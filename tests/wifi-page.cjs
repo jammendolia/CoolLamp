@@ -1,6 +1,6 @@
 const fs=require('node:fs'),assert=require('node:assert/strict'),vm=require('node:vm'),os=require('node:os'),path=require('node:path');
 const {generatePassword,setupSecrets}=require('../tools/setup-secrets.cjs');
-for(let i=0;i<1000;i++){const p=generatePassword();assert.match(p,/^[a-z]+(-[a-z]+){3}$/);assert.equal(new Set(p.split('-')).size,4);assert(p.length>=8&&p.length<=63)}
+for(let i=0;i<1000;i++){const p=generatePassword();assert.match(p,/^[a-z]+(-[a-z]+){1}$/);assert.equal(new Set(p.split('-')).size,2);assert(p.length>=8&&p.length<=63)}
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lamp-secret-test-'));
 try{const dest=path.join(dir,'LampSecrets.h');assert(setupSecrets(dest));const before=fs.readFileSync(dest,'utf8');assert.equal(setupSecrets(dest),false);assert.equal(fs.readFileSync(dest,'utf8'),before)}finally{fs.rmSync(dir,{recursive:true})}
 const page=fs.readFileSync(path.join(__dirname,'../LampPage.h'),'utf8');
@@ -17,5 +17,5 @@ vm.runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/)[1],context);
  el('networks').selectedOptions=[el('networks').options[2]];el('networks').onchange();assert.equal(el('ssid').value,'Guest');assert.equal(el('openNetwork').checked,true);
  el('networks').selectedOptions=[el('networks').options[1]];el('networks').onchange();assert.equal(el('ssid').value,unusual);assert.equal(el('openNetwork').checked,false);
  scanState='failed';await el('scan').onclick();assert.equal(el('scan').disabled,false);assert.match(el('scanStatus').textContent,/could not finish/);
- console.log('PASS: four-word password generation, existing secret preserved, network selection, literal SSID rendering, open-network selection, and scan failure recovery.');
+ console.log('PASS: two-word password generation, existing secret preserved, network selection, literal SSID rendering, open-network selection, and scan failure recovery.');
 })().catch(e=>{console.error(e);process.exitCode=1});

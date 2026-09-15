@@ -54,7 +54,7 @@ The default LED current budget is 500 mA at 5 V. Raising it requires an appropri
 
 ## Build and update
 
-After cloning, run `node tools/setup-secrets.cjs` once to create a private initial password header made from four randomly selected common words (for example, `cactus-piano-river-moon`). It will not overwrite an existing header. Node.js is needed for this helper and the tests.
+After cloning, run `node tools/setup-secrets.cjs` once to create a private initial password header made from two randomly selected common words (for example, `cactus-piano`). It will not overwrite an existing header. Node.js is needed for this helper and the tests.
 
 Board target: `esp32:esp32:esp32c3:CDCOnBoot=cdc`. Dependencies: Arduino ESP32 core 3.3.11, FastLED 3.10.5, ESP32RotaryEncoder 1.2.0. WiFi, WebServer, Preferences, ESPmDNS, and Update come with the ESP32 core.
 
