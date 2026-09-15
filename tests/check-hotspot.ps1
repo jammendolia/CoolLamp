@@ -3,16 +3,18 @@ $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 $secret = Get-Content -Raw (Join-Path $project 'LampSecrets.h')
 $password = [regex]::Match($secret, 'DEFAULT_ADMIN_PASSWORD "([^"]+)"').Groups[1].Value
-if ($password.Length -lt 12) { throw 'Initial access password missing.' }
+if ($env:LAMP_PASSWORD) { $password = $env:LAMP_PASSWORD }
+if ($password.Length -lt 8) { throw 'Initial access password missing.' }
 $before = (netsh wlan show interfaces) -join "`n"
 $profileMatch = [regex]::Match($before, '(?m)^\s*Profile\s*:\s*(.+)$')
 if (!$profileMatch.Success) { throw 'Cannot identify the Wi-Fi profile to restore.' }
 $previousProfile = $profileMatch.Groups[1].Value.Trim()
 $temporaryProfile = 'CoolLamp-Test-' + [guid]::NewGuid().ToString('N').Substring(0,8)
 $profilePath = Join-Path $env:TEMP ($temporaryProfile + '.xml')
+$escapedPassword = [System.Security.SecurityElement]::Escape($password)
 $escapedSsid = [System.Security.SecurityElement]::Escape($Ssid)
 $xml = @"
-<?xml version="1.0"?><WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1"><name>$temporaryProfile</name><SSIDConfig><SSID><name>$escapedSsid</name></SSID></SSIDConfig><connectionType>ESS</connectionType><connectionMode>manual</connectionMode><MSM><security><authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption><sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>$password</keyMaterial></sharedKey></security></MSM></WLANProfile>
+<?xml version="1.0"?><WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1"><name>$temporaryProfile</name><SSIDConfig><SSID><name>$escapedSsid</name></SSID></SSIDConfig><connectionType>ESS</connectionType><connectionMode>manual</connectionMode><MSM><security><authEncryption><authentication>WPA2PSK</authentication><encryption>AES</encryption><useOneX>false</useOneX></authEncryption><sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>$escapedPassword</keyMaterial></sharedKey></security></MSM></WLANProfile>
 "@
 $added = $false
 try {

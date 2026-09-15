@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -13,6 +14,8 @@ WebServer lampServer(80);
 String lampHost;
 String lampAPName;
 String lampToken;
+bool scanActive = false;
+String scanResults = "{\"status\":\"idle\",\"networks\":[]}";
 bool setupAP = false;
 bool lastAPStartOK = false;
 bool serverStarted = false;
@@ -60,7 +63,7 @@ void loadLampSettings()
       saved.milliAmps < 100 || saved.milliAmps > 20000 || saved.brightness < 1 ||
       saved.startupMode < 1 || saved.startupMode > MODE_MAX ||
       saved.ssid[32] != '\0' || saved.wifiPassword[63] != '\0' || saved.adminPassword[63] != '\0' ||
-      strlen(saved.adminPassword) < 12) return;
+      strlen(saved.adminPassword) < 8) return;
   lampSettings = saved;
 }
 
@@ -89,6 +92,66 @@ bool authorizedLampRequest(bool mutation)
   }
   apLastActivity = millis();
   return true;
+}
+
+// Scan asynchronously so effects and HTTP requests continue while the radio scans.
+void serviceLampScan()
+{
+  if (!scanActive) return;
+  const int count = WiFi.scanComplete();
+  if (count == WIFI_SCAN_RUNNING) return;
+  scanActive = false;
+  if (count < 0) {
+    esp_wifi_scan_stop();
+    scanResults = "{\"status\":\"failed\",\"networks\":[]}";
+  } else {
+    // WiFi exposes result indexes as uint8_t. Bound both work and response size.
+    int selected[32];
+    int used = 0;
+    for (int i = 0; i < count && i < 256; ++i) {
+      const String ssid = WiFi.SSID(i);
+      if (ssid.isEmpty()) continue;
+      bool duplicate = false;
+      for (int j = 0; j < used; ++j) {
+        if (WiFi.SSID(selected[j]) == ssid && WiFi.encryptionType(selected[j]) == WiFi.encryptionType(i)) {
+          if (WiFi.RSSI(i) > WiFi.RSSI(selected[j])) selected[j] = i;
+          duplicate = true; break;
+        }
+      }
+      if (duplicate) continue;
+      if (used < 32) selected[used++] = i;
+      else {
+        int weakest = 0;
+        for (int j = 1; j < used; ++j) if (WiFi.RSSI(selected[j]) < WiFi.RSSI(selected[weakest])) weakest = j;
+        if (WiFi.RSSI(i) > WiFi.RSSI(selected[weakest])) selected[weakest] = i;
+      }
+    }
+    for (int i = 0; i < used; ++i) for (int j = i + 1; j < used; ++j) {
+      if (WiFi.RSSI(selected[j]) > WiFi.RSSI(selected[i])) { int swap = selected[i]; selected[i] = selected[j]; selected[j] = swap; }
+    }
+    scanResults = "{\"status\":\"complete\",\"networks\":[";
+    for (int i = 0; i < used; ++i) {
+      if (i) scanResults += ',';
+      const int index = selected[i];
+      scanResults += "{\"ssid\":" + jsonText(WiFi.SSID(index));
+      scanResults += ",\"rssi\":" + String(WiFi.RSSI(index));
+      scanResults += ",\"open\":" + String(WiFi.encryptionType(index) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    }
+    scanResults += "]}";
+  }
+  WiFi.scanDelete();
+}
+
+void startLampScan()
+{
+  if (!authorizedLampRequest(true)) return;
+  if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+  if (!scanActive) {
+    WiFi.setScanTimeout(20000);
+    scanActive = WiFi.scanNetworks(true, false, false, 120) == WIFI_SCAN_RUNNING;
+    scanResults = scanActive ? "{\"status\":\"scanning\",\"networks\":[]}" : "{\"status\":\"failed\",\"networks\":[]}";
+  }
+  lampServer.send(202, "application/json", scanResults);
 }
 
 bool readNumber(const char* name, uint32_t low, uint32_t high, uint32_t& result)
@@ -133,8 +196,8 @@ void saveLampConfiguration()
   const String wifiPass = lampServer.arg("wifiPassword");
   const String adminPass = lampServer.arg("adminPassword");
   if (ssid.length() > 32 || wifiPass.length() > 63 || (!wifiPass.isEmpty() && wifiPass.length() < 8) ||
-      (!adminPass.isEmpty() && (adminPass.length() < 12 || adminPass.length() > 63))) {
-    lampServer.send(400, "text/plain", "Wi-Fi passwords need 8–63 characters; access passwords need 12–63. Network names are at most 32 bytes."); return;
+      (!adminPass.isEmpty() && (adminPass.length() < 8 || adminPass.length() > 63))) {
+    lampServer.send(400, "text/plain", "Wi-Fi passwords need 8–63 characters; access passwords need 8–63. Network names are at most 32 bytes."); return;
   }
   if (lampServer.arg("forgetWifi") == "1") {
     memset(next.ssid, 0, sizeof(next.ssid)); memset(next.wifiPassword, 0, sizeof(next.wifiPassword));
@@ -219,6 +282,11 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/scan", HTTP_POST, startLampScan);
+  lampServer.on("/api/scan", HTTP_GET, []() {
+    if (!authorizedLampRequest(false)) return;
+    lampServer.send(200, "application/json", scanResults);
+  });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
   lampServer.on("/api/preview", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
@@ -314,6 +382,7 @@ void serviceLampUSB()
 void serviceLampNetwork()
 {
   serviceLampUSB();
+  serviceLampScan();
   const uint32_t now = millis();
   if (restartAt && static_cast<int32_t>(now - restartAt) >= 0) ESP.restart();
   if (otaActive && now - otaLastActivity > 30000) failLampUpdate("Upload timed out.");

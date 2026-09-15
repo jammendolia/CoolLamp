@@ -15,6 +15,26 @@ async function post(url,data,includeToken=true){return fetch(base+url,{method:'P
   let response=await fetch(base+'/api/state',{signal:AbortSignal.timeout(5000)});assert.equal(response.status,401);
   response=await post('/api/preview',{mode:2,brightness:100},false);assert.equal(response.status,403);
   console.log('PASS: login and per-boot request-token protection.');
+  response=await post('/api/scan',{},false);assert.equal(response.status,403);
+  for(let scan=0;scan<2;scan++){
+    response=await post('/api/scan',{});assert.equal(response.status,202);
+    const deadline=Date.now()+30000;let result;
+    do{
+      await new Promise(r=>setTimeout(r,750));
+      await getState();
+      response=await fetch(base+'/api/scan',{headers:{Authorization:authorization},signal:AbortSignal.timeout(5000)});
+      assert.equal(response.status,200);result=await response.json();
+    }while(result.status==='scanning'&&Date.now()<deadline);
+    assert.equal(result.status,'complete');assert(result.networks.length<=32);
+    for(let i=1;i<result.networks.length;i++)assert(result.networks[i-1].rssi>=result.networks[i].rssi);
+    console.log('PASS: hotspot stayed reachable during scan '+(scan+1)+'; '+result.networks.length+' networks returned in signal order.');
+  }
+  for(const length of [7,8]){
+    response=await post('/api/config',{leds:original.leds,milliamps:original.milliamps,brightness:original.brightness,mode:original.mode,ssid:original.ssid==='test-validation'?'other-validation':'test-validation',adminPassword:'a'.repeat(length)});
+    assert.equal(response.status,400);const message=await response.text();
+    assert(message.includes(length===7?'access passwords':'Enter the new network password'));
+  }
+  console.log('PASS: seven-character access password rejected; eight characters pass password validation without changing saved settings.');
   response=await post('/api/config',{leds:0,milliamps:500,brightness:100,mode:4});assert.equal(response.status,400);
   response=await post('/api/config',{leds:1025,milliamps:500,brightness:100,mode:4});assert.equal(response.status,400);
   console.log('PASS: invalid strip lengths rejected without saving.');
