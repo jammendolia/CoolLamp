@@ -362,7 +362,7 @@ void beginLampNetwork()
   });
   lampServer.on("/api/bluetooth", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
-    lampServer.send(200, "application/json", String("{\"enabled\":") + (COOL_LAMP_BLE ? "true" : "false") +
+    lampServer.send(200, "application/json", String("{\"enabled\":") + (lampBluetoothReady() ? "true" : "false") +
       ",\"pairing\":" + (lampPairingOpen() ? "true" : "false") + "}");
   });
   lampServer.on("/api/bluetooth/forget", HTTP_POST, []() {

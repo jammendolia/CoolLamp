@@ -1,5 +1,6 @@
 #include "UpdateHttp.h"
 #include "LampVersion.h"
+#include "UpdateIo.h"
 #include <esp_crt_bundle.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/ssl_ciphersuites.h>
@@ -25,11 +26,17 @@ void UpdateHttp::close(){if(tls)esp_tls_conn_destroy(tls);tls=nullptr;cursor=buf
 String updateHttpDiagnostics(){return String(",\"httpStage\":")+httpStage.load()+",\"httpCode\":"+httpCode.load()+",\"httpHost\":"+httpHost.load()+",\"tlsError\":"+tlsError.load()+",\"tlsFlags\":"+tlsFlags.load()+",\"transportError\":"+transportError.load();}
 int UpdateHttp::receive(void* output,size_t size){
   if(!tls||uint32_t(millis()-started)>180000)return -1;
-  const int n=esp_tls_conn_read(tls,output,size);if(n<=0)transportError=n;return n;
+  const int n=updateIo([&]{return esp_tls_conn_read(tls,output,size);},[]{return millis();},[]{vTaskDelay(1);},
+                       started,ESP_TLS_ERR_SSL_WANT_READ,ESP_TLS_ERR_SSL_WANT_WRITE);
+  if(n<=0)transportError=n;return n;
 }
 bool UpdateHttp::send(const char* text){
   size_t left=strlen(text);
-  while(left){const int n=esp_tls_conn_write(tls,text,left);if(n<=0){transportError=n;return false;}text+=n;left-=n;}
+  while(left){
+    const int n=updateIo([&]{return esp_tls_conn_write(tls,text,left);},[]{return millis();},[]{vTaskDelay(1);},
+                         started,ESP_TLS_ERR_SSL_WANT_READ,ESP_TLS_ERR_SSL_WANT_WRITE);
+    if(n<=0){transportError=n;return false;}text+=n;left-=n;
+  }
   return true;
 }
 bool UpdateHttp::open(String url,int& code,int64_t& length){

@@ -221,6 +221,7 @@ void setLampPairingWindow(bool open)
 }
 
 bool lampPairingOpen() { return pairing; }
+bool lampBluetoothReady() { return BLEDevice::getInitialized() && server; }
 
 void forgetLampPhones()
 {
@@ -288,5 +289,6 @@ void beginLampBluetooth(const String&) {}
 void serviceLampBluetooth() {}
 void setLampPairingWindow(bool) {}
 bool lampPairingOpen() { return false; }
+bool lampBluetoothReady() { return false; }
 void forgetLampPhones() {}
 #endif

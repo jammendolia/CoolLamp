@@ -40,6 +40,8 @@ jobs:
           /tmp/knob-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/update-http.cpp -o /tmp/update-http-test
           /tmp/update-http-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/update-io.cpp -o /tmp/update-io-test
+          /tmp/update-io-test
           g++ -std=c++17 -Wall -Wextra -Werror tests/update-manifest.cpp -o /tmp/update-manifest-test
           /tmp/update-manifest-test
       - name: Install pinned firmware dependencies

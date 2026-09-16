@@ -86,7 +86,7 @@ Board target: `esp32:esp32:esp32c3:CDCOnBoot=cdc`. Dependencies: Arduino ESP32 c
 
 Bluetooth prototype build: `node tools/build-firmware.cjs`. The larger partition layout needs a first USB installation; see [Bluetooth app notes](docs/bluetooth-app.md).
 
-Use this build script for updater-capable firmware. It applies the Wi-Fi memory
+Use this build script for updater-capable firmware. It applies the radio memory
 configuration needed for HTTPS downloads while Bluetooth is running; a plain
 Arduino IDE build does not apply that linker setting.
 

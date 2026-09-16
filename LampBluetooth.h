@@ -9,4 +9,5 @@ void beginLampBluetooth(const String& name);
 void serviceLampBluetooth();
 void setLampPairingWindow(bool open);
 bool lampPairingOpen();
+bool lampBluetoothReady();
 void forgetLampPhones();
