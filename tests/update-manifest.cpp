@@ -13,4 +13,10 @@ int main() {
   }
   uint16_t current[3]={1,9,9}, newer[3]={1,10,0}, older[3]={1,2,100};
   assert(firmwareIsNewer(newer,current)); assert(!firmwareIsNewer(older,current)); assert(!firmwareIsNewer(current,current));
+  FirmwareManifest offered{{1,3,5},1600000,{}};
+  auto refreshed=offered; assert(sameFirmwareManifest(offered,refreshed));
+  refreshed.version[2]=4; assert(!sameFirmwareManifest(offered,refreshed));
+  refreshed=offered; ++refreshed.version[2]; assert(!sameFirmwareManifest(offered,refreshed));
+  refreshed=offered; ++refreshed.size; assert(!sameFirmwareManifest(offered,refreshed));
+  refreshed=offered; ++refreshed.sha256[31]; assert(!sameFirmwareManifest(offered,refreshed));
 }

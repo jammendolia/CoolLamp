@@ -36,7 +36,11 @@ String versionText(const uint16_t v[3]) { return String(v[0]) + "." + String(v[1
 
 bool checkRelease(bool installing = false) {
   UpdateHttp http; int code = 0; int64_t length = 0;
-  if (!http.open(String(ROOT) + "latest/download/coollamp-manifest.txt", code, length)) { fail(UPDATE_NETWORK); return false; }
+  // Discovery must bypass a cached Latest redirect. Installation rechecks the
+  // exact offered release, never a second Latest lookup that could go backward.
+  const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/coollamp-manifest.txt" :
+    String("latest/download/coollamp-manifest.txt?check=") + String(esp_random(), HEX);
+  if (!http.open(String(ROOT) + path, code, length)) { fail(UPDATE_NETWORK); return false; }
   char text[256] = {}; size_t used = 0;
   if (code == 200 && (length < 0 || length < sizeof(text))) {
     while (used < sizeof(text) - 1) {
@@ -49,6 +53,7 @@ bool checkRelease(bool installing = false) {
   const bool complete = http.complete();
   http.close();
   if (code == 404) {
+    if (installing) { fail(UPDATE_MANIFEST); return false; }
     portENTER_CRITICAL(&mux); status.available = false; memset(status.latest, 0, sizeof(status.latest)); portEXIT_CRITICAL(&mux);
     phase(UPDATE_IDLE); return true;
   }
@@ -56,6 +61,7 @@ bool checkRelease(bool installing = false) {
   if (code != 200 || !complete || used >= sizeof(text) - 1 || strlen(text) != used || !parseFirmwareManifest(text, next)) {
     fail(code == 200 ? UPDATE_MANIFEST : UPDATE_NETWORK); return false;
   }
+  if (installing && !sameFirmwareManifest(next, candidate)) { fail(UPDATE_MANIFEST); return false; }
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   if (!target || target->size < 2031616 || next.size > target->size) { fail(UPDATE_PARTITION); return false; }
   const bool newer = firmwareIsNewer(next.version, CURRENT);
@@ -120,7 +126,7 @@ void downloadRelease() {
 }
 void installRelease() {
   // Keep the manifest and download stack frames separate on this small device.
-  // Fetch a fresh manifest immediately before download; never use an old URL.
+  // Revalidate the offered version, size and hash before downloading its image.
   if (checkRelease(true) && getLampUpdateStatus().available) downloadRelease();
 }
 void updateTask(void*) {

@@ -54,7 +54,7 @@ bool UpdateHttp::open(String url,int& code,int64_t& length){
     }
     httpStage=3;
     if(!send("GET ")||!send(path.c_str())||!send(" HTTP/1.1\r\nHost: ")||!send(host.c_str())||
-       !send("\r\nUser-Agent: CoolLamp/" LAMP_FIRMWARE_VERSION "\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")){close();return false;}
+       !send("\r\nUser-Agent: CoolLamp/" LAMP_FIRMWARE_VERSION "\r\nAccept-Encoding: identity\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")){close();return false;}
     UpdateHttpHeaders headers;
     httpStage=4;
     while(!headers.complete()){

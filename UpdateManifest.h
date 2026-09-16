@@ -10,6 +10,11 @@ struct FirmwareManifest {
   uint8_t sha256[32];
 };
 
+inline bool sameFirmwareManifest(const FirmwareManifest& a, const FirmwareManifest& b) {
+  return !memcmp(a.version, b.version, sizeof(a.version)) && a.size == b.size &&
+         !memcmp(a.sha256, b.sha256, sizeof(a.sha256));
+}
+
 inline bool parseFirmwareVersion(const char* text, uint16_t out[3]) {
   const char* p = text;
   for (unsigned i = 0; i < 3; ++i) {

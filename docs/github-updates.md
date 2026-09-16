@@ -31,7 +31,7 @@ Public images are OTA upgrades for already provisioned lamps, preserving saved c
 
 ## Verification and recovery
 
-### HTTP and TLS repair (1.3.4)
+### HTTP, TLS and release-selection repair (1.3.5)
 
 The first live release check on 1.2.2 hit an allocation assertion in ESP-IDF's
 `http_utils_append_string` while processing GitHub response headers. The repaired
@@ -47,7 +47,7 @@ Lamps on the faulty 1.2.2 updater need one local web firmware upload to receive
 this repair before using online discovery. Existing Wi-Fi credentials, colors,
 and strip settings are retained. Version 1.3.0 remains a prerelease after its
 failed discovery test. A local 1.3.1 repair image is used as the baseline for the
-1.3.4 end-to-end OTA test. Version 1.3.2 fixed header allocation but still lacked
+1.3.5 end-to-end OTA test. Version 1.3.2 fixed header allocation but still lacked
 enough RAM for the asset server's RSA certificate verification.
 
 The canonical build script now wraps `esp_wifi_init` to configure smaller Wi-Fi
@@ -68,6 +68,14 @@ still fail incomplete transfers; the active firmware remains selected. The
 limits are checked between socket operations, which also have a 12-second timeout.
 `tests/update-io.cpp` covers retries, EOF, fatal errors, both deadlines and timer
 wraparound using the same helper as the live transport.
+
+Version 1.3.4 still repeated a Latest lookup during installation. Hardware testing
+observed an older manifest at that step after a newer version had been offered.
+Discovery now uses a per-request cache-busting query and no-cache header.
+Installation re-fetches the offered version's pinned manifest and requires the
+version, size and SHA-256 to remain identical before downloading. A stale Latest
+response cannot silently substitute an older release. Manifest tests reject
+older/newer versions and changed sizes or hashes during this revalidation.
 
 `tests/update-http.cpp` exercises the actual header parser using 48 KB ignored
 headers, byte-at-a-time input, mixed-case field names, signed redirect URLs,
