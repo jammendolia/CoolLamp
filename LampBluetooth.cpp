@@ -19,7 +19,7 @@ constexpr char SERVICE[] = "7b610001-6e2b-4f3d-9a71-28e45c001001";
 constexpr char COMMAND[] = "7b610002-6e2b-4f3d-9a71-28e45c001001";
 constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
 constexpr uint16_t NO_CONNECTION = 0xffff;
-struct Command { uint32_t generation; uint8_t bytes[4]; };
+struct Command { uint32_t generation; uint8_t length; uint8_t bytes[7]; };
 QueueHandle_t commands = nullptr;
 BLEServer* server = nullptr;
 BLECharacteristic* stateCharacteristic = nullptr;
@@ -29,7 +29,7 @@ std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
 uint32_t pairingStarted = 0;
 std::atomic<bool> advertisingDirty{false};
 uint32_t revision = 0;
-uint8_t lastState[12] = {};
+uint8_t lastState[16] = {};
 
 int bondedPeers(ble_addr_t* peers)
 {
@@ -89,13 +89,16 @@ class Writes final : public BLECharacteristicCallbacks {
     if (!secure || connection != event->conn_handle) return;
     const String value = characteristic->getValue();
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
-    if (value.length() != 4) {
+    if ((value.length() != 4 && value.length() != 7) ||
+        (value.length() == 7 && uint8_t(value[2]) != 6) ||
+        (value.length() == 4 && uint8_t(value[2]) == 6)) {
       server->disconnect(event->conn_handle);
       return;
     }
     Command command{};
     command.generation = generation;
-    memcpy(command.bytes, value.c_str(), sizeof(command.bytes));
+    command.length = value.length();
+    memcpy(command.bytes, value.c_str(), command.length);
     // Never change FastLED, Preferences, or Wi-Fi state on the Bluetooth task.
     if (xQueueSend(commands, &command, 0) != pdTRUE) server->disconnect(event->conn_handle);
   }
@@ -127,10 +130,14 @@ void updateAdvertising()
 void publish(uint8_t id, uint8_t result, bool acknowledge)
 {
   const auto state = getLampControlState();
-  const bool changed = lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power;
+  const auto color = getLampColor(state.mode);
+  const bool changed = lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power ||
+    lastState[12] != color.enabled || lastState[13] != color.r || lastState[14] != color.g || lastState[15] != color.b;
+  if (!changed && !acknowledge && lastState[0]) return;
   if (changed) ++revision;
-  uint8_t value[12] = {LAMP_PROTOCOL_VERSION, id, result, state.mode, state.brightness,
-    static_cast<uint8_t>(state.power), LAMP_EFFECT_COUNT, 1};
+  uint8_t value[16] = {LAMP_PROTOCOL_VERSION, id, result, state.mode, state.brightness,
+    static_cast<uint8_t>(state.power), LAMP_EFFECT_COUNT, 3};
+  value[12] = color.enabled; value[13] = color.r; value[14] = color.g; value[15] = color.b;
   for (int i = 0; i < 4; ++i) value[8 + i] = revision >> (8 * i);
   memcpy(lastState, value, sizeof(value));
   stateCharacteristic->setValue(value, sizeof(value));
@@ -216,14 +223,15 @@ void serviceLampBluetooth()
         case 3: if (!setLampControl(value, state.brightness, state.power)) result = 2; break;
         case 4: if (value) result = 2; else if (!saveLampDefaults()) result = 4; break;
         case 5: if (value) result = 2; break;
+        case 6: if (!setLampColor(value, command.bytes[4], command.bytes[5], command.bytes[6])) result = 2; break;
+        case 7: if (!resetLampColor(value)) result = 2; break;
         default: result = 2;
       }
     }
     publish(id, result, true);
   } else {
     // Detect changes from the knob and HTTP without making those paths know BLE.
-    const auto state = getLampControlState();
-    if (lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power) publish(0, 0, false);
+    publish(0, 0, false);
   }
 }
 #else

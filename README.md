@@ -1,12 +1,12 @@
 # Cool Lamp
 
-ESP32-C3 / WS2812B lamp with 28 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
+ESP32-C3 / WS2812B lamp with 29 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
 
 ## Controls
 
 - Turn the knob: select the next or previous effect (wraps around).
 - Short press and release: toggle the light.
-- Hold for three seconds, then release before six seconds: open or close the setup hotspot. A short teal pulse confirms the gesture.
+- At three seconds while held: open or close the setup hotspot. Opening flashes orange for three seconds. Continue holding to six seconds to enter Bluetooth pairing and switch to blue.
 - Hold for six seconds: enter Bluetooth pairing. The entire lamp flashes blue for up to two minutes, stopping when a phone pairs. Hold six seconds again to cancel. No pairing code is required. Long holds never also toggle the light.
 - The hotspot closes after ten minutes without an authenticated request. Hold the knob again to reopen it.
 
@@ -87,7 +87,7 @@ For OTA, open the lamp page, select **CoolLamp.ino.bin** in the Firmware update 
 USB diagnostics are available for recovery: send `?` at 115200 baud for reset/AP/heap status, or `a` to toggle the setup hotspot. Replies contain no credentials and use a zero transmit timeout, so an unread USB port cannot stall lamp controls or radio startup. Library diagnostics can also appear on USB.
 
 The pre-Bluetooth application used about 1.22 MB in a 1.31 MB OTA slot. The Bluetooth prototype compiles at 1,502,898 bytes and uses the larger 2,031,616-byte OTA slots. Install the new partition layout over USB before using wireless updates with that build. This lamp received the USB migration successfully on 2026-09-15; upload hashes, partition readback, saved configuration preservation and USB startup diagnostics passed. Phone pairing and physical gesture tests remain pending.
-- The owner confirmed the three-second knob hold now produces the teal setup pulse.
+- The owner confirmed the original three-second gesture and teal setup pulse. The updated orange feedback still needs a physical check.
 
 ## Planned GitHub updates
 

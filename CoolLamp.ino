@@ -52,7 +52,8 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_PINK 26
 #define MODE_YELLOW 27
 #define MODE_CYAN 28
-#define MODE_MAX MODE_CYAN
+#define MODE_CUSTOM 29
+#define MODE_MAX MODE_CUSTOM
 
 CRGB leds[MAX_LED_COUNT];
 uint8_t Mode = MODE_FIRE;
@@ -66,6 +67,7 @@ void setup() {
   delay(3000); // Allow time for boot recovery before driving the strip.
 
   loadLampSettings();
+  loadLampColors();
   activeLedCount = lampSettings.ledCount;
   Brightness = lampSettings.brightness;
   Mode = lampSettings.startupMode;
@@ -111,15 +113,19 @@ void loop() {
   const uint32_t now = millis();
   static bool wasPairing = false;
   static bool pairingFlashOn = false;
-  if (lampPairingOpen()) {
+  const bool pairingNow = lampPairingOpen();
+  const bool setupNow = lampSetupPulse();
+  static bool lastPairing = false;
+  if (pairingNow || setupNow) {
     const bool flashOn = (now / 400) % 2 == 0;
-    if (!wasPairing || flashOn != pairingFlashOn) {
+    if (!wasPairing || flashOn != pairingFlashOn || pairingNow != lastPairing) {
       pairingFlashOn = flashOn;
       FastLED.setBrightness(100);
-      fill_solid(leds, NUM_LEDS, flashOn ? CRGB::Blue : CRGB::Black);
+      fill_solid(leds, NUM_LEDS, flashOn ? (pairingNow ? CRGB(0, 0, 255) : CRGB(255, 80, 0)) : CRGB::Black);
       FastLED.show();
     }
     wasPairing = true;
+    lastPairing = pairingNow;
     delay(1);
     return;
   }
@@ -127,13 +133,6 @@ void loop() {
     wasPairing = false;
     fill_solid(leds, NUM_LEDS, CRGB::Black);
     renderNow = true;
-  }
-  if (lampSetupPulse()) {
-    FastLED.setBrightness(Brightness);
-    fill_solid(leds, NUM_LEDS, CRGB::Teal);
-    FastLED.show();
-    delay(1);
-    return;
   }
   FastLED.setBrightness(PowerOn ? Brightness : 0);
   if (!PowerOn) FastLED.show();
@@ -144,6 +143,7 @@ void loop() {
   lastFrameMs = now;
 
   switch (Mode) {
+    case MODE_CUSTOM: fill_solid(leds, NUM_LEDS, CRGB::White); break;
     case MODE_AURORA: Aurora(); break;
     case MODE_RAIN: Rain(); break;
     case MODE_EMBERS: Embers(); break;
@@ -227,5 +227,18 @@ void loop() {
 
   }
   EVERY_N_MILLISECONDS(20) { gHue++; }
+  const auto color = getLampColor(Mode);
+  // Preserve the original frame for effects that fade or accumulate past pixels.
+  static CRGB originalFrame[MAX_LED_COUNT];
+  if (color.enabled) {
+    ::memcpy(originalFrame, leds, NUM_LEDS * sizeof(CRGB));
+    for (int i = 0; i < NUM_LEDS; ++i) {
+      // Hue-only rainbows become moving intensity bands with a single color.
+      const uint8_t level = (Mode == MODE_RAINBOW || Mode == MODE_RAINBOW_GLITTER) ?
+        leds[i].getLuma() : max(leds[i].r, max(leds[i].g, leds[i].b));
+      leds[i] = CRGB(uint16_t(color.r) * level / 255, uint16_t(color.g) * level / 255, uint16_t(color.b) * level / 255);
+    }
+  }
   FastLED.show();
+  if (color.enabled) ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
 }

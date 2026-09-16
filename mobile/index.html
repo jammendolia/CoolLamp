@@ -9,8 +9,14 @@
     <label for="brightness">Brightness <output id="brightnessValue">39%</output></label>
     <input id="brightness" type="range" min="1" max="255" value="100">
     <label for="effect">Effect</label><select id="effect"></select>
+    <div id="colorControls" hidden>
+      <label for="color">Color for this effect</label><input id="color" type="color" value="#ff3c6e">
+      <p id="colorHint" class="hint"></p>
+      <button id="resetColor" class="secondary">Restore original colors</button>
+    </div>
+    <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors and Custom solid.</p>
     <button id="save" class="secondary">Use these settings at startup</button>
-    <p class="hint">Changes are live. Save to remember brightness and effect after a restart.</p>
+    <p class="hint">Changes are live. Save to remember brightness, startup effect, and each effect’s custom color after a restart.</p>
   </fieldset>
   <details><summary>Connecting for the first time</summary><ol><li>Hold the lamp’s knob for six seconds until the entire lamp flashes blue.</li><li>Tap “Find a lamp flashing blue” and select your lamp.</li><li>Accept a Bluetooth pairing prompt if your phone shows one. No code is needed.</li></ol><p>Pair within two minutes. Your phone remembers the pairing. Bluetooth control works without home Wi-Fi or internet. Hold for six seconds again to cancel pairing.</p></details>
   <details><summary>Wi-Fi, strip settings & firmware</summary><p>These settings are available on the lamp’s existing web page. Hold the knob for three seconds, join its CoolLamp hotspot, and open <strong>http://192.168.4.1/</strong> in your browser. On home Wi-Fi, use the lamp’s local address.</p></details>

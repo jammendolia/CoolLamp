@@ -43,8 +43,8 @@ void Purple() {
 void Pink() {
   for (int i = 0; i < NUM_LEDS; i++) {
     leds[i].r = 255;
-    leds[i].g = 0;
-    leds[i].b = 220;
+    leds[i].g = 35;
+    leds[i].b = 85;
   }
 };
 

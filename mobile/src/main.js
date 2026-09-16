@@ -13,6 +13,16 @@ if (savedDevice) status('Reconnect to your saved lamp. There is no need to enter
 const lamp = new LampTransport(BleClient, {
   onState(next) {
     state = next;
+    if ($('effect').options.length !== next.effectCount) {
+      $('effect').replaceChildren(...effects.slice(0, next.effectCount).map((name, i) => new Option(name, i + 1)));
+    }
+    $('colorControls').hidden = !next.supportsColor;
+    $('colorUpgrade').hidden = next.supportsColor;
+    if (next.color) {
+      $('color').value = '#' + [next.color.r,next.color.g,next.color.b].map(v => v.toString(16).padStart(2,'0')).join('');
+      $('colorHint').textContent = next.color.enabled ? 'Your color is active for this effect.' : 'Original colors are active. Pick a color to customize this effect.';
+      $('resetColor').textContent = next.mode === 29 ? 'Reset color' : 'Restore original colors';
+    }
     $('power').textContent = next.power ? 'Turn off' : 'Turn on';
     $('power').setAttribute('aria-pressed', String(next.power));
     if (!editingBrightness) { $('brightness').value = next.brightness; brightnessLabel(); }
@@ -54,3 +64,8 @@ $('effect').onchange = () => change('effect', Number($('effect').value));
 $('brightness').oninput = () => { editingBrightness = true; brightnessLabel(); };
 $('brightness').onchange = async () => { const value = Number($('brightness').value); editingBrightness = false; await change('brightness', value); };
 $('save').onclick = () => change('saveDefaults');
+$('color').onchange = () => {
+  const hex = $('color').value.slice(1);
+  change('color', {mode: state.mode, r: parseInt(hex.slice(0,2),16), g: parseInt(hex.slice(2,4),16), b: parseInt(hex.slice(4,6),16)});
+};
+$('resetColor').onclick = () => change('resetColor', state.mode);

@@ -39,7 +39,7 @@ const char* const effectNames[] = {
   "Split fire - reversed colors", "Blue gas fire", "Witch fire", "Purple fire",
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
-  "Blue", "Purple", "Pink", "Yellow", "Cyan"
+  "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -179,6 +179,12 @@ void sendLampState()
   state += ",\"address\":" + jsonText(WiFi.localIP().toString());
   state += ",\"hostname\":" + jsonText(lampHost + ".local") + ",\"effects\":[";
   for (size_t i = 0; i < MODE_MAX; i++) { if (i) state += ','; state += jsonText(effectNames[i]); }
+  state += "],\"colors\":[";
+  for (uint8_t mode = 1; mode <= MODE_MAX; ++mode) {
+    if (mode > 1) state += ',';
+    const auto c = getLampColor(mode);
+    state += "[" + String(c.enabled) + "," + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
+  }
   state += "]}";
   lampServer.send(200, "application/json", state);
 }
@@ -217,6 +223,7 @@ void saveLampConfiguration()
   const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next);
   prefs.end();
   if (!saved) { lampServer.send(500, "text/plain", "Settings could not be saved. Please retry."); return; }
+  if (!saveLampColors()) { lampServer.send(500, "text/plain", "Settings saved, but colors could not be saved. Please retry."); return; }
   lampServer.send(200, "text/plain", "Saved. Restarting… If needed, hold the knob for three seconds to reopen setup. On home Wi-Fi, use http://" + lampHost + ".local/");
   restartAt = millis() + 1200;
 }
@@ -290,6 +297,21 @@ void beginLampNetwork()
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
+  lampServer.on("/api/color", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    uint32_t mode, r, g, b;
+    if (!readNumber("mode", 1, MODE_MAX, mode)) { lampServer.send(400, "text/plain", "Invalid effect."); return; }
+    if (lampServer.arg("reset") == "1") resetLampColor(mode);
+    else {
+      if (!readNumber("r", 0, 255, r) || !readNumber("g", 0, 255, g) || !readNumber("b", 0, 255, b)) {
+        lampServer.send(400, "text/plain", "Invalid RGB color."); return;
+      }
+      setLampColor(mode, r, g, b);
+    }
+    setLampControl(mode, Brightness, PowerOn);
+    lampServer.send(200, "text/plain", "Color applied. Save settings to keep it after restart.");
+  });
   lampServer.on("/api/bluetooth", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", String("{\"enabled\":") + (COOL_LAMP_BLE ? "true" : "false") +
@@ -349,32 +371,36 @@ void toggleLampSetup()
     lastAPStartOK = setupAP;
     apLastActivity = millis();
   }
-  setupPulseStart = millis(); setupPulseActive = true;
+  setupPulseStart = millis(); setupPulseActive = setupAP;
 }
 
 bool pollLampButton()
 {
-  static bool raw = HIGH, stable = HIGH, held = false;
+  static bool raw = HIGH, stable = HIGH, wifiHandled = false, pairingHandled = false;
   static uint32_t changedAt = 0, pressedAt = 0;
   const uint32_t now = millis();
   const bool reading = digitalRead(DI_ENCODER_SW);
   if (reading != raw) { raw = reading; changedAt = now; }
   if (raw != stable && now - changedAt >= 30) {
     stable = raw;
-    if (stable == LOW) { pressedAt = now; held = false; }
-    else if (!held) {
-      if (now - pressedAt >= 6000) { setLampPairingWindow(!lampPairingOpen()); held = true; }
-      else if (now - pressedAt >= 3000) { toggleLampSetup(); held = true; }
-      else return true;
-    }
+    if (stable == LOW) { pressedAt = now; wifiHandled = false; pairingHandled = false; }
+    else if (!wifiHandled && !pairingHandled && now - pressedAt < 3000) return true;
   }
-  if (stable == LOW && !held && now - pressedAt >= 6000) { held = true; setLampPairingWindow(!lampPairingOpen()); }
+  if (stable == LOW && !wifiHandled && now - pressedAt >= 3000) {
+    wifiHandled = true;
+    toggleLampSetup();
+  }
+  if (stable == LOW && !pairingHandled && now - pressedAt >= 6000) {
+    pairingHandled = true;
+    setupPulseActive = false;
+    setLampPairingWindow(!lampPairingOpen());
+  }
   return false;
 }
 
 bool lampSetupPulse()
 {
-  if (setupPulseActive && millis() - setupPulseStart >= 1000) setupPulseActive = false;
+  if (setupPulseActive && millis() - setupPulseStart >= 3000) setupPulseActive = false;
   return setupPulseActive;
 }
 
@@ -424,11 +450,11 @@ bool saveLampDefaults()
   LampSettings next = lampSettings;
   next.brightness = Brightness;
   next.startupMode = Mode;
-  if (next.brightness == lampSettings.brightness && next.startupMode == lampSettings.startupMode) return true;
+  if (next.brightness == lampSettings.brightness && next.startupMode == lampSettings.startupMode) return saveLampColors();
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
   const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next);
   prefs.end();
   if (saved) lampSettings = next;
-  return saved;
+  return saved && saveLampColors();
 }

@@ -8,7 +8,7 @@ export class LampTransport {
   }
   disconnected() {
     const hadConnection = this.id !== null;
-    this.epoch++; this.id = null;
+    this.epoch++; this.id = null; this.state = null;
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
     if (hadConnection) this.onDisconnect();
   }
@@ -18,6 +18,7 @@ export class LampTransport {
       if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = null; }
       return;
     }
+    this.state = state;
     this.onState(state);
     if (this.pending && state.id === this.pending.id) {
       const pending = this.pending; this.pending = null; clearTimeout(pending.timer);
@@ -51,6 +52,8 @@ export class LampTransport {
     const epoch = this.epoch;
     const run = async () => {
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
+      if (['color','resetColor'].includes(operation) && !this.state?.supportsColor) throw new Error('Update the lamp firmware to use custom colors.');
+      if (operation === 'effect' && value > this.state?.effectCount) throw new Error('Update the lamp firmware to use this effect.');
       const id = this.sequence = this.sequence % 255 + 1;
       const frame = encodeCommand(id, operation, value);
       // Install the listener BEFORE writing: notifications may precede the write response.

@@ -26,7 +26,7 @@ class Radio {
 
 test('wire frames preserve boundaries and reject invalid values', () => {
   assert.deepEqual([...new Uint8Array(encodeCommand(255, 'brightness', 255).buffer)], [1,255,2,255]);
-  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',29], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
+  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',30], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
   const state = decodeState(packet(7)); assert.equal(state.id, 7); assert.equal(state.revision, 9);
   assert.throws(() => decodeState(new DataView(new ArrayBuffer(11))));
   const bad = packet(); bad.setUint8(0, 2); assert.throws(() => decodeState(bad), /version/);
@@ -81,4 +81,34 @@ test('lamp rejection is reported instead of claiming a saved setting', async () 
   const radio = new Radio(); const lamp = new LampTransport(radio);
   await lamp.connect(); radio.result = 4;
   await assert.rejects(lamp.command('saveDefaults'), /could not save/);
+});
+
+test('RGB commands preserve black, primary colors, and effect-specific slots', () => {
+  const bytes = value => [...new Uint8Array(encodeCommand(9, 'color', value).buffer)];
+  assert.deepEqual(bytes({mode:3,r:255,g:0,b:0}), [1,9,6,3,255,0,0]);
+  assert.deepEqual(bytes({mode:29,r:0,g:0,b:0}), [1,9,6,29,0,0,0]);
+  for (const value of [null, {mode:0,r:1,g:2,b:3}, {mode:30,r:1,g:2,b:3},
+    {mode:3,r:256,g:0,b:0}, {mode:3,r:0,g:-1,b:0}, {mode:3,r:0,g:0,b:1.5}]) {
+    assert.throws(() => encodeCommand(1, 'color', value));
+  }
+  assert.deepEqual([...new Uint8Array(encodeCommand(10,'resetColor',3).buffer)], [1,10,7,3]);
+});
+
+test('color state extension is validated and old firmware remains readable', () => {
+  assert.equal(decodeState(packet()).supportsColor, false);
+  const data = new DataView(Uint8Array.of(1,5,0,29,100,1,29,3,10,0,0,0,1,255,35,85).buffer);
+  assert.deepEqual(decodeState(data).color, {enabled:true,r:255,g:35,b:85});
+  data.setUint8(12,2); assert.throws(() => decodeState(data), /color/);
+  const truncated = packet(); truncated.setUint8(7,3);
+  assert.throws(() => decodeState(truncated), /color/);
+});
+
+test('old firmware rejects new controls locally without losing its connection', async () => {
+  const radio = new Radio(); const lamp = new LampTransport(radio);
+  await lamp.connect(); const count = radio.writes.length;
+  await assert.rejects(lamp.command('color',{mode:3,r:255,g:0,b:0}), /firmware/);
+  await assert.rejects(lamp.command('effect',29), /firmware/);
+  assert.equal(radio.writes.length,count); assert.equal(lamp.id,'lamp-1');
+  await lamp.command('power',1);
+  await lamp.disconnect();
 });

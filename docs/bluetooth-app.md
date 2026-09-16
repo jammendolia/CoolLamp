@@ -5,12 +5,14 @@
 - Shared control functions for the knob, HTTP and Bluetooth.
 - A bundled web interface in native Capacitor Android and iOS projects.
 - Bluetooth discovery, encrypted bonding without a code, saved-device reconnect,
-  power, brightness, 28 effects, state notifications and saved startup defaults.
+  power, brightness, 29 effects, state notifications and saved startup defaults.
 - Six-second knob hold opens a two-minute pairing window. The entire strip flashes
   blue (400 ms on, 400 ms off), even if the light was off. Pairing success or timeout
   restores the normal light state. Another six-second hold cancels pairing.
-- A hold released between three and six seconds toggles the existing hotspot and
-  teal pulse. Waiting until release prevents a six-second hold from toggling Wi-Fi.
+- At three seconds while held, the hotspot toggles. Opening it flashes orange for
+  three seconds; continuing to six seconds opens Bluetooth pairing and switches
+  to blue. A six-second hold now also changes hotspot state at the three-second
+  threshold. Bluetooth pairing feedback takes priority over hotspot feedback.
 - Short press still toggles power. Long holds never also toggle power.
 - Existing Wi-Fi configuration, scanning and manual firmware upload remain available.
 
@@ -78,16 +80,19 @@ Use node tools/build-firmware.cjs --wifi-only for the smaller recovery variant.
   saved CoolLamp configuration: 134 LEDs, 500 mA limit, brightness 100, Fire startup.
   Radio calibration/Bluetooth storage added runtime data outside that configuration.
 - USB diagnostics responded after restart at more than 72 seconds uptime, with
-  about 74 KB free heap. No pairing or physical gesture test was performed.
-- Native APK/iOS compilation, installation, phone Bluetooth behavior and physical
-  blue-flash timing remain unverified.
+  about 74 KB free heap.
+- The owner confirmed iPhone discovery, pairing (blue flashing stopped), on/off
+  commands in nRF Connect, and successful operation in the first TestFlight app.
+- The first native iOS build was signed and uploaded successfully as 1.0 (1.1).
+  Android native builds and the new custom-color firmware still need device testing.
 
 ## Version 1 protocol
 
 Service: 7b610001-6e2b-4f3d-9a71-28e45c001001
 
 Command: 7b610002-6e2b-4f3d-9a71-28e45c001001 (encrypted write).
-Exactly four bytes: [version=1, requestId=1..255, operation, value].
+Commands are four bytes: [version=1, requestId=1..255, operation, value],
+except color operation 6, which is seven bytes: [1, requestId, 6, effect, R, G, B].
 
 | Operation | Value | Behavior |
 | --- | --- | --- |
@@ -96,12 +101,18 @@ Exactly four bytes: [version=1, requestId=1..255, operation, value].
 | 3 | 1â€“28 | Effect, preserving power |
 | 4 | 0 | Save current effect and brightness as startup defaults |
 | 5 | 0 | Refresh state |
+| 6 | Effect 1–29, followed by R/G/B bytes | Set this effect’s custom color |
+| 7 | Effect 1–29 | Restore original colors (Custom solid resets to pink) |
 
 State: 7b610003-6e2b-4f3d-9a71-28e45c001001 (encrypted read and notifications).
-Twelve bytes: [version, requestId, result, effect, brightness, power, effectCount,
+The original firmware sends twelve bytes: [version, requestId, result, effect, brightness, power, effectCount,
 capabilities, revision0, revision1, revision2, revision3]. Revision is unsigned
 32-bit little-endian. Capability bit 0 means save-defaults support. Request ID 0
-denotes an unsolicited knob/HTTP state change.
+denotes an unsolicited knob/HTTP state change. Color-capable firmware appends four
+bytes [overrideEnabled, R, G, B], sets capability bit 1, and reports 29 effects.
+The new app accepts both formats and hides new controls on old firmware.
+Install the updated app before updating firmware: the original app only accepts
+12-byte state packets and 28 effects.
 
 Results: 0 success, 1 protocol error, 2 invalid command/value, 3 update in progress,
 4 save failure. Invalid-length frames or queue overflow disconnect the client.
@@ -125,3 +136,18 @@ Only the main loop modifies LEDs or saved settings; callbacks enqueue commands.
 The first prototype sends brightness on slider release. Saving startup brightness
 and effect does not restart the lamp; full web configuration retains its existing
 save-and-restart behavior. Build and mock tests do not prove radio behavior.
+
+## Custom effect colors
+
+Every effect has an optional RGB override, including Rain. Custom solid is effect
+29; the existing 28 IDs keep their meanings. Pick a color in the mobile app or
+apply one on the Wi-Fi page. Restore original colors returns animated effects to
+their original palettes. The override uses each pixel's strongest channel as its
+intensity, preserving motion and fades while replacing the palette. Rainbow
+effects use luminance to turn moving hue bands into moving brightness bands. Original
+frames are restored after display so trails do not accumulate tint or dim twice.
+
+Colors are previewed live; the app's startup save button or the web settings save
+persists all slots in a separate versioned NVS blob. The Wi-Fi/password/settings
+blob layout is unchanged. Named Pink now uses RGB (255,35,85), reducing its previous
+blue-heavy (255,0,220) appearance; confirm the result on the physical diffuser.
