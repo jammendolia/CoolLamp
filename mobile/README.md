@@ -91,3 +91,7 @@ timeouts, stale callbacks and firmware errors.
 Both native projects include the BLE plugin. They need their platform toolchains
 for compilation and installation. A successful web build is not an APK or a signed
 iOS application; mock tests cannot verify radio connectivity.
+
+## Online firmware updates
+
+The app reads installed/latest versions and update progress over Bluetooth. It offers Check for updates, Update now, and a persistent automatic-install toggle (off by default). The lamp itself needs internet-connected home Wi-Fi. Install updater firmware 1.2.0 manually once to enable this feature; older lamps remain controllable and show an upgrade explanation. Reconnect after the lamp restarts. See ../docs/github-updates.md for release and recovery details.

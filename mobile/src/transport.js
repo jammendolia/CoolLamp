@@ -1,9 +1,11 @@
-import { SERVICE, COMMAND, STATE, encodeCommand, decodeState, resultError } from './protocol.js';
+import { SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, encodeCommand, decodeState, decodeFirmware, decodeEffectOptions, resultError } from './protocol.js';
 
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
-  constructor(ble, { onState = () => {}, onDisconnect = () => {}, timeout = 5000 } = {}) {
+  constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000 } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
+    this.onFirmware = onFirmware;
+    this.onOptions = onOptions;
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
   disconnected() {
@@ -22,7 +24,7 @@ export class LampTransport {
     this.onState(state);
     if (this.pending && state.id === this.pending.id) {
       const pending = this.pending; this.pending = null; clearTimeout(pending.timer);
-      if (state.result) pending.reject(new Error(resultError(state.result))); else pending.resolve(state);
+      if (state.result) pending.reject(Object.assign(new Error(resultError(state.result)), {confirmed:true})); else pending.resolve(state);
     }
   }
   async connect(savedDevice = null) {
@@ -39,6 +41,25 @@ export class LampTransport {
       decodeState(initial); // Fail visibly on incompatible firmware.
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
       this.receive(initial);
+      if (this.state.capabilities & 8) {
+        await this.command('enableEffects', 1);
+        await this.ble.startNotifications(this.id, SERVICE, EFFECT_OPTIONS, data => {
+          if (epoch === this.epoch) { try { this.onOptions(decodeEffectOptions(data)); } catch {} }
+        });
+        const options = await this.ble.read(this.id, SERVICE, EFFECT_OPTIONS);
+        if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
+        this.onOptions(decodeEffectOptions(options));
+      } else this.onOptions(null);
+      if (this.state.capabilities & 4) {
+        const firmware = await this.ble.read(this.id, SERVICE, FIRMWARE);
+        if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
+        this.onFirmware(decodeFirmware(firmware));
+        await this.ble.startNotifications(this.id, SERVICE, FIRMWARE, data => {
+          if (epoch === this.epoch) { try { this.onFirmware(decodeFirmware(data)); } catch {} }
+        });
+        const latest = await this.ble.read(this.id, SERVICE, FIRMWARE);
+        if (epoch === this.epoch) this.onFirmware(decodeFirmware(latest));
+      } else this.onFirmware(null);
       await this.command('refresh'); // Closes the read/subscribe race.
       return device;
     } catch (error) { await this.disconnect(); throw error; }
@@ -53,7 +74,9 @@ export class LampTransport {
     const run = async () => {
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
       if (['color','resetColor'].includes(operation) && !this.state?.supportsColor) throw new Error('Update the lamp firmware to use custom colors.');
+      if (['effectOptions','enableEffects'].includes(operation) && !(this.state?.capabilities & 8)) throw new Error('Update the lamp firmware to use effect controls.');
       if (operation === 'effect' && value > this.state?.effectCount) throw new Error('Update the lamp firmware to use this effect.');
+      if (['checkFirmware','installFirmware','autoUpdate'].includes(operation) && !(this.state?.capabilities & 4)) throw new Error('Install the updater firmware using the lamp’s Wi-Fi page first.');
       const id = this.sequence = this.sequence % 255 + 1;
       const frame = encodeCommand(id, operation, value);
       // Install the listener BEFORE writing: notifications may precede the write response.
@@ -67,7 +90,7 @@ export class LampTransport {
         return state;
       } catch (error) {
         // An uncertain command must not be replayed after reconnect or ID wraparound.
-        await this.disconnect(); throw error;
+        if (!error.confirmed) await this.disconnect(); throw error;
       } finally {
         clearTimeout(settle.timer);
         if (this.pending === settle) this.pending = null;

@@ -7,6 +7,10 @@
 #include "LampConfig.h"
 #include "LampControl.h"
 #include "LampBluetooth.h"
+#include "LampUpdate.h"
+#include "LampGestures.h"
+#include <new>
+SET_LOOP_TASK_STACK_SIZE(4096);
 
 // ESP32-C3 Mini wiring.
 #define DATA_PIN 0
@@ -53,9 +57,28 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_YELLOW 27
 #define MODE_CYAN 28
 #define MODE_CUSTOM 29
-#define MODE_MAX MODE_CUSTOM
+#define MODE_DROPLETS 30
+#define MODE_LIGHTNING 31
+#define MODE_TIDE 32
+#define MODE_FIREFLIES 33
+#define MODE_HEARTBEAT 34
+#define MODE_STARS 35
+#define MODE_BREATHING 36
+#define MODE_BLOBS 37
+#define MODE_MAX MODE_BLOBS
+uint32_t effectClockMs = 0;
+uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
+uint8_t lampBeat8(uint16_t bpm, uint32_t base = 0);
+uint16_t lampBeatSin16(uint16_t bpm, uint16_t low, uint16_t high, uint32_t base = 0, uint16_t phase = 0);
+uint8_t lampBeatSin8(uint16_t bpm, uint8_t low, uint8_t high, uint32_t base = 0, uint8_t phase = 0);
+uint16_t lampBeatSin88(uint16_t bpm, uint16_t low, uint16_t high, uint32_t base = 0, uint16_t phase = 0);
 
-CRGB leds[MAX_LED_COUNT];
+CRGB* leds = nullptr;
+CRGB* originalFrame = nullptr;
+CRGB emergencyFrames[2];
+uint8_t* fireHeat = nullptr;
+uint8_t* splitHeat = nullptr;
+uint8_t emergencyHeat[2];
 uint8_t Mode = MODE_FIRE;
 uint8_t Brightness = 100;
 uint8_t gHue = 0;
@@ -69,6 +92,15 @@ void setup() {
   loadLampSettings();
   loadLampColors();
   activeLedCount = lampSettings.ledCount;
+  // Reserve only the configured strip length; leave RAM for Wi-Fi TLS buffers.
+  leds = new (std::nothrow) CRGB[2 * NUM_LEDS]{};
+  if (!leds) { activeLedCount = 1; leds = emergencyFrames; }
+  originalFrame = leds + NUM_LEDS;
+  fireHeat = new (std::nothrow) uint8_t[2 * NUM_LEDS]{};
+  if (!fireHeat) { activeLedCount = 1; fireHeat = emergencyHeat; }
+  splitHeat = fireHeat + NUM_LEDS;
+  splitHeat[0] = 200;
+  if (NUM_LEDS > 1) splitHeat[(NUM_LEDS + 1) / 2] = 200;
   Brightness = lampSettings.brightness;
   Mode = lampSettings.startupMode;
 
@@ -82,30 +114,16 @@ void setup() {
   // Poll events in loop() instead of changing lamp state from a timer task.
   rotaryEncoder.begin(false);
   rotaryEncoder.setEncoderValue(Mode);
+  beginLampUpdater();
   beginLampNetwork();
 }
 
 void loop() {
   serviceLampNetwork();
   serviceLampBluetooth();
+  serviceLampUpdater();
+  bool renderNow = serviceLampKnob();
   if (lampIsUpdating()) { delay(1); return; }
-  bool renderNow = false;
-  if (rotaryEncoder.encoderChanged()) {
-    const uint8_t nextMode = static_cast<uint8_t>(rotaryEncoder.getEncoderValue());
-    if (nextMode != Mode) {
-      setLampControl(nextMode, Brightness, PowerOn);
-      renderNow = true;
-    }
-  }
-
-  if (pollLampButton()) {
-    setLampControl(Mode, Brightness, !PowerOn);
-    if (PowerOn) {
-      renderNow = true;
-    } else {
-      FastLED.show(); // Transmit the power-off change immediately.
-    }
-  }
 
   // No serial writes here: USB backpressure must never delay lamp controls.
   // Keep input polling responsive between frames, including while off.
@@ -142,7 +160,20 @@ void loop() {
   }
   lastFrameMs = now;
 
+  static uint32_t effectBudget = 0, lastEffectTick = 0;
+  const auto options = getLampEffectOptions(Mode);
+  const uint32_t rate = options.speed <= 50 ? 32 + uint32_t(options.speed) * 224 / 50 : 256 + uint32_t(options.speed - 50) * 768 / 50;
+  effectBudget = min(effectBudget + min(uint32_t(now - lastEffectTick), uint32_t(64)) * rate, uint32_t(16384));
+  lastEffectTick = now;
+  unsigned steps = min(effectBudget / 4096, uint32_t(4));
+  effectBudget -= steps * 4096;
+  if (renderNow && steps == 0) steps = 1;
+  for (unsigned step = 0; step < steps; ++step) {
+  effectClockMs += 16;
   switch (Mode) {
+    case MODE_DROPLETS: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
+    case MODE_HEARTBEAT: case MODE_STARS: case MODE_BREATHING: case MODE_BLOBS:
+      renderNewEffect(Mode, effectClockMs); break;
     case MODE_CUSTOM: fill_solid(leds, NUM_LEDS, CRGB::White); break;
     case MODE_AURORA: Aurora(); break;
     case MODE_RAIN: Rain(); break;
@@ -226,19 +257,22 @@ void loop() {
 
 
   }
-  EVERY_N_MILLISECONDS(20) { gHue++; }
+  gHue = effectClockMs / 20;
+  }
   const auto color = getLampColor(Mode);
   // Preserve the original frame for effects that fade or accumulate past pixels.
-  static CRGB originalFrame[MAX_LED_COUNT];
-  if (color.enabled) {
-    ::memcpy(originalFrame, leds, NUM_LEDS * sizeof(CRGB));
+  const bool transform = Mode < 30 && color.enabled;
+  ::memcpy(originalFrame, leds, NUM_LEDS * sizeof(CRGB));
+  if (transform) {
     for (int i = 0; i < NUM_LEDS; ++i) {
       // Hue-only rainbows become moving intensity bands with a single color.
       const uint8_t level = (Mode == MODE_RAINBOW || Mode == MODE_RAINBOW_GLITTER) ?
         leds[i].getLuma() : max(leds[i].r, max(leds[i].g, leds[i].b));
-      leds[i] = CRGB(uint16_t(color.r) * level / 255, uint16_t(color.g) * level / 255, uint16_t(color.b) * level / 255);
+      const CRGB tint = options.dual ? blend(CRGB(color.r,color.g,color.b), CRGB(options.r,options.g,options.b), NUM_LEDS > 1 ? uint32_t(i)*255/(NUM_LEDS-1) : 128) : CRGB(color.r,color.g,color.b);
+      leds[i] = CRGB(uint16_t(tint.r) * level / 255, uint16_t(tint.g) * level / 255, uint16_t(tint.b) * level / 255);
     }
   }
+  if (options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
   FastLED.show();
-  if (color.enabled) ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
+  ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
 }

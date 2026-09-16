@@ -1,6 +1,7 @@
 #include "LampBluetooth.h"
 #include "LampControl.h"
 #include "LampConfig.h"
+#include "LampUpdate.h"
 
 #if COOL_LAMP_BLE
 #include <BLEDevice.h>
@@ -18,11 +19,18 @@ namespace {
 constexpr char SERVICE[] = "7b610001-6e2b-4f3d-9a71-28e45c001001";
 constexpr char COMMAND[] = "7b610002-6e2b-4f3d-9a71-28e45c001001";
 constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
+constexpr char FIRMWARE[] = "7b610004-6e2b-4f3d-9a71-28e45c001001";
+constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
+std::atomic<bool> extendedControls{false};
+BLECharacteristic* effectCharacteristic = nullptr;
+uint8_t lastEffect[8] = {};
 constexpr uint16_t NO_CONNECTION = 0xffff;
-struct Command { uint32_t generation; uint8_t length; uint8_t bytes[7]; };
+struct Command { uint32_t generation; uint8_t length; uint8_t bytes[10]; };
 QueueHandle_t commands = nullptr;
 BLEServer* server = nullptr;
 BLECharacteristic* stateCharacteristic = nullptr;
+BLECharacteristic* firmwareCharacteristic = nullptr;
+uint8_t lastFirmware[20] = {};
 std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0};
 std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
@@ -56,6 +64,7 @@ class Connections final : public BLEServerCallbacks {
     secure = false;
     knownPeer = bonded(event->peer_id_addr);
     ++generation;
+    extendedControls = false;
     if (!knownPeer && !pairing) s->disconnect(event->conn_handle);
     // Reading the protected state characteristic starts OS-managed pairing.
   }
@@ -64,6 +73,7 @@ class Connections final : public BLEServerCallbacks {
     secure = false;
     knownPeer = false;
     ++generation;
+    extendedControls = false;
     connection = NO_CONNECTION;
     advertisingDirty = true;
   }
@@ -84,14 +94,27 @@ class Security final : public BLESecurityCallbacks {
   }
 };
 
+class StateReads final : public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic* characteristic, ble_gap_conn_desc*) override {
+    // A newly connected older app may read before the loop has refreshed the
+    // previous client's extended catalog. Always provide its initial baseline.
+    if (extendedControls) return;
+    const String cached = characteristic->getValue();
+    if (cached.length() != 16) return;
+    uint8_t value[16]; memcpy(value, cached.c_str(), sizeof(value));
+    if (value[3] > 29) value[3] = 29;
+    value[6] = 29;
+    characteristic->setValue(value, sizeof(value));
+  }
+};
+
 class Writes final : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic, ble_gap_conn_desc* event) override {
     if (!secure || connection != event->conn_handle) return;
     const String value = characteristic->getValue();
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
-    if ((value.length() != 4 && value.length() != 7) ||
-        (value.length() == 7 && uint8_t(value[2]) != 6) ||
-        (value.length() == 4 && uint8_t(value[2]) == 6)) {
+    const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : 4) : 4;
+    if (value.length() != expected) {
       server->disconnect(event->conn_handle);
       return;
     }
@@ -107,6 +130,7 @@ class Writes final : public BLECharacteristicCallbacks {
 Connections connectionCallbacks;
 Security securityCallbacks;
 Writes writeCallbacks;
+StateReads stateReadCallbacks;
 
 void updateAdvertising()
 {
@@ -129,14 +153,21 @@ void updateAdvertising()
 
 void publish(uint8_t id, uint8_t result, bool acknowledge)
 {
+  uint8_t effect[8]; getLampEffectPacket(effect);
+  if (memcmp(effect,lastEffect,sizeof(effect))) {
+    memcpy(lastEffect,effect,sizeof(effect)); effectCharacteristic->setValue(effect,sizeof(effect));
+    if (secure && extendedControls) effectCharacteristic->notify();
+  }
   const auto state = getLampControlState();
   const auto color = getLampColor(state.mode);
-  const bool changed = lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power ||
+  const uint8_t visibleMode = extendedControls ? state.mode : (state.mode > 29 ? 29 : state.mode);
+  const uint8_t visibleCount = extendedControls ? LAMP_EFFECT_COUNT : 29;
+  const bool changed = lastState[6] != visibleCount || lastState[3] != visibleMode || lastState[4] != state.brightness || lastState[5] != state.power ||
     lastState[12] != color.enabled || lastState[13] != color.r || lastState[14] != color.g || lastState[15] != color.b;
   if (!changed && !acknowledge && lastState[0]) return;
   if (changed) ++revision;
-  uint8_t value[16] = {LAMP_PROTOCOL_VERSION, id, result, state.mode, state.brightness,
-    static_cast<uint8_t>(state.power), LAMP_EFFECT_COUNT, 3};
+  uint8_t value[16] = {LAMP_PROTOCOL_VERSION, id, result, visibleMode, state.brightness,
+    static_cast<uint8_t>(state.power), visibleCount, 15};
   value[12] = color.enabled; value[13] = color.r; value[14] = color.g; value[15] = color.b;
   for (int i = 0; i < 4; ++i) value[8 + i] = revision >> (8 * i);
   memcpy(lastState, value, sizeof(value));
@@ -163,6 +194,12 @@ void beginLampBluetooth(const String& name)
   auto* command = service->createCharacteristic(COMMAND, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC);
   command->setCallbacks(&writeCallbacks);
   stateCharacteristic = service->createCharacteristic(STATE, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
+  stateCharacteristic->setCallbacks(&stateReadCallbacks);
+  firmwareCharacteristic = service->createCharacteristic(FIRMWARE, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
+  effectCharacteristic = service->createCharacteristic(EFFECT, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
+  getLampEffectPacket(lastEffect); effectCharacteristic->setValue(lastEffect, sizeof(lastEffect));
+  getLampUpdatePacket(lastFirmware);
+  firmwareCharacteristic->setValue(lastFirmware, sizeof(lastFirmware));
   // NimBLE creates the notification subscription descriptor automatically.
   publish(0, 0, false);
   service->start();
@@ -177,6 +214,7 @@ void setLampPairingWindow(bool open)
   if (pairing && connection != NO_CONNECTION) {
     secure = false;
     ++generation;
+    extendedControls = false;
     server->disconnect(connection);
   }
   advertisingDirty = true;
@@ -215,7 +253,7 @@ void serviceLampBluetooth()
     auto state = getLampControlState();
     uint8_t result = 0;
     if (version != LAMP_PROTOCOL_VERSION || id == 0) result = 1;
-    else if (lampIsUpdating()) result = 3;
+    else if (lampIsUpdating() && op != 5 && op != 12) result = 3;
     else {
       switch (op) {
         case 1: if (value > 1) result = 2; else setLampControl(state.mode, state.brightness, value); break;
@@ -225,6 +263,11 @@ void serviceLampBluetooth()
         case 5: if (value) result = 2; break;
         case 6: if (!setLampColor(value, command.bytes[4], command.bytes[5], command.bytes[6])) result = 2; break;
         case 7: if (!resetLampColor(value)) result = 2; break;
+        case 11: if (!extendedControls || !setLampEffectOptions(value, {command.bytes[4],command.bytes[5],command.bytes[6],command.bytes[7],command.bytes[8],command.bytes[9]})) result=2; break;
+        case 12: if (value != 1) result=2; else extendedControls=true; break;
+        case 8: if (value) result = 2; else if (!requestLampUpdateCheck()) result = 3; break;
+        case 9: if (value) result = 2; else if (!requestLampUpdateInstall()) result = 3; break;
+        case 10: if (value > 1) result = 2; else if (!setLampAutoUpdate(value)) result = 4; break;
         default: result = 2;
       }
     }
@@ -232,6 +275,12 @@ void serviceLampBluetooth()
   } else {
     // Detect changes from the knob and HTTP without making those paths know BLE.
     publish(0, 0, false);
+  }
+  uint8_t firmware[20]; getLampUpdatePacket(firmware);
+  if (memcmp(firmware, lastFirmware, sizeof(firmware))) {
+    memcpy(lastFirmware, firmware, sizeof(firmware));
+    firmwareCharacteristic->setValue(firmware, sizeof(firmware));
+    if (secure) firmwareCharacteristic->notify();
   }
 }
 #else

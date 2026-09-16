@@ -1,27 +1,50 @@
-# GitHub-delivered updates (planned)
+# Online firmware updates
 
-Repository: https://github.com/jammendolia/CoolLamp
+Firmware 1.2.0 adds updates from https://github.com/jammendolia/CoolLamp. Both the web page and Bluetooth app show the installed version, available update and progress, with Check for updates, Update now, and Install updates automatically controls.
 
-This is a roadmap, not an implemented capability. Current firmware supports authenticated application uploads through the local web page. It does not check GitHub or download updates automatically.
+## Owner setup
 
-## Intended experience
+Install 1.2.0 once through the existing authenticated web upload or USB. Older firmware cannot discover its first updater installation. Lamps still using the small pre-Bluetooth partitions need USB migration first. Connect the lamp to home Wi-Fi with internet access through its settings page.
 
-1. Publish a versioned ESP32-C3 application binary and signed update manifest as GitHub Release assets.
-2. A lamp connected to home Wi-Fi periodically checks for a compatible newer version, with backoff and randomized timing.
-3. The lamp signals an available update using a gentle, configurable indicator and a notice on the setup page.
-4. Download, verify, and install the release through the inactive OTA slot. Make automatic installation an explicit setting, with a sensible idle-time policy; manual installation stays available.
-5. Reboot into the new version, confirm that it is healthy, and retain a recovery path if boot fails. Do not repeatedly retry a bad release.
+All build variants now use the larger dual-slot partition layout, including --wifi-only. Do not upload those images to a lamp with the old small layout without migrating it over USB.
 
-## Required groundwork before publishing binaries
+Automatic installation defaults off; changing it persists immediately. Checks run after 60–90 seconds of uptime and roughly every six hours. Failures retry after approximately 15 minutes. The updater waits for a 30-second boot health period; automatic installation waits at least a minute. An attempted version is remembered across restarts to prevent repeated automatic attempts at a bad release. Update now can retry manually.
 
-- Remove per-lamp initial passwords from distributable firmware. Current builds embed LampSecrets.h; the local firmware directory must not be uploaded or attached to a public release.
-- Move initial provisioning to a device-specific process, keeping Wi-Fi and access credentials in device storage across updates. Do not ship a universal setup password or embed a GitHub token.
-- Add a firmware version, stable effect/settings identifiers, and explicit settings-schema migrations. Reordering numeric mode IDs must not silently change a saved startup effect.
-- Include version, board/chip target, minimum bootloader/partition requirements, image size, download URL, and SHA-256 in a signed manifest. A hash alone is not proof of publisher authenticity.
-- Verify HTTPS certificates and the manifest signature using a trusted public key embedded in the firmware. Keep the signing private key in protected release infrastructure and define key rotation.
-- Pin build tools and dependencies. Test artifacts before signing and publishing. Publish the application .ino.bin, not a merged flash image, for OTA.
-- Plan the partition layout now: current application size is approximately 1.22 MB in a 1.31 MB OTA slot. A larger dual-slot layout may need a one-time USB upgrade before adding the updater.
-- Validate interrupted downloads, wrong-chip images, invalid signatures, oversized images, loss of power, failed health checks, and downgrade policy. Boot rollback must be enabled and tested; the current manual updater does not yet implement post-boot health rollback.
-- Keep update traffic and status indicators from blocking the knob, button, or normal effects. Avoid signaling updates while the lamp is switched off unless the owner enables it.
+Checks run in a background task. Installation pauses animation and restarts into saved startup settings. Updates can run while the light is off. Reconnect the app after restart. Bluetooth controls alone do not provide internet to the lamp.
 
-No release workflow or public firmware assets are enabled until provisioning and authenticity checks are implemented.
+## Publishing releases
+
+Set the three version components and matching string in LampVersion.h to a new stable major.minor.patch version. Never reuse a released version or replace its assets. Run the Build firmware release draft workflow with that version. It builds pinned dependencies and creates a draft tagged firmware-v<version>, containing CoolLamp.ino.bin and coollamp-manifest.txt.
+
+Review and test the draft before publishing it as the repository's Latest release. Publishing Latest makes it installable by every compatible lamp with auto-update enabled. Keep unrelated app releases from becoming Latest.
+
+Local public build commands:
+
+```
+node tools/build-firmware.cjs --public
+node tools/package-firmware.cjs
+```
+
+Packaging checks version, board, size, the public-build marker and credential exclusion. Only firmware/public application and manifest files may be published. Private firmware/ble and firmware/wifi images contain initial credentials and must never be published.
+
+Public images are OTA upgrades for already provisioned lamps, preserving saved credentials, colors and settings. They are not fresh-device provisioning images: absent valid settings, they generate an inaccessible random password. Provision new or erased devices with a private local USB build first.
+
+## Verification and recovery
+
+HTTPS certificates are verified using the ESP certificate bundle. Redirects are restricted to GitHub asset hosts, and internet time is required for TLS. There is no GitHub token on the lamp. The strict manifest permits only ESP32-C3, dual 2,031,616-byte OTA slots and a numerically newer version. Image size, chip/application headers and SHA-256 must pass before selecting the inactive slot for boot. Interrupted or invalid downloads never select the incomplete image. Manual uploads and online installs cannot run simultaneously.
+
+Publisher trust comes from HTTPS and control of the GitHub repository. The manifest does not have a separate cryptographic signature: SHA-256 verifies integrity, not independent publisher identity. Protect the GitHub account and release permissions.
+
+With a rollback-enabled bootloader, the new firmware stays pending until its main loop runs for 30 seconds. A reset before confirmation allows bootloader rollback. This is a basic startup check, not proof that every effect, radio or peripheral works. USB recovery and authenticated manual uploads remain available. Firmware rollback does not undo settings: preserve existing formats or add explicit migrations.
+
+## Hardware validation still required
+
+Build and mock tests do not prove on-device TLS memory availability, Bluetooth/Wi-Fi coexistence during downloads, power-loss recovery or boot rollback. Before fleet publication, install the baseline on a test lamp and exercise a newer image through a controlled release, including interrupted downloads, reconnection, saved-settings preservation and reset before boot confirmation.
+
+Firmware 1.2.2 retains the DHCP-provided primary DNS server and fills an empty backup DNS slot with Cloudflare (1.1.1.1). A DHCP-provided backup is preserved. The authenticated /api/state response includes gateway and DNS addresses for diagnostics. This does not change the router, static IP configuration, HTTPS hostname checks, or certificate validation.
+
+## 1.2.2 hardware check (2026-09-16)
+
+The connected lamp retained its DHCP primary DNS (192.168.1.1) and gained the empty-slot fallback (1.1.1.1). This resolved the observed lookup failure. Testing then exposed TLS allocation failures. LED frame and heat buffers now scale to the saved strip length, the updater task is allocated before radio initialization, and task stacks are bounded at 8 KB (updater) and 4 KB (control loop). Allocation failure falls back to a one-pixel buffer without overwriting saved strip settings.
+
+Initial HTTPS checks succeeded but rapid repeats exposed an RSA verification allocation failure. For github.com only, the certificate-bundle callback selects its supported ECDHE-ECDSA AES-GCM suites, keeping certificate-chain and hostname verification enabled. GitHub asset hosts retain the SDK default suites because they do not all support ECDSA. Three consecutive on-device checks then completed successfully with no USB TLS errors: roughly 62 KB free heap, 34–43 KB largest free block, 3 KB updater stack headroom and 1.6 KB control-loop stack headroom. These measurements apply to the installed strip configuration; larger strips and full downloads still need hardware validation. The authenticated firmware status includes memory diagnostics. Certificate verification remains enabled. No downloadable release or automatic installation was tested by these checks.

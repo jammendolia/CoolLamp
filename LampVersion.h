@@ -1,0 +1,5 @@
+#pragma once
+#define LAMP_FIRMWARE_VERSION "1.3.0"
+#define LAMP_VERSION_MAJOR 1
+#define LAMP_VERSION_MINOR 3
+#define LAMP_VERSION_PATCH 0

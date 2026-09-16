@@ -21,6 +21,6 @@ extern LampSettings lampSettings;
 void loadLampSettings();
 void beginLampNetwork();
 void serviceLampNetwork();
-bool pollLampButton();
+void cancelLampSetupPulse();
 bool lampIsUpdating();
 bool lampSetupPulse();

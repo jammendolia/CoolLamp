@@ -43,8 +43,8 @@ void FireSplit(bool reverse, bool reverseColors, uint8_t palette)
   const int leftCount = (NUM_LEDS + 1) / 2;
   const int rightCount = NUM_LEDS / 2;
   // Give both bases some heat on first entry, then evolve independently.
-  static uint8_t leftHeat[(MAX_LED_COUNT + 1) / 2] = {200};
-  static uint8_t rightHeat[MAX_LED_COUNT / 2] = {200};
+  uint8_t* leftHeat = splitHeat;
+  uint8_t* rightHeat = splitHeat + leftCount;
   updateSplitHeat(leftHeat, leftCount);
   updateSplitHeat(rightHeat, rightCount);
 

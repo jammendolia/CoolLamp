@@ -2,7 +2,12 @@
 #include <stdint.h>
 
 constexpr uint8_t LAMP_PROTOCOL_VERSION = 1;
-constexpr uint8_t LAMP_EFFECT_COUNT = 29;
+constexpr uint8_t LAMP_EFFECT_COUNT = 37;
+constexpr uint8_t LAMP_CUSTOM_SOLID = 29;
+struct LampEffectOptions { uint8_t speed, intensity, dual, r, g, b; };
+LampEffectOptions getLampEffectOptions(uint8_t mode);
+bool setLampEffectOptions(uint8_t mode, LampEffectOptions options);
+void getLampEffectPacket(uint8_t* packet);
 
 struct LampColor { uint8_t enabled, r, g, b; };
 LampColor getLampColor(uint8_t mode);
@@ -21,3 +26,5 @@ struct LampControlState {
 LampControlState getLampControlState();
 bool setLampControl(uint32_t mode, uint32_t brightness, bool power);
 bool saveLampDefaults();
+bool saveLampKnobBrightness();
+void syncLampKnob();

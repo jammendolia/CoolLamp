@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LampTransport } from '../src/transport.js';
-import { decodeState, encodeCommand, STATE, effects } from '../src/protocol.js';
+import { decodeState, encodeCommand, decodeEffectOptions, decodeFirmware, firmwareMessage, FIRMWARE, EFFECT_OPTIONS, STATE, effects } from '../src/protocol.js';
 import { readFileSync } from 'node:fs';
 
 function packet(id = 0, result = 0, brightness = 100) {
@@ -24,9 +24,34 @@ class Radio {
   }
 }
 
+function firmwarePacket() { return new DataView(Uint8Array.of(1,2,0,1,0,0,1,0,2,0,0,0,1,0,3,0,0,0,1,0).buffer); }
+test('firmware status validates boundaries and reports availability, progress and offline state', () => {
+  const p=firmwarePacket(), s=decodeFirmware(p);
+  assert.equal(s.version,'1.2.0'); assert.equal(s.latest,'1.3.0'); assert.equal(s.available,true);
+  assert.match(firmwareMessage(s),/1.3.0/);
+  assert.match(firmwareMessage({...s,phase:3,progress:42}),/42%/);
+  assert.match(firmwareMessage({...s,wifi:false}),/Wi-Fi/);
+  for(const [offset,value] of [[0,2],[1,6],[2,2],[3,2],[4,101],[5,9],[18,2]]) { const bad=firmwarePacket();bad.setUint8(offset,value);assert.throws(()=>decodeFirmware(bad)); }
+  assert.throws(()=>decodeFirmware(packet()));
+  assert.deepEqual([...new Uint8Array(encodeCommand(1,'autoUpdate',1).buffer)],[1,1,10,1]);
+  assert.throws(()=>encodeCommand(1,'autoUpdate',2));
+});
+test('firmware subscription is separate, stale notifications are ignored, and rejection keeps connection', async () => {
+  class UpdateRadio extends Radio {
+    async read(id,service,char) { if(char===FIRMWARE)return firmwarePacket();const p=packet();p.setUint8(7,5);return p; }
+    async startNotifications(id,service,char,fn) { if(char===FIRMWARE)this.firmwareListener=fn;else this.listener=fn; }
+    async write(id,service,char,frame) { this.writes.push([...new Uint8Array(frame.buffer)]);const p=packet(frame.getUint8(1),this.result);p.setUint8(7,5);this.listener(p); }
+  }
+  const radio=new UpdateRadio(), received=[],lamp=new LampTransport(radio,{onFirmware:s=>received.push(s)});
+  await lamp.connect(); assert.equal(received.at(-1).latest,'1.3.0');
+  await lamp.command('checkFirmware'); await lamp.command('installFirmware');
+  radio.result=3;await assert.rejects(lamp.command('autoUpdate',1),/busy/);assert.equal(lamp.id,'lamp-1');
+  const stale=radio.firmwareListener;await lamp.disconnect();const count=received.length;stale(firmwarePacket());assert.equal(received.length,count);
+});
+
 test('wire frames preserve boundaries and reject invalid values', () => {
   assert.deepEqual([...new Uint8Array(encodeCommand(255, 'brightness', 255).buffer)], [1,255,2,255]);
-  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',30], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
+  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',38], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
   const state = decodeState(packet(7)); assert.equal(state.id, 7); assert.equal(state.revision, 9);
   assert.throws(() => decodeState(new DataView(new ArrayBuffer(11))));
   const bad = packet(); bad.setUint8(0, 2); assert.throws(() => decodeState(bad), /version/);
@@ -87,7 +112,7 @@ test('RGB commands preserve black, primary colors, and effect-specific slots', (
   const bytes = value => [...new Uint8Array(encodeCommand(9, 'color', value).buffer)];
   assert.deepEqual(bytes({mode:3,r:255,g:0,b:0}), [1,9,6,3,255,0,0]);
   assert.deepEqual(bytes({mode:29,r:0,g:0,b:0}), [1,9,6,29,0,0,0]);
-  for (const value of [null, {mode:0,r:1,g:2,b:3}, {mode:30,r:1,g:2,b:3},
+  for (const value of [null, {mode:0,r:1,g:2,b:3}, {mode:38,r:1,g:2,b:3},
     {mode:3,r:256,g:0,b:0}, {mode:3,r:0,g:-1,b:0}, {mode:3,r:0,g:0,b:1.5}]) {
     assert.throws(() => encodeCommand(1, 'color', value));
   }
@@ -108,7 +133,32 @@ test('old firmware rejects new controls locally without losing its connection', 
   await lamp.connect(); const count = radio.writes.length;
   await assert.rejects(lamp.command('color',{mode:3,r:255,g:0,b:0}), /firmware/);
   await assert.rejects(lamp.command('effect',29), /firmware/);
+  await assert.rejects(lamp.command('enableEffects',1), /firmware/);
+  await assert.rejects(lamp.command('effectOptions',{}), /firmware/);
   assert.equal(radio.writes.length,count); assert.equal(lamp.id,'lamp-1');
   await lamp.command('power',1);
   await lamp.disconnect();
+});
+
+test('advanced effects negotiate full catalog and receive independent option notifications', async () => {
+  const options = new DataView(Uint8Array.of(1,37,1,0,1,0,255,127).buffer);
+  const value = {mode:37,speed:1,intensity:0,dual:1,r:0,g:255,b:127};
+  assert.deepEqual(decodeEffectOptions(options),value);
+  assert.deepEqual([...new Uint8Array(encodeCommand(2,'effectOptions',value).buffer)],[1,2,11,37,1,0,1,0,255,127]);
+  for(const [field,n] of [['mode',38],['speed',0],['speed',101],['intensity',101],['dual',2],['r',-1],['b',256]])
+    assert.throws(()=>encodeCommand(1,'effectOptions',{...value,[field]:n}));
+  for(const [offset,n] of [[0,2],[1,0],[1,38],[2,0],[2,101],[3,101],[4,2]]) {
+    const bad=new DataView(options.buffer.slice(0));bad.setUint8(offset,n);assert.throws(()=>decodeEffectOptions(bad));
+  }
+  class EffectsRadio extends Radio {
+    extended=false;
+    state(id=0) {return new DataView(Uint8Array.of(1,id,0,this.extended?37:29,100,1,this.extended?37:29,11,1,0,0,0,1,255,60,110).buffer);}
+    async read(id,service,char) {return char===EFFECT_OPTIONS?options:this.state();}
+    async startNotifications(id,service,char,fn) {if(char===EFFECT_OPTIONS)this.optionsListener=fn;else this.listener=fn;}
+    async write(id,service,char,frame) {this.writes.push([...new Uint8Array(frame.buffer)]);if(frame.getUint8(2)===12)this.extended=true;this.listener(this.state(frame.getUint8(1)));}
+  }
+  const radio=new EffectsRadio(), received=[],lamp=new LampTransport(radio,{onOptions:o=>received.push(o)});
+  await lamp.connect();assert.equal(lamp.state.effectCount,37);assert.equal(radio.writes[0][2],12);assert.deepEqual(received.at(-1),value);
+  await lamp.command('effect',37);await lamp.command('effectOptions',value);
+  const stale=radio.optionsListener;await lamp.disconnect();const count=received.length;stale(options);assert.equal(received.length,count);
 });

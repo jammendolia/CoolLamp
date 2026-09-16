@@ -6,7 +6,7 @@ uint16_t effectPosition(int index, int count)
 
 void Aurora()
 {
-  const uint32_t t = millis();
+  const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const uint16_t x = effectPosition(i, NUM_LEDS);
     const uint8_t ribbon = inoise8(x / 24, t / 70);
@@ -18,7 +18,7 @@ void Aurora()
 
 void Embers()
 {
-  const uint32_t t = millis();
+  const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const uint16_t x = effectPosition(i, NUM_LEDS);
     const uint8_t glow = inoise8(x / 10, t / 30);
@@ -29,7 +29,7 @@ void Embers()
 
 void Lava()
 {
-  const uint32_t t = millis();
+  const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const uint16_t x = effectPosition(i, NUM_LEDS);
     const uint8_t blob = inoise8(static_cast<uint16_t>(x / 40 - t / 32), t / 100);
@@ -40,7 +40,7 @@ void Lava()
 
 void Plasma()
 {
-  const uint32_t t = millis();
+  const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const uint16_t x = effectPosition(i, NUM_LEDS);
     const uint8_t a = sin8(static_cast<uint8_t>(x / 140 + t / 24));
@@ -53,7 +53,7 @@ void Plasma()
 void CometCollision()
 {
   // A full approach/retreat cycle takes six seconds.
-  const uint16_t travel = beatsin16(10, 0, 32767);
+  const uint16_t travel = lampBeatSin16(10, 0, 32767);
   const uint16_t other = 65535 - travel;
   const uint8_t flash = travel > 30500 ? (travel - 30500) * 255UL / 2267 : 0;
   for (int i = 0; i < NUM_LEDS; i++) {
@@ -76,7 +76,7 @@ void Rain()
 {
   const int leftCount = (NUM_LEDS + 1) / 2;
   const int rightCount = NUM_LEDS / 2;
-  const uint32_t t = millis();
+  const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const bool left = i < leftCount;
     const int localIndex = left ? leftCount - 1 - i : i - leftCount;

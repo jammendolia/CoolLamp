@@ -40,7 +40,7 @@ bool gReverseDirection = false;
 void Fire2012()
 {
 // Array of temperature readings at each simulation cell
-  static uint8_t heat[MAX_LED_COUNT];
+  uint8_t* heat = fireHeat;
 
   // Step 1.  Cool down every cell a little
     const int coolingRange = ((COOLING * 10) / NUM_LEDS) + 2;

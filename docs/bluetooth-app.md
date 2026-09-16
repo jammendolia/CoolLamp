@@ -13,7 +13,7 @@
   three seconds; continuing to six seconds opens Bluetooth pairing and switches
   to blue. A six-second hold now also changes hotspot state at the three-second
   threshold. Bluetooth pairing feedback takes priority over hotspot feedback.
-- Short press still toggles power. Long holds never also toggle power.
+- Single click adjusts brightness; double click adjusts Color 1. Turn to preview, then single-click or wait five idle seconds to save. Triple click turns off; single click while off turns on. Long holds cancel click counting.
 - Existing Wi-Fi configuration, scanning and manual firmware upload remain available.
 
 A phone may show an OS pairing confirmation, but no lamp code is required.
@@ -151,3 +151,9 @@ Colors are previewed live; the app's startup save button or the web settings sav
 persists all slots in a separate versioned NVS blob. The Wi-Fi/password/settings
 blob layout is unchanged. Named Pink now uses RGB (255,35,85), reducing its previous
 blue-heavy (255,0,220) appearance; confirm the result on the physical diffuser.
+
+## Firmware status extension
+
+Capability bit 2 advertises encrypted read/notify characteristic 7b610004-6e2b-4f3d-9a71-28e45c001001. Its 20 bytes contain schema (1), phase, automatic flag, Wi-Fi flag, progress (0–100), error, three little-endian uint16 installed version components, three uint16 latest version components, available flag and a reserved byte.
+
+Phases: idle=0, checking=1, available=2, downloading=3, restarting=4, error=5. Error meanings are in LampUpdate.h. Operations 8 and 9 (value 0) check and install; operation 10 (0/1) persists automatic installation. Result 3 also means updater starting, busy, or no available update. Explicit rejection keeps the Bluetooth connection; uncertain timeouts still disconnect. Existing state packets and control compatibility remain unchanged.

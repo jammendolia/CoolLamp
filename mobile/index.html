@@ -15,9 +15,26 @@
       <button id="resetColor" class="secondary">Restore original colors</button>
     </div>
     <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors and Custom solid.</p>
+    <fieldset id="effectOptions" hidden disabled><legend>Make it yours</legend>
+      <label for="speed">Speed <output id="speedValue">50%</output></label>
+      <input id="speed" type="range" min="1" max="100" value="50">
+      <label for="intensity">Intensity <output id="intensityValue">100%</output></label>
+      <input id="intensity" type="range" min="0" max="100" value="100">
+      <label><input id="dual" type="checkbox"> Use two colors</label>
+      <label for="secondaryColor">Second color</label><input id="secondaryColor" type="color" value="#23a0ff">
+      <p class="hint">For original effects, apply a custom primary color to enable two colors. Speed applies to animated effects.</p>
+    </fieldset>
     <button id="save" class="secondary">Use these settings at startup</button>
-    <p class="hint">Changes are live. Save to remember brightness, startup effect, and each effect’s custom color after a restart.</p>
+    <p class="hint">Changes are live. Save to remember brightness, startup effect, and each effect’s colors, speed, and intensity after a restart.</p>
   </fieldset>
   <details><summary>Connecting for the first time</summary><ol><li>Hold the lamp’s knob for six seconds until the entire lamp flashes blue.</li><li>Tap “Find a lamp flashing blue” and select your lamp.</li><li>Accept a Bluetooth pairing prompt if your phone shows one. No code is needed.</li></ol><p>Pair within two minutes. Your phone remembers the pairing. Bluetooth control works without home Wi-Fi or internet. Hold for six seconds again to cancel pairing.</p></details>
   <details><summary>Wi-Fi, strip settings & firmware</summary><p>These settings are available on the lamp’s existing web page. Hold the knob for three seconds, join its CoolLamp hotspot, and open <strong>http://192.168.4.1/</strong> in your browser. On home Wi-Fi, use the lamp’s local address.</p></details>
+  <fieldset id="firmwareControls" disabled><legend>Lamp firmware</legend>
+    <p>Installed: <strong id="firmwareVersion">Connect to view</strong></p>
+    <p id="firmwareStatus" role="status"></p>
+    <label><input id="autoUpdate" type="checkbox"> Install updates automatically</label>
+    <p class="hint">The lamp needs home Wi-Fi with internet access. Updates briefly pause the light and restart the lamp.</p>
+    <button id="checkFirmware" class="secondary">Check for updates</button>
+    <button id="installFirmware" disabled>Update now</button>
+  </fieldset>
 </main><script type="module" src="/src/main.js"></script></body></html>

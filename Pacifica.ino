@@ -46,27 +46,27 @@ void pacifica_loop()
   // Each is incremented at a different speed, and the speeds vary over time.
   static uint16_t sCIStart1, sCIStart2, sCIStart3, sCIStart4;
   static uint32_t sLastms = 0;
-  uint32_t ms = GET_MILLIS();
+  uint32_t ms = lampEffectMillis();
   uint32_t deltams = ms - sLastms;
   sLastms = ms;
-  uint16_t speedfactor1 = beatsin16(3, 179, 269);
-  uint16_t speedfactor2 = beatsin16(4, 179, 269);
+  uint16_t speedfactor1 = lampBeatSin16(3, 179, 269);
+  uint16_t speedfactor2 = lampBeatSin16(4, 179, 269);
   uint32_t deltams1 = (deltams * speedfactor1) / 256;
   uint32_t deltams2 = (deltams * speedfactor2) / 256;
   uint32_t deltams21 = (deltams1 + deltams2) / 2;
-  sCIStart1 += (deltams1 * beatsin88(1011,10,13));
-  sCIStart2 -= (deltams21 * beatsin88(777,8,11));
-  sCIStart3 -= (deltams1 * beatsin88(501,5,7));
-  sCIStart4 -= (deltams2 * beatsin88(257,4,6));
+  sCIStart1 += (deltams1 * lampBeatSin88(1011,10,13));
+  sCIStart2 -= (deltams21 * lampBeatSin88(777,8,11));
+  sCIStart3 -= (deltams1 * lampBeatSin88(501,5,7));
+  sCIStart4 -= (deltams2 * lampBeatSin88(257,4,6));
 
   // Clear out the LED array to a dim background blue-green
   fill_solid( leds, NUM_LEDS, CRGB( 2, 6, 10));
 
   // Render each of four layers, with different scales and speeds, that vary over time
-  pacifica_one_layer( pacifica_palette_1, sCIStart1, beatsin16( 3, 11 * 256, 14 * 256), beatsin8( 10, 70, 130), 0-beat16( 301) );
-  pacifica_one_layer( pacifica_palette_2, sCIStart2, beatsin16( 4,  6 * 256,  9 * 256), beatsin8( 17, 40,  80), beat16( 401) );
-  pacifica_one_layer( pacifica_palette_3, sCIStart3, 6 * 256, beatsin8( 9, 10,38), 0-beat16(503));
-  pacifica_one_layer( pacifica_palette_3, sCIStart4, 5 * 256, beatsin8( 8, 10,28), beat16(601));
+  pacifica_one_layer( pacifica_palette_1, sCIStart1, lampBeatSin16( 3, 11 * 256, 14 * 256), lampBeatSin8( 10, 70, 130), 0-lampBeat16( 301) );
+  pacifica_one_layer( pacifica_palette_2, sCIStart2, lampBeatSin16( 4,  6 * 256,  9 * 256), lampBeatSin8( 17, 40,  80), lampBeat16( 401) );
+  pacifica_one_layer( pacifica_palette_3, sCIStart3, 6 * 256, lampBeatSin8( 9, 10,38), 0-lampBeat16(503));
+  pacifica_one_layer( pacifica_palette_3, sCIStart4, 5 * 256, lampBeatSin8( 8, 10,28), lampBeat16(601));
 
   // Add brighter 'whitecaps' where the waves lines up more
   pacifica_add_whitecaps();
@@ -96,8 +96,8 @@ void pacifica_one_layer( CRGBPalette16& p, uint16_t cistart, uint16_t wavescale,
 // Add extra 'white' to areas where the four layers of light have lined up brightly
 void pacifica_add_whitecaps()
 {
-  uint8_t basethreshold = beatsin8( 9, 55, 65);
-  uint8_t wave = beat8( 7 );
+  uint8_t basethreshold = lampBeatSin8( 9, 55, 65);
+  uint8_t wave = lampBeat8( 7 );
 
   for( uint16_t i = 0; i < NUM_LEDS; i++) {
     uint8_t threshold = scale8( sin8( wave), 20) + basethreshold;

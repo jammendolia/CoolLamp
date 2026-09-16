@@ -1,11 +1,15 @@
 # Cool Lamp
 
-ESP32-C3 / WS2812B lamp with 29 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
+ESP32-C3 / WS2812B lamp with 37 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
 
 ## Controls
 
 - Turn the knob: select the next or previous effect (wraps around).
-- Short press and release: toggle the light.
+- Single short click while on: adjust brightness by turning the knob (minimum stays above zero).
+- Double short click while on: adjust Color 1 for the current effect using a 24-color palette.
+- While adjusting: single click or five seconds without activity saves the change and returns to effect selection. Changes preview live; brightness saves do not change the startup effect.
+- Triple short click while on: turn off. Single short click while off: turn on.
+- Clicks are grouped within 350 ms; a short press lasts up to 600 ms. Turning immediately after clicking confirms the click without waiting. Long holds cancel click counting.
 - At three seconds while held: open or close the setup hotspot. Opening flashes orange for three seconds. Continue holding to six seconds to enter Bluetooth pairing and switch to blue.
 - Hold for six seconds: enter Bluetooth pairing. The entire lamp flashes blue for up to two minutes, stopping when a phone pairs. Hold six seconds again to cancel. No pairing code is required. Long holds never also toggle the light.
 - The hotspot closes after ten minutes without an authenticated request. Hold the knob again to reopen it.
@@ -25,7 +29,7 @@ There are no cloud services. The web interface uses HTTP on the local network; u
 
 ## LED count and power
 
-`LampConfig.h` defines `DEFAULT_LED_COUNT` (134) and `MAX_LED_COUNT` (1024). The page changes the active length from 1 to 1024 without rebuilding. Every effect uses the active `NUM_LEDS` value. Odd split lengths assign the extra center LED to the left half. Build-time buffers are sized for the maximum; only the active LEDs are transmitted.
+`LampConfig.h` defines `DEFAULT_LED_COUNT` (134) and `MAX_LED_COUNT` (1024). The page changes the active length from 1 to 1024 without rebuilding. Every effect uses the active `NUM_LEDS` value. Odd split lengths assign the extra center LED to the left half. Animation buffers are allocated for the configured length at startup; only the active LEDs are transmitted.
 
 The default LED current budget is 500 mA at 5 V. Raising it requires an appropriately rated supply and wiring. The FastLED budget is an estimate for LED power, not a measurement of total lamp current. Longer strips may run at lower brightness or frame rates.
 
@@ -53,6 +57,27 @@ The default LED current budget is 500 mA at 5 V. Raising it requires an appropri
 20. Juggle
 21–28. White, red, green, blue, purple, pink, yellow, cyan
 
+29. Custom solid
+30. Bouncing droplets
+31. Lightning storm
+32. Color tide
+33. Fireflies
+34. Heartbeat
+35. Shooting stars
+36. Breathing glow
+37. Lava blobs
+
+Each effect remembers its primary color, optional second color, speed (1–100), and
+intensity (0–100). Speed 50 is normal; speed does not apply to solid colors.
+Intensity scales light output and also changes particle density or strike
+frequency where applicable. The new effects use both colors directly. For older
+effects, apply a primary custom color to enable the two-color gradient.
+
+App changes apply live. On the web page, apply colors/effect settings and use
+**Preview light** to activate the selected effect. Save startup settings to keep
+all slots through a restart. The previous color-capable app can still connect and
+select its original 29 effects. See [effect release notes](docs/effects-1.3.md).
+
 ## Build and update
 
 After cloning, run `node tools/setup-secrets.cjs` once to create a private initial password header made from two randomly selected common words (for example, `cactus-piano`). It will not overwrite an existing header. Node.js is needed for this helper and the tests.
@@ -66,6 +91,13 @@ For OTA, open the lamp page, select **CoolLamp.ino.bin** in the Firmware update 
 `LampSecrets.h` contains this lamp's generated initial access password. Keep it private; create a different 8–63 character password for another lamp or change it through setup. Saved passwords override the initial value after restart. If you forget the saved password, recovery requires clearing the `coollamp` preferences namespace or erasing device settings over USB; simply rebuilding with a different initial password does not override saved credentials.
 
 ## Verification
+
+`tests/knob.cpp` exercises the actual knob controller with simulated time, button,
+encoder, and storage. Compile with C++17, warnings as errors, and address/undefined
+behavior sanitizers, then run it. It covers click counts, bounce, long holds,
+immediate click-and-turn, inactivity saves, failed-save retries, bounds, effect
+wraparound, remote changes, update suppression, and timer wraparound. Physical
+click feel and encoder behavior still require a device check after flashing.
 
 `node tests/wifi-page.cjs` checks word-password generation, preservation of existing secrets, network selection, and scan-error recovery. Live device checks also exercise repeated scans while the hotspot serves requests.
 
@@ -89,9 +121,9 @@ USB diagnostics are available for recovery: send `?` at 115200 baud for reset/AP
 The pre-Bluetooth application used about 1.22 MB in a 1.31 MB OTA slot. The Bluetooth prototype compiles at 1,502,898 bytes and uses the larger 2,031,616-byte OTA slots. Install the new partition layout over USB before using wireless updates with that build. This lamp received the USB migration successfully on 2026-09-15; upload hashes, partition readback, saved configuration preservation and USB startup diagnostics passed. Phone pairing and physical gesture tests remain pending.
 - The owner confirmed the original three-second gesture and teal setup pulse. The updated orange feedback still needs a physical check.
 
-## Planned GitHub updates
+## Online firmware updates
 
-See [the update roadmap](docs/github-updates.md) for release publishing, available-update signaling, and automatic installation. These are planned; current OTA uses a manual upload on the lamp page. Never publish the current local firmware binaries: they contain the initial device password.
+Firmware 1.2.0 adds version display, update detection, **Update now**, and optional automatic installation in both the web page and phone app. Automatic installation defaults off. The lamp needs home Wi-Fi with internet access. Install this first updater firmware manually once. See [online update setup and release instructions](docs/github-updates.md). Only the separate public build may be published; private local binaries contain initial credentials. On-device update and rollback validation remains pending.
 
 ## Phone app prototype
 

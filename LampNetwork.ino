@@ -6,7 +6,9 @@
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
+#ifndef COOL_LAMP_PUBLIC_RELEASE
 #include "LampSecrets.h"
+#endif
 #include "LampPage.h"
 
 LampSettings lampSettings;
@@ -39,7 +41,8 @@ const char* const effectNames[] = {
   "Split fire - reversed colors", "Blue gas fire", "Witch fire", "Purple fire",
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
-  "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid"
+  "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
+  "Bouncing droplets", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -51,7 +54,13 @@ void loadLampSettings()
   defaults.milliAmps = MAX_POWER_MILLIAMPS;
   defaults.brightness = 100;
   defaults.startupMode = MODE_FIRE;
+#ifdef COOL_LAMP_PUBLIC_RELEASE
+  // Public images are OTA-only: normal updates restore existing NVS credentials.
+  // A fresh device receives an unguessable password, never a shared public default.
+  snprintf(defaults.adminPassword, sizeof(defaults.adminPassword), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
+#else
   strlcpy(defaults.adminPassword, DEFAULT_ADMIN_PASSWORD, sizeof(defaults.adminPassword));
+#endif
   lampSettings = defaults;
   Preferences prefs;
   if (!prefs.begin("coollamp", true)) return;
@@ -145,7 +154,7 @@ void serviceLampScan()
 void startLampScan()
 {
   if (!authorizedLampRequest(true)) return;
-  if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+  if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
   if (!scanActive) {
     WiFi.setScanTimeout(20000);
     scanActive = WiFi.scanNetworks(true, false, false, 120) == WIFI_SCAN_RUNNING;
@@ -171,12 +180,15 @@ void sendLampState()
   if (!authorizedLampRequest(false)) return;
   String state = "{\"token\":" + jsonText(lampToken);
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
+  state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   state += ",\"leds\":" + String(NUM_LEDS) + ",\"milliamps\":" + String(lampSettings.milliAmps);
   state += ",\"power\":" + String(PowerOn ? "true" : "false");
   state += ",\"ssid\":" + jsonText(lampSettings.ssid);
   state += ",\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
   state += ",\"address\":" + jsonText(WiFi.localIP().toString());
+  state += ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
+  state += ",\"dns\":[" + jsonText(WiFi.dnsIP(0).toString()) + "," + jsonText(WiFi.dnsIP(1).toString()) + "]";
   state += ",\"hostname\":" + jsonText(lampHost + ".local") + ",\"effects\":[";
   for (size_t i = 0; i < MODE_MAX; i++) { if (i) state += ','; state += jsonText(effectNames[i]); }
   state += "],\"colors\":[";
@@ -185,6 +197,11 @@ void sendLampState()
     const auto c = getLampColor(mode);
     state += "[" + String(c.enabled) + "," + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
   }
+  state += "],\"effectOptions\":[";
+  for (uint8_t mode=1;mode<=MODE_MAX;++mode) {
+    if(mode>1) state+=','; const auto o=getLampEffectOptions(mode);
+    state += "["+String(o.speed)+","+String(o.intensity)+","+String(o.dual)+","+String(o.r)+","+String(o.g)+","+String(o.b)+"]";
+  }
   state += "]}";
   lampServer.send(200, "application/json", state);
 }
@@ -192,7 +209,7 @@ void sendLampState()
 void saveLampConfiguration()
 {
   if (!authorizedLampRequest(true)) return;
-  if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+  if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
   uint32_t count, powerLimit, brightness, mode;
   if (!readNumber("leds", 1, MAX_LED_COUNT, count) || !readNumber("milliamps", 100, 20000, powerLimit) ||
       !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, MODE_MAX, mode)) {
@@ -231,6 +248,7 @@ void saveLampConfiguration()
 void failLampUpdate(const String& message)
 {
   if (Update.isRunning()) Update.abort();
+  releaseLampManualUpdate();
   otaAccepted = false; otaActive = false; otaComplete = false; otaMessage = message;
 }
 
@@ -243,6 +261,7 @@ void receiveLampUpdate()
     if (!lampServer.authenticate("lamp", lampSettings.adminPassword) || lampServer.header("X-Lamp-Token") != lampToken) {
       otaMessage = "Not authorized. Refresh the setup page and sign in."; return;
     }
+    if (!reserveLampManualUpdate()) { otaMessage = "Another update operation is active. Try again when it finishes."; return; }
     otaAccepted = true; otaActive = true; otaLastActivity = millis();
   } else if (upload.status == UPLOAD_FILE_WRITE && otaAccepted) {
     otaLastActivity = millis();
@@ -297,9 +316,38 @@ void beginLampNetwork()
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
+  lampServer.on("/api/firmware", HTTP_GET, []() {
+    if (!authorizedLampRequest(false)) return;
+    lampServer.send(200, "application/json", lampUpdateJson());
+  });
+  lampServer.on("/api/firmware/check", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    const bool ok = requestLampUpdateCheck();
+    lampServer.send(ok ? 202 : 409, "text/plain", ok ? "Checking for firmware updates…" : "Updater busy or starting. Try again shortly.");
+  });
+  lampServer.on("/api/firmware/install", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    const bool ok = requestLampUpdateInstall();
+    lampServer.send(ok ? 202 : 409, "text/plain", ok ? "Installing update. The lamp will restart when verified." : "No update available, or updater busy. Check again shortly.");
+  });
+  lampServer.on("/api/firmware/automatic", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    uint32_t enabled;
+    if (!readNumber("enabled", 0, 1, enabled)) { lampServer.send(400, "text/plain", "Invalid setting."); return; }
+    const bool ok = !otaActive && setLampAutoUpdate(enabled);
+    lampServer.send(ok ? 200 : 409, "text/plain", ok ? "Automatic update setting saved." : "Could not save while updater is busy. Try again shortly.");
+  });
+  lampServer.on("/api/effect-options", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    uint32_t mode,speed,intensity,dual,r,g,b;
+    if (!readNumber("mode",1,MODE_MAX,mode)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||!readNumber("dual",0,1,dual)||!readNumber("r",0,255,r)||!readNumber("g",0,255,g)||!readNumber("b",0,255,b)) { lampServer.send(400,"text/plain","Invalid effect options."); return; }
+    setLampEffectOptions(mode,{uint8_t(speed),uint8_t(intensity),uint8_t(dual),uint8_t(r),uint8_t(g),uint8_t(b)});
+    lampServer.send(200,"text/plain","Effect options applied. Save settings to remember them.");
+  });
   lampServer.on("/api/color", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, r, g, b;
     if (!readNumber("mode", 1, MODE_MAX, mode)) { lampServer.send(400, "text/plain", "Invalid effect."); return; }
     if (lampServer.arg("reset") == "1") resetLampColor(mode);
@@ -325,13 +373,13 @@ void beginLampNetwork()
   });
   lampServer.on("/api/defaults", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     const bool saved = saveLampDefaults();
     lampServer.send(saved ? 200 : 500, "text/plain", saved ? "Startup effect and brightness saved." : "Could not save defaults.");
   });
   lampServer.on("/api/preview", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
     if (!readNumber("mode", 1, MODE_MAX, mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
     setLampControl(mode, brightness, true);
@@ -339,7 +387,7 @@ void beginLampNetwork()
   });
   lampServer.on("/api/power", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t on;
     if (!readNumber("on", 0, 1, on)) { lampServer.send(400, "text/plain", "Invalid power value."); return; }
     setLampControl(Mode, Brightness, on); FastLED.show();
@@ -374,29 +422,7 @@ void toggleLampSetup()
   setupPulseStart = millis(); setupPulseActive = setupAP;
 }
 
-bool pollLampButton()
-{
-  static bool raw = HIGH, stable = HIGH, wifiHandled = false, pairingHandled = false;
-  static uint32_t changedAt = 0, pressedAt = 0;
-  const uint32_t now = millis();
-  const bool reading = digitalRead(DI_ENCODER_SW);
-  if (reading != raw) { raw = reading; changedAt = now; }
-  if (raw != stable && now - changedAt >= 30) {
-    stable = raw;
-    if (stable == LOW) { pressedAt = now; wifiHandled = false; pairingHandled = false; }
-    else if (!wifiHandled && !pairingHandled && now - pressedAt < 3000) return true;
-  }
-  if (stable == LOW && !wifiHandled && now - pressedAt >= 3000) {
-    wifiHandled = true;
-    toggleLampSetup();
-  }
-  if (stable == LOW && !pairingHandled && now - pressedAt >= 6000) {
-    pairingHandled = true;
-    setupPulseActive = false;
-    setLampPairingWindow(!lampPairingOpen());
-  }
-  return false;
-}
+void cancelLampSetupPulse() { setupPulseActive = false; }
 
 bool lampSetupPulse()
 {
@@ -404,7 +430,10 @@ bool lampSetupPulse()
   return setupPulseActive;
 }
 
-bool lampIsUpdating() { return otaActive; }
+bool lampIsUpdating() {
+  const auto state = getLampUpdateStatus();
+  return otaActive || state.phase == UPDATE_DOWNLOADING || state.phase == UPDATE_RESTARTING;
+}
 
 // USB-only recovery/diagnostics. No credentials are included in replies.
 void serviceLampUSB()
@@ -438,6 +467,10 @@ void serviceLampNetwork()
     WiFi.mode(lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
   }
   const bool connected = WiFi.status() == WL_CONNECTED;
+  // Keep DHCP's primary resolver. Supply a backup when the router provides none.
+  if (connected && WiFi.dnsIP(1) == IPAddress(0, 0, 0, 0)) {
+    WiFi.STA.dnsIP(1, IPAddress(1, 1, 1, 1));
+  }
   if ((setupAP || connected) && !serverStarted) { lampServer.begin(); serverStarted = true; }
   if (!setupAP && !connected && serverStarted) { lampServer.stop(); serverStarted = false; }
   if (connected && !mdnsStarted) { mdnsStarted = MDNS.begin(lampHost.c_str()); if (mdnsStarted) MDNS.addService("http", "tcp", 80); }
@@ -457,4 +490,18 @@ bool saveLampDefaults()
   prefs.end();
   if (saved) lampSettings = next;
   return saved && saveLampColors();
+}
+
+bool saveLampKnobBrightness()
+{
+  // Knob brightness edits must not replace the chosen startup effect or Wi-Fi.
+  if (lampSettings.brightness == Brightness) return true;
+  LampSettings next = lampSettings;
+  next.brightness = Brightness;
+  Preferences prefs;
+  if (!prefs.begin("coollamp", false)) return false;
+  const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next);
+  prefs.end();
+  if (saved) lampSettings = next;
+  return saved;
 }
