@@ -31,6 +31,29 @@ Public images are OTA upgrades for already provisioned lamps, preserving saved c
 
 ## Verification and recovery
 
+### HTTP memory repair (1.3.2)
+
+The first live release check on 1.2.2 hit an allocation assertion in ESP-IDF's
+`http_utils_append_string` while processing GitHub response headers. The repaired
+updater uses `esp_tls` with a fixed-size streaming header parser. Unneeded header
+values are discarded as they arrive; header storage never grows with a server's
+Content-Security-Policy. Total headers are limited to 64 KiB and redirect URLs to
+2,047 bytes. Redirect hosts, HTTPS certificates/hostnames, firmware size, target
+chip, and SHA-256 remain checked. Release assets must use Content-Length and
+identity encoding; unsupported framing or incomplete responses fail without
+activating a partial image. Manifest and download stack frames are separate.
+
+Lamps on the faulty 1.2.2 updater need one local web firmware upload to receive
+this repair before using online discovery. Existing Wi-Fi credentials, colors,
+and strip settings are retained. Version 1.3.0 remains a prerelease after its
+failed discovery test. A local 1.3.1 repair image is used as the baseline for the
+1.3.2 end-to-end OTA test.
+
+`tests/update-http.cpp` exercises the actual header parser using 48 KB ignored
+headers, byte-at-a-time input, mixed-case field names, signed redirect URLs,
+invalid/duplicate lengths, unsupported encodings and oversized input. Build/run
+it with C++17 and address/undefined behavior sanitizers.
+
 HTTPS certificates are verified using the ESP certificate bundle. Redirects are restricted to GitHub asset hosts, and internet time is required for TLS. There is no GitHub token on the lamp. The strict manifest permits only ESP32-C3, dual 2,031,616-byte OTA slots and a numerically newer version. Image size, chip/application headers and SHA-256 must pass before selecting the inactive slot for boot. Interrupted or invalid downloads never select the incomplete image. Manual uploads and online installs cannot run simultaneously.
 
 Publisher trust comes from HTTPS and control of the GitHub repository. The manifest does not have a separate cryptographic signature: SHA-256 verifies integrity, not independent publisher identity. Protect the GitHub account and release permissions.

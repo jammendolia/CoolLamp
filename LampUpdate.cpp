@@ -2,14 +2,11 @@
 #include "UpdateManifest.h"
 #include <WiFi.h>
 #include <Preferences.h>
-#include <esp_http_client.h>
-#include <esp_crt_bundle.h>
+#include "UpdateHttp.h"
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
 #include <mbedtls/sha256.h>
-#include <mbedtls/ssl.h>
-#include <mbedtls/ssl_ciphersuites.h>
 #include <time.h>
 #include <atomic>
 #include <esp_heap_caps.h>
@@ -37,68 +34,20 @@ void phase(uint8_t value, uint8_t error = UPDATE_OK) {
 void fail(uint8_t error) { phase(UPDATE_ERROR, error); }
 String versionText(const uint16_t v[3]) { return String(v[0]) + "." + String(v[1]) + "." + String(v[2]); }
 
-struct Response { char location[2048]; };
-esp_err_t attachGitHubCertificateBundle(void* config) {
-  // github.com supports ECDSA certificates, avoiding its larger RSA handshake.
-  // Asset hosts use the SDK's default suites; some do not offer ECDSA.
-  static const int suites[] = {MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-    MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, 0};
-  mbedtls_ssl_conf_ciphersuites(static_cast<mbedtls_ssl_config*>(config), suites);
-  return esp_crt_bundle_attach(config);
-}
-esp_err_t httpEvent(esp_http_client_event_t* event) {
-  if (event->event_id == HTTP_EVENT_ON_HEADER && !strcasecmp(event->header_key, "Location")) {
-    auto* response = static_cast<Response*>(event->user_data);
-    strlcpy(response->location, event->header_value, sizeof(response->location));
-  }
-  return ESP_OK;
-}
-bool allowedUrl(const String& url) {
-  if (!url.startsWith("https://")) return false;
-  const int slash = url.indexOf('/', 8);
-  if (slash < 0) return false;
-  const String host = url.substring(8, slash);
-  return host == "github.com" || host == "release-assets.githubusercontent.com" ||
-    host == "objects.githubusercontent.com" || host == "github-releases.githubusercontent.com";
-}
-// Every redirect is validated. No insecure TLS fallback or GitHub token on lamps.
-esp_http_client_handle_t openHttp(String url, Response& response, int& code, int64_t& length) {
-  for (unsigned redirect = 0; redirect < 6; ++redirect) {
-    if (!allowedUrl(url)) return nullptr;
-    response.location[0] = 0;
-    esp_http_client_config_t config{};
-    config.url = url.c_str(); config.timeout_ms = 12000;
-    config.crt_bundle_attach = url.startsWith("https://github.com/") ? attachGitHubCertificateBundle : esp_crt_bundle_attach;
-    config.disable_auto_redirect = true; config.event_handler = httpEvent;
-    config.user_data = &response; config.buffer_size = 1024; config.buffer_size_tx = 512;
-    auto http = esp_http_client_init(&config);
-    if (!http) return nullptr;
-    esp_http_client_set_header(http, "User-Agent", "CoolLamp/" LAMP_FIRMWARE_VERSION);
-    esp_http_client_set_header(http, "Accept-Encoding", "identity");
-    if (esp_http_client_open(http, 0) != ESP_OK) { esp_http_client_cleanup(http); return nullptr; }
-    length = esp_http_client_fetch_headers(http);
-    code = esp_http_client_get_status_code(http);
-    if (code != 301 && code != 302 && code != 303 && code != 307 && code != 308) return http;
-    url = response.location;
-    esp_http_client_cleanup(http);
-  }
-  return nullptr;
-}
 bool checkRelease(bool installing = false) {
-  Response response{}; int code = 0; int64_t length = 0;
-  auto http = openHttp(String(ROOT) + "latest/download/coollamp-manifest.txt", response, code, length);
-  if (!http) { fail(UPDATE_NETWORK); return false; }
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  if (!http.open(String(ROOT) + "latest/download/coollamp-manifest.txt", code, length)) { fail(UPDATE_NETWORK); return false; }
   char text[256] = {}; size_t used = 0;
   if (code == 200 && (length < 0 || length < sizeof(text))) {
     while (used < sizeof(text) - 1) {
-      const int n = esp_http_client_read(http, text + used, sizeof(text) - 1 - used);
+      const int n = http.read(text + used, sizeof(text) - 1 - used);
       if (n < 0) { used = sizeof(text); break; }
       if (!n) break;
       used += n;
     }
   }
-  const bool complete = esp_http_client_is_complete_data_received(http);
-  esp_http_client_cleanup(http);
+  const bool complete = http.complete();
+  http.close();
   if (code == 404) {
     portENTER_CRITICAL(&mux); status.available = false; memset(status.latest, 0, sizeof(status.latest)); portEXIT_CRITICAL(&mux);
     phase(UPDATE_IDLE); return true;
@@ -123,18 +72,14 @@ bool recordAttempt(const String& version) {
   if (ok) strlcpy(attemptedVersion, version.c_str(), sizeof(attemptedVersion));
   return ok;
 }
-void installRelease() {
-  // Fetch a fresh manifest immediately before download; never install an old cached URL.
-  if (!checkRelease(true)) return;
-  if (!getLampUpdateStatus().available) return;
+void downloadRelease() {
   phase(UPDATE_DOWNLOADING);
   const FirmwareManifest selected = candidate;
   const String version = versionText(selected.version);
   if (!recordAttempt(version)) { fail(UPDATE_STORAGE); return; }
-  Response response{}; int code = 0; int64_t length = 0;
-  auto http = openHttp(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", response, code, length);
-  if (!http) { fail(UPDATE_NETWORK); return; }
-  if (code != 200 || length != selected.size) { esp_http_client_cleanup(http); fail(UPDATE_IMAGE); return; }
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(UPDATE_NETWORK); return; }
+  if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   esp_ota_handle_t ota = 0;
   uint8_t buffer[1024], digest[32]; size_t received = 0;
@@ -146,7 +91,7 @@ void installRelease() {
   size_t prefixUsed = 0; uint8_t prefix[PREFIX]; bool headerValid = false;
   while (ok && received < selected.size && millis() - started < 180000) {
     const size_t want = min(sizeof(buffer), size_t(selected.size - received));
-    const int n = esp_http_client_read(http, reinterpret_cast<char*>(buffer), want);
+    const int n = http.read(reinterpret_cast<char*>(buffer), want);
     if (n <= 0) { ok = false; break; }
     mbedtls_sha256_update(&hash, buffer, n);
     size_t offset = 0;
@@ -167,11 +112,16 @@ void installRelease() {
     vTaskDelay(1);
   }
   mbedtls_sha256_finish(&hash, digest); mbedtls_sha256_free(&hash);
-  esp_http_client_cleanup(http);
+  http.close();
   ok = ok && headerValid && received == selected.size && !memcmp(digest, selected.sha256, 32);
   if (!ok) { if (ota) esp_ota_abort(ota); fail(UPDATE_IMAGE); return; }
   if (esp_ota_end(ota) != ESP_OK || esp_ota_set_boot_partition(target) != ESP_OK) { fail(UPDATE_IMAGE); return; }
   phase(UPDATE_RESTARTING);
+}
+void installRelease() {
+  // Keep the manifest and download stack frames separate on this small device.
+  // Fetch a fresh manifest immediately before download; never use an old URL.
+  if (checkRelease(true) && getLampUpdateStatus().available) downloadRelease();
 }
 void updateTask(void*) {
   for (;;) {
