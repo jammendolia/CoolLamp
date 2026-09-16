@@ -31,7 +31,7 @@ Public images are OTA upgrades for already provisioned lamps, preserving saved c
 
 ## Verification and recovery
 
-### HTTP memory repair (1.3.2)
+### HTTP and TLS memory repair (1.3.3)
 
 The first live release check on 1.2.2 hit an allocation assertion in ESP-IDF's
 `http_utils_append_string` while processing GitHub response headers. The repaired
@@ -47,7 +47,16 @@ Lamps on the faulty 1.2.2 updater need one local web firmware upload to receive
 this repair before using online discovery. Existing Wi-Fi credentials, colors,
 and strip settings are retained. Version 1.3.0 remains a prerelease after its
 failed discovery test. A local 1.3.1 repair image is used as the baseline for the
-1.3.2 end-to-end OTA test.
+1.3.3 end-to-end OTA test. Version 1.3.2 fixed header allocation but still lacked
+enough RAM for the asset server's RSA certificate verification.
+
+The canonical build script now wraps `esp_wifi_init` to configure smaller Wi-Fi
+buffer pools: two static RX buffers, eight dynamic RX/TX buffers, a two-frame
+receive block-ack window, two RX management buffers, and six short management
+buffers. This trades peak network throughput for TLS memory while retaining
+Bluetooth. Build with `tools/build-firmware.cjs`; a plain IDE build does not apply
+the linker wrapper. The authenticated firmware status includes HTTP stage, host
+category, response code and TLS error diagnostics, without signed URLs or secrets.
 
 `tests/update-http.cpp` exercises the actual header parser using 48 KB ignored
 headers, byte-at-a-time input, mixed-case field names, signed redirect URLs,

@@ -86,6 +86,10 @@ Board target: `esp32:esp32:esp32c3:CDCOnBoot=cdc`. Dependencies: Arduino ESP32 c
 
 Bluetooth prototype build: `node tools/build-firmware.cjs`. The larger partition layout needs a first USB installation; see [Bluetooth app notes](docs/bluetooth-app.md).
 
+Use this build script for updater-capable firmware. It applies the Wi-Fi memory
+configuration needed for HTTPS downloads while Bluetooth is running; a plain
+Arduino IDE build does not apply that linker setting.
+
 For OTA, open the lamp page, select **CoolLamp.ino.bin** in the Firmware update section, and upload. Do not select bootloader, partitions, or merged images. The upload is authenticated and protected by a per-boot request token. The handler verifies the C3 application header, writes the inactive OTA partition, and restarts only after successful verification. Failed/interrupted uploads do not activate the incomplete image. Effects pause while receiving firmware. USB upload remains available for recovery.
 
 `LampSecrets.h` contains this lamp's generated initial access password. Keep it private; create a different 8–63 character password for another lamp or change it through setup. Saved passwords override the initial value after restart. If you forget the saved password, recovery requires clearing the `coollamp` preferences namespace or erasing device settings over USB; simply rebuilding with a different initial password does not override saved credentials.

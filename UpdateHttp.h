@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <esp_tls.h>
 #include "UpdateHttpHeaders.h"
+String updateHttpDiagnostics();
 
 class UpdateHttp {
   esp_tls_t* tls=nullptr;

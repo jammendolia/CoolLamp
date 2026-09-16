@@ -231,5 +231,5 @@ String lampUpdateJson() {
     ",\"freeHeap\":" + String(ESP.getFreeHeap()) +
     ",\"largestBlock\":" + String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)) +
     ",\"workerStackFree\":" + String(worker ? uxTaskGetStackHighWaterMark(worker) : 0) +
-    ",\"loopStackFree\":" + String(uxTaskGetStackHighWaterMark(nullptr)) + "}";
+    ",\"loopStackFree\":" + String(uxTaskGetStackHighWaterMark(nullptr)) + updateHttpDiagnostics() + "}";
 }
