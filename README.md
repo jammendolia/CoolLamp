@@ -127,7 +127,7 @@ The pre-Bluetooth application used about 1.22 MB in a 1.31 MB OTA slot. The Blue
 
 ## Online firmware updates
 
-Firmware 1.2.0 adds version display, update detection, **Update now**, and optional automatic installation in both the web page and phone app. Automatic installation defaults off. The lamp needs home Wi-Fi with internet access. Install this first updater firmware manually once. See [online update setup and release instructions](docs/github-updates.md). Only the separate public build may be published; private local binaries contain initial credentials. On-device update and rollback validation remains pending.
+Firmware 1.2.0 adds version display, update detection, **Update now**, and optional automatic installation in both the web page and phone app. Automatic installation defaults off. The lamp needs home Wi-Fi with internet access. Affected older updaters need a one-time local or USB repair. Firmware 1.3.5 completed a full online download, verification and restart on the test lamp with saved settings preserved. See [online update setup, release instructions and validation limits](docs/github-updates.md). Only the separate public build may be published; private local binaries contain initial credentials.
 
 ## Phone app prototype
 

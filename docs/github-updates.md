@@ -88,9 +88,32 @@ Publisher trust comes from HTTPS and control of the GitHub repository. The manif
 
 With a rollback-enabled bootloader, the new firmware stays pending until its main loop runs for 30 seconds. A reset before confirmation allows bootloader rollback. This is a basic startup check, not proof that every effect, radio or peripheral works. USB recovery and authenticated manual uploads remain available. Firmware rollback does not undo settings: preserve existing formats or add explicit migrations.
 
-## Hardware validation still required
+## Hardware validation
 
-Build and mock tests do not prove on-device TLS memory availability, Bluetooth/Wi-Fi coexistence during downloads, power-loss recovery or boot rollback. Before fleet publication, install the baseline on a test lamp and exercise a newer image through a controlled release, including interrupted downloads, reconnection, saved-settings preservation and reset before boot confirmation.
+The 134-LED test lamp completed the online update described below. Larger strip
+configurations, phone reconnection during transfers, power-loss recovery and
+boot rollback still need separate hardware tests. Build and mock tests alone do
+not establish those behaviors.
+
+### 1.3.5 hardware verification (2026-09-16)
+
+The repaired local 1.3.1 baseline detected the newly published 1.3.5 release,
+downloaded and verified its 1,716,736-byte application over home Wi-Fi, reached
+100%, and restarted into `COOLLAMP-PUBLIC-1.3.5`. Colors, per-effect options, LED
+count, power limit and Wi-Fi access were preserved. Bluetooth initialization
+reported ready, and the main loop remained healthy past the 30-second startup
+confirmation period. Automatic installation stayed off throughout the test.
+The scheduled post-restart check then completed with installed/latest both
+`1.3.5`, no update available, and no HTTP or TLS errors. Free heap after checking
+was about 74 KB, with about 2.2 KB of updater stack and 1.3 KB of loop stack free.
+
+Published image SHA-256:
+`bde94910721da2a83896247bc0092e2de9df58e4ed2c34d10c4b16b552808858`.
+The public release assets were compared against the local build before and after
+publication. Earlier interrupted transfers left the original firmware selected.
+The equivalent repair baseline also completed a full upgrade to 1.3.3, and an
+authenticated local upload back to the baseline passed. Releases 1.3.0, 1.3.2,
+1.3.3 and 1.3.4 are retained as superseded prereleases; 1.3.5 is Latest.
 
 Firmware 1.2.2 retains the DHCP-provided primary DNS server and fills an empty backup DNS slot with Cloudflare (1.1.1.1). A DHCP-provided backup is preserved. The authenticated /api/state response includes gateway and DNS addresses for diagnostics. This does not change the router, static IP configuration, HTTPS hostname checks, or certificate validation.
 
