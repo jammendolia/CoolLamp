@@ -1,3 +1,17 @@
 LampSecrets.h
 firmware/
 *.log
+mobile/node_modules/
+mobile/dist/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/**/build/
+mobile/ios/App/Pods/
+mobile/ios/App/build/
+.build/
+.pnpm-store/
+*.p8
+*.p12
+*.mobileprovision
+*.pem
+mobile/build/

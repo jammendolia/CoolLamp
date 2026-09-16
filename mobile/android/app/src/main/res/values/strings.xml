@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CoolLamp</string>
+    <string name="title_activity_main">CoolLamp</string>
+    <string name="package_name">com.coollamp.controller</string>
+    <string name="custom_url_scheme">com.coollamp.controller</string>
+</resources>

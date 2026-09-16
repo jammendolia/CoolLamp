@@ -1,0 +1,235 @@
+#include "LampBluetooth.h"
+#include "LampControl.h"
+#include "LampConfig.h"
+
+#if COOL_LAMP_BLE
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLESecurity.h>
+#include <host/ble_store.h>
+#if !defined(CONFIG_NIMBLE_ENABLED)
+#error CoolLamp Bluetooth requires the NimBLE backend shipped with ESP32-C3 Arduino core 3.3.11.
+#endif
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+
+namespace {
+constexpr char SERVICE[] = "7b610001-6e2b-4f3d-9a71-28e45c001001";
+constexpr char COMMAND[] = "7b610002-6e2b-4f3d-9a71-28e45c001001";
+constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
+constexpr uint16_t NO_CONNECTION = 0xffff;
+struct Command { uint32_t generation; uint8_t bytes[4]; };
+QueueHandle_t commands = nullptr;
+BLEServer* server = nullptr;
+BLECharacteristic* stateCharacteristic = nullptr;
+std::atomic<uint16_t> connection{NO_CONNECTION};
+std::atomic<uint32_t> generation{0};
+std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
+uint32_t pairingStarted = 0;
+std::atomic<bool> advertisingDirty{false};
+uint32_t revision = 0;
+uint8_t lastState[12] = {};
+
+int bondedPeers(ble_addr_t* peers)
+{
+  int count = 0;
+  if (ble_store_util_bonded_peers(peers, &count, CONFIG_BT_NIMBLE_MAX_BONDS) != 0) return 0;
+  return count;
+}
+
+bool bonded(const ble_addr_t& address)
+{
+  ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+  const int count = bondedPeers(peers);
+  for (int i = 0; i < count; ++i) if (ble_addr_cmp(&peers[i], &address) == 0) return true;
+  return false;
+}
+
+class Connections final : public BLEServerCallbacks {
+  void onConnect(BLEServer* s, ble_gap_conn_desc* event) override {
+    uint16_t empty = NO_CONNECTION;
+    if (!connection.compare_exchange_strong(empty, event->conn_handle)) {
+      s->disconnect(event->conn_handle);
+      return;
+    }
+    secure = false;
+    knownPeer = bonded(event->peer_id_addr);
+    ++generation;
+    if (!knownPeer && !pairing) s->disconnect(event->conn_handle);
+    // Reading the protected state characteristic starts OS-managed pairing.
+  }
+  void onDisconnect(BLEServer*, ble_gap_conn_desc* event) override {
+    if (connection != event->conn_handle) return;
+    secure = false;
+    knownPeer = false;
+    ++generation;
+    connection = NO_CONNECTION;
+    advertisingDirty = true;
+  }
+};
+
+class Security final : public BLESecurityCallbacks {
+  bool onSecurityRequest() override { return knownPeer || pairing; }
+  uint32_t onPassKeyRequest() override { return 0; }
+  void onPassKeyNotify(uint32_t) override {}
+  bool onConfirmPIN(uint32_t) override { return false; }
+  void onAuthenticationComplete(ble_gap_conn_desc* result) override {
+    if (connection != result->conn_handle) return;
+    secure = result->sec_state.encrypted && (knownPeer || pairing);
+    if (!secure && connection != NO_CONNECTION) {
+      if (!knownPeer) ble_store_util_delete_peer(&result->peer_id_addr);
+      server->disconnect(connection);
+    }
+  }
+};
+
+class Writes final : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic, ble_gap_conn_desc* event) override {
+    if (!secure || connection != event->conn_handle) return;
+    const String value = characteristic->getValue();
+    // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
+    if (value.length() != 4) {
+      server->disconnect(event->conn_handle);
+      return;
+    }
+    Command command{};
+    command.generation = generation;
+    memcpy(command.bytes, value.c_str(), sizeof(command.bytes));
+    // Never change FastLED, Preferences, or Wi-Fi state on the Bluetooth task.
+    if (xQueueSend(commands, &command, 0) != pdTRUE) server->disconnect(event->conn_handle);
+  }
+};
+
+Connections connectionCallbacks;
+Security securityCallbacks;
+Writes writeCallbacks;
+
+void updateAdvertising()
+{
+  auto* advertising = BLEDevice::getAdvertising();
+  advertising->stop();
+  BLEAdvertisementData data;
+  BLEAdvertisementData response;
+  data.setFlags(0x06);
+  // Outside enrollment, omit the service and name so Find my lamp only lists
+  // lamps deliberately put into pairing mode. Saved phones connect by device ID.
+  if (pairing) {
+    data.setCompleteServices(BLEUUID(SERVICE));
+    response.setName("CoolLamp");
+  }
+  advertising->setAdvertisementData(data);
+  advertising->setScanResponseData(response);
+  ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+  if (connection == NO_CONNECTION && (pairing || bondedPeers(peers) > 0)) advertising->start();
+}
+
+void publish(uint8_t id, uint8_t result, bool acknowledge)
+{
+  const auto state = getLampControlState();
+  const bool changed = lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power;
+  if (changed) ++revision;
+  uint8_t value[12] = {LAMP_PROTOCOL_VERSION, id, result, state.mode, state.brightness,
+    static_cast<uint8_t>(state.power), LAMP_EFFECT_COUNT, 1};
+  for (int i = 0; i < 4; ++i) value[8 + i] = revision >> (8 * i);
+  memcpy(lastState, value, sizeof(value));
+  stateCharacteristic->setValue(value, sizeof(value));
+  if (secure && (changed || acknowledge)) stateCharacteristic->notify();
+}
+} // namespace
+
+void beginLampBluetooth(const String& name)
+{
+  commands = xQueueCreate(8, sizeof(Command));
+  if (!commands) return;
+  BLEDevice::init(name);
+  BLEDevice::setSecurityCallbacks(&securityCallbacks);
+  BLESecurity::setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  BLESecurity::setCapability(ESP_IO_CAP_NONE);
+  BLESecurity::setKeySize(16);
+  BLESecurity::setInitEncryptionKey();
+  BLESecurity::setRespEncryptionKey();
+  server = BLEDevice::createServer();
+  server->setCallbacks(&connectionCallbacks);
+  server->advertiseOnDisconnect(false);
+  BLEService* service = server->createService(SERVICE);
+  auto* command = service->createCharacteristic(COMMAND, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC);
+  command->setCallbacks(&writeCallbacks);
+  stateCharacteristic = service->createCharacteristic(STATE, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
+  // NimBLE creates the notification subscription descriptor automatically.
+  publish(0, 0, false);
+  service->start();
+  updateAdvertising();
+}
+
+void setLampPairingWindow(bool open)
+{
+  pairing = open && server;
+  pairingStarted = millis();
+  // Make room for a new phone if the owner opens pairing while one is connected.
+  if (pairing && connection != NO_CONNECTION) {
+    secure = false;
+    ++generation;
+    server->disconnect(connection);
+  }
+  advertisingDirty = true;
+}
+
+bool lampPairingOpen() { return pairing; }
+
+void forgetLampPhones()
+{
+  if (!pairing || !server) return;
+  secure = false;
+  knownPeer = false;
+  ++generation;
+  if (connection != NO_CONNECTION) server->disconnect(connection);
+  ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+  const int count = bondedPeers(peers);
+  for (int i = 0; i < count; ++i) ble_store_util_delete_peer(&peers[i]);
+  advertisingDirty = true;
+}
+
+void serviceLampBluetooth()
+{
+  if (!server) return;
+  ble_gap_conn_desc peer{};
+  const bool paired = pairing && secure && connection != NO_CONNECTION &&
+    ble_gap_conn_find(connection, &peer) == 0 && peer.sec_state.bonded;
+  if (paired || (pairing && millis() - pairingStarted >= 120000)) {
+    pairing = false;
+    advertisingDirty = true;
+  }
+  if (advertisingDirty.exchange(false)) updateAdvertising();
+  Command command{};
+  // Bound work per frame; app waits for each application-level acknowledgment.
+  if (xQueueReceive(commands, &command, 0) == pdTRUE && secure && command.generation == generation) {
+    const uint8_t version = command.bytes[0], id = command.bytes[1], op = command.bytes[2], value = command.bytes[3];
+    auto state = getLampControlState();
+    uint8_t result = 0;
+    if (version != LAMP_PROTOCOL_VERSION || id == 0) result = 1;
+    else if (lampIsUpdating()) result = 3;
+    else {
+      switch (op) {
+        case 1: if (value > 1) result = 2; else setLampControl(state.mode, state.brightness, value); break;
+        case 2: if (!setLampControl(state.mode, value, state.power)) result = 2; break;
+        case 3: if (!setLampControl(value, state.brightness, state.power)) result = 2; break;
+        case 4: if (value) result = 2; else if (!saveLampDefaults()) result = 4; break;
+        case 5: if (value) result = 2; break;
+        default: result = 2;
+      }
+    }
+    publish(id, result, true);
+  } else {
+    // Detect changes from the knob and HTTP without making those paths know BLE.
+    const auto state = getLampControlState();
+    if (lastState[3] != state.mode || lastState[4] != state.brightness || lastState[5] != state.power) publish(0, 0, false);
+  }
+}
+#else
+void beginLampBluetooth(const String&) {}
+void serviceLampBluetooth() {}
+void setLampPairingWindow(bool) {}
+bool lampPairingOpen() { return false; }
+void forgetLampPhones() {}
+#endif

@@ -1,0 +1,83 @@
+name: iOS TestFlight upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coollamp-testflight
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tools
+        run: |
+          npm install --global pnpm@11.19.0
+          python -m pip install codemagic-cli-tools==0.69.0
+      - name: Test and prepare app
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build
+          pnpm exec cap sync ios
+      - name: Set unique build number
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          path = pathlib.Path('ios/App/App.xcodeproj/project.pbxproj')
+          contents, count = re.subn(r'CURRENT_PROJECT_VERSION = [^;]+;',
+                                   f'CURRENT_PROJECT_VERSION = {os.environ["BUILD_NUMBER"]};',
+                                   path.read_text())
+          if count != 2:
+              raise SystemExit('Expected exactly two build configurations')
+          path.write_text(contents)
+          PY
+      - name: Configure Apple signing
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ vars.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          CERTIFICATE_PRIVATE_KEY: ${{ secrets.CERTIFICATE_PRIVATE_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          required = ['APP_STORE_CONNECT_ISSUER_ID', 'APP_STORE_CONNECT_KEY_IDENTIFIER',
+                      'APP_STORE_CONNECT_PRIVATE_KEY', 'CERTIFICATE_PRIVATE_KEY']
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Missing GitHub settings: ' + ', '.join(missing))
+          PY
+          keychain initialize
+          app-store-connect fetch-signing-files com.coollamp.controller --type IOS_APP_STORE --strict-match-identifier --create
+          keychain add-certificates
+          xcode-project use-profiles --project ios/App/App.xcodeproj
+      - name: Build signed iPhone app
+        run: |
+          xcode-project build-ipa --project ios/App/App.xcodeproj --scheme App --config Release --disable-xcpretty
+      - name: Upload for TestFlight processing
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ vars.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          app-store-connect publish --path 'build/ios/ipa/*.ipa' --enable-package-validation
+      - name: Restore runner keychain
+        if: always()
+        run: keychain use-login

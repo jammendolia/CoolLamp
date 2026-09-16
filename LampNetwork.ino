@@ -170,6 +170,7 @@ void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
   String state = "{\"token\":" + jsonText(lampToken);
+  state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   state += ",\"leds\":" + String(NUM_LEDS) + ",\"milliamps\":" + String(lampSettings.milliAmps);
   state += ",\"power\":" + String(PowerOn ? "true" : "false");
@@ -185,6 +186,7 @@ void sendLampState()
 void saveLampConfiguration()
 {
   if (!authorizedLampRequest(true)) return;
+  if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
   uint32_t count, powerLimit, brightness, mode;
   if (!readNumber("leds", 1, MAX_LED_COUNT, count) || !readNumber("milliamps", 100, 20000, powerLimit) ||
       !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, MODE_MAX, mode)) {
@@ -288,20 +290,37 @@ void beginLampNetwork()
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
+  lampServer.on("/api/bluetooth", HTTP_GET, []() {
+    if (!authorizedLampRequest(false)) return;
+    lampServer.send(200, "application/json", String("{\"enabled\":") + (COOL_LAMP_BLE ? "true" : "false") +
+      ",\"pairing\":" + (lampPairingOpen() ? "true" : "false") + "}");
+  });
+  lampServer.on("/api/bluetooth/forget", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (!lampPairingOpen() || otaActive) { lampServer.send(409, "text/plain", "Hold the knob for six seconds to open pairing first; wait for any update to finish."); return; }
+    forgetLampPhones();
+    lampServer.send(200, "text/plain", "Saved phones removed. Forget CoolLamp in your phone's Bluetooth settings before pairing again.");
+  });
+  lampServer.on("/api/defaults", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    const bool saved = saveLampDefaults();
+    lampServer.send(saved ? 200 : 500, "text/plain", saved ? "Startup effect and brightness saved." : "Could not save defaults.");
+  });
   lampServer.on("/api/preview", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
+    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
     if (!readNumber("mode", 1, MODE_MAX, mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
-    Mode = mode; Brightness = brightness; PowerOn = true;
-    rotaryEncoder.setEncoderValue(Mode);
-    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    setLampControl(mode, brightness, true);
     lampServer.send(200, "text/plain", "Preview applied. Save settings to keep it after restart.");
   });
   lampServer.on("/api/power", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
+    if (otaActive) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t on;
     if (!readNumber("on", 0, 1, on)) { lampServer.send(400, "text/plain", "Invalid power value."); return; }
-    PowerOn = on; FastLED.setBrightness(PowerOn ? Brightness : 0); FastLED.show();
+    setLampControl(Mode, Brightness, on); FastLED.show();
     lampServer.send(200, "text/plain", PowerOn ? "Light on." : "Light off.");
   });
   lampServer.on("/update", HTTP_POST, []() {
@@ -316,6 +335,7 @@ void beginLampNetwork()
     WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
     WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
   } else WiFi.mode(WIFI_OFF);
+  beginLampBluetooth(lampAPName);
 }
 
 void toggleLampSetup()
@@ -343,11 +363,12 @@ bool pollLampButton()
     stable = raw;
     if (stable == LOW) { pressedAt = now; held = false; }
     else if (!held) {
-      if (now - pressedAt >= 3000) { toggleLampSetup(); held = true; }
+      if (now - pressedAt >= 6000) { setLampPairingWindow(!lampPairingOpen()); held = true; }
+      else if (now - pressedAt >= 3000) { toggleLampSetup(); held = true; }
       else return true;
     }
   }
-  if (stable == LOW && !held && now - pressedAt >= 3000) { held = true; toggleLampSetup(); }
+  if (stable == LOW && !held && now - pressedAt >= 6000) { held = true; setLampPairingWindow(!lampPairingOpen()); }
   return false;
 }
 
@@ -396,4 +417,18 @@ void serviceLampNetwork()
   if (connected && !mdnsStarted) { mdnsStarted = MDNS.begin(lampHost.c_str()); if (mdnsStarted) MDNS.addService("http", "tcp", 80); }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
+}
+
+bool saveLampDefaults()
+{
+  LampSettings next = lampSettings;
+  next.brightness = Brightness;
+  next.startupMode = Mode;
+  if (next.brightness == lampSettings.brightness && next.startupMode == lampSettings.startupMode) return true;
+  Preferences prefs;
+  if (!prefs.begin("coollamp", false)) return false;
+  const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next);
+  prefs.end();
+  if (saved) lampSettings = next;
+  return saved;
 }

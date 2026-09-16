@@ -5,6 +5,8 @@
 #include <ESP32RotaryEncoder.h>
 #include <FastLED.h>
 #include "LampConfig.h"
+#include "LampControl.h"
+#include "LampBluetooth.h"
 
 // ESP32-C3 Mini wiring.
 #define DATA_PIN 0
@@ -83,20 +85,19 @@ void setup() {
 
 void loop() {
   serviceLampNetwork();
+  serviceLampBluetooth();
   if (lampIsUpdating()) { delay(1); return; }
   bool renderNow = false;
   if (rotaryEncoder.encoderChanged()) {
     const uint8_t nextMode = static_cast<uint8_t>(rotaryEncoder.getEncoderValue());
     if (nextMode != Mode) {
-      Mode = nextMode;
-      fill_solid(leds, NUM_LEDS, CRGB::Black);
+      setLampControl(nextMode, Brightness, PowerOn);
       renderNow = true;
     }
   }
 
   if (pollLampButton()) {
-    PowerOn = !PowerOn;
-    FastLED.setBrightness(PowerOn ? Brightness : 0);
+    setLampControl(Mode, Brightness, !PowerOn);
     if (PowerOn) {
       renderNow = true;
     } else {
@@ -108,6 +109,25 @@ void loop() {
   // Keep input polling responsive between frames, including while off.
   static uint32_t lastFrameMs = 0;
   const uint32_t now = millis();
+  static bool wasPairing = false;
+  static bool pairingFlashOn = false;
+  if (lampPairingOpen()) {
+    const bool flashOn = (now / 400) % 2 == 0;
+    if (!wasPairing || flashOn != pairingFlashOn) {
+      pairingFlashOn = flashOn;
+      FastLED.setBrightness(100);
+      fill_solid(leds, NUM_LEDS, flashOn ? CRGB::Blue : CRGB::Black);
+      FastLED.show();
+    }
+    wasPairing = true;
+    delay(1);
+    return;
+  }
+  if (wasPairing) {
+    wasPairing = false;
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    renderNow = true;
+  }
   if (lampSetupPulse()) {
     FastLED.setBrightness(Brightness);
     fill_solid(leds, NUM_LEDS, CRGB::Teal);

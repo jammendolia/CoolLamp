@@ -6,7 +6,8 @@ ESP32-C3 / WS2812B lamp with 28 effects, rotary controls, saved settings, Wi-Fi 
 
 - Turn the knob: select the next or previous effect (wraps around).
 - Short press and release: toggle the light.
-- Hold for three seconds: open or close the setup hotspot. A short teal pulse confirms the gesture. Releasing after a long hold does not toggle the light.
+- Hold for three seconds, then release before six seconds: open or close the setup hotspot. A short teal pulse confirms the gesture.
+- Hold for six seconds: enter Bluetooth pairing. The entire lamp flashes blue for up to two minutes, stopping when a phone pairs. Hold six seconds again to cancel. No pairing code is required. Long holds never also toggle the light.
 - The hotspot closes after ten minutes without an authenticated request. Hold the knob again to reopen it.
 
 ## Setup
@@ -58,7 +59,7 @@ After cloning, run `node tools/setup-secrets.cjs` once to create a private initi
 
 Board target: `esp32:esp32:esp32c3:CDCOnBoot=cdc`. Dependencies: Arduino ESP32 core 3.3.11, FastLED 3.10.5, ESP32RotaryEncoder 1.2.0. WiFi, WebServer, Preferences, ESPmDNS, and Update come with the ESP32 core.
 
-Build using `arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --output-dir firmware .`.
+Bluetooth prototype build: `node tools/build-firmware.cjs`. The larger partition layout needs a first USB installation; see [Bluetooth app notes](docs/bluetooth-app.md).
 
 For OTA, open the lamp page, select **CoolLamp.ino.bin** in the Firmware update section, and upload. Do not select bootloader, partitions, or merged images. The upload is authenticated and protected by a per-boot request token. The handler verifies the C3 application header, writes the inactive OTA partition, and restarts only after successful verification. Failed/interrupted uploads do not activate the incomplete image. Effects pause while receiving firmware. USB upload remains available for recovery.
 
@@ -85,9 +86,13 @@ For OTA, open the lamp page, select **CoolLamp.ino.bin** in the Firmware update 
 
 USB diagnostics are available for recovery: send `?` at 115200 baud for reset/AP/heap status, or `a` to toggle the setup hotspot. Replies contain no credentials and use a zero transmit timeout, so an unread USB port cannot stall lamp controls or radio startup. Library diagnostics can also appear on USB.
 
-Current application size is about 1.22 MB in a 1.31 MB OTA slot. Future larger builds may require a partition-layout change over USB before they can be installed wirelessly.
+The pre-Bluetooth application used about 1.22 MB in a 1.31 MB OTA slot. The Bluetooth prototype compiles at 1,502,898 bytes and uses the larger 2,031,616-byte OTA slots. Install the new partition layout over USB before using wireless updates with that build. This lamp received the USB migration successfully on 2026-09-15; upload hashes, partition readback, saved configuration preservation and USB startup diagnostics passed. Phone pairing and physical gesture tests remain pending.
 - The owner confirmed the three-second knob hold now produces the teal setup pulse.
 
 ## Planned GitHub updates
 
 See [the update roadmap](docs/github-updates.md) for release publishing, available-update signaling, and automatic installation. These are planned; current OTA uses a manual upload on the lamp page. Never publish the current local firmware binaries: they contain the initial device password.
+
+## Phone app prototype
+
+See [mobile/README.md](mobile/README.md) for the Android/iOS projects and [Bluetooth app notes](docs/bluetooth-app.md) for gestures, pairing and prototype limits. USB installation and startup are verified; phone pairing and physical gesture tests remain pending.
