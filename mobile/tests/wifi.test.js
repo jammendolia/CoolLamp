@@ -48,6 +48,13 @@ test('server rejection stays visible and does not claim success',async()=>{
   http.request=async()=>({status:409,data:'Updater busy'});
   await assert.rejects(lamp.command('power',0),/Updater busy/);assert.equal(lamp.state.power,true);await lamp.disconnect();
 });
+test('adjusting an off lamp preserves power and older firmware cannot turn it on accidentally',async()=>{
+  const {lamp,setRaw,calls}=setup();setRaw({...fixture(),power:false,apiVersion:2});
+  await lamp.connect('192.168.1.9','test');await lamp.command('brightness',50);
+  assert.equal(new URLSearchParams(calls.find(x=>x.method==='POST').data).get('keepPower'),'1');
+  setRaw({...fixture(),power:false});await lamp.refresh();const count=calls.length;
+  await assert.rejects(lamp.command('effect',1),/Turn the lamp on first/);assert.equal(calls.length,count);await lamp.disconnect();
+});
 test('local addresses reject remote hosts, credentials, paths and redirects',()=>{
   for(const address of ['https://lamp.local','example.com','192.168.1.4/evil','user:pass@lamp.local','127.0.0.1','192.168.1.2:443','lamp.local?x=1'])assert.throws(()=>lampAddress(address));
   assert.equal(lampAddress('lamp.local'),'http://lamp.local');assert.equal(lampAddress('192.168.1.4'),'http://192.168.1.4');
@@ -59,4 +66,12 @@ test('legacy Bluetooth migration runs once and Wi-Fi/BLE identities merge',()=>{
   store.upsert({id:'aabb',name:'Desk',address:'http://lamp.local',room:'Office'});
   store.upsert({id:'aabb',deviceId:'phone-id'});assert.equal(store.items.length,1);assert.equal(store.items[0].room,'Office');
   store.remove('aabb');assert.equal(new LampStore(storage).items.length,0);
+});
+test('a firmware upgrade migrates legacy Wi-Fi identity without a duplicate lamp',async()=>{
+  const {lamp}=setup();
+  await lamp.connect('coollamp-ddeeff.local','test','coollamp-ddeeff');
+  const data=new Map();const store=new LampStore({getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)});
+  store.upsert({id:'coollamp-ddeeff',room:'Office'});
+  store.upsert({id:lamp.identity},'coollamp-ddeeff');
+  assert.equal(store.items.length,1);assert.equal(store.items[0].room,'Office');await lamp.disconnect();
 });

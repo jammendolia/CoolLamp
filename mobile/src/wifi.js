@@ -24,7 +24,8 @@ export class WifiTransport {
     const raw=typeof result==='string'?JSON.parse(result):result;
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
     const identity=raw.deviceId || raw.hostname.replace(/\.local$/,'');
-    if (expectedId && identity!==expectedId) throw new Error('This address belongs to a different lamp. Find your lamp again.');
+    const legacyIdentity=raw.hostname.replace(/\.local$/,'');
+    if (expectedId && identity!==expectedId && expectedId!==legacyIdentity) throw new Error('This address belongs to a different lamp. Find your lamp again.');
     if (this.identity && identity!==this.identity) throw new Error('Lamp identity changed. Reconnect before controlling it.');
     this.identity=identity; this.raw=raw;
     const c=raw.colors?.[raw.mode-1];
@@ -44,7 +45,8 @@ export class WifiTransport {
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
   command(op,value=0) { return this.enqueue(async()=>{
     const epoch=this.epoch;
-    const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value}],effect:['/api/preview',{mode:value,brightness:this.state.brightness}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
+    if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
+    const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value,keepPower:1}],effect:['/api/preview',{mode:value,brightness:this.state.brightness,keepPower:1}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
     if(!paths[op])throw new Error('Unsupported command.');
     try { await this.request(...paths[op]); await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }

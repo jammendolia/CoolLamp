@@ -70,3 +70,19 @@ permission, switch Wi-Fi/BLE without duplicates, change Wi-Fi through the app,
 verify credentials after a password change, and run OTA with BLE and Wi-Fi
 active while checking minimum free heap and largest block. Compilation does
 not replace these radio/device checks.
+
+### Development checks completed
+
+- Public firmware compiled: 1,721,174 bytes, leaving 310,442 bytes per OTA slot.
+  This is 4,438 bytes larger than 1.3.5. Runtime free heap is not yet measured on
+  the new firmware.
+- 27 combined mobile/manifest tests passed, plus existing effect, webpage, and
+  update-page checks. Tests cover identity migration, uncertain writes, late
+  responses, token binding, power preservation, and BLE compatibility.
+- Native iOS and Android compilation passed in Actions run 35389663819.
+  Subsequent UI and JavaScript-only refinements passed the local production
+  build and tests; native plugin sources are unchanged from that successful run.
+- Browser review used an isolated simulated lamp, including saved-lamp
+  reconnect, favorites filtering, power control, and advanced settings layout.
+  The simulation is not part of either native app's bundled assets.
+- These changes have not been released to TestFlight or installed on hardware.

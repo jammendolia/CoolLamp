@@ -8,6 +8,7 @@ import { WifiTransport } from './wifi.js';
 const native = registerPlugin('LampNetwork');
 const store = new LampStore(localStorage);
 let selected = null, lamp = null, connecting = false, discovered = [], category = 'all';
+let effectListKey = '';
 const isNative = Capacitor.isNativePlatform();
 const sessionPasswords = new Map();
 async function credential(id, value) {
@@ -70,6 +71,7 @@ const callbacks = {
     }
     $('power').textContent = next.power ? 'Turn off' : 'Turn on';
     $('power').setAttribute('aria-pressed', String(next.power));
+    $('lampArt').style.opacity=next.power?'1':'.2';
     if (!editingBrightness) { $('brightness').value = next.brightness; brightnessLabel(); }
     $('effect').value = next.mode;
     document.documentElement.style.setProperty('--lamp-color', next.color?.enabled ? $('color').value : '#70e1c9');
@@ -116,6 +118,7 @@ async function connect(saved = null) {
 function connected(kind) {
   localStorage.setItem('coollamp-selected',selected.id);
   $('controls').disabled=false; $('disconnect').hidden=false;
+  $('favoriteEffect').setAttribute('aria-pressed',String(Boolean(selected.favorites?.includes(state.mode))));
   $('connectionBadge').textContent=kind; $('lampTitle').textContent=selected.name;
   $('lampRoom').textContent=selected.room||'YOUR LAMP';
   $('lampName').value=selected.name; $('room').value=selected.room||'';
@@ -130,12 +133,12 @@ async function connectWifi(entry,password) {
   connecting=true;status('Connecting over Wi-Fi…');
   await lamp.disconnect(); lamp=wifiLamp;
   try {
-    if(password===undefined) password=(await credential(entry.id)).value;
+    if(password===undefined && entry.id) password=(await credential(entry.id)).value;
     if(!password){$('address').value=entry.address;$('addLamp').open=true;page('lamps');$('password').focus();throw new Error('Enter the lamp access password to connect.');}
     const raw=await wifiLamp.connect(entry.address,password,entry.id);
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
-    const prior=store.items.find(x=>x.id===id);
-    selected=store.upsert({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'});
+    const prior=store.items.find(x=>x.id===id || x.id===entry.id);
+    selected=store.upsert({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
   } catch(e) { status(e.message); }
@@ -202,11 +205,24 @@ for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>
 function filterEffects() {
   const query=$('effectSearch').value.trim().toLowerCase();
   const names=lamp===wifiLamp&&wifiLamp.raw?wifiLamp.raw.effects:effects.slice(0,state?.effectCount||effects.length);
+  $('currentEffect').textContent=state?'Current: '+names[state.mode-1]:'Choose a lamp to browse its effects.';
+  const key=JSON.stringify([names,query,category,selected?.favorites,state?.mode]);
+  if(key===effectListKey)return;
+  effectListKey=key;
+  const focused=document.activeElement?.dataset.effect;
+  $('effectGrid').replaceChildren();
   const ids={calm:[1,2,3,13,30,32,33,36,37],fire:[4,5,6,7,8,9,10,11,12],color:[14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,31,34,35]};
   $('effect').replaceChildren();
   names.forEach((name,i)=>{const mode=i+1;if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):ids[category]?.includes(mode))))$('effect').add(new Option(name,mode));});
   if(state)$('effect').value=state.mode;
   if(!$('effect').options.length){const option=new Option('No matching effects','');option.disabled=true;$('effect').add(option);}
+  for(const option of $('effect').options) {
+    const button=document.createElement('button');button.type='button';button.textContent=option.text;
+    button.disabled=option.disabled;button.dataset.effect=option.value;
+    button.setAttribute('aria-pressed',String(Number(option.value)===state?.mode));
+    button.onclick=()=>change('effect',Number(option.value));$('effectGrid').append(button);
+    if(focused===option.value)button.focus({preventScroll:true});
+  }
 }
 $('effectSearch').oninput=filterEffects;
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{category=button.dataset.category;document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x===button)));filterEffects();};

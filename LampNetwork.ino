@@ -411,7 +411,7 @@ void beginLampNetwork()
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
     if (!readNumber("mode", 1, MODE_MAX, mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
-    setLampControl(mode, brightness, true);
+    setLampControl(mode, brightness, lampServer.arg("keepPower") == "1" ? PowerOn : true);
     lampServer.send(200, "text/plain", "Preview applied. Save settings to keep it after restart.");
   });
   lampServer.on("/api/power", HTTP_POST, []() {

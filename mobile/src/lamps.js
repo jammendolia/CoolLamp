@@ -11,8 +11,8 @@ export class LampStore {
       if (old) storage.removeItem('coollamp-device');
     } catch {}
   }
-  upsert(value) {
-    const matches = this.items.filter(x => x.id === value.id || (value.deviceId && x.deviceId === value.deviceId));
+  upsert(value, previousId) {
+    const matches = this.items.filter(x => x.id === value.id || x.id === previousId || (value.deviceId && x.deviceId === value.deviceId));
     const entry = Object.assign({}, ...matches, value);
     this.items = this.items.filter(x => !matches.includes(x));
     this.items.push(entry); this.save(); return entry;
