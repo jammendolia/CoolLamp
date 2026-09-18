@@ -33,7 +33,7 @@ uint16_t beatsin16(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 uint8_t beatsin8(uint16_t,uint8_t,uint8_t,uint32_t,uint8_t){return 0;}
 uint16_t beatsin88(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 int NUM_LEDS=134;CRGB* leds=nullptr;
-enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS};
+enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD};
 #include "../NewEffects.ino"
 int main(){
   // Migrate the original 29-color blob without losing black or per-mode slots.
@@ -42,17 +42,46 @@ int main(){
   loadLampColors();assert(getLampColor(3).r==2);assert(getLampColor(29).r==28);
   assert(getLampColor(37).enabled==1);assert(getLampEffectOptions(31).intensity==35);
   assert(setLampColor(30,0,0,0));assert(setLampEffectOptions(30,{1,0,1,0,255,0}));
-  assert(!setLampEffectOptions(38,{50,100,0,1,2,3}));assert(!setLampEffectOptions(30,{0,100,0,1,2,3}));
+  assert(!setLampEffectOptions(39,{50,100,0,1,2,3}));assert(!setLampEffectOptions(30,{0,100,0,1,2,3}));
   Preferences::failWrites=true;assert(!saveLampColors());Preferences::failWrites=false;assert(saveLampColors());
-  assert(Preferences::storage["colors"].size()==149);assert(Preferences::storage["effectOptions"].size()==223);
+  assert(Preferences::storage["colors"].size()==153);assert(Preferences::storage["effectOptions"].size()==229);
   setLampColor(30,255,255,255);setLampEffectOptions(30,{50,100,0,1,2,3});loadLampColors();
   assert(getLampColor(30).r==0);assert(getLampEffectOptions(30).speed==1);assert(getLampEffectOptions(30).g==255);
+  // Upgrade the 37-effect release without resetting existing colors/options.
+  Preferences::storage["colors"].resize(149);
+  Preferences::storage["effectOptions"].resize(223);
+  setLampColor(38,1,2,3);setLampEffectOptions(38,{3,4,0,5,6,7});
+  loadLampColors();
+  assert(getLampColor(30).r==0 && getLampEffectOptions(30).speed==1);
+  assert(getLampEffectOptions(30).g==255);
+  assert(getLampColor(38).r==255 && getLampEffectOptions(38).speed==50);
+  assert(saveLampColors());
+  assert(Preferences::storage["colors"].size()==153);
+  assert(Preferences::storage["effectOptions"].size()==229);
   assert(getLampColor(3).r==2);resetLampColor(30);assert(getLampEffectOptions(30).speed==50);
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
   for(int count:{1,2,3,133,134,135,1024}){
     NUM_LEDS=count;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
-    for(int mode=30;mode<=37;++mode){
+    if(count>=133) {
+      setLampColor(38,255,0,0);setLampEffectOptions(38,{50,25,1,0,0,255});
+      auto peak=[&](bool blue){
+        int best=0;
+        for(int i=1;i<count;++i) {
+          if((blue?leds[i].b:leds[i].r)>(blue?leds[best].b:leds[best].r))best=i;
+        }
+        return best;
+      };
+      renderNewEffect(38,0);assert(leds[count/2].r==255 && leds[0].r==0 && leds[count-1].r==0);
+      renderNewEffect(38,2800);assert(peak(false)==0);
+      renderNewEffect(38,6200-1103);assert(leds[count/2].b==255 && leds[0].b==0 && leds[count-1].b==0);
+      renderNewEffect(38,6200-1103+2800);assert(leds[count-1].b==255 && peak(true)>count*9/10);
+      // The original still starts at the left end and travels inward.
+      setLampColor(30,255,0,0);setLampEffectOptions(30,{50,25,1,0,0,255});
+      renderNewEffect(30,0);assert(peak(false)==0);
+      renderNewEffect(30,2800);assert(leds[count/2].r==255 && leds[0].r==0 && leds[count-1].r==0);
+    }
+    for(int mode=30;mode<=38;++mode){
       resetLampColor(mode);setLampColor(mode,255,0,0);setLampEffectOptions(mode,{100,100,1,0,0,255});
       bool lit=false,changed=false;std::vector<CRGB> first;
       for(uint32_t t=0;t<24000;t+=137){
@@ -69,5 +98,5 @@ int main(){
       for(int i=0;i<count;++i)assert(leds[i]==CRGB::Black);
     }
   }
-  std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, eight animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
+  std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }

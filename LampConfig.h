@@ -25,6 +25,7 @@ inline String lampIdentity() {
   snprintf(id, sizeof(id), "%012llx", (unsigned long long)(mac & 0xffffffffffffULL));
   return String(id);
 }
+String lampEffectCatalogEntry(uint8_t mode);
 bool lampIdentifyActive();
 void beginLampNetwork();
 void serviceLampNetwork();

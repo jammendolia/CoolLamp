@@ -1,3 +1,4 @@
+import { legacyCatalog, validateCatalog } from './catalog.js';
 import { lampAddress } from './lamps.js';
 
 export class WifiTransport {
@@ -27,6 +28,13 @@ export class WifiTransport {
     const legacyIdentity=raw.hostname.replace(/\.local$/,'');
     if (expectedId && identity!==expectedId && expectedId!==legacyIdentity) throw new Error('This address belongs to a different lamp. Find your lamp again.');
     if (this.identity && identity!==this.identity) throw new Error('Lamp identity changed. Reconnect before controlling it.');
+    if (!this.catalog || this.raw?.token!==raw.token) {
+      if (raw.catalogVersion===1) {
+        const data=await this.request('/api/effects');
+        this.catalog=validateCatalog(typeof data==='string'?JSON.parse(data):data,raw.effects.length);
+      } else this.catalog=legacyCatalog(raw.effects);
+    }
+    if(this.catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
     this.identity=identity; this.raw=raw;
     const c=raw.colors?.[raw.mode-1];
     this.state={...raw,effectCount:raw.effects.length,capabilities:4|(c?2:0)|(raw.effectOptions?8:0),supportsColor:Boolean(c),color:c?{enabled:Boolean(c[0]),r:c[1],g:c[2],b:c[3]}:null};
@@ -47,9 +55,11 @@ export class WifiTransport {
     const epoch=this.epoch;
     if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
     const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value,keepPower:1}],effect:['/api/preview',{mode:value,brightness:this.state.brightness,keepPower:1}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
+    const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;
+    if(mode!==null && !this.catalog?.some(x=>x.id===mode))throw new Error('This effect is not available on the selected lamp.');
     if(!paths[op])throw new Error('Unsupported command.');
     try { await this.request(...paths[op]); await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }
-  async disconnect() { clearTimeout(this.timer);this.epoch++;this.identity=null;this.raw=null;this.state=null;this.authorization=null;this.callbacks.onDisconnect?.(); }
+  async disconnect() { clearTimeout(this.timer);this.epoch++;this.identity=null;this.catalog=null;this.raw=null;this.state=null;this.authorization=null;this.callbacks.onDisconnect?.(); }
 }

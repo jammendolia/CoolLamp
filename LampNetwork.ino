@@ -40,12 +40,12 @@ size_t imagePrefixUsed = 0;
 bool imageValidated = false;
 
 const char* const effectNames[] = {
-  "Pacifica", "Aurora", "Rain", "Fire", "Split fire", "Split fire - outward",
-  "Split fire - reversed colors", "Blue gas fire", "Witch fire", "Purple fire",
+  "Pacifica", "Aurora", "Rain", "Fire", "Split fire - rising", "Split fire - falling",
+  "Split fire - rising, reversed colors", "Blue gas fire", "Witch fire", "Purple fire",
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
   "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs"
+  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -178,12 +178,22 @@ bool readNumber(const char* name, uint32_t low, uint32_t high, uint32_t& result)
   return result >= low && result <= high;
 }
 
+String lampEffectCatalogEntry(uint8_t mode)
+{
+  if (mode < 1 || mode > MODE_MAX) return "{}";
+  const bool calm = mode == 1 || mode == 2 || mode == 3 || mode == 13 || mode == 30 || mode == 32 || mode == 33 || mode >= 36;
+  const char* category = mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
+  return "{\"id\":" + String(mode) + ",\"name\":" + jsonText(effectNames[mode-1]) +
+    ",\"category\":" + jsonText(category) + ",\"speed\":" + String(mode >= 21 && mode <= 29 ? "false" : "true") + "}";
+}
+
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
   String state = "{\"token\":" + jsonText(lampToken);
   state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
   state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode) + ",\"startupBrightness\":" + String(lampSettings.brightness);
+  state += ",\"catalogVersion\":1";
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
@@ -345,6 +355,13 @@ void beginLampNetwork()
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
+  lampServer.on("/api/effects", HTTP_GET, []() {
+    if (!authorizedLampRequest(false)) return;
+    String catalog = "[";
+    for (uint8_t mode=1; mode<=MODE_MAX; ++mode) { if (mode>1) catalog+=','; catalog+=lampEffectCatalogEntry(mode); }
+    catalog+=']';
+    lampServer.send(200, "application/json", catalog);
+  });
   lampServer.on("/api/firmware", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampUpdateJson());

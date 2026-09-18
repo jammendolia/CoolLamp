@@ -65,7 +65,8 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_STARS 35
 #define MODE_BREATHING 36
 #define MODE_BLOBS 37
-#define MODE_MAX MODE_BLOBS
+#define MODE_DROPLETS_OUTWARD 38
+#define MODE_MAX MODE_DROPLETS_OUTWARD
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
 uint8_t lampBeat8(uint16_t bpm, uint32_t base = 0);
@@ -172,7 +173,7 @@ void loop() {
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
   switch (Mode) {
-    case MODE_DROPLETS: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
+    case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
     case MODE_HEARTBEAT: case MODE_STARS: case MODE_BREATHING: case MODE_BLOBS:
       renderNewEffect(Mode, effectClockMs); break;
     case MODE_CUSTOM: fill_solid(leds, NUM_LEDS, CRGB::White); break;
