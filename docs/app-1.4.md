@@ -64,7 +64,7 @@ existing firmware/page regression tests. Build firmware with
 Unsigned iOS and debug Android build workflows are available separately from
 TestFlight and firmware publication.
 
-Hardware acceptance before release: discover two lamps, rename and identify
+Remaining phone and multi-lamp acceptance: discover two lamps, rename and identify
 each, reconnect after IP changes and app restart, deny/regrant local-network
 permission, switch Wi-Fi/BLE without duplicates, change Wi-Fi through the app,
 verify credentials after a password change, and run OTA with BLE and Wi-Fi
@@ -73,9 +73,9 @@ not replace these radio/device checks.
 
 ### Development checks completed
 
-- Public firmware compiled: 1,721,174 bytes, leaving 310,442 bytes per OTA slot.
-  This is 4,438 bytes larger than 1.3.5. Runtime free heap is not yet measured on
-  the new firmware.
+- Public firmware binary: 1,721,328 bytes, leaving 310,288 bytes per OTA slot.
+  This is 4,592 bytes larger than 1.3.5. The physical lamp booted with 76,624
+  bytes free heap and a 65,524-byte largest free block.
 - 27 combined mobile/manifest tests passed, plus existing effect, webpage, and
   update-page checks. Tests cover identity migration, uncertain writes, late
   responses, token binding, power preservation, and BLE compatibility.
@@ -85,4 +85,8 @@ not replace these radio/device checks.
 - Browser review used an isolated simulated lamp, including saved-lamp
   reconnect, favorites filtering, power control, and advanced settings layout.
   The simulation is not part of either native app's bundled assets.
-- These changes have not been released to TestFlight or installed on hardware.
+- Firmware 1.4.0 was installed on the physical lamp over authenticated Wi-Fi
+  OTA. Its new boot token and public build marker were verified, with saved
+  colors, effect options, Wi-Fi configuration, LED count, and power limit intact.
+  Physical iPhone discovery and multi-lamp acceptance remain to be checked
+  with the signed TestFlight build.
