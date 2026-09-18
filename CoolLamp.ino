@@ -133,13 +133,14 @@ void loop() {
   static bool pairingFlashOn = false;
   const bool pairingNow = lampPairingOpen();
   const bool setupNow = lampSetupPulse();
+  const bool identifying = lampIdentifyActive();
   static bool lastPairing = false;
-  if (pairingNow || setupNow) {
+  if (pairingNow || setupNow || identifying) {
     const bool flashOn = (now / 400) % 2 == 0;
     if (!wasPairing || flashOn != pairingFlashOn || pairingNow != lastPairing) {
       pairingFlashOn = flashOn;
       FastLED.setBrightness(100);
-      fill_solid(leds, NUM_LEDS, flashOn ? (pairingNow ? CRGB(0, 0, 255) : CRGB(255, 80, 0)) : CRGB::Black);
+      fill_solid(leds, NUM_LEDS, flashOn ? (pairingNow ? CRGB(0, 0, 255) : setupNow ? CRGB(255, 80, 0) : CRGB::White) : CRGB::Black);
       FastLED.show();
     }
     wasPairing = true;

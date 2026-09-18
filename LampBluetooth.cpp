@@ -21,6 +21,7 @@ constexpr char COMMAND[] = "7b610002-6e2b-4f3d-9a71-28e45c001001";
 constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
 constexpr char FIRMWARE[] = "7b610004-6e2b-4f3d-9a71-28e45c001001";
 constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
+constexpr char IDENTITY[] = "7b610006-6e2b-4f3d-9a71-28e45c001001";
 std::atomic<bool> extendedControls{false};
 BLECharacteristic* effectCharacteristic = nullptr;
 uint8_t lastEffect[8] = {};
@@ -192,6 +193,8 @@ void beginLampBluetooth(const String& name)
   server->advertiseOnDisconnect(false);
   BLEService* service = server->createService(SERVICE);
   auto* command = service->createCharacteristic(COMMAND, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC);
+  auto* identity = service->createCharacteristic(IDENTITY, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
+  identity->setValue(lampIdentity().c_str());
   command->setCallbacks(&writeCallbacks);
   stateCharacteristic = service->createCharacteristic(STATE, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
   stateCharacteristic->setCallbacks(&stateReadCallbacks);

@@ -14,6 +14,9 @@
 LampSettings lampSettings;
 WebServer lampServer(80);
 String lampHost;
+String lampName;
+uint32_t identifyUntil = 0;
+bool lampIdentifyActive() { return identifyUntil && static_cast<int32_t>(identifyUntil - millis()) > 0; }
 String lampAPName;
 String lampToken;
 bool scanActive = false;
@@ -179,6 +182,8 @@ void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
   String state = "{\"token\":" + jsonText(lampToken);
+  state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
+  state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode) + ",\"startupBrightness\":" + String(lampSettings.brightness);
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
@@ -299,6 +304,9 @@ void beginLampNetwork()
   char suffix[7]; snprintf(suffix, sizeof(suffix), "%02X%02X%02X", static_cast<uint8_t>(mac >> 24), static_cast<uint8_t>(mac >> 32), static_cast<uint8_t>(mac >> 40));
   lampHost = String("coollamp-") + suffix; lampHost.toLowerCase();
   lampAPName = String("CoolLamp-") + suffix;
+  lampName = lampAPName;
+  Preferences names;
+  if (names.begin("coollamp", true)) { lampName = names.getString("name", lampAPName); names.end(); }
   char token[33]; snprintf(token, sizeof(token), "%08lx%08lx%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random(), (unsigned long)esp_random());
   lampToken = token;
   const char* headers[] = {"X-Lamp-Token"};
@@ -310,6 +318,27 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/name", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    String name = lampServer.arg("name"); name.trim();
+    bool valid = !name.isEmpty() && name.length() <= 48;
+    for (size_t i=0;i<name.length();++i) if (static_cast<uint8_t>(name[i])<32) valid=false;
+    if (!valid) { lampServer.send(400,"text/plain","Use a name of 1 to 48 UTF-8 bytes."); return; }
+    Preferences prefs;
+    bool saved = prefs.begin("coollamp",false);
+    if (saved) { saved=prefs.putString("name",name)>0; prefs.end(); }
+    if (!saved) { lampServer.send(500,"text/plain","Could not save lamp name."); return; }
+    lampName=name;
+    if (mdnsStarted) MDNS.addServiceTxt("coollamp","tcp","name",lampName);
+    lampServer.send(200,"text/plain","Lamp name saved.");
+  });
+  lampServer.on("/api/identify", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampIsUpdating() || lampPairingOpen() || lampSetupPulse()) { lampServer.send(409,"text/plain","Finish setup or updating before identifying the lamp."); return; }
+    identifyUntil=millis()+2400;
+    lampServer.send(200,"text/plain","Lamp is flashing white.");
+  });
   lampServer.on("/api/scan", HTTP_POST, startLampScan);
   lampServer.on("/api/scan", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
@@ -473,7 +502,16 @@ void serviceLampNetwork()
   }
   if ((setupAP || connected) && !serverStarted) { lampServer.begin(); serverStarted = true; }
   if (!setupAP && !connected && serverStarted) { lampServer.stop(); serverStarted = false; }
-  if (connected && !mdnsStarted) { mdnsStarted = MDNS.begin(lampHost.c_str()); if (mdnsStarted) MDNS.addService("http", "tcp", 80); }
+  if (connected && !mdnsStarted) {
+    mdnsStarted = MDNS.begin(lampHost.c_str());
+    if (mdnsStarted) {
+      MDNS.addService("http", "tcp", 80);
+      MDNS.addService("coollamp", "tcp", 80);
+      MDNS.addServiceTxt("coollamp", "tcp", "id", lampIdentity());
+      MDNS.addServiceTxt("coollamp", "tcp", "name", lampName);
+      MDNS.addServiceTxt("coollamp", "tcp", "api", "2");
+    }
+  }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
 }

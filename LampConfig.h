@@ -19,6 +19,13 @@ struct LampSettings {
 };
 extern LampSettings lampSettings;
 void loadLampSettings();
+inline String lampIdentity() {
+  const uint64_t mac = ESP.getEfuseMac();
+  char id[13];
+  snprintf(id, sizeof(id), "%012llx", (unsigned long long)(mac & 0xffffffffffffULL));
+  return String(id);
+}
+bool lampIdentifyActive();
 void beginLampNetwork();
 void serviceLampNetwork();
 void cancelLampSetupPulse();

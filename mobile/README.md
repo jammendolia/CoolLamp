@@ -1,8 +1,9 @@
 # CoolLamp phone app
 
-Capacitor app with a bundled web interface and the community BLE plugin.
+Capacitor app with a bundled web interface, Wi-Fi discovery/control, and the community BLE plugin.
 No cloud or Wi-Fi is required for Bluetooth control.
 See [implementation and protocol](../docs/bluetooth-app.md).
+See [multi-lamp app, discovery, design, and validation](../docs/app-1.4.md).
 
 ## Development
 
