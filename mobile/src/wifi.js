@@ -9,8 +9,8 @@ export class WifiTransport {
       ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
     catch { throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
     if (epoch!==this.epoch) throw new Error('Connection changed.');
-    if (response.status===401) throw new Error('Check the lamp access password.');
-    if (response.status<200 || response.status>=300) throw new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.');
+    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true});
+    if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true});
     return response.data;
   }
   async connect(address,password,expectedId) {
@@ -43,10 +43,11 @@ export class WifiTransport {
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
   command(op,value=0) { return this.enqueue(async()=>{
+    const epoch=this.epoch;
     const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value}],effect:['/api/preview',{mode:value,brightness:this.state.brightness}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
     if(!paths[op])throw new Error('Unsupported command.');
     try { await this.request(...paths[op]); await this.refresh(); }
-    catch(e) { if(e.uncertain)await this.disconnect();throw e; }
+    catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }
   async disconnect() { clearTimeout(this.timer);this.epoch++;this.identity=null;this.raw=null;this.state=null;this.authorization=null;this.callbacks.onDisconnect?.(); }
 }

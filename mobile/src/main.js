@@ -18,6 +18,7 @@ async function credential(id, value) {
 function page(name) {
   for (const item of ['lamps','light','settings']) $('page-'+item).hidden=item!==name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  window.scrollTo(0,0);
 }
 
 
@@ -25,13 +26,13 @@ const $ = id => document.getElementById(id);
 const status = message => { $('status').textContent = message; };
 let state = null, editingBrightness = false, busy = false;
 let firmware = null;
-let effectOptions = null;
+let effectOptions = null, editingOptions = false;
 function renderOptions() {
   const supported = Boolean(state?.capabilities & 8);
   $('effectOptions').hidden = !supported;
   const ready = supported && effectOptions?.mode === state.mode;
   $('effectOptions').disabled = !ready;
-  if (!ready) return;
+  if (!ready || editingOptions) return;
   $('speed').value = effectOptions.speed;
   $('intensity').value = effectOptions.intensity;
   $('speedValue').value = effectOptions.speed + '%';
@@ -156,12 +157,13 @@ $('resetColor').onclick = () => change('resetColor', state.mode);
 $('checkFirmware').onclick = () => change('checkFirmware');
 $('installFirmware').onclick = () => change('installFirmware');
 $('autoUpdate').onchange = () => change('autoUpdate', Number($('autoUpdate').checked));
-for (const id of ['speed','intensity']) $(id).oninput = () => { $(id+'Value').value = $(id).value + '%'; };
+for (const id of ['speed','intensity']) $(id).oninput = () => { editingOptions=true; $(id+'Value').value = $(id).value + '%'; };
 for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange = async () => {
   if (!state || effectOptions?.mode !== state.mode) return;
   const hex = $('secondaryColor').value.slice(1);
   await change('effectOptions', {mode:state.mode, speed:Number($('speed').value), intensity:Number($('intensity').value),
     dual:Number($('dual').checked),r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)});
+  editingOptions=false;
   renderOptions();
 };
 
@@ -220,16 +222,17 @@ function fillNetwork() {
 async function networkAction(action) {
   if(busy||connecting||lamp!==wifiLamp||!state)return;
   busy=true;$('networkSettings').disabled=true;
-  try{await wifiLamp.enqueue(action);}catch(e){status(e.message);}finally{busy=false;$('networkSettings').disabled=lamp!==wifiLamp||!state;}
+  try{await wifiLamp.enqueue(action);}catch(e){if(e.uncertain)await wifiLamp.disconnect();status(e.message);}finally{busy=false;$('networkSettings').disabled=lamp!==wifiLamp||!state;}
 }
 $('identityForm').onsubmit=async e=>{
-  e.preventDefault();if(!selected)return;
+  e.preventDefault();if(!selected||busy||connecting)return;
   const name=$('lampName').value.trim(),room=$('room').value.trim();if(!name)return;
   if(new TextEncoder().encode(name).length>48){status('Use a lamp name of at most 48 UTF-8 bytes.');return;}
+  busy=true;
   try {
     if(lamp===wifiLamp&&state&&wifiLamp.raw.apiVersion)await wifiLamp.enqueue(()=>wifiLamp.request('/api/name',{name}));
     selected=store.upsert({...selected,name,room});$('lampTitle').textContent=name;$('lampRoom').textContent=room||'YOUR LAMP';renderLamps();status(lamp===wifiLamp&&wifiLamp.raw?.apiVersion?'Lamp name saved. Room saved on this phone.':'Name and room saved on this phone.');
-  }catch(e){status(e.message);}
+  }catch(e){status(e.message);}finally{busy=false;}
 };
 $('identify').onclick=()=>networkAction(async()=>status(await wifiLamp.request('/api/identify',{})));
 $('pairingStatus').onclick=()=>networkAction(async()=>{const result=await wifiLamp.request('/api/bluetooth');const value=typeof result==='string'?JSON.parse(result):result;status(value.pairing?'Pairing is open.':'Pairing is closed. Hold the knob for six seconds to open it.');});
