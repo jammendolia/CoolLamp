@@ -20,7 +20,8 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
   const CRGB a(c.r,c.g,c.b), b=o.dual ? CRGB(o.r,o.g,o.b) : a;
   fill_solid(leds,NUM_LEDS,CRGB::Black);
   switch(mode) {
-    case MODE_DROPLETS: {
+    case MODE_DROPLETS:
+    case MODE_DROPLETS_OUTWARD: {
       const unsigned count=1+o.intensity/25;
       for(unsigned k=0;k<count;++k) {
         const uint32_t phase=(t+k*1103)%6200;
@@ -28,7 +29,9 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         if(phase<2800) travel=uint64_t(phase)*phase*32767/(2800UL*2800);
         else { const uint32_t age=phase-2800; travel=32767-uint32_t(sin8(age*256/850+192))*uint32_t(3400-age)*8/255; }
         travel=min(travel,uint32_t(32767));
-        const uint16_t position=k%2 ? 65535-travel : travel;
+        // Reflect each half around its midpoint: center -> ends, same bounce.
+        const uint32_t distance=mode==MODE_DROPLETS_OUTWARD ? 32767-travel : travel;
+        const uint16_t position=k%2 ? 65535-distance : distance;
         effectGlow(position,4500,k%2?b:a,255);
         effectGlow(position,10000,k%2?b:a,55);
       } break;

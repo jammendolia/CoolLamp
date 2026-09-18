@@ -1,6 +1,6 @@
 import { BleClient } from '@capacitor-community/bluetooth-le';
 import { LampTransport } from './transport.js';
-import { effects, firmwareMessage } from './protocol.js';
+import { firmwareMessage } from './protocol.js';
 import './style.css';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, lampAddress } from './lamps.js';
@@ -38,7 +38,7 @@ function renderOptions() {
   $('intensity').value = effectOptions.intensity;
   $('speedValue').value = effectOptions.speed + '%';
   $('intensityValue').value = effectOptions.intensity + '%';
-  $('speed').disabled = state.mode >= 21 && state.mode <= 29;
+  $('speed').disabled = lamp?.catalog?.find(x=>x.id===state.mode)?.speed === false;
   $('dual').checked = Boolean(effectOptions.dual);
   $('secondaryColor').disabled = !effectOptions.dual;
   $('secondaryColor').value = '#' + [effectOptions.r,effectOptions.g,effectOptions.b].map(v=>v.toString(16).padStart(2,'0')).join('');
@@ -67,7 +67,7 @@ const callbacks = {
     if (next.color) {
       $('color').value = '#' + [next.color.r,next.color.g,next.color.b].map(v => v.toString(16).padStart(2,'0')).join('');
       $('colorHint').textContent = next.color.enabled ? 'Your color is active for this effect.' : 'Original colors are active. Pick a color to customize this effect.';
-      $('resetColor').textContent = next.capabilities & 8 ? 'Restore effect defaults' : next.mode === 29 ? 'Reset color' : 'Restore original colors';
+      $('resetColor').textContent = next.capabilities & 8 ? 'Restore effect defaults' : 'Restore original colors';
     }
     $('power').textContent = next.power ? 'Turn off' : 'Turn on';
     $('power').setAttribute('aria-pressed', String(next.power));
@@ -80,7 +80,7 @@ const callbacks = {
   },
   onDisconnect() {
     firmware = null; effectOptions = null;
-    state = null; $('controls').disabled = true; $('disconnect').hidden = true;
+    state = null; filterEffects(); $('controls').disabled = true; $('disconnect').hidden = true;
     renderFirmware();
     renderOptions();
     $('connect').hidden = false; editingBrightness = false;
@@ -94,7 +94,7 @@ const callbacks = {
 const bleLamp = new LampTransport(BleClient, callbacks);
 const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:e=>{status(e.message); if(selected?.deviceId && !connecting) connect(selected);}});
 lamp=bleLamp;
-effects.forEach((name, i) => $('effect').add(new Option(name, i + 1)));
+
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%'; }
 async function change(operation, value) {
   if (busy) return;
@@ -116,6 +116,9 @@ async function connect(saved = null) {
   finally { connecting=false; $('connect').disabled=false; }
 }
 function connected(kind) {
+  category='all'; $('effectSearch').value='';
+  document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.category==='all')));
+  renderOptions();
   localStorage.setItem('coollamp-selected',selected.id);
   $('controls').disabled=false; $('disconnect').hidden=false;
   $('favoriteEffect').setAttribute('aria-pressed',String(Boolean(selected.favorites?.includes(state.mode))));
@@ -204,16 +207,15 @@ $('wifiConnect').onsubmit=e=>{e.preventDefault();const address=$('address').valu
 for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>page(button.dataset.page);
 function filterEffects() {
   const query=$('effectSearch').value.trim().toLowerCase();
-  const names=lamp===wifiLamp&&wifiLamp.raw?wifiLamp.raw.effects:effects.slice(0,state?.effectCount||effects.length);
-  $('currentEffect').textContent=state?'Current: '+names[state.mode-1]:'Choose a lamp to browse its effects.';
-  const key=JSON.stringify([names,query,category,selected?.favorites,state?.mode]);
+  const catalog=state ? lamp?.catalog || [] : [];
+  $('currentEffect').textContent=state?'Current: '+(catalog.find(x=>x.id===state.mode)?.name || 'Loading effects…'):'Choose a lamp to browse its effects.';
+  const key=JSON.stringify([catalog,query,category,selected?.favorites,state?.mode]);
   if(key===effectListKey)return;
   effectListKey=key;
   const focused=document.activeElement?.dataset.effect;
   $('effectGrid').replaceChildren();
-  const ids={calm:[1,2,3,13,30,32,33,36,37],fire:[4,5,6,7,8,9,10,11,12],color:[14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,31,34,35]};
   $('effect').replaceChildren();
-  names.forEach((name,i)=>{const mode=i+1;if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):ids[category]?.includes(mode))))$('effect').add(new Option(name,mode));});
+  catalog.forEach(({id:mode,name,category:group})=>{if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):group===category)))$('effect').add(new Option(name,mode));});
   if(state)$('effect').value=state.mode;
   if(!$('effect').options.length){const option=new Option('No matching effects','');option.disabled=true;$('effect').add(option);}
   for(const option of $('effect').options) {
@@ -230,7 +232,7 @@ $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new
 function fillNetwork() {
   const raw=wifiLamp.raw;
   for(const id of ['ssid','leds','milliamps'])$(id).value=raw[id];
-  $('startupMode').replaceChildren(...raw.effects.map((x,i)=>new Option(x,i+1)));
+  $('startupMode').replaceChildren(...wifiLamp.catalog.map(x=>new Option(x.name,x.id)));
   $('startupMode').value=raw.startupMode||raw.mode;$('startupBrightness').value=raw.startupBrightness||raw.brightness;
   for(const id of ['wifiPassword','adminPassword'])$(id).value='';
   for(const id of ['openNetwork','forgetWifi'])$(id).checked=false;

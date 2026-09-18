@@ -1,13 +1,15 @@
-# Effects in firmware 1.3.0
+# Effects introduced in firmware 1.3.0
+
+Names below use the current helix-aware labels.
 
 | Effect | Motion |
 | --- | --- |
-| Bouncing droplets | Colored drops fall inward from both ends and bounce near the center. |
+| Bouncing droplets - rising | Colored drops rise from both ends at the base and bounce near the strip midpoint at the top. |
 | Lightning storm | A dim background with scattered, soft-edged strikes. |
-| Color tide | Two colors swell inward from opposite ends. |
+| Color tide | Two colors swell upward from both sides of the base, then recede. |
 | Fireflies | Small drifting lights brighten and fade independently. |
-| Heartbeat | Paired pulses spread outward from the center. |
-| Shooting stars | Alternating stars cross the strip with fading tails. |
+| Heartbeat | Paired pulses fall from the strip midpoint at the top toward both ends at the base. |
+| Shooting stars | Alternating stars cross the full strip with fading tails, rising up one side and falling down the other. |
 | Breathing glow | The whole lamp slowly fades and blends between colors. |
 | Lava blobs | Broad overlapping blobs drift through the lamp. |
 

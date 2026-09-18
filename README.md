@@ -1,6 +1,13 @@
 # Cool Lamp
 
-ESP32-C3 / WS2812B lamp with 37 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
+ESP32-C3 / WS2812B lamp with 38 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
+
+## Physical layout
+
+The lamp uses one continuous LED strip arranged as a vertical helix. Both ends
+of the strip are at the base; its midpoint is at the top. Moving from the ends
+toward the midpoint appears to rise. Moving from the midpoint toward both ends
+appears to fall. Name directional effects by this physical motion.
 
 ## Controls
 
@@ -33,15 +40,32 @@ There are no cloud services. The web interface uses HTTP on the local network; u
 
 The default LED current budget is 500 mA at 5 V. Raising it requires an appropriately rated supply and wiring. The FastLED budget is an estimate for LED power, not a measurement of total lamp current. Longer strips may run at lower brightness or frame rates.
 
+## Effect motion on the helix
+
+- Rain and falling droplets travel from the top to the base on both sides.
+- Rising split fire, its reversed-color variant, blue gas fire, witch fire,
+  and purple fire carry heat from the base toward the top on both sides.
+  Falling split fire runs from the top toward the base.
+- Rising droplets start at the base and bounce near the top.
+- Comet collision rises from both sides of the base, meets in a flash at
+  the top, then retreats. Color tide swells and recedes from the base.
+- Heartbeat sends paired pulses from the top toward the base.
+- Fire follows the whole strip from one end; shooting stars, Sinelon,
+  and Juggle also traverse the full strip. Full-strip travel goes up one
+  side and down the other, so these names do not imply a single vertical direction.
+- Pacifica, Aurora, Embers, Lava, Plasma, the rainbow effects, Confetti,
+  BPM, Lightning storm, Fireflies, Breathing glow, Lava blobs, and solid
+  colors retain their descriptive names: they do not promise one vertical direction.
+
 ## Effect order
 
 1. Pacifica
 2. Aurora
 3. Rain
 4. Fire
-5. Split fire (ends to center)
-6. Split fire, outward (center to ends)
-7. Split fire, reversed colors (red/orange ends, white center)
+5. Split fire - rising (base to top)
+6. Split fire - falling (top to base)
+7. Split fire - rising, reversed colors (red/orange base, white top)
 8. Blue gas fire
 9. Witch fire
 10. Purple fire
@@ -58,7 +82,7 @@ The default LED current budget is 500 mA at 5 V. Raising it requires an appropri
 21–28. White, red, green, blue, purple, pink, yellow, cyan
 
 29. Custom solid
-30. Bouncing droplets
+30. Bouncing droplets - rising (base to top)
 31. Lightning storm
 32. Color tide
 33. Fireflies
@@ -66,6 +90,7 @@ The default LED current budget is 500 mA at 5 V. Raising it requires an appropri
 35. Shooting stars
 36. Breathing glow
 37. Lava blobs
+38. Bouncing droplets - falling (top to base, strip center to ends; independent colors, speed, and intensity)
 
 Each effect remembers its primary color, optional second color, speed (1–100), and
 intensity (0–100). Speed 50 is normal; speed does not apply to solid colors.

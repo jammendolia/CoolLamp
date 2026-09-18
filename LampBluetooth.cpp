@@ -22,7 +22,9 @@ constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
 constexpr char FIRMWARE[] = "7b610004-6e2b-4f3d-9a71-28e45c001001";
 constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
 constexpr char IDENTITY[] = "7b610006-6e2b-4f3d-9a71-28e45c001001";
-std::atomic<bool> extendedControls{false};
+// Catalog negotiated per connection: 0 = baseline, 37 = legacy app, 38 = outward droplets.
+std::atomic<uint8_t> extendedControls{0};
+BLECharacteristic* catalogCharacteristic = nullptr;
 BLECharacteristic* effectCharacteristic = nullptr;
 uint8_t lastEffect[8] = {};
 constexpr uint16_t NO_CONNECTION = 0xffff;
@@ -154,21 +156,22 @@ void updateAdvertising()
 
 void publish(uint8_t id, uint8_t result, bool acknowledge)
 {
+  const uint8_t visibleCount = extendedControls ? extendedControls.load() : 29;
   uint8_t effect[8]; getLampEffectPacket(effect);
+  if (effect[1] > visibleCount) effect[1] = 29;
   if (memcmp(effect,lastEffect,sizeof(effect))) {
     memcpy(lastEffect,effect,sizeof(effect)); effectCharacteristic->setValue(effect,sizeof(effect));
     if (secure && extendedControls) effectCharacteristic->notify();
   }
   const auto state = getLampControlState();
   const auto color = getLampColor(state.mode);
-  const uint8_t visibleMode = extendedControls ? state.mode : (state.mode > 29 ? 29 : state.mode);
-  const uint8_t visibleCount = extendedControls ? LAMP_EFFECT_COUNT : 29;
+  const uint8_t visibleMode = state.mode > visibleCount ? 29 : state.mode;
   const bool changed = lastState[6] != visibleCount || lastState[3] != visibleMode || lastState[4] != state.brightness || lastState[5] != state.power ||
     lastState[12] != color.enabled || lastState[13] != color.r || lastState[14] != color.g || lastState[15] != color.b;
   if (!changed && !acknowledge && lastState[0]) return;
   if (changed) ++revision;
   uint8_t value[16] = {LAMP_PROTOCOL_VERSION, id, result, visibleMode, state.brightness,
-    static_cast<uint8_t>(state.power), visibleCount, 15};
+    static_cast<uint8_t>(state.power), visibleCount, 63};
   value[12] = color.enabled; value[13] = color.r; value[14] = color.g; value[15] = color.b;
   for (int i = 0; i < 4; ++i) value[8 + i] = revision >> (8 * i);
   memcpy(lastState, value, sizeof(value));
@@ -195,6 +198,8 @@ void beginLampBluetooth(const String& name)
   auto* command = service->createCharacteristic(COMMAND, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC);
   auto* identity = service->createCharacteristic(IDENTITY, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
   identity->setValue(lampIdentity().c_str());
+  catalogCharacteristic = service->createCharacteristic("7b610007-6e2b-4f3d-9a71-28e45c001001", BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
+  catalogCharacteristic->setValue("{}");
   command->setCallbacks(&writeCallbacks);
   stateCharacteristic = service->createCharacteristic(STATE, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | BLECharacteristic::PROPERTY_NOTIFY);
   stateCharacteristic->setCallbacks(&stateReadCallbacks);
@@ -268,7 +273,8 @@ void serviceLampBluetooth()
         case 6: if (!setLampColor(value, command.bytes[4], command.bytes[5], command.bytes[6])) result = 2; break;
         case 7: if (!resetLampColor(value)) result = 2; break;
         case 11: if (!extendedControls || !setLampEffectOptions(value, {command.bytes[4],command.bytes[5],command.bytes[6],command.bytes[7],command.bytes[8],command.bytes[9]})) result=2; break;
-        case 12: if (value != 1) result=2; else extendedControls=true; break;
+        case 12: if (value == 1) extendedControls=37; else if (value == 2) extendedControls=38; else if (value == 3) extendedControls=LAMP_EFFECT_COUNT; else result=2; break;
+        case 13: if (value < 1 || value > LAMP_EFFECT_COUNT) result=2; else catalogCharacteristic->setValue(lampEffectCatalogEntry(value).c_str()); break;
         case 8: if (value) result = 2; else if (!requestLampUpdateCheck()) result = 3; break;
         case 9: if (value) result = 2; else if (!requestLampUpdateInstall()) result = 3; break;
         case 10: if (value > 1) result = 2; else if (!setLampAutoUpdate(value)) result = 4; break;

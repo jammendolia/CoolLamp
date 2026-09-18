@@ -28,12 +28,14 @@ void loadLampColors()
   Preferences prefs;
   if (!prefs.begin("coollamp", true)) return;
   const size_t length = prefs.getBytesLength("colors");
-  const bool valid = (length == 117 || length == sizeof(data)) &&
+  const bool valid = (length == 117 || length == 149 || length == sizeof(data)) &&
     prefs.getBytes("colors", data, length) == length && data[0] == 1;
   uint8_t options[1 + LAMP_EFFECT_COUNT * 6] = {};
-  if (prefs.getBytesLength("effectOptions") == sizeof(options) &&
-      prefs.getBytes("effectOptions", options, sizeof(options)) == sizeof(options) && options[0] == 1) {
-    for (uint8_t i = 0; i < LAMP_EFFECT_COUNT; ++i) {
+  const size_t optionsLength = prefs.getBytesLength("effectOptions");
+  if ((optionsLength == 223 || optionsLength == sizeof(options)) &&
+      prefs.getBytes("effectOptions", options, optionsLength) == optionsLength && options[0] == 1) {
+    optionsDirty = optionsLength != sizeof(options);
+    for (uint8_t i = 0; i < (optionsLength - 1) / 6; ++i) {
       const auto* p = options + 1 + i * 6;
       if (p[0] >= 1 && p[0] <= 100 && p[1] <= 100 && p[2] <= 1) effectOptions[i] = {p[0],p[1],p[2],p[3],p[4],p[5]};
     }

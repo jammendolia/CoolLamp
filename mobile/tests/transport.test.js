@@ -51,7 +51,7 @@ test('firmware subscription is separate, stale notifications are ignored, and re
 
 test('wire frames preserve boundaries and reject invalid values', () => {
   assert.deepEqual([...new Uint8Array(encodeCommand(255, 'brightness', 255).buffer)], [1,255,2,255]);
-  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',38], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
+  for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',39], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
   const state = decodeState(packet(7)); assert.equal(state.id, 7); assert.equal(state.revision, 9);
   assert.throws(() => decodeState(new DataView(new ArrayBuffer(11))));
   const bad = packet(); bad.setUint8(0, 2); assert.throws(() => decodeState(bad), /version/);
@@ -122,7 +122,7 @@ test('RGB commands preserve black, primary colors, and effect-specific slots', (
   const bytes = value => [...new Uint8Array(encodeCommand(9, 'color', value).buffer)];
   assert.deepEqual(bytes({mode:3,r:255,g:0,b:0}), [1,9,6,3,255,0,0]);
   assert.deepEqual(bytes({mode:29,r:0,g:0,b:0}), [1,9,6,29,0,0,0]);
-  for (const value of [null, {mode:0,r:1,g:2,b:3}, {mode:38,r:1,g:2,b:3},
+  for (const value of [null, {mode:0,r:1,g:2,b:3}, {mode:39,r:1,g:2,b:3},
     {mode:3,r:256,g:0,b:0}, {mode:3,r:0,g:-1,b:0}, {mode:3,r:0,g:0,b:1.5}]) {
     assert.throws(() => encodeCommand(1, 'color', value));
   }
@@ -155,9 +155,9 @@ test('advanced effects negotiate full catalog and receive independent option not
   const value = {mode:37,speed:1,intensity:0,dual:1,r:0,g:255,b:127};
   assert.deepEqual(decodeEffectOptions(options),value);
   assert.deepEqual([...new Uint8Array(encodeCommand(2,'effectOptions',value).buffer)],[1,2,11,37,1,0,1,0,255,127]);
-  for(const [field,n] of [['mode',38],['speed',0],['speed',101],['intensity',101],['dual',2],['r',-1],['b',256]])
+  for(const [field,n] of [['mode',39],['speed',0],['speed',101],['intensity',101],['dual',2],['r',-1],['b',256]])
     assert.throws(()=>encodeCommand(1,'effectOptions',{...value,[field]:n}));
-  for(const [offset,n] of [[0,2],[1,0],[1,38],[2,0],[2,101],[3,101],[4,2]]) {
+  for(const [offset,n] of [[0,2],[1,0],[1,39],[2,0],[2,101],[3,101],[4,2]]) {
     const bad=new DataView(options.buffer.slice(0));bad.setUint8(offset,n);assert.throws(()=>decodeEffectOptions(bad));
   }
   class EffectsRadio extends Radio {
@@ -171,4 +171,45 @@ test('advanced effects negotiate full catalog and receive independent option not
   await lamp.connect();assert.equal(lamp.state.effectCount,37);assert.equal(radio.writes[0][2],12);assert.deepEqual(received.at(-1),value);
   await lamp.command('effect',37);await lamp.command('effectOptions',value);
   const stale=radio.optionsListener;await lamp.disconnect();const count=received.length;stale(options);assert.equal(received.length,count);
+});
+
+test('outward droplets negotiate the new catalog while old firmware retains its catalog', async () => {
+  assert.equal(effects[29], 'Bouncing droplets - rising');
+  assert.equal(effects[37], 'Bouncing droplets - falling');
+  class OutwardRadio extends Radio {
+    extended=false;
+    state(id=0) {return new DataView(Uint8Array.of(1,id,0,this.extended?38:29,100,1,this.extended?38:29,27,1,0,0,0,1,255,60,110).buffer);}
+    async read(id,service,char) {return char===EFFECT_OPTIONS?new DataView(Uint8Array.of(1,38,50,100,1,35,160,255).buffer):this.state();}
+    async startNotifications(id,service,char,fn) {if(char!==EFFECT_OPTIONS)this.listener=fn;}
+    async write(id,service,char,frame) {this.writes.push([...new Uint8Array(frame.buffer)]);if(frame.getUint8(2)===12){assert.equal(frame.getUint8(3),2);this.extended=true;}this.listener(this.state(frame.getUint8(1)));}
+  }
+  const radio=new OutwardRadio(),lamp=new LampTransport(radio);
+  await lamp.connect();assert.equal(lamp.state.effectCount,38);assert.equal(lamp.state.mode,38);
+  await lamp.command('effect',38);
+  await lamp.command('effectOptions',{mode:38,speed:60,intensity:75,dual:1,r:12,g:34,b:56});
+  await lamp.disconnect();
+});
+
+test('Bluetooth enumerates each lamp catalog, including effects unknown to this app', async () => {
+  const { CATALOG } = await import('../src/catalog.js');
+  class CatalogRadio extends Radio {
+    count=41; extended=false; requested=1;
+    state(id=0) {return new DataView(Uint8Array.of(1,id,0,this.extended?this.count:1,100,1,this.extended?this.count:29,43,1,0,0,0,1,255,60,110).buffer);}
+    async read(id,service,char) {
+      if(char===CATALOG){const bytes=new TextEncoder().encode(JSON.stringify({id:this.requested,name:`Style ${this.count} effect ${this.requested}`,category:'calm',speed:this.requested!==1}));return new DataView(bytes.buffer);}
+      if(char===EFFECT_OPTIONS)return new DataView(Uint8Array.of(1,this.count,50,100,1,35,160,255).buffer);
+      return this.state();
+    }
+    async startNotifications(id,service,char,fn){if(char===STATE)this.listener=fn;}
+    async write(id,service,char,frame){this.writes.push([...new Uint8Array(frame.buffer)]);const op=frame.getUint8(2);if(op===12){assert.equal(frame.getUint8(3),3);this.extended=true;}if(op===13)this.requested=frame.getUint8(3);this.listener(this.state(frame.getUint8(1)));}
+  }
+  const radio=new CatalogRadio(),lamp=new LampTransport(radio);
+  await lamp.connect();assert.equal(lamp.catalog.length,41);assert.equal(lamp.catalog[40].name,'Style 41 effect 41');
+  await lamp.command('effect',41);await lamp.command('color',{mode:41,r:1,g:2,b:3});
+  await lamp.command('effectOptions',{mode:41,speed:50,intensity:100,dual:0,r:1,g:2,b:3});
+  await assert.rejects(lamp.command('effect',42));
+  await lamp.disconnect();assert.equal(lamp.catalog,null);
+  radio.count=2;radio.extended=false;
+  await lamp.connect({deviceId:'second-lamp'});assert.equal(lamp.catalog.length,2);assert.equal(lamp.catalog[1].name,'Style 2 effect 2');
+  assert.equal(lamp.catalog[0].speed,false);await lamp.disconnect();
 });

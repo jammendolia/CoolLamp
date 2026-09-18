@@ -1,4 +1,5 @@
-import { SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, encodeCommand, decodeState, decodeFirmware, decodeEffectOptions, resultError } from './protocol.js';
+import { CATALOG, validateCatalog, legacyCatalog } from './catalog.js';
+import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, encodeCommand, decodeState, decodeFirmware, decodeEffectOptions, resultError } from './protocol.js';
 
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
@@ -10,7 +11,7 @@ export class LampTransport {
   }
   disconnected() {
     const hadConnection = this.id !== null;
-    this.epoch++; this.id = null; this.state = null;
+    this.epoch++; this.id = null; this.state = null; this.catalog = null;
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
     if (hadConnection) this.onDisconnect();
   }
@@ -49,13 +50,23 @@ export class LampTransport {
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
       this.receive(initial);
       if (this.state.capabilities & 8) {
-        await this.command('enableEffects', 1);
+        await this.command('enableEffects', (this.state.capabilities & 32) ? 3 : (this.state.capabilities & 16) ? 2 : 1);
+        if (this.state.capabilities & 32) {
+          const entries=[], count=this.state.effectCount;
+          for (let id=1;id<=count;id++) {
+            await this.command('catalogEntry',id);
+            const data=await this.ble.read(this.id,SERVICE,CATALOG);
+            if(epoch!==this.epoch)throw new Error('Lamp disconnected.');
+            entries.push(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(data.buffer,data.byteOffset,data.byteLength))));
+          }
+          this.catalog=validateCatalog(entries,count);
+        }
         await this.ble.startNotifications(this.id, SERVICE, EFFECT_OPTIONS, data => {
-          if (epoch === this.epoch) { try { this.onOptions(decodeEffectOptions(data)); } catch {} }
+          if (epoch === this.epoch) { try { this.onOptions(decodeEffectOptions(data,this.state.effectCount)); } catch {} }
         });
         const options = await this.ble.read(this.id, SERVICE, EFFECT_OPTIONS);
         if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
-        this.onOptions(decodeEffectOptions(options));
+        this.onOptions(decodeEffectOptions(options,this.state.effectCount));
       } else this.onOptions(null);
       if (this.state.capabilities & 4) {
         const firmware = await this.ble.read(this.id, SERVICE, FIRMWARE);
@@ -67,6 +78,7 @@ export class LampTransport {
         const latest = await this.ble.read(this.id, SERVICE, FIRMWARE);
         if (epoch === this.epoch) this.onFirmware(decodeFirmware(latest));
       } else this.onFirmware(null);
+      if (!this.catalog) this.catalog=legacyCatalog(effects.slice(0,this.state.effectCount));
       await this.command('refresh'); // Closes the read/subscribe race.
       return device;
     } catch (error) { await this.disconnect(); throw error; }
@@ -85,7 +97,7 @@ export class LampTransport {
       if (operation === 'effect' && value > this.state?.effectCount) throw new Error('Update the lamp firmware to use this effect.');
       if (['checkFirmware','installFirmware','autoUpdate'].includes(operation) && !(this.state?.capabilities & 4)) throw new Error('Install the updater firmware using the lamp’s Wi-Fi page first.');
       const id = this.sequence = this.sequence % 255 + 1;
-      const frame = encodeCommand(id, operation, value);
+      const frame = encodeCommand(id, operation, value, this.state.effectCount);
       // Install the listener BEFORE writing: notifications may precede the write response.
       let settle;
       const response = new Promise((resolve, reject) => {

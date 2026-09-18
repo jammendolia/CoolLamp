@@ -75,3 +75,28 @@ test('a firmware upgrade migrates legacy Wi-Fi identity without a duplicate lamp
   store.upsert({id:lamp.identity},'coollamp-ddeeff');
   assert.equal(store.items.length,1);assert.equal(store.items[0].room,'Office');await lamp.disconnect();
 });
+
+test('Wi-Fi loads lamp-specific categories and speed support and clears them when switching',async()=>{
+  const {lamp,http,setRaw}=setup();let count=2;
+  setRaw({...fixture(),catalogVersion:1,effects:['Still sky','Spark'],colors:[[1,1,2,3],[1,4,5,6]]});
+  const original=http.request;
+  http.request=async options=>options.url.endsWith('/api/effects')?{status:200,data:Array.from({length:count},(_,i)=>({id:i+1,name:count===2?(i?'Spark':'Still sky'):'Other lamp effect',category:i?'fire':'calm',speed:Boolean(i)}))}:original(options);
+  await lamp.connect('192.168.1.9','test');
+  assert.equal(lamp.catalog[0].speed,false);assert.equal(lamp.catalog[1].category,'fire');
+  await assert.rejects(lamp.command('color',{mode:3,r:1,g:2,b:3}),/not available/);
+  await lamp.disconnect();assert.equal(lamp.catalog,null);
+  count=1;setRaw({...fixture(),deviceId:'second',catalogVersion:1});
+  await lamp.connect('192.168.1.10','test');assert.equal(lamp.catalog.length,1);assert.equal(lamp.catalog[0].name,'Other lamp effect');
+  await lamp.disconnect();
+});
+
+test('malformed or late Wi-Fi catalogs cannot populate a new connection',async()=>{
+  const {lamp,http,setRaw}=setup();setRaw({...fixture(),catalogVersion:1});const original=http.request;
+  http.request=async options=>options.url.endsWith('/api/effects')?{status:200,data:[{id:2,name:'Wrong ID',category:'calm',speed:true}]}:original(options);
+  await assert.rejects(lamp.connect('192.168.1.9','test'),/catalog/);assert.equal(lamp.catalog,null);
+  let complete,started;const ready=new Promise(r=>started=r);
+  http.request=async options=>options.url.endsWith('/api/effects')?new Promise(r=>{complete=r;started();}):original(options);
+  const pending=lamp.connect('192.168.1.9','test');await ready;await lamp.disconnect();
+  complete({status:200,data:[{id:1,name:'Late',category:'calm',speed:true}]});
+  await assert.rejects(pending,/Connection changed/);assert.equal(lamp.catalog,null);
+});
