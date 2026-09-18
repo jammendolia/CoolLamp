@@ -107,6 +107,16 @@ test('lamp rejection is reported instead of claiming a saved setting', async () 
   await lamp.connect(); radio.result = 4;
   await assert.rejects(lamp.command('saveDefaults'), /could not save/);
 });
+test('protected Bluetooth identity matches network identity when supported', async () => {
+  class IdentityRadio extends Radio {
+    async read(id,service,char) {
+      if(char==='7b610006-6e2b-4f3d-9a71-28e45c001001')return new DataView(new TextEncoder().encode('aabbccddeeff').buffer);
+      return super.read(id,service,char);
+    }
+  }
+  const lamp=new LampTransport(new IdentityRadio());const device=await lamp.connect();
+  assert.equal(device.lampId,'aabbccddeeff');await lamp.disconnect();
+});
 
 test('RGB commands preserve black, primary colors, and effect-specific slots', () => {
   const bytes = value => [...new Uint8Array(encodeCommand(9, 'color', value).buffer)];

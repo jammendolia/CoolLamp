@@ -39,6 +39,13 @@ export class LampTransport {
       const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: 60000 });
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       decodeState(initial); // Fail visibly on incompatible firmware.
+      // Optional on older firmware. The short protected value matches Wi-Fi discovery.
+      try {
+        const identity = await this.ble.read(this.id, SERVICE, '7b610006-6e2b-4f3d-9a71-28e45c001001');
+        const text = new TextDecoder().decode(new Uint8Array(identity.buffer, identity.byteOffset, identity.byteLength));
+        if (/^[0-9a-f]{12}$/.test(text)) device.lampId = text;
+      } catch { /* Firmware before network discovery has no identity characteristic. */ }
+      if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
       this.receive(initial);
       if (this.state.capabilities & 8) {

@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>CoolLamp finds and controls your lamps on your home Wi-Fi.</string>
+    <key>NSBonjourServices</key>
+    <array><string>_coollamp._tcp</string></array>
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>CoolLamp uses Bluetooth to find, pair with, and control your lamp.</string>
   <key>CAPACITOR_DEBUG</key>

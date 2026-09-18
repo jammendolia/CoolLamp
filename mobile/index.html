@@ -1,14 +1,21 @@
 <!doctype html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#10151d"><title>CoolLamp</title></head>
 <body><main>
-  <header><p class="eyebrow">YOUR LIGHT, YOUR WAY</p><h1>CoolLamp</h1><p>Set the mood. Keep your connection.</p></header>
-  <p id="status" role="status" aria-live="polite">Hold the knob for six seconds until the lamp flashes blue, then find it here.</p>
+  <header class="app-header"><div><p class="eyebrow">YOUR LIGHT, YOUR WAY</p><h1>CoolLamp<span class="brand-dot">.</span></h1></div><span id="connectionBadge" class="badge">Not connected</span></header>
+<nav aria-label="Main navigation"><button data-page="lamps" aria-current="page">My lamps</button><button data-page="light">Light</button><button data-page="settings">Settings</button></nav>
+  <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
+  <section id="page-lamps"><div class="section-title"><div><p class="eyebrow">AT HOME</p><h2>My lamps</h2></div><button id="discover" class="compact">Find on Wi-Fi</button></div>
+<div id="lampList" class="lamp-list"></div><p id="emptyLamps" class="hint">Your lamps will appear here. Give each one a name and a room to make it your own.</p>
+<details id="addLamp"><summary>Add or connect a lamp</summary>
+<form id="wifiConnect"><label for="address">Lamp address</label><input id="address" placeholder="coollamp-50b9ac.local" autocapitalize="none" autocomplete="off" required><label for="password">Lamp access password</label><input id="password" type="password" autocomplete="current-password"><p class="hint">The same password you use on the lamp’s webpage. Saved securely on this phone.</p><button>Connect over Wi-Fi</button></form>
   <div class="connection"><button id="reconnect" hidden>Reconnect to my lamp</button><button id="connect">Find a lamp flashing blue</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
+<p class="hint">For a new Bluetooth pairing, hold the knob for six seconds until the lamp flashes blue.</p></details></section>
+<section id="page-light" hidden><div class="section-title"><div><p class="eyebrow" id="lampRoom">YOUR LAMP</p><h2 id="lampTitle">Choose a lamp</h2></div></div><div id="lampArt" class="lamp-art" aria-hidden="true"><svg viewBox="0 0 360 100"><path d="M25 74 C70 74 78 18 119 18 S161 83 202 83 S254 18 300 18 S334 50 340 50"/></svg></div>
   <fieldset id="controls" disabled><legend>Light & effects</legend>
     <button id="power" aria-pressed="false">Turn on</button>
     <label for="brightness">Brightness <output id="brightnessValue">39%</output></label>
     <input id="brightness" type="range" min="1" max="255" value="100">
-    <label for="effect">Effect</label><select id="effect"></select>
+    <div class="section-title"><h3 class="effects-heading">Effects</h3><button id="favoriteEffect" class="compact secondary" aria-pressed="false">Favorite</button></div><input id="effectSearch" type="search" placeholder="Search effects" aria-label="Search effects"><div id="effectCategories" class="chips" aria-label="Effect categories"><button type="button" data-category="all" aria-pressed="true">All</button><button type="button" data-category="favorites" aria-pressed="false">Favorites</button><button type="button" data-category="calm" aria-pressed="false">Calm</button><button type="button" data-category="fire" aria-pressed="false">Fire</button><button type="button" data-category="color" aria-pressed="false">Color</button></div><p id="currentEffect" class="hint"></p><div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect"></div><select id="effect" hidden aria-hidden="true" tabindex="-1"></select>
     <div id="colorControls" hidden>
       <label for="color">Color for this effect</label><input id="color" type="color" value="#ff3c6e">
       <p id="colorHint" class="hint"></p>
@@ -27,8 +34,11 @@
     <button id="save" class="secondary">Use these settings at startup</button>
     <p class="hint">Changes are live. Save to remember brightness, startup effect, and each effect’s colors, speed, and intensity after a restart.</p>
   </fieldset>
-  <details><summary>Connecting for the first time</summary><ol><li>Hold the lamp’s knob for six seconds until the entire lamp flashes blue.</li><li>Tap “Find a lamp flashing blue” and select your lamp.</li><li>Accept a Bluetooth pairing prompt if your phone shows one. No code is needed.</li></ol><p>Pair within two minutes. Your phone remembers the pairing. Bluetooth control works without home Wi-Fi or internet. Hold for six seconds again to cancel pairing.</p></details>
-  <details><summary>Wi-Fi, strip settings & firmware</summary><p>These settings are available on the lamp’s existing web page. Hold the knob for three seconds, join its CoolLamp hotspot, and open <strong>http://192.168.4.1/</strong> in your browser. On home Wi-Fi, use the lamp’s local address.</p></details>
+</section><section id="page-settings" hidden><h2>Lamp settings</h2><p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
+<form id="identityForm" class="panel"><h3>Make it yours</h3><label for="lampName">Lamp name</label><input id="lampName" maxlength="48" required><label for="room">Room</label><input id="room" maxlength="48"><button id="saveIdentity">Save name & room</button><button id="identify" type="button" class="secondary">Identify lamp</button><p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p></form>
+<details class="panel"><summary>Wi-Fi & advanced settings</summary><p class="hint" id="wifiSettingsHint">Connect over Wi-Fi to manage these settings. For first-time setup, hold the knob for three seconds, join its hotspot, then connect to 192.168.4.1 here.</p><fieldset id="networkSettings" disabled><form id="networkForm">
+<button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button><label for="networks">Nearby networks</label><select id="networks"><option value="">Choose a network or enter its name below</option></select><label for="ssid">Network name</label><input id="ssid" maxlength="32" autocomplete="off"><label for="wifiPassword">Wi-Fi password</label><input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"><label class="toggle"><input id="openNetwork" type="checkbox"> Password-free network</label><label class="toggle"><input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
+<label for="leds">LED count</label><input id="leds" type="number" min="1" max="1024" required><label for="milliamps">Power limit (mA)</label><input id="milliamps" type="number" min="100" max="20000" required><label for="startupMode">Startup effect</label><select id="startupMode"></select><label for="startupBrightness">Startup brightness (1–255)</label><input id="startupBrightness" type="number" min="1" max="255" required><label for="adminPassword">New lamp access password</label><input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password"><p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p><button>Save & restart lamp</button></form><button id="pairingStatus" class="secondary">Check pairing status</button><button id="forgetPhones" class="secondary">Forget paired phones</button></fieldset></details>
   <fieldset id="firmwareControls" disabled><legend>Lamp firmware</legend>
     <p>Installed: <strong id="firmwareVersion">Connect to view</strong></p>
     <p id="firmwareStatus" role="status"></p>
@@ -37,4 +47,4 @@
     <button id="checkFirmware" class="secondary">Check for updates</button>
     <button id="installFirmware" disabled>Update now</button>
   </fieldset>
-</main><script type="module" src="/src/main.js"></script></body></html>
+<button id="forgetLamp" class="text-button">Remove lamp from this phone</button><p class="hint">The setup webpage remains available by holding the knob for three seconds and opening 192.168.4.1 on its hotspot.</p></section></main><script type="module" src="/src/main.js"></script></body></html>
