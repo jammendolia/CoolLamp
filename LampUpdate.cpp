@@ -1,4 +1,5 @@
 #include "LampUpdate.h"
+#include "LampAudio.h"
 #include "UpdateManifest.h"
 #include <WiFi.h>
 #include <Preferences.h>
@@ -147,6 +148,11 @@ bool request(uint8_t operation) {
   if (operation == 2 && !status.available) { portEXIT_CRITICAL(&mux); return false; }
   job = operation; status.phase = UPDATE_CHECKING; status.error = 0;
   portEXIT_CRITICAL(&mux);
+  // request() runs on the loop task. Do not wake HTTPS until DMA is released.
+  if (!stopLampAudio()) {
+    portENTER_CRITICAL(&mux); job = 0; portEXIT_CRITICAL(&mux);
+    fail(UPDATE_MEMORY); return false;
+  }
   xTaskNotifyGive(worker); return true;
 }
 } // namespace
@@ -176,12 +182,18 @@ bool setLampAutoUpdate(bool enabled) {
   return saved;
 }
 bool lampRemoteUpdateBusy() { return busy(getLampUpdateStatus().phase); }
+bool lampUpdateOwnsResources() {
+  portENTER_CRITICAL(&mux); const bool result = manual || busy(status.phase); portEXIT_CRITICAL(&mux);
+  return result;
+}
 bool reserveLampManualUpdate() {
   if (!healthy) return false;
   portENTER_CRITICAL(&mux);
   const bool ok = !manual && !busy(status.phase) && !job;
   if (ok) manual = true;
-  portEXIT_CRITICAL(&mux); return ok;
+  portEXIT_CRITICAL(&mux);
+  if (ok && !stopLampAudio()) { releaseLampManualUpdate(); return false; }
+  return ok;
 }
 void releaseLampManualUpdate() { portENTER_CRITICAL(&mux); manual = false; portEXIT_CRITICAL(&mux); }
 void serviceLampUpdater() {

@@ -16,6 +16,7 @@ bool requestLampUpdateCheck();
 bool requestLampUpdateInstall();
 bool setLampAutoUpdate(bool enabled);
 bool lampRemoteUpdateBusy();
+bool lampUpdateOwnsResources();
 bool reserveLampManualUpdate();
 void releaseLampManualUpdate();
 void getLampUpdatePacket(uint8_t* packet); // Exactly 20 bytes; fits minimum BLE MTU.

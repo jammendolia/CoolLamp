@@ -9,6 +9,8 @@
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
 #include "LampGestures.h"
+#include "LampAudio.h"
+#include "AudioAnalysis.h"
 #include <new>
 SET_LOOP_TASK_STACK_SIZE(4096);
 
@@ -66,7 +68,10 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_BREATHING 36
 #define MODE_BLOBS 37
 #define MODE_DROPLETS_OUTWARD 38
-#define MODE_MAX MODE_DROPLETS_OUTWARD
+#define MODE_SOUND_GLOW 39
+#define MODE_SOUND_METER 40
+#define MODE_MAX MODE_SOUND_METER
+static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
 uint8_t lampBeat8(uint16_t bpm, uint32_t base = 0);
@@ -84,12 +89,14 @@ uint8_t Mode = MODE_FIRE;
 uint8_t Brightness = 100;
 uint8_t gHue = 0;
 bool PowerOn = true;
+uint32_t lampRenderedFrames = 0, lampMaxRenderUs = 0;
 
 void setup() {
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0); // USB diagnostic replies must never stall rendering.
   delay(3000); // Allow time for boot recovery before driving the strip.
 
+  beginLampAudio();
   loadLampSettings();
   loadLampColors();
   activeLedCount = lampSettings.ledCount;
@@ -103,7 +110,7 @@ void setup() {
   splitHeat[0] = 200;
   if (NUM_LEDS > 1) splitHeat[(NUM_LEDS + 1) / 2] = 200;
   Brightness = lampSettings.brightness;
-  Mode = lampSettings.startupMode;
+  Mode = lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE;
 
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS)
       .setCorrection(TypicalLEDStrip);
@@ -111,7 +118,7 @@ void setup() {
   FastLED.setBrightness(Brightness);
 
   rotaryEncoder.setEncoderType(EncoderType::HAS_PULLUP);
-  rotaryEncoder.setBoundaries(1, MODE_MAX, true);
+  rotaryEncoder.setBoundaries(1, lampAvailableEffectCount(), true);
   // Poll events in loop() instead of changing lamp state from a timer task.
   rotaryEncoder.begin(false);
   rotaryEncoder.setEncoderValue(Mode);
@@ -123,6 +130,7 @@ void loop() {
   serviceLampNetwork();
   serviceLampBluetooth();
   serviceLampUpdater();
+  serviceLampAudio(PowerOn && Mode > LAMP_BASE_EFFECT_COUNT, lampUpdateOwnsResources());
   bool renderNow = serviceLampKnob();
   if (lampIsUpdating()) { delay(1); return; }
 
@@ -161,6 +169,7 @@ void loop() {
     return;
   }
   lastFrameMs = now;
+  const uint32_t renderStarted = micros();
 
   static uint32_t effectBudget = 0, lastEffectTick = 0;
   const auto options = getLampEffectOptions(Mode);
@@ -170,9 +179,12 @@ void loop() {
   unsigned steps = min(effectBudget / 4096, uint32_t(4));
   effectBudget -= steps * 4096;
   if (renderNow && steps == 0) steps = 1;
+  if (Mode > LAMP_BASE_EFFECT_COUNT) steps = 1; // Audio follows real time, independently of speed.
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
   switch (Mode) {
+    case MODE_SOUND_GLOW: case MODE_SOUND_METER:
+      renderAudioEffect(Mode, now); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
     case MODE_HEARTBEAT: case MODE_STARS: case MODE_BREATHING: case MODE_BLOBS:
       renderNewEffect(Mode, effectClockMs); break;
@@ -277,4 +289,6 @@ void loop() {
   if (options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
   FastLED.show();
   ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
+  ++lampRenderedFrames;
+  lampMaxRenderUs = max(lampMaxRenderUs, uint32_t(micros() - renderStarted));
 }

@@ -45,7 +45,7 @@ const char* const effectNames[] = {
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
   "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling"
+  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -180,9 +180,9 @@ bool readNumber(const char* name, uint32_t low, uint32_t high, uint32_t& result)
 
 String lampEffectCatalogEntry(uint8_t mode)
 {
-  if (mode < 1 || mode > MODE_MAX) return "{}";
+  if (mode < 1 || mode > lampAvailableEffectCount()) return "{}";
   const bool calm = mode == 1 || mode == 2 || mode == 3 || mode == 13 || mode == 30 || mode == 32 || mode == 33 || mode >= 36;
-  const char* category = mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
+  const char* category = mode > LAMP_BASE_EFFECT_COUNT ? "audio" : mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
   return "{\"id\":" + String(mode) + ",\"name\":" + jsonText(effectNames[mode-1]) +
     ",\"category\":" + jsonText(category) + ",\"speed\":" + String(mode >= 21 && mode <= 29 ? "false" : "true") + "}";
 }
@@ -192,10 +192,11 @@ void sendLampState()
   if (!authorizedLampRequest(false)) return;
   String state = "{\"token\":" + jsonText(lampToken);
   state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
-  state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode) + ",\"startupBrightness\":" + String(lampSettings.brightness);
+  state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE) + ",\"startupBrightness\":" + String(lampSettings.brightness);
   state += ",\"catalogVersion\":1";
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
+  state += ",\"audio\":" + lampAudioJson();
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   state += ",\"leds\":" + String(NUM_LEDS) + ",\"milliamps\":" + String(lampSettings.milliAmps);
   state += ",\"power\":" + String(PowerOn ? "true" : "false");
@@ -205,15 +206,15 @@ void sendLampState()
   state += ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
   state += ",\"dns\":[" + jsonText(WiFi.dnsIP(0).toString()) + "," + jsonText(WiFi.dnsIP(1).toString()) + "]";
   state += ",\"hostname\":" + jsonText(lampHost + ".local") + ",\"effects\":[";
-  for (size_t i = 0; i < MODE_MAX; i++) { if (i) state += ','; state += jsonText(effectNames[i]); }
+  for (size_t i = 0; i < lampAvailableEffectCount(); i++) { if (i) state += ','; state += jsonText(effectNames[i]); }
   state += "],\"colors\":[";
-  for (uint8_t mode = 1; mode <= MODE_MAX; ++mode) {
+  for (uint8_t mode = 1; mode <= lampAvailableEffectCount(); ++mode) {
     if (mode > 1) state += ',';
     const auto c = getLampColor(mode);
     state += "[" + String(c.enabled) + "," + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
   }
   state += "],\"effectOptions\":[";
-  for (uint8_t mode=1;mode<=MODE_MAX;++mode) {
+  for (uint8_t mode=1;mode<=lampAvailableEffectCount();++mode) {
     if(mode>1) state+=','; const auto o=getLampEffectOptions(mode);
     state += "["+String(o.speed)+","+String(o.intensity)+","+String(o.dual)+","+String(o.r)+","+String(o.g)+","+String(o.b)+"]";
   }
@@ -227,7 +228,7 @@ void saveLampConfiguration()
   if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
   uint32_t count, powerLimit, brightness, mode;
   if (!readNumber("leds", 1, MAX_LED_COUNT, count) || !readNumber("milliamps", 100, 20000, powerLimit) ||
-      !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, MODE_MAX, mode)) {
+      !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, lampAvailableEffectCount(), mode)) {
     lampServer.send(400, "text/plain", "Check LED count, power limit, brightness, and effect."); return;
   }
   LampSettings next = lampSettings;
@@ -328,6 +329,28 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/audio", HTTP_GET, []() {
+    if (!authorizedLampRequest(false)) return;
+    lampServer.send(200, "application/json", lampAudioJson());
+  });
+  lampServer.on("/api/audio", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    uint32_t enabled, gain, gate, scale = lampAudioScale();
+    if (!readNumber("enabled",0,1,enabled) || !readNumber("gain",1,64,gain) || !readNumber("gate",0,1024,gate) || (lampServer.hasArg("scale") && !readNumber("scale",100,400,scale))) {
+      lampServer.send(400,"text/plain","Invalid microphone settings."); return;
+    }
+    if (!saveLampAudioConfiguration(enabled,gain,gate,scale)) { lampServer.send(500,"text/plain","Could not save microphone settings."); return; }
+    lampServer.send(200,"text/plain","Microphone settings saved. Restarting; reconnect to refresh effects.");
+    restartAt = millis() + 1000;
+  });
+  lampServer.on("/api/audio/test", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (!lampHasMicrophone() || lampUpdateOwnsResources()) {
+      lampServer.send(409,"text/plain","Enable the installed microphone and finish updating first."); return;
+    }
+    diagnoseLampAudio(); lampServer.send(200,"text/plain","Listening for 10 seconds.");
+  });
   lampServer.on("/api/name", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
@@ -358,7 +381,7 @@ void beginLampNetwork()
   lampServer.on("/api/effects", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
     String catalog = "[";
-    for (uint8_t mode=1; mode<=MODE_MAX; ++mode) { if (mode>1) catalog+=','; catalog+=lampEffectCatalogEntry(mode); }
+    for (uint8_t mode=1; mode<=lampAvailableEffectCount(); ++mode) { if (mode>1) catalog+=','; catalog+=lampEffectCatalogEntry(mode); }
     catalog+=']';
     lampServer.send(200, "application/json", catalog);
   });
@@ -387,7 +410,7 @@ void beginLampNetwork()
     if (!authorizedLampRequest(true)) return;
     if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
     uint32_t mode,speed,intensity,dual,r,g,b;
-    if (!readNumber("mode",1,MODE_MAX,mode)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||!readNumber("dual",0,1,dual)||!readNumber("r",0,255,r)||!readNumber("g",0,255,g)||!readNumber("b",0,255,b)) { lampServer.send(400,"text/plain","Invalid effect options."); return; }
+    if (!readNumber("mode",1,lampAvailableEffectCount(),mode)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||!readNumber("dual",0,1,dual)||!readNumber("r",0,255,r)||!readNumber("g",0,255,g)||!readNumber("b",0,255,b)) { lampServer.send(400,"text/plain","Invalid effect options."); return; }
     setLampEffectOptions(mode,{uint8_t(speed),uint8_t(intensity),uint8_t(dual),uint8_t(r),uint8_t(g),uint8_t(b)});
     lampServer.send(200,"text/plain","Effect options applied. Save settings to remember them.");
   });
@@ -395,7 +418,7 @@ void beginLampNetwork()
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, r, g, b;
-    if (!readNumber("mode", 1, MODE_MAX, mode)) { lampServer.send(400, "text/plain", "Invalid effect."); return; }
+    if (!readNumber("mode", 1, lampAvailableEffectCount(), mode)) { lampServer.send(400, "text/plain", "Invalid effect."); return; }
     if (lampServer.arg("reset") == "1") resetLampColor(mode);
     else {
       if (!readNumber("r", 0, 255, r) || !readNumber("g", 0, 255, g) || !readNumber("b", 0, 255, b)) {
@@ -427,7 +450,7 @@ void beginLampNetwork()
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
-    if (!readNumber("mode", 1, MODE_MAX, mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
+    if (!readNumber("mode", 1, lampAvailableEffectCount(), mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
     setLampControl(mode, brightness, lampServer.arg("keepPower") == "1" ? PowerOn : true);
     lampServer.send(200, "text/plain", "Preview applied. Save settings to keep it after restart.");
   });
@@ -485,10 +508,32 @@ bool lampIsUpdating() {
 void serviceLampUSB()
 {
   static bool statusPending = false;
+  static bool audioPending = false;
+  static String audioReply;
+  static size_t audioSent = 0;
   while (Serial.available()) {
     const char command = Serial.read();
     if (command == '?') statusPending = true;
     if (command == 'a' && !otaActive) { toggleLampSetup(); statusPending = true; }
+    if (command == 't' && !lampUpdateOwnsResources()) { diagnoseLampAudio(); audioPending = true; }
+    if (command == 'u') audioPending = true;
+    if (!lampUpdateOwnsResources()) {
+      if (command == '+' || command == '-') { adjustLampAudioGain(command == '+'); audioPending = true; }
+      if (command == 'g') setLampControl(MODE_SOUND_GLOW, Brightness, true);
+      if (command == 'v') setLampControl(MODE_SOUND_METER, Brightness, true);
+      if (command == 'f') setLampControl(MODE_FIRE, Brightness, PowerOn);
+    }
+    // USB factory provisioning, persistent across ordinary OTA. Never erase NVS.
+    if ((command == 'm' || command == 'n') && !lampUpdateOwnsResources()) {
+      if (saveLampAudioConfiguration(command == 'm', 8, 8)) restartAt = millis() + 1000;
+    }
+  }
+  if (audioPending && audioReply.isEmpty()) { audioReply = lampAudioJson() + "\n"; audioSent = 0; audioPending = false; }
+  if (!audioReply.isEmpty()) {
+    const size_t room = Serial.availableForWrite();
+    const size_t count = min(room, audioReply.length() - audioSent);
+    if (count) audioSent += Serial.write(reinterpret_cast<const uint8_t*>(audioReply.c_str()) + audioSent, count);
+    if (audioSent == audioReply.length()) audioReply = "";
   }
   if (statusPending) {
     String status = "reset=" + String(static_cast<int>(esp_reset_reason())) + " uptime=" + String(millis());

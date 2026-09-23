@@ -7,6 +7,8 @@
 #include <vector>
 #include "../LampControl.h"
 using std::min;
+bool microphone=false;
+uint8_t lampAvailableEffectCount(){return microphone?LAMP_EFFECT_COUNT:LAMP_BASE_EFFECT_COUNT;}
 LampControlState control{3,100,true};
 LampControlState getLampControlState(){return control;}
 #include "../LampColors.ino"
@@ -33,8 +35,12 @@ uint16_t beatsin16(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 uint8_t beatsin8(uint16_t,uint8_t,uint8_t,uint32_t,uint8_t){return 0;}
 uint16_t beatsin88(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 int NUM_LEDS=134;CRGB* leds=nullptr;
-enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD};
+enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER};
 #include "../NewEffects.ino"
+#include "../AudioAnalysis.h"
+struct AudioSnapshot { bool valid=true; uint8_t level=0; } audioSnapshot;
+AudioSnapshot getLampAudioFeatures(){return audioSnapshot;}
+#include "../AudioEffects.ino"
 int main(){
   // Migrate the original 29-color blob without losing black or per-mode slots.
   auto& old=Preferences::storage["colors"];old.resize(117);old[0]=1;
@@ -59,7 +65,32 @@ int main(){
   assert(Preferences::storage["colors"].size()==153);
   assert(Preferences::storage["effectOptions"].size()==229);
   assert(getLampColor(3).r==2);resetLampColor(30);assert(getLampEffectOptions(30).speed==50);
+  // The current 38-effect payload remains readable and keeps its byte layout.
+  setLampColor(38,11,22,33);assert(saveLampColors());loadLampColors();
+  assert(getLampColor(38).r==11);
+  microphone=true;
+  assert(setLampColor(39,17,18,19));assert(setLampEffectOptions(40,{75,80,1,20,21,22}));
+  assert(saveLampColors());loadLampColors();
+  assert(getLampColor(39).r==17 && getLampEffectOptions(40).speed==75);
+  assert(Preferences::storage["colors"].size()==153 && Preferences::storage["effectOptions"].size()==229);
+  microphone=false;
+  assert(!setLampColor(39,1,2,3) && !setLampEffectOptions(40,{50,100,0,1,2,3}));
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
+  microphone=true;
+  for(int count:{1,2,3,133,134,135,1024}){
+    NUM_LEDS=count;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
+    const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
+    for(uint8_t mode:{39,40}) for(uint8_t speed:{1,50,100}) {
+      setLampColor(mode,255,255,255);setLampEffectOptions(mode,{speed,100,0,0,0,0});
+      audioSnapshot={true,255};
+      for(uint32_t t=1000;t<2000;t+=16)renderAudioEffect(mode,t);
+      assert(leds[0].r>240 && leds[count-1].r>240);
+      audioSnapshot={false,255};
+      for(uint32_t t=2000;t<6000;t+=16)renderAudioEffect(mode,t);
+      for(int i=0;i<count;++i)assert(leds[i]==CRGB::Black);
+      assert(frame.front()==guard && frame.back()==guard);
+    }
+  }
   for(int count:{1,2,3,133,134,135,1024}){
     NUM_LEDS=count;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;

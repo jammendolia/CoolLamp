@@ -2,6 +2,8 @@
 
 static_assert(LAMP_EFFECT_COUNT == MODE_MAX, "Keep the Bluetooth effect count in sync");
 
+uint8_t lampAvailableEffectCount() { return lampHasMicrophone() ? LAMP_EFFECT_COUNT : LAMP_BASE_EFFECT_COUNT; }
+
 LampControlState getLampControlState()
 {
   return {Mode, Brightness, PowerOn};
@@ -9,7 +11,7 @@ LampControlState getLampControlState()
 
 bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
 {
-  if (mode < 1 || mode > MODE_MAX || brightness < 1 || brightness > 255) return false;
+  if (mode < 1 || mode > lampAvailableEffectCount() || brightness < 1 || brightness > 255) return false;
   if (Mode != mode) {
     Mode = mode;
     fill_solid(leds, NUM_LEDS, CRGB::Black);

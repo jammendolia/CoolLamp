@@ -2,7 +2,9 @@
 #include <stdint.h>
 
 constexpr uint8_t LAMP_PROTOCOL_VERSION = 1;
-constexpr uint8_t LAMP_EFFECT_COUNT = 38;
+constexpr uint8_t LAMP_BASE_EFFECT_COUNT = 38;
+constexpr uint8_t LAMP_EFFECT_COUNT = 40;
+uint8_t lampAvailableEffectCount();
 constexpr uint8_t LAMP_CUSTOM_SOLID = 29;
 struct LampEffectOptions { uint8_t speed, intensity, dual, r, g, b; };
 LampEffectOptions getLampEffectOptions(uint8_t mode);

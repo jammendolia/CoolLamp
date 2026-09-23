@@ -28,7 +28,7 @@ void syncLampKnob() {
     rotaryEncoder.setBoundaries(0, knobPaletteSize - 1, true);
     rotaryEncoder.setEncoderValue(knobColorIndex);
   } else {
-    rotaryEncoder.setBoundaries(1, MODE_MAX, true);
+    rotaryEncoder.setBoundaries(1, lampAvailableEffectCount(), true);
     rotaryEncoder.setEncoderValue(Mode);
   }
   rotaryEncoder.encoderChanged(); // Discard movement from the previous mode.
@@ -103,7 +103,7 @@ bool serviceLampKnob() {
     const long previous = knobMode == KnobMode::Brightness ? Brightness : knobMode == KnobMode::Color ? knobColorIndex : Mode;
     long delta = value - previous;
     if (knobMode != KnobMode::Brightness) {
-      const long size = knobMode == KnobMode::Color ? knobPaletteSize : MODE_MAX;
+      const long size = knobMode == KnobMode::Color ? knobPaletteSize : lampAvailableEffectCount();
       if (delta > size/2) delta -= size;
       if (delta < -size/2) delta += size;
     }
@@ -121,7 +121,7 @@ bool serviceLampKnob() {
       const auto* c = knobPalette[knobColorIndex];
       if (delta) { setLampColor(knobEffect,c[0],c[1],c[2]); knobDirty = true; }
     } else {
-      const int next = (int(Mode)-1 + delta % MODE_MAX + MODE_MAX) % MODE_MAX + 1;
+      const int next = (int(Mode)-1 + delta % lampAvailableEffectCount() + lampAvailableEffectCount()) % lampAvailableEffectCount() + 1;
       setLampControl(next, Brightness, PowerOn);
     }
     syncLampKnob(); changed = true;

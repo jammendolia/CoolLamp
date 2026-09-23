@@ -156,7 +156,7 @@ void updateAdvertising()
 
 void publish(uint8_t id, uint8_t result, bool acknowledge)
 {
-  const uint8_t visibleCount = extendedControls ? extendedControls.load() : 29;
+  const uint8_t visibleCount = extendedControls ? min(extendedControls.load(), lampAvailableEffectCount()) : 29;
   uint8_t effect[8]; getLampEffectPacket(effect);
   if (effect[1] > visibleCount) effect[1] = 29;
   if (memcmp(effect,lastEffect,sizeof(effect))) {
@@ -273,8 +273,8 @@ void serviceLampBluetooth()
         case 6: if (!setLampColor(value, command.bytes[4], command.bytes[5], command.bytes[6])) result = 2; break;
         case 7: if (!resetLampColor(value)) result = 2; break;
         case 11: if (!extendedControls || !setLampEffectOptions(value, {command.bytes[4],command.bytes[5],command.bytes[6],command.bytes[7],command.bytes[8],command.bytes[9]})) result=2; break;
-        case 12: if (value == 1) extendedControls=37; else if (value == 2) extendedControls=38; else if (value == 3) extendedControls=LAMP_EFFECT_COUNT; else result=2; break;
-        case 13: if (value < 1 || value > LAMP_EFFECT_COUNT) result=2; else catalogCharacteristic->setValue(lampEffectCatalogEntry(value).c_str()); break;
+        case 12: if (value == 1) extendedControls=37; else if (value == 2) extendedControls=38; else if (value == 3) extendedControls=lampAvailableEffectCount(); else result=2; break;
+        case 13: if (value < 1 || value > lampAvailableEffectCount()) result=2; else catalogCharacteristic->setValue(lampEffectCatalogEntry(value).c_str()); break;
         case 8: if (value) result = 2; else if (!requestLampUpdateCheck()) result = 3; break;
         case 9: if (value) result = 2; else if (!requestLampUpdateInstall()) result = 3; break;
         case 10: if (value > 1) result = 2; else if (!setLampAutoUpdate(value)) result = 4; break;
