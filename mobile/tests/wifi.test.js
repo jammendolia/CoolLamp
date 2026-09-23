@@ -22,6 +22,30 @@ test('Wi-Fi maps state and sends authenticated, token-bound form commands',async
     assert.equal(post.data,'mode=1&r=0&g=0&b=0');assert.equal(post.disableRedirects,true);
   }finally{await lamp.disconnect();}
 });
+test('microphone configuration validates, authenticates, and disconnects for restart',async()=>{
+  const {lamp,calls,setRaw}=setup();
+  setRaw({...fixture(),audio:{installed:true,gain:8,gate:8}});
+  await lamp.connect('coollamp-ddeeff.local','test-password');
+  try {
+    const before=calls.length;
+    await assert.rejects(lamp.enqueue(()=>lamp.configureAudio({enabled:1,gain:65,gate:8})),/ranges/);
+    assert.equal(calls.length,before);
+    assert.equal(await lamp.enqueue(()=>lamp.configureAudio({enabled:1,gain:32,gate:8})),'OK');
+    const post=calls.find(x=>x.method==='POST');
+    assert.equal(post.url,'http://coollamp-ddeeff.local/api/audio');
+    assert.equal(post.headers['X-Lamp-Token'],'boot-token');
+    assert.equal(post.data,'enabled=1&gain=32&gate=8');
+    assert.equal(lamp.state,null);
+  }finally{await lamp.disconnect();}
+});
+test('old firmware cannot accept microphone configuration',async()=>{
+  const {lamp,calls}=setup();await lamp.connect('coollamp-ddeeff.local','test-password');
+  try {
+    const before=calls.length;
+    await assert.rejects(lamp.enqueue(()=>lamp.configureAudio({enabled:1,gain:8,gate:8})),/does not support/);
+    assert.equal(calls.length,before);
+  }finally{await lamp.disconnect();}
+});
 test('wrong identity and malformed responses cannot enable controls',async()=>{
   const {lamp,setRaw,states}=setup();
   await assert.rejects(lamp.connect('192.168.1.9','test','different'),/different lamp/);
@@ -99,4 +123,19 @@ test('malformed or late Wi-Fi catalogs cannot populate a new connection',async()
   const pending=lamp.connect('192.168.1.9','test');await ready;await lamp.disconnect();
   complete({status:200,data:[{id:1,name:'Late',category:'calm',speed:true}]});
   await assert.rejects(pending,/Connection changed/);assert.equal(lamp.catalog,null);
+});
+
+ test('scale is validated and sent with sensitivity; unsupported firmware rejects it',async()=>{
+  const {lamp,calls,setRaw}=setup();
+  setRaw({...fixture(),audio:{installed:true,gain:32,gate:8,scale:100}});
+  await lamp.connect('192.168.1.9','test');
+  try {
+    for(const scale of [99,401,150.5,NaN]) await assert.rejects(lamp.configureAudio({enabled:1,gain:32,gate:8,scale}),/ranges/);
+    assert(!calls.some(x=>x.method==='POST'));
+    await lamp.configureAudio({enabled:1,gain:32,gate:8,scale:200});
+    assert.equal(calls.find(x=>x.method==='POST').data,'enabled=1&gain=32&gate=8&scale=200');
+    setRaw({...fixture(),audio:{installed:true,gain:32,gate:8}});
+    await lamp.connect('192.168.1.9','test');
+    await assert.rejects(lamp.configureAudio({enabled:1,gain:32,gate:8,scale:200}),/Update lamp firmware/);
+  }finally{await lamp.disconnect();}
 });

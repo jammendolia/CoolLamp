@@ -59,7 +59,9 @@ test('wire frames preserve boundaries and reject invalid values', () => {
 test('effect names stay aligned with actual firmware', () => {
   const firmware = readFileSync(new URL('../../LampNetwork.ino', import.meta.url), 'utf8');
   const names = [...firmware.match(/effectNames\[\] = \{([\s\S]*?)\};/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(effects, names);
+  // The fallback list is intentionally the microphone-free legacy catalog.
+  assert.deepEqual(effects, names.slice(0,38));
+  assert.deepEqual(names.slice(38), ['Sound glow','Sound meter']);
 });
 test('discovery, encrypted read, notification and acknowledged commands', async () => {
   const radio = new Radio(); const received = [];

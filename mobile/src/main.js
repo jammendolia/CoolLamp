@@ -209,6 +209,10 @@ function filterEffects() {
   const query=$('effectSearch').value.trim().toLowerCase();
   const catalog=state ? lamp?.catalog || [] : [];
   $('currentEffect').textContent=state?'Current: '+(catalog.find(x=>x.id===state.mode)?.name || 'Loading effects…'):'Choose a lamp to browse its effects.';
+  document.querySelector('[data-category=audio]').hidden=!catalog.some(entry=>entry.category==='audio');
+  if(category==='audio' && !catalog.some(entry=>entry.category==='audio')) {
+    category='all';document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.category==='all')));
+  }
   const key=JSON.stringify([catalog,query,category,selected?.favorites,state?.mode]);
   if(key===effectListKey)return;
   effectListKey=key;
@@ -218,7 +222,12 @@ function filterEffects() {
   catalog.forEach(({id:mode,name,category:group})=>{if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):group===category)))$('effect').add(new Option(name,mode));});
   if(state)$('effect').value=state.mode;
   if(!$('effect').options.length){const option=new Option('No matching effects','');option.disabled=true;$('effect').add(option);}
+  let previousGroup=null;
   for(const option of $('effect').options) {
+    const group=catalog.find(entry=>entry.id===Number(option.value))?.category==='audio'?'Audio effects':'Light effects';
+    if(category==='all' && group!==previousGroup) {
+      const heading=document.createElement('h4');heading.textContent=group;heading.className='effect-group-heading';$('effectGrid').append(heading);previousGroup=group;
+    }
     const button=document.createElement('button');button.type='button';button.textContent=option.text;
     button.disabled=option.disabled;button.dataset.effect=option.value;
     button.setAttribute('aria-pressed',String(Number(option.value)===state?.mode));
@@ -231,6 +240,8 @@ for(const button of document.querySelectorAll('[data-category]'))button.onclick=
 $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new Set(selected.favorites||[]);if(favorites.has(state.mode))favorites.delete(state.mode);else favorites.add(state.mode);selected=store.upsert({...selected,favorites:[...favorites]});$('favoriteEffect').setAttribute('aria-pressed',String(favorites.has(state.mode)));filterEffects();};
 function fillNetwork() {
   const raw=wifiLamp.raw;
+  $('audioSettings').hidden=!raw.audio;
+  if(raw.audio){$('microphoneInstalled').checked=raw.audio.installed;$('audioGain').value=raw.audio.gain;$('audioGate').value=raw.audio.gate;$('audioScale').value=raw.audio.scale??100;$('audioScale').disabled=raw.audio.scale===undefined;audioLabels();}
   for(const id of ['ssid','leds','milliamps'])$(id).value=raw[id];
   $('startupMode').replaceChildren(...wifiLamp.catalog.map(x=>new Option(x.name,x.id)));
   $('startupMode').value=raw.startupMode||raw.mode;$('startupBrightness').value=raw.startupBrightness||raw.brightness;
@@ -274,6 +285,19 @@ $('networkForm').onsubmit=e=>{
     const message=await wifiLamp.request('/api/config',data);
     if(data.adminPassword)await credential(selected.id,data.adminPassword);
     await wifiLamp.disconnect();status(message+' Find the lamp again after it restarts.');
+  });
+};
+function audioLabels() {
+  $('audioGainValue').value=$('audioGain').value;
+  $('audioScaleValue').value=(Number($('audioScale').value)/100).toFixed(2)+'×';
+}
+$('audioGain').oninput=audioLabels;
+$('audioScale').oninput=audioLabels;
+$('audioForm').onsubmit=e=>{
+  e.preventDefault();
+  networkAction(async()=>{
+    const message=await wifiLamp.configureAudio({enabled:Number($('microphoneInstalled').checked),gain:Number($('audioGain').value),gate:Number($('audioGate').value),...(wifiLamp.raw.audio.scale===undefined?{}:{scale:Number($('audioScale').value)})});
+    status(message+' Reconnect after the lamp restarts.');
   });
 };
 $('forgetLamp').onclick=async()=>{if(!selected||!confirm('Remove this lamp from this phone? The lamp’s own settings stay saved.'))return;const id=selected.id;await lamp.disconnect();try{await credential(id,'');}catch(e){status(e.message);return;}store.remove(id);selected=null;renderLamps();page('lamps');status('Lamp removed from this phone.');};

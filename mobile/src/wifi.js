@@ -51,6 +51,17 @@ export class WifiTransport {
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
+  // Call inside enqueue, like the other advanced settings actions. Save restarts the device.
+  async configureAudio({enabled,gain,gate,scale}) {
+    if (!this.raw?.audio) throw new Error('This firmware does not support microphone settings.');
+    if (![0,1].includes(enabled) || !Number.isInteger(gain) || gain<1 || gain>64 ||
+        !Number.isInteger(gate) || gate<0 || gate>1024) throw new Error('Check microphone sensitivity and noise gate ranges.');
+    if(scale!==undefined && (!Number.isInteger(scale) || scale<100 || scale>400)) throw new Error('Check scale factor ranges.');
+    if(scale!==undefined && this.raw.audio.scale===undefined) throw new Error('Update lamp firmware to adjust scale factor.');
+    const message=await this.request('/api/audio',{enabled,gain,gate,...(scale===undefined?{}:{scale})});
+    await this.disconnect();
+    return message;
+  }
   command(op,value=0) { return this.enqueue(async()=>{
     const epoch=this.epoch;
     if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
