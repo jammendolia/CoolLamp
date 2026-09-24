@@ -19,8 +19,8 @@ bool PowerOn=true;
 bool failSave=false;
 int brightnessSaves=0,colorSaves=0,wifiToggles=0,pairToggles=0;
 bool microphone=false;
-uint8_t lampAvailableEffectCount(){return microphone?45:38;}
-LampColor colors[46]{};
+uint8_t lampAvailableEffectCount(){return microphone?46:38;}
+LampColor colors[47]{};
 struct Encoder {
   long value=4,low=1,high=38;bool wrap=true,changed=false;
   void setBoundaries(long a,long b,bool w){low=a;high=b;wrap=w;}
@@ -46,7 +46,7 @@ void tick(unsigned ms){for(unsigned i=0;i<ms;++i){++clockMs;serviceLampKnob();}}
 void clicks(int n){for(int i=0;i<n;++i){button=true;tick(80);button=false;tick(100);}tick(400);}
 void turn(int delta){rotaryEncoder.turn(delta);tick(1);}
 int main(){
-  microphone=true;setLampControl(45,100,true);turn(1);assert(Mode==1);turn(-1);assert(Mode==45);
+  microphone=true;setLampControl(46,100,true);turn(1);assert(Mode==1);turn(-1);assert(Mode==46);
   microphone=false;
   setLampControl(38,100,true);turn(1);assert(Mode==1);turn(-1);assert(Mode==38);setLampControl(4,100,true);
   turn(1);assert(Mode==5&&Brightness==100);

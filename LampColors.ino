@@ -31,7 +31,7 @@ void loadLampColors()
   // Audio entries live separately: keep the original 38-entry blobs readable by older firmware.
   uint8_t audio[1 + (LAMP_EFFECT_COUNT - LAMP_BASE_EFFECT_COUNT) * 10] = {};
   const size_t audioLength = prefs.getBytesLength("audioEffectsV1");
-  if ((audioLength == 21 || audioLength == sizeof(audio)) &&
+  if ((audioLength == 21 || audioLength == 71 || audioLength == sizeof(audio)) &&
       prefs.getBytes("audioEffectsV1", audio, audioLength) == audioLength && audio[0] == 1) {
     for (uint8_t i = LAMP_BASE_EFFECT_COUNT; i < LAMP_BASE_EFFECT_COUNT + (audioLength-1)/10; ++i) {
       const auto* p = audio + 1 + (i - LAMP_BASE_EFFECT_COUNT) * 10;

@@ -11,6 +11,7 @@
 #include "LampUpdate.h"
 #include "LampGestures.h"
 #include "LampAudio.h"
+#include "LampVu.h"
 #include "AudioAnalysis.h"
 #include <new>
 SET_LOOP_TASK_STACK_SIZE(4096);
@@ -76,7 +77,8 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_SPECTRAL_EMBERS 43
 #define MODE_BEAT_BLOOM 44
 #define MODE_BAND_FOUNTAIN 45
-#define MODE_MAX MODE_BAND_FOUNTAIN
+#define MODE_VU_METER 46
+#define MODE_MAX MODE_VU_METER
 static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
@@ -106,6 +108,7 @@ void setup() {
   loadLampSettings();
   loadLampGeometry();
   loadLampColors();
+  loadLampVuColors();
   activeLedCount = lampSettings.ledCount;
   // Reserve only the configured strip length; leave RAM for Wi-Fi TLS buffers.
   leds = new (std::nothrow) CRGB[2 * NUM_LEDS]{};
@@ -191,6 +194,7 @@ void loop() {
   effectClockMs += 16;
   switch (Mode) {
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
+    case MODE_VU_METER:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:
       renderAudioEffect(Mode, now); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:

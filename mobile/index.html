@@ -38,6 +38,18 @@
         <p id="colorHint" class="hint"></p>
       </div>
       <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors.</p>
+      <section id="vuControls" class="control-section" hidden>
+        <div class="control-heading"><span class="section-kicker">METER COLORS</span><span class="small-badge">Fixed height zones</span></div>
+        <div id="vuPreview" class="vu-preview" aria-hidden="true"></div>
+        <fieldset id="vuFields"><legend class="sr-only">VU meter zone colors</legend>
+          <label class="vu-zone" for="vuLow"><span>Low <small>0–65%</small></span><input id="vuLow" type="color" value="#00ff00"></label>
+          <label class="vu-zone" for="vuMid"><span>Mid <small>65–80%</small></span><input id="vuMid" type="color" value="#ffff00"></label>
+          <label class="vu-zone" for="vuPeak"><span>Peak <small>80–100%</small></span><input id="vuPeak" type="color" value="#ff0000"></label>
+          <button id="applyVu" type="button">Save meter colors</button>
+          <button id="resetVu" class="text-button" type="button">Restore green / yellow / red</button>
+        </fieldset>
+        <p id="vuFeedback" class="hint" role="status"></p>
+      </section>
       <fieldset id="effectOptions" hidden disabled><legend class="sr-only">Effect settings</legend>
         <div class="palette-options"><label class="switch-row"><span>Two-color palette</span><input id="dual" type="checkbox"></label><div id="secondaryColorRow"><label for="secondaryColor" id="secondaryColorLabel">Secondary color</label><input id="secondaryColor" type="color" value="#23a0ff"></div></div>
         <div id="motionControls" class="control-section"><p class="section-kicker">MOVEMENT</p><label for="speed"><span id="speedLabel">Motion speed</span> <output id="speedValue">50%</output></label><input id="speed" type="range" min="1" max="100" value="50"><div class="range-captions"><span>Slow</span><span>Fast</span></div><p id="speedHint" class="hint"></p></div>

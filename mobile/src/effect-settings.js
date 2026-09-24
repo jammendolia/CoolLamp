@@ -27,6 +27,7 @@ family(['Bass Launch'], {description:'Bass hits launch color toward the center.'
 family(['Spectral Embers'], {description:'Warm bass flames meet cool treble sparks.',spectrum:true,speedLabel:'Response speed',speedHint:'Adjusts how quickly the flame follows falling sound levels.'});
 family(['Beat Bloom'], {description:'Each attack blooms at the center and ripples outward.',spectrum:true,speedLabel:'Ripple speed',speedHint:'Higher values move ripples toward the ends more quickly.'});
 family(['Three-band Fountain'], {description:'Bass, mids and treble rise in three layers of color.',spectrum:true,speedLabel:'Response speed',speedHint:'Higher values make the layers fall faster.'});
+family(['VU Meter'], {description:'Volume climbs from both ends: green, yellow, then red at the center.',vu:true,speedLabel:'Response speed',speedHint:'Higher values make the meter fall faster.'});
 export function effectSettings(entry) {
   const known=profiles.get(entry?.name)||{};
   const audio=entry?.category==='audio';

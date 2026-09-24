@@ -9,8 +9,8 @@ const html = pageHeader.split('R"HTML(')[1].split(')HTML";')[0];
 const js = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(js);
 const modes = [...main.matchAll(/^#define (MODE_\w+) (\d+)$/gm)];
-assert.equal(modes.length, 45);
-assert.deepEqual(modes.map(m=>Number(m[2])), Array.from({length:45},(_,i)=>i+1));
+assert.equal(modes.length, 46);
+assert.deepEqual(modes.map(m=>Number(m[2])), Array.from({length:46},(_,i)=>i+1));
 for(const [,name] of modes) assert(main.includes(`case ${name}:`));
 assert(!main.match(/Serial\.(print|write)/));
 for(let count=1;count<=1024;count++){
@@ -34,7 +34,7 @@ const network=fs.readFileSync(path.join(root,'LampNetwork.ino'),'utf8');
 assert(network.includes('header.chip_id != CONFIG_IDF_FIRMWARE_CHIP_ID'));
 assert(network.includes('app.magic_word != ESP_APP_DESC_MAGIC_WORD'));
 assert(network.includes('if (Update.isRunning()) Update.abort()'));
-console.log('PASS: page JavaScript parses; 45 modes have unique selectable IDs; split/rain mappings cover lengths 1–1024; controls contain no blocking serial writes.');
+console.log('PASS: page JavaScript parses; 46 modes have unique selectable IDs; split/rain mappings cover lengths 1–1024; controls contain no blocking serial writes.');
 if(process.argv.includes('--serve')){
   const effects=[...network.match(/effectNames\[\] = \{([\s\S]*?)\};/)[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]);
   require('node:http').createServer((req,res)=>{

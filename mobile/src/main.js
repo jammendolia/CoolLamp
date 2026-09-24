@@ -29,6 +29,7 @@ const status = message => { $('status').textContent = message; };
 let state = null, editingBrightness = false, busy = false;
 let firmware = null;
 let effectOptions = null, editingOptions = false;
+let vuDirty = false;
 let audioDirty = false, effectTab = 'look', paneMode = null;
 function paintRanges() {
   for(const slider of document.querySelectorAll('input[type=range]')) {
@@ -50,9 +51,9 @@ function renderEffectPane() {
   for(const tab of document.querySelectorAll('[data-effect-tab]')){tab.setAttribute('aria-selected',String(tab.dataset.effectTab===effectTab));tab.tabIndex=tab.dataset.effectTab===effectTab?0:-1;}
   $('effectBody').setAttribute('aria-labelledby','effect-tab-'+effectTab);
   $('lightControls').hidden=effectTab!=='look';
-  $('colorControls').hidden=!state.supportsColor||effectTab!=='look';
+  $('colorControls').hidden=profile.vu||!state.supportsColor||effectTab!=='look';
   $('colorUpgrade').hidden=state.supportsColor||effectTab!=='look';
-  document.querySelector('.palette-options').hidden=effectTab!=='look'||!state.color?.enabled;
+  document.querySelector('.palette-options').hidden=profile.vu||effectTab!=='look'||!state.color?.enabled;
   $('effectTitle').textContent=entry.name;
   $('effectFamily').textContent=profile.audio?'SOUND & LIGHT':(entry.category||'LIGHT').toUpperCase()+' COLLECTION';
   $('effectDescription').textContent=profile.description;
@@ -68,7 +69,13 @@ function renderEffectPane() {
     'Bass is warm, mids are green, treble is violet. Choose a color to create your own frequency palette.':
     state.color?.enabled?'Your palette is active.':'Original colors are active. Choose a primary color to unlock your own palette.';
   $('effectAudio').hidden=!profile.audio||effectTab!=='sound';
-  $('resetColor').hidden=!state.supportsColor||effectTab==='sound';
+  $('resetColor').hidden=profile.vu||!state.supportsColor||effectTab==='sound';
+  $('vuControls').hidden=!profile.vu||effectTab!=='look';
+  const vu=lamp===wifiLamp?wifiLamp.raw?.vuColors:null;
+  $('vuFields').disabled=!vu||busy;
+  if(!vu)$('vuFeedback').textContent='Connect over Wi-Fi to firmware 1.6.2 or newer to set meter colors.';
+  if(vu&&!vuDirty){['vuLow','vuMid','vuPeak'].forEach((id,i)=>$(id).value='#'+vu[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintVu();}
+
   const audio=lamp===wifiLamp?wifiLamp.raw?.audio:null;
   $('audioTuning').disabled=!audio || busy;
   $('audioScale').disabled=audio?.scale===undefined;
@@ -140,7 +147,7 @@ const callbacks = {
     renderOptions();
   },
   onDisconnect() {
-    firmware = null; effectOptions = null; audioDirty=false;paneMode=null;$('audioFeedback').textContent='';
+    firmware = null; effectOptions = null; vuDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';
     state = null; filterEffects(); $('controls').disabled = true; $('disconnect').hidden = true;
     renderFirmware();
     renderOptions();
@@ -398,3 +405,15 @@ $('audioForm').onsubmit=e=>{
 $('forgetLamp').onclick=async()=>{if(!selected||!confirm('Remove this lamp from this phone? The lamp’s own settings stay saved.'))return;const id=selected.id;await lamp.disconnect();try{await credential(id,'');}catch(e){status(e.message);return;}store.remove(id);selected=null;renderLamps();page('lamps');status('Lamp removed from this phone.');};
 paintRanges();renderLamps();
 if(isNative)discover();
+
+function paintVu(){const [a,b,c]=['vuLow','vuMid','vuPeak'].map(id=>$(id).value);$('vuPreview').style.background=`linear-gradient(to right,${a} 0 65%,${b} 65% 80%,${c} 80% 100%)`;}
+for(const id of ['vuLow','vuMid','vuPeak'])$(id).oninput=()=>{vuDirty=true;paintVu();$('vuFeedback').textContent='Unsaved meter colors';};
+async function saveVu(reset=false){
+  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  const colors=reset?null:['vuLow','vuMid','vuPeak'].map(id=>$(id).value.slice(1).match(/../g).map(v=>parseInt(v,16)));
+  busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
+  try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureVuColors(colors));vuDirty=false;$('vuFeedback').textContent=message;status(message);}
+  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('vuFeedback').textContent=e.message;status(e.message);}
+  finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+}
+$('applyVu').onclick=()=>saveVu();$('resetVu').onclick=()=>saveVu(true);

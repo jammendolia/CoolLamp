@@ -59,6 +59,17 @@ export class WifiTransport {
     return message;
   }
   // Apply from the active effect pane. Older firmware retains its restart behavior.
+  async configureVuColors(colors) {
+    if(!this.raw?.vuColors)throw new Error('Connect over Wi-Fi to firmware 1.6.2 or newer to set meter colors.');
+    const values={};
+    if(colors===null)values.reset=1;
+    else {
+      if(!Array.isArray(colors)||colors.length!==3||colors.some(c=>!Array.isArray(c)||c.length!==3||c.some(v=>!Number.isInteger(v)||v<0||v>255)))throw new Error('Choose three valid RGB colors.');
+      colors.forEach((c,i)=>['r','g','b'].forEach((channel,j)=>values[channel+i]=c[j]));
+    }
+    const message=await this.request('/api/vu-colors',values);
+    await this.refresh();return message;
+  }
   async tuneAudio({gain,gate,scale}) {
     const audio=this.raw?.audio;
     if(!audio?.installed) throw new Error('Connect to a lamp with an installed microphone.');

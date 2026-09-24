@@ -10,8 +10,8 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("port", help="Explicit serial device, e.g. /dev/cu.usbmodem80201")
-parser.add_argument("command", choices=["?", "u", "t", "m", "n", "g", "v", "f", "+", "-", "1", "2", "3", "4", "5"],
-                    help="?: status, u: audio status, t: 10s test, m/n: mic enable/disable + restart, g/v/f: glow/meter/fire, 1–5: spectrum/launch/embers/bloom/fountain, +/-: double/halve sensitivity and save")
+parser.add_argument("command", choices=["?", "u", "t", "m", "n", "g", "v", "f", "+", "-", "1", "2", "3", "4", "5", "6"],
+                    help="?: status, u: audio status, t: 10s test, m/n: mic enable/disable + restart, g/v/f: glow/meter/fire, 1–5: spectrum/launch/embers/bloom/fountain, 6: VU meter, +/-: double/halve sensitivity and save")
 parser.add_argument("--seconds", type=float, default=4)
 parser.add_argument("--poll", action="store_true", help="Poll audio status after the initial command")
 parser.add_argument("--interval", type=float, default=1, help="Polling interval in seconds (0.05–10); use 0.05 to catch short sounds")

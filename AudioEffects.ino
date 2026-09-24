@@ -55,7 +55,12 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
     const uint16_t height = i < left ? i : NUM_LEDS - 1 - i;
     const uint8_t position = size > 1 ? uint32_t(height) * 255 / (size - 1) : 0;
     CRGB tint = options.dual ? blend(primary, secondary, position) : primary;
-    if(mode>=MODE_SPECTRUM_RISE) {
+    if(mode==MODE_VU_METER) {
+      const auto zone=lampVuColors[vuZone(height,size)];
+      tint=CRGB(zone.r,zone.g,zone.b);
+      const int coverage=int(level)*size-int(height)*255;
+      tint.nscale8(coverage<=0?0:coverage>=255?255:uint8_t(coverage));
+    } else if(mode>=MODE_SPECTRUM_RISE) {
       tint=CRGB::Black;
       const int coverage=int(level)*size-int(height)*255;
       const uint8_t fill=coverage<=0?0:coverage>=255?255:uint8_t(coverage);

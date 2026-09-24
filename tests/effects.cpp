@@ -14,6 +14,7 @@ uint8_t lampAvailableEffectCount(){return microphone?LAMP_EFFECT_COUNT:LAMP_BASE
 LampControlState control{3,100,true};
 LampControlState getLampControlState(){return control;}
 #include "../LampColors.ino"
+#include "../LampVu.cpp"
 // Host RGB and sine stand-ins exercise the actual effect loops and arithmetic.
 // Hardware compilation separately validates the real FastLED API.
 struct CRGB {
@@ -37,7 +38,7 @@ uint16_t beatsin16(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 uint8_t beatsin8(uint16_t,uint8_t,uint8_t,uint32_t,uint8_t){return 0;}
 uint16_t beatsin88(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 int NUM_LEDS=134;CRGB* leds=nullptr;
-enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER,MODE_SPECTRUM_RISE,MODE_BASS_LAUNCH,MODE_SPECTRAL_EMBERS,MODE_BEAT_BLOOM,MODE_BAND_FOUNTAIN};
+enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER,MODE_SPECTRUM_RISE,MODE_BASS_LAUNCH,MODE_SPECTRAL_EMBERS,MODE_BEAT_BLOOM,MODE_BAND_FOUNTAIN,MODE_VU_METER};
 #include "../NewEffects.ino"
 #include "../AudioAnalysis.h"
 struct AudioSnapshot { bool valid=true; uint8_t level=0; uint16_t bass=0,mid=0,treble=0; uint32_t beat=0,bassBeat=0; } audioSnapshot;
@@ -80,7 +81,10 @@ int main(){
   loadLampColors();assert(getLampColor(39).r==17 && getLampEffectOptions(40).speed==75);
   assert(!getLampColor(41).enabled);
   assert(setLampColor(45,1,2,3));assert(saveLampColors());loadLampColors();
-  assert(getLampColor(45).r==1 && Preferences::storage["audioEffectsV1"].size()==71);
+  assert(getLampColor(45).r==1 && Preferences::storage["audioEffectsV1"].size()==81);
+  Preferences::storage["audioEffectsV1"].resize(71);
+  loadLampColors();assert(getLampColor(45).r==1 && getLampEffectOptions(40).speed==75);
+  assert(setLampColor(46,2,3,4));assert(saveLampColors() && Preferences::storage["audioEffectsV1"].size()==81);
   microphone=false;
   assert(!setLampColor(39,1,2,3) && !setLampEffectOptions(40,{50,100,0,1,2,3}));
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
@@ -151,7 +155,7 @@ int main(){
   for(int count:{1,2,3,134,1024}) for(uint16_t midpoint:{0,1,40,1000}) {
     NUM_LEDS=count;lampMidpoint=midpoint;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
-    for(uint8_t mode=41;mode<=45;++mode) {
+    for(uint8_t mode=41;mode<=46;++mode) {
       resetLampColor(mode);bool lit=false;
       for(uint32_t t=1000;t<5000;t+=16) {
         audioSnapshot={true,200,100,60,30,t/400,t/500};renderAudioEffect(mode,t);
@@ -174,5 +178,18 @@ int main(){
   assert(leds[0].b>leds[0].r);
   setLampColor(41,0,0,0);setLampEffectOptions(41,{50,100,0,0,0,0});
   renderAudioEffect(41,3016);for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
+  NUM_LEDS=202;lampMidpoint=101;std::vector<CRGB> vuFrame(NUM_LEDS);leds=vuFrame.data();
+  resetLampColor(46);setLampEffectOptions(46,{100,100,0,0,0,0});
+  audioSnapshot={true,255};
+  for(uint32_t t=10000;t<11000;t+=16)renderAudioEffect(46,t);
+  assert(leds[64]==CRGB(0,255,0) && leds[65]==CRGB(255,255,0));
+  assert(leds[79]==CRGB(255,255,0) && leds[80]==CRGB(255,0,0) && leds[100]==CRGB(255,0,0));
+  for(int i=0;i<101;++i)assert(leds[i]==leds[201-i]);
+  const VuColor custom[3]={{10,20,30},{40,50,60},{70,80,90}};
+  Preferences::failWrites=true;assert(!saveLampVuColors(custom));assert(lampVuColors[0].g==255);
+  Preferences::failWrites=false;assert(saveLampVuColors(custom));lampVuColors[0]={};loadLampVuColors();assert(lampVuColors[0].g==20);
+  renderAudioEffect(46,11000);assert(leds[0]==CRGB(10,20,30) && leds[80]==CRGB(70,80,90));
+  audioSnapshot={true,128};for(uint32_t t=11016;t<12000;t+=16)renderAudioEffect(46,t);
+  assert(leds[0]==CRGB(10,20,30) && leds[60]==CRGB::Black && leds[100]==CRGB::Black);
   std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }

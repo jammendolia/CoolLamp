@@ -21,3 +21,9 @@ A fixed six-pulse buffer bounds rendering work. Pulse tails finish within 0.6–
 The audio color/options blob accepts the prior two-effect layout on upgrade, preserving IDs 39–40 while defaulting the five new slots. Base color/options blobs and GPIO assignments are unchanged. Before downgrading firmware, save a startup effect supported by the older version; older firmware cannot load the expanded audio customization blob.
 
 USB commands `1` through `5` select IDs 41 through 45 for testing. Host checks cover tone separation, silence, full-scale arithmetic, attack refractory behavior, setting migration, microphone variant catalogs, exact black with custom black, stale-input fade-out, clock wrap, and effect bounds on one-LED through 1024-LED strips with uneven centers. Physical microphone response and aesthetic tuning remain room-dependent.
+
+## VU Meter (46)
+
+Amplitude fills each side from its end toward the saved center boundary. Each side scales independently, so an asymmetric center reaches full height together. Fixed height zones are green below 65%, yellow from 65% to below 80%, and red from 80% to 100%. Silence fades to black; response speed controls the falloff. Shared audio sensitivity, cutoff and contrast apply.
+
+In the app, select VU Meter in Audio, then open Light to choose the three zone colors. Save meter colors applies immediately and persists across restarts; Restore green / yellow / red resets this palette. Color editing requires Wi-Fi and firmware 1.6.2 or newer. Bluetooth can select the effect and adjust its response speed and glow. The palette uses a separate versioned NVS record and does not alter existing effect colors or GPIO assignments.

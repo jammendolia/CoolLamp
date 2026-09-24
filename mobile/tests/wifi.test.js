@@ -178,3 +178,17 @@ test('audio pane tuning uses the older save-and-restart endpoint when required',
   await lamp.enqueue(()=>lamp.tuneAudio({gain:30,gate:32,scale:120}));
   assert(calls.find(c=>c.method==='POST').url.endsWith('/api/audio'));assert.equal(lamp.state,null);
 });
+
+test('VU colors validate all channels, authenticate, reset, and require capable firmware',async()=>{
+  const {lamp,calls,setRaw}=setup();setRaw({...fixture(),vuColors:[[0,255,0],[255,255,0],[255,0,0]]});
+  await lamp.connect('192.168.1.9','test');
+  try{
+    for(const colors of [[],[[0,0,0]],[[256,0,0],[0,0,0],[0,0,0]],[[1.5,0,0],[0,0,0],[0,0,0]]])await assert.rejects(lamp.configureVuColors(colors),/valid RGB/);
+    assert(!calls.some(c=>c.method==='POST'));
+    await lamp.enqueue(()=>lamp.configureVuColors([[1,2,3],[4,5,6],[7,8,9]]));
+    const post=calls.find(c=>c.method==='POST');assert(post.url.endsWith('/api/vu-colors'));
+    assert.equal(post.data,'r0=1&g0=2&b0=3&r1=4&g1=5&b1=6&r2=7&g2=8&b2=9');assert.equal(post.headers['X-Lamp-Token'],'boot-token');assert(lamp.state);
+    await lamp.configureVuColors(null);assert.equal(calls.filter(c=>c.method==='POST').at(-1).data,'reset=1');
+    setRaw(fixture());await lamp.refresh();await assert.rejects(lamp.configureVuColors(null),/1.6.2/);
+  }finally{await lamp.disconnect();}
+});
