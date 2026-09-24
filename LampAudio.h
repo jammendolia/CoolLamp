@@ -6,6 +6,8 @@ extern uint32_t lampRenderedFrames, lampMaxRenderUs;
 struct LampAudioFeatures {
   uint32_t sequence, timestamp, errors, overruns, stackFree;
   uint16_t rms, peak;
+  uint16_t bass, mid, treble;
+  uint32_t beat, bassBeat;
   uint8_t level;
   bool valid, signalSeen, running;
   int error;

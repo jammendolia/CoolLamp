@@ -1,5 +1,6 @@
 #include "LampAudio.h"
 #include "AudioAnalysis.h"
+#include "AudioSpectrum.h"
 #include <Preferences.h>
 #include <driver/i2s_std.h>
 #include <driver/gpio.h>
@@ -34,6 +35,7 @@ void error(int code) {
 void capture(void*) {
   AudioAnalysis analysis;
   AudioPeakHold peakHold;
+  AudioSpectrum spectrum;
   // Count captured frames, not wall time: queued DMA data may predate a stall.
   size_t warmup = 4800;
   unsigned failures = 0;
@@ -51,10 +53,13 @@ void capture(void*) {
     if (warmup) { warmup = count >= warmup ? 0 : warmup - count; continue; }
     const auto level = analysis.process(samples, count, gain, gate, scale);
     const uint32_t capturedAt = millis();
+    const auto bands = spectrum.process(samples,count,level.level,capturedAt);
     const uint8_t heldLevel = peakHold.process(level.level, capturedAt);
     const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
     portENTER_CRITICAL(&mux);
     ++features.sequence; features.timestamp = capturedAt;
+    features.bass=bands.bass; features.mid=bands.mid; features.treble=bands.treble;
+    features.beat=bands.beat; features.bassBeat=bands.bassBeat;
     features.rms = level.rms; features.peak = level.peak; features.level = heldLevel;
     features.signalSeen |= level.signal; features.valid = true; features.error = 0;
     features.stackFree = stackFree;
@@ -186,6 +191,8 @@ String lampAudioJson() {
     ",\"signalSeen\":" + (f.signalSeen ? "true" : "false") + ",\"level\":" + f.level +
     ",\"rms\":" + f.rms + ",\"peak\":" + f.peak + ",\"blocks\":" + f.sequence +
     ",\"errors\":" + f.errors + ",\"overruns\":" + f.overruns + ",\"stackFree\":" + f.stackFree +
+    ",\"bass\":" + f.bass + ",\"mid\":" + f.mid + ",\"treble\":" + f.treble +
+    ",\"beat\":" + f.beat + ",\"bassBeat\":" + f.bassBeat +
     ",\"heap\":" + ESP.getFreeHeap() + ",\"frames\":" + lampRenderedFrames +
     ",\"maxRenderUs\":" + lampMaxRenderUs + ",\"error\":" + f.error + "}";
 }

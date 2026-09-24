@@ -61,7 +61,7 @@ test('effect names stay aligned with actual firmware', () => {
   const names = [...firmware.match(/effectNames\[\] = \{([\s\S]*?)\};/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
   // The fallback list is intentionally the microphone-free legacy catalog.
   assert.deepEqual(effects, names.slice(0,38));
-  assert.deepEqual(names.slice(38), ['Sound glow','Sound meter']);
+  assert.deepEqual(names.slice(38), ['Sound glow','Sound meter','Spectrum Rise','Bass Launch','Spectral Embers','Beat Bloom','Three-band Fountain']);
 });
 test('discovery, encrypted read, notification and acknowledged commands', async () => {
   const radio = new Radio(); const received = [];

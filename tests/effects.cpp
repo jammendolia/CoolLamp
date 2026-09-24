@@ -37,10 +37,10 @@ uint16_t beatsin16(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 uint8_t beatsin8(uint16_t,uint8_t,uint8_t,uint32_t,uint8_t){return 0;}
 uint16_t beatsin88(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 int NUM_LEDS=134;CRGB* leds=nullptr;
-enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER};
+enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER,MODE_SPECTRUM_RISE,MODE_BASS_LAUNCH,MODE_SPECTRAL_EMBERS,MODE_BEAT_BLOOM,MODE_BAND_FOUNTAIN};
 #include "../NewEffects.ino"
 #include "../AudioAnalysis.h"
-struct AudioSnapshot { bool valid=true; uint8_t level=0; } audioSnapshot;
+struct AudioSnapshot { bool valid=true; uint8_t level=0; uint16_t bass=0,mid=0,treble=0; uint32_t beat=0,bassBeat=0; } audioSnapshot;
 AudioSnapshot getLampAudioFeatures(){return audioSnapshot;}
 #include "../AudioEffects.ino"
 int main(){
@@ -75,6 +75,12 @@ int main(){
   assert(saveLampColors());loadLampColors();
   assert(getLampColor(39).r==17 && getLampEffectOptions(40).speed==75);
   assert(Preferences::storage["colors"].size()==153 && Preferences::storage["effectOptions"].size()==229);
+  // Upgrade the two-effect audio blob without losing its custom settings.
+  Preferences::storage["audioEffectsV1"].resize(21);
+  loadLampColors();assert(getLampColor(39).r==17 && getLampEffectOptions(40).speed==75);
+  assert(!getLampColor(41).enabled);
+  assert(setLampColor(45,1,2,3));assert(saveLampColors());loadLampColors();
+  assert(getLampColor(45).r==1 && Preferences::storage["audioEffectsV1"].size()==71);
   microphone=false;
   assert(!setLampColor(39,1,2,3) && !setLampEffectOptions(40,{50,100,0,1,2,3}));
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
@@ -142,5 +148,31 @@ int main(){
       for(int i=0;i<count;++i)assert(leds[i]==CRGB::Black);
     }
   }
+  for(int count:{1,2,3,134,1024}) for(uint16_t midpoint:{0,1,40,1000}) {
+    NUM_LEDS=count;lampMidpoint=midpoint;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
+    const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
+    for(uint8_t mode=41;mode<=45;++mode) {
+      resetLampColor(mode);bool lit=false;
+      for(uint32_t t=1000;t<5000;t+=16) {
+        audioSnapshot={true,200,100,60,30,t/400,t/500};renderAudioEffect(mode,t);
+        for(int i=0;i<count;++i)lit|=leds[i].r||leds[i].g||leds[i].b;
+        assert(frame.front()==guard && frame.back()==guard);
+      }
+      assert(lit);
+      audioSnapshot={false,0};
+      for(uint32_t t=5000;t<9000;t+=16)renderAudioEffect(mode,t);
+      for(int i=0;i<count;++i)assert(leds[i]==CRGB::Black);
+      for(uint32_t t:{0xfffffff0U,0U,80U})renderAudioEffect(mode,t);
+      assert(frame.front()==guard && frame.back()==guard);
+    }
+  }
+  NUM_LEDS=134;lampMidpoint=40;std::vector<CRGB> spectrumFrame(NUM_LEDS);leds=spectrumFrame.data();
+  resetLampColor(41);
+  for(uint32_t t=1000;t<2000;t+=16){audioSnapshot={true,200,10000,0,0,0,0};renderAudioEffect(41,t);}
+  assert(leds[0].r>leds[0].b);
+  for(uint32_t t=2000;t<3000;t+=16){audioSnapshot={true,200,0,0,10000,0,0};renderAudioEffect(41,t);}
+  assert(leds[0].b>leds[0].r);
+  setLampColor(41,0,0,0);setLampEffectOptions(41,{50,100,0,0,0,0});
+  renderAudioEffect(41,3016);for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
   std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }

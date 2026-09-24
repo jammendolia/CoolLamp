@@ -71,7 +71,12 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_DROPLETS_OUTWARD 38
 #define MODE_SOUND_GLOW 39
 #define MODE_SOUND_METER 40
-#define MODE_MAX MODE_SOUND_METER
+#define MODE_SPECTRUM_RISE 41
+#define MODE_BASS_LAUNCH 42
+#define MODE_SPECTRAL_EMBERS 43
+#define MODE_BEAT_BLOOM 44
+#define MODE_BAND_FOUNTAIN 45
+#define MODE_MAX MODE_BAND_FOUNTAIN
 static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
@@ -185,6 +190,7 @@ void loop() {
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
   switch (Mode) {
+    case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:
       renderAudioEffect(Mode, now); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:

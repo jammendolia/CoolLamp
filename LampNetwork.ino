@@ -45,7 +45,7 @@ const char* const effectNames[] = {
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
   "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter"
+  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -533,6 +533,7 @@ void serviceLampUSB()
     if (command == 'u') audioPending = true;
     if (!lampUpdateOwnsResources()) {
       if (command == '+' || command == '-') { adjustLampAudioGain(command == '+'); audioPending = true; }
+      if (command >= '1' && command <= '5') setLampControl(MODE_SPECTRUM_RISE + command - '1', Brightness, true);
       if (command == 'g') setLampControl(MODE_SOUND_GLOW, Brightness, true);
       if (command == 'v') setLampControl(MODE_SOUND_METER, Brightness, true);
       if (command == 'f') setLampControl(MODE_FIRE, Brightness, PowerOn);

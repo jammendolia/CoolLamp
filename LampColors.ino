@@ -8,6 +8,7 @@ static bool optionsDirty = false;
 
 LampColor defaultLampColor(uint8_t mode)
 {
+  if (mode >= 41) return {0,255,80,0};
   if (mode == 3) return {0, 128, 160, 255};
   if (mode == 31) return {1, 190, 215, 255};
   if (mode == 33) return {1, 255, 200, 60};
@@ -29,9 +30,10 @@ void loadLampColors()
   if (!prefs.begin("coollamp", true)) return;
   // Audio entries live separately: keep the original 38-entry blobs readable by older firmware.
   uint8_t audio[1 + (LAMP_EFFECT_COUNT - LAMP_BASE_EFFECT_COUNT) * 10] = {};
-  if (prefs.getBytesLength("audioEffectsV1") == sizeof(audio) &&
-      prefs.getBytes("audioEffectsV1", audio, sizeof(audio)) == sizeof(audio) && audio[0] == 1) {
-    for (uint8_t i = LAMP_BASE_EFFECT_COUNT; i < LAMP_EFFECT_COUNT; ++i) {
+  const size_t audioLength = prefs.getBytesLength("audioEffectsV1");
+  if ((audioLength == 21 || audioLength == sizeof(audio)) &&
+      prefs.getBytes("audioEffectsV1", audio, audioLength) == audioLength && audio[0] == 1) {
+    for (uint8_t i = LAMP_BASE_EFFECT_COUNT; i < LAMP_BASE_EFFECT_COUNT + (audioLength-1)/10; ++i) {
       const auto* p = audio + 1 + (i - LAMP_BASE_EFFECT_COUNT) * 10;
       if (p[0] <= 1) effectColors[i] = {p[0],p[1],p[2],p[3]};
       if (p[4] >= 1 && p[4] <= 100 && p[5] <= 100 && p[6] <= 1)
