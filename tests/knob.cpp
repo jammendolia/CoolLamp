@@ -1,4 +1,6 @@
 #include <algorithm>
+#include "../LampGeometry.h"
+uint16_t lampMidpoint=0;
 #include <cassert>
 #include <cstdint>
 #include <iostream>

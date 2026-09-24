@@ -139,3 +139,22 @@ test('malformed or late Wi-Fi catalogs cannot populate a new connection',async()
     await assert.rejects(lamp.configureAudio({enabled:1,gain:32,gate:8,scale:200}),/Update lamp firmware/);
   }finally{await lamp.disconnect();}
 });
+
+test('center setting validates strip boundaries, authenticates, and stays connected',async()=>{
+  const {lamp,calls,setRaw}=setup();
+  setRaw({...fixture(),leds:134,midpoint:0,effectiveMidpoint:67});
+  await lamp.connect('192.168.1.9','test');
+  try {
+    for(const midpoint of [-1,134,1024,1.5,NaN]) await assert.rejects(lamp.configureGeometry(midpoint),/boundary/);
+    assert(!calls.some(x=>x.method==='POST'));
+    await lamp.enqueue(()=>lamp.configureGeometry(40));
+    const post=calls.find(x=>x.method==='POST');
+    assert(post.url.endsWith('/api/geometry'));assert.equal(post.data,'midpoint=40');
+    assert.equal(post.headers['X-Lamp-Token'],'boot-token');assert(lamp.state);
+    await lamp.configureGeometry(0);
+    setRaw({...fixture(),leds:1,midpoint:0});await lamp.refresh();
+    await assert.rejects(lamp.configureGeometry(1),/boundary/);await lamp.configureGeometry(0);
+    setRaw(fixture());await lamp.refresh();
+    await assert.rejects(lamp.configureGeometry(40),/Update lamp firmware/);
+  }finally{await lamp.disconnect();}
+});

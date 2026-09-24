@@ -51,6 +51,13 @@ export class WifiTransport {
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
+  async configureGeometry(midpoint) {
+    if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');
+    if(!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
+    const message=await this.request('/api/geometry',{midpoint});
+    await this.refresh();
+    return message;
+  }
   // Call inside enqueue, like the other advanced settings actions. Save restarts the device.
   async configureAudio({enabled,gain,gate,scale}) {
     if (!this.raw?.audio) throw new Error('This firmware does not support microphone settings.');

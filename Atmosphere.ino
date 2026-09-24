@@ -57,7 +57,7 @@ void CometCollision()
   const uint16_t other = 65535 - travel;
   const uint8_t flash = travel > 30500 ? (travel - 30500) * 255UL / 2267 : 0;
   for (int i = 0; i < NUM_LEDS; i++) {
-    const uint16_t x = effectPosition(i, NUM_LEDS);
+    const uint16_t x = lampCenteredPosition(i, NUM_LEDS, lampMidpoint);
     const uint32_t d1 = x > travel ? x - travel : travel - x;
     const uint32_t d2 = x > other ? x - other : other - x;
     const uint8_t head1 = d1 < 9000 ? 255 - d1 * 255 / 9000 : 0;
@@ -74,8 +74,8 @@ void CometCollision()
 
 void Rain()
 {
-  const int leftCount = (NUM_LEDS + 1) / 2;
-  const int rightCount = NUM_LEDS / 2;
+  const int leftCount = lampSplitCount(NUM_LEDS, lampMidpoint);
+  const int rightCount = NUM_LEDS - leftCount;
   const uint32_t t = lampEffectMillis();
   for (int i = 0; i < NUM_LEDS; i++) {
     const bool left = i < leftCount;

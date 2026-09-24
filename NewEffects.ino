@@ -7,13 +7,16 @@ uint8_t lampBeatSin8(uint16_t bpm, uint8_t low, uint8_t high, uint32_t base, uin
 uint16_t lampBeatSin88(uint16_t bpm, uint16_t low, uint16_t high, uint32_t base, uint16_t phase) { return beatsin88(bpm,low,high,millis()-effectClockMs+base,phase); }
 
 uint32_t effectHash(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; return x ^ (x >> 16); }
-void effectGlow(uint16_t position, uint16_t width, CRGB color, uint8_t strength) {
+void effectGlowAt(uint16_t position, uint16_t width, CRGB color, uint8_t strength, bool centered) {
   for (int i=0;i<NUM_LEDS;++i) {
-    const int32_t x = NUM_LEDS > 1 ? uint32_t(i)*65535/(NUM_LEDS-1) : 32768;
+    const int32_t x = lampCenteredPosition(i, NUM_LEDS, centered ? lampMidpoint : 0);
     const uint32_t distance = abs(x-int32_t(position));
     if (distance >= width) continue;
     CRGB pixel = color; pixel.nscale8(uint32_t(strength)*(width-distance)/width); leds[i] += pixel;
   }
+}
+void effectGlow(uint16_t position, uint16_t width, CRGB color, uint8_t strength) {
+  effectGlowAt(position, width, color, strength, false);
 }
 void renderNewEffect(uint8_t mode, uint32_t t) {
   const auto c=getLampColor(mode); const auto o=getLampEffectOptions(mode);
@@ -32,8 +35,8 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         // Reflect each half around its midpoint: center -> ends, same bounce.
         const uint32_t distance=mode==MODE_DROPLETS_OUTWARD ? 32767-travel : travel;
         const uint16_t position=k%2 ? 65535-distance : distance;
-        effectGlow(position,4500,k%2?b:a,255);
-        effectGlow(position,10000,k%2?b:a,55);
+        effectGlowAt(position,4500,k%2?b:a,255,true);
+        effectGlowAt(position,10000,k%2?b:a,55,true);
       } break;
     }
     case MODE_LIGHTNING: {
@@ -68,8 +71,8 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         const uint32_t age=phase-k*600;
         const uint16_t distance=age*32767/1700;
         const uint8_t strength=(1700-age)*255/1700;
-        effectGlow(32767-distance,6500,k?b:a,strength);
-        effectGlow(32768+distance,6500,k?b:a,strength);
+        effectGlowAt(32767-distance,6500,k?b:a,strength,true);
+        effectGlowAt(32768+distance,6500,k?b:a,strength,true);
       } break;
     }
     case MODE_STARS: {

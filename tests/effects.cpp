@@ -1,4 +1,6 @@
 #include <algorithm>
+#include "../LampGeometry.h"
+uint16_t lampMidpoint=0;
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -77,7 +79,8 @@ int main(){
   assert(!setLampColor(39,1,2,3) && !setLampEffectOptions(40,{50,100,0,1,2,3}));
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
   microphone=true;
-  for(int count:{1,2,3,133,134,135,1024}){
+  for(int count:{1,2,3,133,134,135,1024}) for(uint16_t midpoint:{0,1,40,1000}) {
+    lampMidpoint=midpoint;
     NUM_LEDS=count;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
     for(uint8_t mode:{39,40}) for(uint8_t speed:{1,50,100}) {
@@ -91,10 +94,11 @@ int main(){
       assert(frame.front()==guard && frame.back()==guard);
     }
   }
-  for(int count:{1,2,3,133,134,135,1024}){
+  for(int count:{1,2,3,133,134,135,1024}) for(uint16_t midpoint:{0,1,40,1000}) {
+    lampMidpoint=midpoint;
     NUM_LEDS=count;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
-    if(count>=133) {
+    if(count>=133 && !lampMidpoint) {
       setLampColor(38,255,0,0);setLampEffectOptions(38,{50,25,1,0,0,255});
       auto peak=[&](bool blue){
         int best=0;
@@ -111,6 +115,15 @@ int main(){
       setLampColor(30,255,0,0);setLampEffectOptions(30,{50,25,1,0,0,255});
       renderNewEffect(30,0);assert(peak(false)==0);
       renderNewEffect(30,2800);assert(leds[count/2].r==255 && leds[0].r==0 && leds[count-1].r==0);
+    }
+    if(count==134 && lampMidpoint==40) {
+      setLampColor(38,255,0,0);setLampEffectOptions(38,{50,0,0,0,0,0});
+      renderNewEffect(38,0);
+      assert(leds[39].r>leds[66].r && leds[40].r>leds[67].r);
+      renderNewEffect(38,2800);assert(leds[0].r==255);
+      setLampColor(34,255,0,0);setLampEffectOptions(34,{50,100,0,0,0,0});
+      renderNewEffect(34,0);
+      assert(leds[39].r>leds[66].r && leds[40].r>leds[67].r);
     }
     for(int mode=30;mode<=38;++mode){
       resetLampColor(mode);setLampColor(mode,255,0,0);setLampEffectOptions(mode,{100,100,1,0,0,255});

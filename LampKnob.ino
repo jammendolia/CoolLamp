@@ -56,7 +56,7 @@ void enterLampKnob(KnobMode next) {
   if (next == KnobMode::Color) {
     // Prefer the actual custom color, otherwise use the rendered effect color.
     const auto c = getLampColor(Mode);
-    CRGB current = c.enabled ? CRGB(c.r,c.g,c.b) : leds[NUM_LEDS / 2];
+    CRGB current = c.enabled ? CRGB(c.r,c.g,c.b) : leds[lampMidpoint ? lampSplitCount(NUM_LEDS, lampMidpoint) - 1 : NUM_LEDS / 2];
     uint32_t best = UINT32_MAX;
     for (int i = 0; i < knobPaletteSize; ++i) {
       const int dr = int(current.r)-knobPalette[i][0], dg = int(current.g)-knobPalette[i][1], db = int(current.b)-knobPalette[i][2];

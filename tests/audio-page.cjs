@@ -5,7 +5,7 @@ let reject=false;
 const context={document:{getElementById:el},Option:function(){},URLSearchParams,AbortSignal,
  fetch:async(url,options)=>{
   if(options){requests.push({url,token:options.headers['X-Lamp-Token'],data:Object.fromEntries(options.body)});return{ok:!reject,text:async()=>reject?'Busy':'Saved; restarting'};}
-  return{ok:true,json:async()=>url==='/api/state'?{token:'token',effects:['Fire'],mode:1,audio:{installed:false,gain:8,gate:8}}:{phase:0,wifi:false}};
+  return{ok:true,json:async()=>url==='/api/state'?{token:'token',effects:['Fire'],mode:1,leds:134,midpoint:40,audio:{installed:false,gain:8,gate:8}}:{phase:0,wifi:false}};
  }};
 vm.createContext(context);vm.runInContext(fs.readFileSync('LampPage.h','utf8').match(/<script>([\s\S]*?)<\/script>/)[1],context);
 (async()=>{
@@ -20,5 +20,8 @@ vm.createContext(context);vm.runInContext(fs.readFileSync('LampPage.h','utf8').m
  assert.equal(el('audioStatus').textContent,'Busy');
  const before=requests.length;el('audioGain').value='65';await el('saveAudio').onclick();assert.equal(requests.length,before);
  el('audioGain').value='32';el('audioScale').value='401';await el('saveAudio').onclick();assert.equal(requests.length,before);
+ reject=false;el('midpoint').value='50';await el('geometryForm').onsubmit({preventDefault(){}});
+ assert.deepEqual(requests.at(-1),{url:'/api/geometry',token:'token',data:{midpoint:'50'}});
+ const count=requests.length;el('midpoint').value='134';await el('geometryForm').onsubmit({preventDefault(){}});assert.equal(requests.length,count);
  console.log('PASS: microphone settings load, authenticated provisioning, bounds and failure recovery.');
 })().catch(e=>{console.error(e);process.exitCode=1});

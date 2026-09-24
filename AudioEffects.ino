@@ -9,7 +9,7 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
   level = smoothAudioLevel(level, audio.valid ? audio.level : 0, elapsed, options.speed);
   last = now; previousMode = mode;
   const CRGB primary(color.r, color.g, color.b), secondary(options.r, options.g, options.b);
-  const uint16_t left = (NUM_LEDS + 1) / 2;
+  const uint16_t left = lampSplitCount(NUM_LEDS, lampMidpoint);
   for (uint16_t i = 0; i < NUM_LEDS; ++i) {
     const uint16_t size = i < left ? left : NUM_LEDS - left;
     // Both strip ends at base, midpoint at top.

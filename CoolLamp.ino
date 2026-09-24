@@ -5,6 +5,7 @@
 #include <ESP32RotaryEncoder.h>
 #include <FastLED.h>
 #include "LampConfig.h"
+#include "LampGeometry.h"
 #include "LampControl.h"
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
@@ -98,6 +99,7 @@ void setup() {
 
   beginLampAudio();
   loadLampSettings();
+  loadLampGeometry();
   loadLampColors();
   activeLedCount = lampSettings.ledCount;
   // Reserve only the configured strip length; leave RAM for Wi-Fi TLS buffers.
@@ -108,7 +110,7 @@ void setup() {
   if (!fireHeat) { activeLedCount = 1; fireHeat = emergencyHeat; }
   splitHeat = fireHeat + NUM_LEDS;
   splitHeat[0] = 200;
-  if (NUM_LEDS > 1) splitHeat[(NUM_LEDS + 1) / 2] = 200;
+  if (NUM_LEDS > 1) splitHeat[lampSplitCount(NUM_LEDS, lampMidpoint)] = 200;
   Brightness = lampSettings.brightness;
   Mode = lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE;
 

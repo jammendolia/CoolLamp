@@ -240,6 +240,8 @@ for(const button of document.querySelectorAll('[data-category]'))button.onclick=
 $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new Set(selected.favorites||[]);if(favorites.has(state.mode))favorites.delete(state.mode);else favorites.add(state.mode);selected=store.upsert({...selected,favorites:[...favorites]});$('favoriteEffect').setAttribute('aria-pressed',String(favorites.has(state.mode)));filterEffects();};
 function fillNetwork() {
   const raw=wifiLamp.raw;
+  $('geometrySettings').hidden=raw.midpoint===undefined;
+  $('midpoint').max=Math.max(0,raw.leds-1);$('midpoint').value=raw.midpoint?Math.min(raw.midpoint,raw.leds-1):0;
   $('audioSettings').hidden=!raw.audio;
   if(raw.audio){$('microphoneInstalled').checked=raw.audio.installed;$('audioGain').value=raw.audio.gain;$('audioGate').value=raw.audio.gate;$('audioScale').value=raw.audio.scale??100;$('audioScale').disabled=raw.audio.scale===undefined;audioLabels();}
   for(const id of ['ssid','leds','milliamps'])$(id).value=raw[id];
@@ -285,6 +287,11 @@ $('networkForm').onsubmit=e=>{
     const message=await wifiLamp.request('/api/config',data);
     if(data.adminPassword)await credential(selected.id,data.adminPassword);
     await wifiLamp.disconnect();status(message+' Find the lamp again after it restarts.');
+  });
+};
+$('geometryForm').onsubmit=e=>{
+  e.preventDefault();networkAction(async()=>{
+    status(await wifiLamp.configureGeometry(Number($('midpoint').value)));
   });
 };
 function audioLabels() {

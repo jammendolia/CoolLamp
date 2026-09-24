@@ -40,8 +40,8 @@ CRGB splitFireColor(uint8_t heat, bool reverseColors, uint8_t palette)
 
 void FireSplit(bool reverse, bool reverseColors, uint8_t palette)
 {
-  const int leftCount = (NUM_LEDS + 1) / 2;
-  const int rightCount = NUM_LEDS / 2;
+  const int leftCount = lampSplitCount(NUM_LEDS, lampMidpoint);
+  const int rightCount = NUM_LEDS - leftCount;
   // Give both bases some heat on first entry, then evolve independently.
   uint8_t* leftHeat = splitHeat;
   uint8_t* rightHeat = splitHeat + leftCount;

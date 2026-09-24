@@ -197,6 +197,7 @@ void sendLampState()
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
+  state += ",\"midpoint\":" + String(lampMidpoint) + ",\"effectiveMidpoint\":" + String(lampSplitCount(NUM_LEDS, lampMidpoint));
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   state += ",\"leds\":" + String(NUM_LEDS) + ",\"milliamps\":" + String(lampSettings.milliAmps);
   state += ",\"power\":" + String(PowerOn ? "true" : "false");
@@ -329,6 +330,19 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/geometry", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    uint32_t midpoint;
+    if (!readNumber("midpoint",0,NUM_LEDS-1,midpoint)) {
+      lampServer.send(400,"text/plain","Center must be 0 (automatic) or a boundary before the last LED."); return;
+    }
+    if (!saveLampGeometry(midpoint,NUM_LEDS)) { lampServer.send(500,"text/plain","Could not save center point."); return; }
+    memset(splitHeat,0,NUM_LEDS);
+    splitHeat[0] = 200;
+    if (NUM_LEDS > 1) splitHeat[lampSplitCount(NUM_LEDS,lampMidpoint)] = 200;
+    lampServer.send(200,"text/plain","Center point saved and applied.");
+  });
   lampServer.on("/api/audio", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampAudioJson());
