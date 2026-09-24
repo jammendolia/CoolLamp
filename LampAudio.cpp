@@ -159,6 +159,14 @@ bool stopLampAudio() {
   vTaskDelete(worker); worker = nullptr;
   releaseReceiver(); return true;
 }
+bool tuneLampAudio(uint8_t nextGain, uint16_t nextGate, uint16_t nextScale) {
+  if (!installed || nextGain<1 || nextGain>64 || nextGate>1024 || nextScale<100 || nextScale>400) return false;
+  if (nextGain==gain && nextGate==gate && nextScale==scale) return true;
+  // Worker reads configuration without a lock: stop before applying new values.
+  if (!stopLampAudio() || !saveLampAudioConfiguration(installed,nextGain,nextGate,nextScale)) return false;
+  gain=nextGain;gate=nextGate;scale=nextScale;
+  return true;
+}
 bool adjustLampAudioGain(bool increase) {
   const uint8_t next = increase ? (gain >= 32 ? 64 : gain * 2) : (gain <= 2 ? 1 : gain / 2);
   if (next == gain) return true;
@@ -186,7 +194,7 @@ LampAudioFeatures getLampAudioFeatures() {
 }
 String lampAudioJson() {
   const auto f = getLampAudioFeatures();
-  return String("{\"installed\":") + (installed ? "true" : "false") + ",\"gain\":" + gain + ",\"gate\":" + gate + ",\"scale\":" + scale +
+  return String("{\"installed\":") + (installed ? "true" : "false") + ",\"liveTuning\":true,\"gain\":" + gain + ",\"gate\":" + gate + ",\"scale\":" + scale +
     ",\"running\":" + (f.running ? "true" : "false") + ",\"valid\":" + (f.valid ? "true" : "false") +
     ",\"signalSeen\":" + (f.signalSeen ? "true" : "false") + ",\"level\":" + f.level +
     ",\"rms\":" + f.rms + ",\"peak\":" + f.peak + ",\"blocks\":" + f.sequence +

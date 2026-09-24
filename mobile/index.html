@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#10151d"><title>CoolLamp</title></head>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#101313"><title>CoolLamp</title></head>
 <body><main>
-  <header class="app-header"><div><p class="eyebrow">YOUR LIGHT, YOUR WAY</p><h1>CoolLamp<span class="brand-dot">.</span></h1></div><span id="connectionBadge" class="badge">Not connected</span></header>
+  <header class="app-header"><div><p class="eyebrow">LIGHT STUDIO</p><h1>CoolLamp<span class="brand-dot">.</span></h1></div><span id="connectionBadge" class="badge">Not connected</span></header>
 <nav aria-label="Main navigation"><button data-page="lamps" aria-current="page">My lamps</button><button data-page="light">Light</button><button data-page="settings">Settings</button></nav>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
   <section id="page-lamps"><div class="section-title"><div><p class="eyebrow">AT HOME</p><h2>My lamps</h2></div><button id="discover" class="compact">Find on Wi-Fi</button></div>
@@ -11,34 +11,61 @@
   <div class="connection"><button id="reconnect" hidden>Reconnect to my lamp</button><button id="connect">Find a lamp flashing blue</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
 <p class="hint">For a new Bluetooth pairing, hold the knob for six seconds until the lamp flashes blue.</p></details></section>
 <section id="page-light" hidden><div class="section-title"><div><p class="eyebrow" id="lampRoom">YOUR LAMP</p><h2 id="lampTitle">Choose a lamp</h2></div></div><div id="lampArt" class="lamp-art" aria-hidden="true"><svg viewBox="0 0 360 100"><path d="M25 74 C70 74 78 18 119 18 S161 83 202 83 S254 18 300 18 S334 50 340 50"/></svg></div>
-  <fieldset id="controls" disabled><legend>Light & effects</legend>
+  <fieldset id="controls" disabled><legend class="sr-only">Light & effects</legend>
     <button id="power" aria-pressed="false">Turn on</button>
-    <label for="brightness">Brightness <output id="brightnessValue">39%</output></label>
-    <input id="brightness" type="range" min="1" max="255" value="100">
-    <div class="section-title"><h3 class="effects-heading">Effects</h3><button id="favoriteEffect" class="compact secondary" aria-pressed="false">Favorite</button></div><input id="effectSearch" type="search" placeholder="Search effects" aria-label="Search effects"><div id="effectCategories" class="chips" aria-label="Effect categories"><button type="button" data-category="all" aria-pressed="true">All</button><button type="button" data-category="favorites" aria-pressed="false">Favorites</button><button type="button" data-category="calm" aria-pressed="false">Calm</button><button type="button" data-category="fire" aria-pressed="false">Fire</button><button type="button" data-category="color" aria-pressed="false">Color</button><button type="button" data-category="audio" aria-pressed="false" hidden>Audio</button></div><p id="currentEffect" class="hint"></p><div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect"></div><select id="effect" hidden aria-hidden="true" tabindex="-1"></select>
-    <div id="colorControls" hidden>
-      <label for="color">Color for this effect</label><input id="color" type="color" value="#ff3c6e">
-      <p id="colorHint" class="hint"></p>
-      <button id="resetColor" class="secondary">Restore original colors</button>
-    </div>
-    <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors and Custom solid.</p>
-    <fieldset id="effectOptions" hidden disabled><legend>Make it yours</legend>
-      <label for="speed">Speed <output id="speedValue">50%</output></label>
-      <input id="speed" type="range" min="1" max="100" value="50">
-      <label for="intensity">Intensity <output id="intensityValue">100%</output></label>
-      <input id="intensity" type="range" min="0" max="100" value="100">
-      <label><input id="dual" type="checkbox"> Use two colors</label>
-      <label for="secondaryColor">Second color</label><input id="secondaryColor" type="color" value="#23a0ff">
-      <p class="hint">For original effects, apply a custom primary color to enable two colors. Speed applies to animated effects.</p>
-    </fieldset>
+    <details id="effectLibrary" class="effect-library"><summary>Change effect <span id="libraryCount" class="summary-detail">Explore the collection</span></summary>
+    <div class="section-title"><h3 class="effects-heading">Find your next mood</h3></div><input id="effectSearch" type="search" placeholder="Search effects" aria-label="Search effects"><div id="effectCategories" class="chips" aria-label="Effect categories"><button type="button" data-category="all" aria-pressed="true">All</button><button type="button" data-category="favorites" aria-pressed="false">Favorites</button><button type="button" data-category="calm" aria-pressed="false">Calm</button><button type="button" data-category="fire" aria-pressed="false">Fire</button><button type="button" data-category="color" aria-pressed="false">Color</button><button type="button" data-category="audio" aria-pressed="false" hidden>Audio</button></div><p id="currentEffect" class="hint"></p><div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect"></div><select id="effect" hidden aria-hidden="true" tabindex="-1"></select>
+    </details>
+    <section id="effectPane" class="effect-pane" aria-labelledby="effectTitle" hidden>
+      <div class="effect-heading"><div><p id="effectFamily" class="eyebrow">LIGHT STUDIO</p><h2 id="effectTitle">Your effect</h2></div><button id="favoriteEffect" class="favorite-button secondary" aria-pressed="false" aria-label="Favorite this effect">♡</button></div>
+      <p id="effectDescription" class="effect-description"></p>
+      <div id="effectTabs" class="effect-tabs" role="tablist" aria-label="Effect settings">
+        <button id="effect-tab-look" type="button" role="tab" data-effect-tab="look" aria-controls="effectBody" aria-selected="true">Light</button>
+        <button id="effect-tab-motion" type="button" role="tab" data-effect-tab="motion" aria-controls="effectBody" aria-selected="false" tabindex="-1">Motion</button>
+        <button id="effect-tab-sound" type="button" role="tab" data-effect-tab="sound" aria-controls="effectBody" aria-selected="false" tabindex="-1" hidden>Sound</button>
+      </div>
+      <div id="effectBody" role="tabpanel" aria-labelledby="effect-tab-look">
+      <div id="lightControls" class="control-section">
+        <p class="section-kicker">LIGHT</p>
+        <label for="brightness">Brightness <output id="brightnessValue">39%</output></label>
+        <input id="brightness" type="range" min="1" max="255" value="100">
+        <div class="range-captions"><span>Soft</span><span>Luminous</span></div>
+        <p class="micro-copy">Shared lamp brightness</p>
+      </div>
+      <div id="colorControls" class="control-section" hidden>
+        <div class="section-title"><p class="section-kicker">PALETTE</p><span id="paletteState" class="small-badge">Original</span></div>
+        <label for="color" id="primaryColorLabel">Primary color</label><input id="color" type="color" value="#ff3c6e">
+        <p id="colorHint" class="hint"></p>
+      </div>
+      <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors.</p>
+      <fieldset id="effectOptions" hidden disabled><legend class="sr-only">Effect settings</legend>
+        <div class="palette-options"><label class="switch-row"><span>Two-color palette</span><input id="dual" type="checkbox"></label><div id="secondaryColorRow"><label for="secondaryColor" id="secondaryColorLabel">Secondary color</label><input id="secondaryColor" type="color" value="#23a0ff"></div></div>
+        <div id="motionControls" class="control-section"><p class="section-kicker">MOVEMENT</p><label for="speed"><span id="speedLabel">Motion speed</span> <output id="speedValue">50%</output></label><input id="speed" type="range" min="1" max="100" value="50"><div class="range-captions"><span>Slow</span><span>Fast</span></div><p id="speedHint" class="hint"></p></div>
+        <div id="intensityControls" class="control-section"><label for="intensity"><span id="intensityLabel">Effect glow</span> <output id="intensityValue">100%</output></label><input id="intensity" type="range" min="0" max="100" value="100"><p id="intensityHint" class="hint"></p></div>
+      </fieldset>
+      <div id="effectAudio" class="control-section audio-section" hidden>
+        <div class="section-title"><p class="section-kicker">AUDIO RESPONSE</p><span class="small-badge">Shared</span></div>
+        <p class="hint">Tune once. Every audio effect follows.</p>
+        <p id="audioConnectionHint" class="hint" role="status"></p>
+        <fieldset id="audioTuning" disabled><legend class="sr-only">Shared audio tuning</legend>
+          <label for="audioGain">Sensitivity <output id="audioGainValue">8</output></label><input id="audioGain" type="range" min="1" max="64" value="8"><p class="micro-copy">Amplify quieter sounds.</p>
+          <label for="audioGate">Quiet cutoff <output id="audioGateValue">8</output></label><input id="audioGate" type="range" min="0" max="1024" value="8"><p class="micro-copy">Raise to ignore room noise.</p>
+          <label for="audioScale">Contrast <output id="audioScaleValue">1.00×</output></label><input id="audioScale" type="range" min="100" max="400" step="5" value="100"><p class="micro-copy">Scale factor: deeper darkness for quiet sounds, full brightness for loud ones.</p>
+          <button id="applyAudio" type="button">Apply to all audio effects</button>
+        </fieldset>
+        <p id="audioFeedback" class="hint" role="status" aria-live="polite"></p>
+      </div>
+      <button id="resetColor" class="text-button" type="button">Restore effect defaults</button>
+      </div>
+    </section>
     <button id="save" class="secondary">Use these settings at startup</button>
-    <p class="hint">Changes are live. Save to remember brightness, startup effect, and each effect’s colors, speed, and intensity after a restart.</p>
+    <p class="hint save-hint">Remembers the current effect, lamp brightness and your effect customizations. Audio tuning saves separately.</p>
   </fieldset>
 </section><section id="page-settings" hidden><h2>Lamp settings</h2><p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
 <form id="identityForm" class="panel"><h3>Make it yours</h3><label for="lampName">Lamp name</label><input id="lampName" maxlength="48" required><label for="room">Room</label><input id="room" maxlength="48"><button id="saveIdentity">Save name & room</button><button id="identify" type="button" class="secondary">Identify lamp</button><p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p></form>
 <details class="panel"><summary>Wi-Fi & advanced settings</summary><p class="hint" id="wifiSettingsHint">Connect over Wi-Fi to manage these settings. For first-time setup, hold the knob for three seconds, join its hotspot, then connect to 192.168.4.1 here.</p><fieldset id="networkSettings" disabled><form id="networkForm">
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button><label for="networks">Nearby networks</label><select id="networks"><option value="">Choose a network or enter its name below</option></select><label for="ssid">Network name</label><input id="ssid" maxlength="32" autocomplete="off"><label for="wifiPassword">Wi-Fi password</label><input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"><label class="toggle"><input id="openNetwork" type="checkbox"> Password-free network</label><label class="toggle"><input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
-<label for="leds">LED count</label><input id="leds" type="number" min="1" max="1024" required><label for="milliamps">Power limit (mA)</label><input id="milliamps" type="number" min="100" max="20000" required><label for="startupMode">Startup effect</label><select id="startupMode"></select><label for="startupBrightness">Startup brightness (1–255)</label><input id="startupBrightness" type="number" min="1" max="255" required><label for="adminPassword">New lamp access password</label><input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password"><p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p><button>Save & restart lamp</button></form><section id="geometrySettings" hidden><form id="geometryForm"><h3>Effect center</h3><label for="midpoint">Center after LED (0 = automatic)</label><input id="midpoint" type="number" min="0" max="1023" value="0" required><p class="hint">Count from the data-input end. The center lies between this LED and the next. Each side scales independently. Save LED-count changes first. If the strip gets shorter, the center is limited to its last boundary.</p><button>Save center point</button></form></section><section id="audioSettings" hidden><form id="audioForm"><h3>Microphone</h3><label><input id="microphoneInstalled" type="checkbox"> INMP441 microphone installed</label><label for="audioGain">Sensitivity <output id="audioGainValue">8</output></label><input id="audioGain" type="range" min="1" max="64" value="8" required><label for="audioScale">Scale factor <output id="audioScaleValue">1.00×</output></label><input id="audioScale" type="range" min="100" max="400" step="5" value="100"><p class="hint">Higher scale makes quieter sounds dark while loud sounds still reach full brightness. Start at 2×. Sensitivity controls amplification.</p><label for="audioGate">Noise gate <output id="audioGateValue">8</output></label><input id="audioGate" type="range" min="0" max="1024" value="8" required><p class="hint">Raise sensitivity for a stronger response to quiet sounds. Raise the noise gate if background noise keeps the light active. Microphone-free lamps should leave the installed setting off. Saving restarts the lamp.</p><button>Save microphone settings & restart</button></form></section><button id="pairingStatus" class="secondary">Check pairing status</button><button id="forgetPhones" class="secondary">Forget paired phones</button></fieldset></details>
+<label for="leds">LED count</label><input id="leds" type="number" min="1" max="1024" required><label for="milliamps">Power limit (mA)</label><input id="milliamps" type="number" min="100" max="20000" required><label for="startupMode">Startup effect</label><select id="startupMode"></select><label for="startupBrightness">Startup brightness (1–255)</label><input id="startupBrightness" type="number" min="1" max="255" required><label for="adminPassword">New lamp access password</label><input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password"><p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p><button>Save & restart lamp</button></form><section id="geometrySettings" hidden><form id="geometryForm"><h3>Effect center</h3><label for="midpoint">Center after LED (0 = automatic)</label><input id="midpoint" type="number" min="0" max="1023" value="0" required><p class="hint">Count from the data-input end. The center lies between this LED and the next. Each side scales independently. Save LED-count changes first. If the strip gets shorter, the center is limited to its last boundary.</p><button>Save center point</button></form></section><section id="audioSettings" hidden><form id="audioForm"><h3>Microphone hardware</h3><label class="switch-row"><span>Microphone installed</span><input id="microphoneInstalled" type="checkbox"></label><p class="hint">Enable audio effects on lamps fitted with a microphone. Sound tuning lives with each audio effect.</p><button>Save hardware setting & restart</button></form></section><button id="pairingStatus" class="secondary">Check pairing status</button><button id="forgetPhones" class="secondary">Forget paired phones</button></fieldset></details>
   <fieldset id="firmwareControls" disabled><legend>Lamp firmware</legend>
     <p>Installed: <strong id="firmwareVersion">Connect to view</strong></p>
     <p id="firmwareStatus" role="status"></p>

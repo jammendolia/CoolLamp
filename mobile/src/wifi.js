@@ -58,6 +58,17 @@ export class WifiTransport {
     await this.refresh();
     return message;
   }
+  // Apply from the active effect pane. Older firmware retains its restart behavior.
+  async tuneAudio({gain,gate,scale}) {
+    const audio=this.raw?.audio;
+    if(!audio?.installed) throw new Error('Connect to a lamp with an installed microphone.');
+    if(!Number.isInteger(gain)||gain<1||gain>64||!Number.isInteger(gate)||gate<0||gate>1024||
+      (scale!==undefined && (!Number.isInteger(scale)||scale<100||scale>400))) throw new Error('Check audio tuning ranges.');
+    if(!audio.liveTuning)return this.configureAudio({enabled:1,gain,gate,...(scale===undefined?{}:{scale})});
+    const message=await this.request('/api/audio/tuning',{gain,gate,scale:scale??audio.scale});
+    await this.refresh();
+    return message;
+  }
   // Call inside enqueue, like the other advanced settings actions. Save restarts the device.
   async configureAudio({enabled,gain,gate,scale}) {
     if (!this.raw?.audio) throw new Error('This firmware does not support microphone settings.');

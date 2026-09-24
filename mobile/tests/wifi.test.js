@@ -158,3 +158,23 @@ test('center setting validates strip boundaries, authenticates, and stays connec
     await assert.rejects(lamp.configureGeometry(40),/Update lamp firmware/);
   }finally{await lamp.disconnect();}
 });
+
+test('audio pane tuning applies without disconnecting on capable firmware',async()=>{
+  const {lamp,calls,setRaw}=setup();
+  setRaw({...fixture(),audio:{installed:true,gain:30,gate:8,scale:150,liveTuning:true}});
+  await lamp.connect('192.168.1.9','test');
+  try {
+    for(const data of [{gain:0,gate:8,scale:150},{gain:30,gate:1025,scale:150},{gain:30,gate:32,scale:99}])await assert.rejects(lamp.tuneAudio(data),/ranges/);
+    assert(!calls.some(c=>c.method==='POST'));
+    await lamp.enqueue(()=>lamp.tuneAudio({gain:30,gate:32,scale:120}));
+    const post=calls.find(c=>c.method==='POST');
+    assert(post.url.endsWith('/api/audio/tuning'));assert.equal(post.data,'gain=30&gate=32&scale=120');
+    assert.equal(post.headers['X-Lamp-Token'],'boot-token');assert(lamp.state);
+  }finally{await lamp.disconnect();}
+});
+test('audio pane tuning uses the older save-and-restart endpoint when required',async()=>{
+  const {lamp,calls,setRaw}=setup();setRaw({...fixture(),audio:{installed:true,gain:30,gate:8,scale:150}});
+  await lamp.connect('192.168.1.9','test');
+  await lamp.enqueue(()=>lamp.tuneAudio({gain:30,gate:32,scale:120}));
+  assert(calls.find(c=>c.method==='POST').url.endsWith('/api/audio'));assert.equal(lamp.state,null);
+});

@@ -358,6 +358,16 @@ void beginLampNetwork()
     lampServer.send(200,"text/plain","Microphone settings saved. Restarting; reconnect to refresh effects.");
     restartAt = millis() + 1000;
   });
+  lampServer.on("/api/audio/tuning", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (!lampHasMicrophone() || lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Enable the microphone and finish updating first."); return; }
+    uint32_t gain,gate,scale;
+    if (!readNumber("gain",1,64,gain) || !readNumber("gate",0,1024,gate) || !readNumber("scale",100,400,scale)) {
+      lampServer.send(400,"text/plain","Invalid audio tuning values."); return;
+    }
+    if (!tuneLampAudio(gain,gate,scale)) { lampServer.send(500,"text/plain","Could not apply audio tuning. Try again."); return; }
+    lampServer.send(200,"text/plain","Audio tuning saved for all audio effects.");
+  });
   lampServer.on("/api/audio/test", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (!lampHasMicrophone() || lampUpdateOwnsResources()) {

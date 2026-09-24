@@ -17,6 +17,7 @@ void beginLampAudio();
 bool lampHasMicrophone();
 bool saveLampAudioConfiguration(bool enabled, uint8_t gain, uint16_t gate, uint16_t scale = 0);
 uint16_t lampAudioScale();
+bool tuneLampAudio(uint8_t gain, uint16_t gate, uint16_t scale);
 bool adjustLampAudioGain(bool increase); // USB tuning; saves and applies without reboot.
 void serviceLampAudio(bool wanted, bool blocked);
 bool stopLampAudio(); // Bounded handshake; frees DMA before updater may allocate TLS.
