@@ -33,6 +33,7 @@ void error(int code) {
 }
 void capture(void*) {
   AudioAnalysis analysis;
+  AudioPeakHold peakHold;
   // Count captured frames, not wall time: queued DMA data may predate a stall.
   size_t warmup = 4800;
   unsigned failures = 0;
@@ -49,10 +50,12 @@ void capture(void*) {
     const size_t count = bytes / 8;
     if (warmup) { warmup = count >= warmup ? 0 : warmup - count; continue; }
     const auto level = analysis.process(samples, count, gain, gate, scale);
+    const uint32_t capturedAt = millis();
+    const uint8_t heldLevel = peakHold.process(level.level, capturedAt);
     const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
     portENTER_CRITICAL(&mux);
-    ++features.sequence; features.timestamp = millis();
-    features.rms = level.rms; features.peak = level.peak; features.level = level.level;
+    ++features.sequence; features.timestamp = capturedAt;
+    features.rms = level.rms; features.peak = level.peak; features.level = heldLevel;
     features.signalSeen |= level.signal; features.valid = true; features.error = 0;
     features.stackFree = stackFree;
     portEXIT_CRITICAL(&mux);

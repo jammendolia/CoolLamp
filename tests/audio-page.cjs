@@ -12,7 +12,7 @@ vm.createContext(context);vm.runInContext(fs.readFileSync('LampPage.h','utf8').m
  await new Promise(r=>setImmediate(r));
  assert.equal(el('microphoneInstalled').checked,false);assert.equal(el('audioGain').value,8);
  el('microphoneInstalled').checked=true;el('audioGain').value='16';el('audioGate').value='12';el('audioScale').value='200';el('audioScale').oninput();
- assert.equal(el('audioScaleValue').value,'2.00×');
+ assert.equal(el('audioScaleValue').value,'2.00×');el('audioGate').oninput();assert.equal(el('audioGateValue').value,'12');
  await el('saveAudio').onclick();
  assert.deepEqual(requests.at(-1),{url:'/api/audio',token:'token',data:{enabled:'1',gain:'16',gate:'12',scale:'200'}});
  assert.equal(el('saveAudio').disabled,true);assert.match(el('audioStatus').textContent,/restarting/);

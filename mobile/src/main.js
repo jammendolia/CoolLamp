@@ -296,9 +296,11 @@ $('geometryForm').onsubmit=e=>{
 };
 function audioLabels() {
   $('audioGainValue').value=$('audioGain').value;
+  $('audioGateValue').value=$('audioGate').value;
   $('audioScaleValue').value=(Number($('audioScale').value)/100).toFixed(2)+'×';
 }
 $('audioGain').oninput=audioLabels;
+$('audioGate').oninput=audioLabels;
 $('audioScale').oninput=audioLabels;
 $('audioForm').onsubmit=e=>{
   e.preventDefault();

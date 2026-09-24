@@ -48,6 +48,21 @@ public:
   }
 };
 
+// Preserve short transients across render scheduling and the visual attack ramp.
+// Capture continues publishing fresh samples during the hold; stale-data protection
+// remains the renderer's responsibility. Unsigned elapsed time handles clock wrap.
+class AudioPeakHold {
+  uint8_t held = 0;
+  uint32_t since = 0;
+public:
+  uint8_t process(uint8_t level, uint32_t now) {
+    if (level >= held || uint32_t(now - since) >= 80) {
+      held = level; since = now;
+    }
+    return held;
+  }
+};
+
 // Time-based smoothing belongs to rendering, never to the effect's virtual clock.
 inline uint8_t smoothAudioLevel(uint8_t previous, uint8_t target, uint32_t elapsed, uint8_t speed) {
   const uint32_t duration = target > previous ? 20 : 400 - uint32_t(speed) * 3;

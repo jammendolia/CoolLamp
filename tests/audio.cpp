@@ -47,6 +47,24 @@ int main() {
   assert(AudioAnalysis::scaleLevel(127,200)==0);
   assert(AudioAnalysis::scaleLevel(191,200)==127);
   assert(AudioAnalysis::scaleLevel(170,300)==0);
+  AudioPeakHold hold;
+  assert(hold.process(0,100)==0);
+  assert(hold.process(240,116)==240);
+  assert(hold.process(0,132)==240);
+  assert(hold.process(0,180)==240);
+  assert(hold.process(0,196)==0);
+  assert(hold.process(90,212)==90);
+  assert(hold.process(180,228)==180);
+  assert(hold.process(0,307)==180);
+  assert(hold.process(0,308)==0);
+  AudioPeakHold wrap;
+  assert(wrap.process(200,0xfffffff0U)==200);
+  assert(wrap.process(0,32)==200);
+  assert(wrap.process(0,64)==0);
+  // A 16 ms clap remains visible to a renderer arriving 48 ms later.
+  AudioPeakHold clap;
+  clap.process(255,1000);clap.process(0,1016);clap.process(0,1032);
+  assert(smoothAudioLevel(0,clap.process(0,1048),16,50)>200);
   uint8_t level=0;
   for(int i=0;i<10;++i) level=smoothAudioLevel(level,200,16,50);
   assert(level>=198);
