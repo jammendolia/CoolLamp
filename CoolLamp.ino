@@ -12,6 +12,7 @@
 #include "LampGestures.h"
 #include "LampAudio.h"
 #include "LampVu.h"
+#include "LampFountain.h"
 #include "AudioAnalysis.h"
 #include <new>
 SET_LOOP_TASK_STACK_SIZE(4096);
@@ -110,6 +111,7 @@ void setup() {
   loadLampGeometry();
   loadLampColors();
   loadLampVuColors();
+  loadLampFountainColors();
   activeLedCount = lampSettings.ledCount;
   // Reserve only the configured strip length; leave RAM for Wi-Fi TLS buffers.
   leds = new (std::nothrow) CRGB[2 * NUM_LEDS]{};

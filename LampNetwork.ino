@@ -197,6 +197,9 @@ void sendLampState()
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
+  state += ",\"fountainColors\":[";
+  for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=fountainPaletteColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
+  state += "]";
   state += ",\"vuColors\":[";
   for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=lampVuColors[i];state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
   state += "]";
@@ -345,6 +348,19 @@ void beginLampNetwork()
     splitHeat[0] = 200;
     if (NUM_LEDS > 1) splitHeat[lampSplitCount(NUM_LEDS,lampMidpoint)] = 200;
     lampServer.send(200,"text/plain","Center point saved and applied.");
+  });
+  lampServer.on("/api/fountain-colors", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources() || !lampHasMicrophone()){lampServer.send(409,"text/plain","Enable the microphone and finish updating first.");return;}
+    FountainColor colors[3]={{255,65,0},{0,230,130},{75,30,255}};
+    if(lampServer.arg("reset")!="1") {
+      const char* keys[9]={"r0","g0","b0","r1","g1","b1","r2","g2","b2"};
+      uint32_t values[9];
+      for(unsigned i=0;i<9;++i)if(!readNumber(keys[i],0,255,values[i])){lampServer.send(400,"text/plain","Invalid Fountain colors.");return;}
+      for(unsigned i=0;i<3;++i)colors[i]={uint8_t(values[i*3]),uint8_t(values[i*3+1]),uint8_t(values[i*3+2])};
+    }
+    if(!saveLampFountainColors(colors)){lampServer.send(500,"text/plain","Could not save Fountain colors.");return;}
+    lampServer.send(200,"text/plain","Fountain colors saved and applied.");
   });
   lampServer.on("/api/vu-colors", HTTP_POST, []() {
     if(!authorizedLampRequest(true))return;

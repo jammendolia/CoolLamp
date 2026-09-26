@@ -29,7 +29,7 @@ const status = message => { $('status').textContent = message; };
 let state = null, editingBrightness = false, busy = false;
 let firmware = null;
 let effectOptions = null, editingOptions = false;
-let vuDirty = false;
+let vuDirty = false, fountainDirty = false;
 let audioDirty = false, effectTab = 'look', paneMode = null;
 function paintRanges() {
   for(const slider of document.querySelectorAll('input[type=range]')) {
@@ -51,9 +51,9 @@ function renderEffectPane() {
   for(const tab of document.querySelectorAll('[data-effect-tab]')){tab.setAttribute('aria-selected',String(tab.dataset.effectTab===effectTab));tab.tabIndex=tab.dataset.effectTab===effectTab?0:-1;}
   $('effectBody').setAttribute('aria-labelledby','effect-tab-'+effectTab);
   $('lightControls').hidden=effectTab!=='look';
-  $('colorControls').hidden=profile.vu||!state.supportsColor||effectTab!=='look';
+  $('colorControls').hidden=profile.vu||profile.fountain||!state.supportsColor||effectTab!=='look';
   $('colorUpgrade').hidden=state.supportsColor||effectTab!=='look';
-  document.querySelector('.palette-options').hidden=profile.vu||effectTab!=='look'||!state.color?.enabled;
+  document.querySelector('.palette-options').hidden=profile.vu||profile.fountain||effectTab!=='look'||!state.color?.enabled;
   $('effectTitle').textContent=entry.name;
   $('effectFamily').textContent=profile.audio?'SOUND & LIGHT':(entry.category||'LIGHT').toUpperCase()+' COLLECTION';
   $('effectDescription').textContent=profile.description;
@@ -69,12 +69,18 @@ function renderEffectPane() {
     'Bass is warm, mids are green, treble is violet. Choose a color to create your own frequency palette.':
     state.color?.enabled?'Your palette is active.':'Original colors are active. Choose a primary color to unlock your own palette.';
   $('effectAudio').hidden=!profile.audio||effectTab!=='sound';
-  $('resetColor').hidden=profile.vu||!state.supportsColor||effectTab==='sound';
-  $('vuControls').hidden=!profile.vu||effectTab!=='look';
+  $('resetColor').hidden=profile.vu||profile.fountain||!state.supportsColor||effectTab==='sound';
+  $('vuControls').hidden=!profile.vu||profile.fountain||effectTab!=='look';
   const vu=lamp===wifiLamp?wifiLamp.raw?.vuColors:null;
   $('vuFields').disabled=!vu||busy;
   if(!vu)$('vuFeedback').textContent='Connect over Wi-Fi to firmware 1.6.2 or newer to set meter colors.';
   if(vu&&!vuDirty){['vuLow','vuMid','vuPeak'].forEach((id,i)=>$(id).value='#'+vu[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintVu();}
+
+  $('fountainControls').hidden=!profile.fountain||effectTab!=='look';
+  const fountain=lamp===wifiLamp?wifiLamp.raw?.fountainColors:null;
+  $('fountainFields').disabled=!fountain||busy;
+  if(!fountain)$('fountainFeedback').textContent='Connect over Wi-Fi to firmware 1.6.6 or newer to set fountain colors.';
+  if(fountain&&!fountainDirty){['fountainLow','fountainMid','fountainPeak'].forEach((id,i)=>$(id).value='#'+fountain[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintFountain();}
 
   const audio=lamp===wifiLamp?wifiLamp.raw?.audio:null;
   $('audioTuning').disabled=!audio || busy;
@@ -147,7 +153,7 @@ const callbacks = {
     renderOptions();
   },
   onDisconnect() {
-    firmware = null; effectOptions = null; vuDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';
+    firmware = null; effectOptions = null; vuDirty=false;fountainDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';$('fountainFeedback').textContent='';
     state = null; filterEffects(); $('controls').disabled = true; $('disconnect').hidden = true;
     renderFirmware();
     renderOptions();
@@ -417,3 +423,15 @@ async function saveVu(reset=false){
   finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
 }
 $('applyVu').onclick=()=>saveVu();$('resetVu').onclick=()=>saveVu(true);
+
+function paintFountain(){const [a,b,c]=['fountainLow','fountainMid','fountainPeak'].map(id=>$(id).value);$('fountainPreview').style.background=`linear-gradient(to right,${a} 0 33.33%,${b} 33.33% 66.67%,${c} 66.67% 100%)`;}
+for(const id of ['fountainLow','fountainMid','fountainPeak'])$(id).oninput=()=>{fountainDirty=true;paintFountain();$('fountainFeedback').textContent='Unsaved fountain colors';};
+async function saveFountain(reset=false){
+  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  const colors=reset?null:['fountainLow','fountainMid','fountainPeak'].map(id=>$(id).value.slice(1).match(/../g).map(v=>parseInt(v,16)));
+  busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
+  try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureFountainColors(colors));fountainDirty=false;$('fountainFeedback').textContent=message;status(message);}
+  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('fountainFeedback').textContent=e.message;status(e.message);}
+  finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+}
+$('applyFountain').onclick=()=>saveFountain();$('resetFountain').onclick=()=>saveFountain(true);

@@ -1,3 +1,12 @@
+// Until a three-color palette is saved, retain the exact legacy color mapping.
+CRGB fountainPaletteColor(uint8_t band) {
+  if(lampFountainCustom){const auto c=lampFountainColors[band];return CRGB(c.r,c.g,c.b);}
+  const auto c=getLampColor(MODE_BAND_FOUNTAIN);const auto o=getLampEffectOptions(MODE_BAND_FOUNTAIN);
+  const CRGB bass=c.enabled?CRGB(c.r,c.g,c.b):CRGB(255,65,0);
+  const CRGB treble=c.enabled?(o.dual?CRGB(o.r,o.g,o.b):bass):CRGB(75,30,255);
+  return band==0?bass:band==2?treble:c.enabled?blend(bass,treble,128):CRGB(0,230,130);
+}
+
 // Fixed-size visual state; never allocate in the rendering loop.
 struct AudioPulse { uint32_t born; uint8_t strength; CRGB color; };
 static AudioPulse audioPulses[6]{};
@@ -67,6 +76,8 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
     auto& pulse=audioPulses[audioPulseNext++%6];pulse={now,audio.level,spectral};
   }
   audioBeatSeen=audio.beat;audioBassSeen=audio.bassBeat;
+  CRGB fountainColors[3];
+  if(mode==MODE_BAND_FOUNTAIN)for(unsigned b=0;b<3;++b)fountainColors[b]=fountainPaletteColor(b);
   const uint32_t duration=1600-uint32_t(options.speed)*10;
   const uint16_t left = lampSplitCount(NUM_LEDS, lampMidpoint);
   for (uint16_t i = 0; i < NUM_LEDS; ++i) {
@@ -88,11 +99,10 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
         tint=spectral;tint.nscale8(fill);
         if(level && audioPeak && abs(int(position)-audioPeak)<5){CRGB marker=color.enabled?spectral:CRGB(255,255,255);marker.nscale8(level);tint+=marker;}
       } else if(mode==MODE_BAND_FOUNTAIN) {
-        const CRGB colors[3]={bassColor,midColor,highColor};
         for(unsigned b=0;b<3;++b){
           const uint8_t bandHeight=uint16_t(level)*audioBandLevels[b]/255;
           const int amount=int(bandHeight)*size-int(height)*255;
-          CRGB layer=colors[b];layer.nscale8(amount<=0?0:amount>=255?180:uint32_t(amount)*180/255);tint+=layer;
+          CRGB layer=fountainColors[b];layer.nscale8(amount<=0?0:amount>=255?180:uint32_t(amount)*180/255);tint+=layer;
         }
       } else if(mode==MODE_SPECTRAL_EMBERS || mode==MODE_RAINBOW_EMBERS) {
         const uint8_t flame=uint16_t(level)*audioBandLevels[0]/255;

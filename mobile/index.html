@@ -50,6 +50,18 @@
         </fieldset>
         <p id="vuFeedback" class="hint" role="status"></p>
       </section>
+      <section id="fountainControls" class="control-section" hidden>
+        <div class="control-heading"><span class="section-kicker">FREQUENCY COLORS</span><span class="small-badge">Three independent bands</span></div>
+        <div id="fountainPreview" class="vu-preview" aria-hidden="true"></div>
+        <fieldset id="fountainFields"><legend class="sr-only">Fountain band colors</legend>
+          <label class="vu-zone" for="fountainLow"><span>Bass <small>Low frequencies</small></span><input id="fountainLow" type="color" value="#ff4100"></label>
+          <label class="vu-zone" for="fountainMid"><span>Midrange <small>Middle frequencies</small></span><input id="fountainMid" type="color" value="#00e682"></label>
+          <label class="vu-zone" for="fountainPeak"><span>Treble <small>High frequencies</small></span><input id="fountainPeak" type="color" value="#4b1eff"></label>
+          <button id="applyFountain" type="button">Save fountain colors</button>
+          <button id="resetFountain" class="text-button" type="button">Restore frequency colors</button>
+        </fieldset>
+        <p id="fountainFeedback" class="hint" role="status"></p>
+      </section>
       <fieldset id="effectOptions" hidden disabled><legend class="sr-only">Effect settings</legend>
         <div class="palette-options"><label class="switch-row"><span>Two-color palette</span><input id="dual" type="checkbox"></label><div id="secondaryColorRow"><label for="secondaryColor" id="secondaryColorLabel">Secondary color</label><input id="secondaryColor" type="color" value="#23a0ff"></div></div>
         <div id="motionControls" class="control-section"><p class="section-kicker">MOVEMENT</p><label for="speed"><span id="speedLabel">Motion speed</span> <output id="speedValue">50%</output></label><input id="speed" type="range" min="1" max="100" value="50"><div class="range-captions"><span>Slow</span><span>Fast</span></div><p id="speedHint" class="hint"></p></div>

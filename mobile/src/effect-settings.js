@@ -26,7 +26,7 @@ family(['Spectrum Rise'], {description:'Volume becomes height. Frequency becomes
 family(['Bass Launch'], {description:'Bass hits launch color toward the center.',spectrum:true,speedLabel:'Pulse speed',speedHint:'Higher values send pulses to the top more quickly.'});
 family(['Spectral Embers'], {description:'Warm bass flames meet cool treble sparks.',spectrum:true,speedLabel:'Response speed',speedHint:'Adjusts how quickly the flame follows falling sound levels.'});
 family(['Beat Bloom'], {description:'Each attack blooms at the center and ripples outward.',spectrum:true,speedLabel:'Ripple speed',speedHint:'Higher values move ripples toward the ends more quickly.'});
-family(['Three-band Fountain'], {description:'Bass, mids and treble rise in three layers of color.',spectrum:true,speedLabel:'Response speed',speedHint:'Higher values make the layers fall faster.'});
+family(['Three-band Fountain'], {description:'Bass, mids and treble rise in three layers of color.',fountain:true,speedLabel:'Response speed',speedHint:'Higher values make the layers fall faster.'});
 family(['VU Meter'], {description:'Volume climbs from both ends: green, yellow, then red at the center.',vu:true,speedLabel:'Response speed',speedHint:'Higher values make the meter fall faster.'});
 family(['Rainbow Embers'], {description:'Audio-reactive flames with rainbow sparks dancing across the strip.',speedLabel:'Response speed',speedHint:'Adjusts how quickly the flame follows falling sound levels.',colorLabel:'Flame base',secondaryLabel:'Flame blend'});
 export function effectSettings(entry) {

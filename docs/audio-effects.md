@@ -49,3 +49,9 @@ Audio diagnostics expose `noiseFloor` and `effectiveGate` in raw RMS counts, alo
 Rainbow Embers is effect 47 in the Audio group. It preserves Spectral Embers' flame calculation, spark positions, timing and audio response. Only the spark colors change to a cycling rainbow. Flame colors remain configurable; spark colors are always rainbow. Existing effect IDs and settings are preserved, including migration of the eight-effect audio settings blob.
 
 Sound Glow now budgets the full-amplitude palette before audio modulation. Previously the frame power limiter could counteract changes in amplitude when the whole strip exceeded its current budget, making the glow appear static. The normal power limiter remains enabled. A concave response also improves quieter-sound visibility while keeping zero exactly black. Explicit black palettes and zero effect intensity remain respected. Physical confirmation is pending.
+
+## Three-band Fountain palette (1.6.6)
+
+The effect Light pane now has independent Bass, Midrange and Treble color pickers, a three-band preview, Save fountain colors, and Restore frequency colors. Editing requires the updated phone app, Wi-Fi and firmware 1.6.6 or newer. Defaults are orange, green and violet. Black is a valid band color.
+
+Until the first explicit palette save, rendering and the API retain the exact previous colors, including a blended midpoint for a custom two-color palette. All three colors then save atomically in a separate versioned `fountainV1` NVS record and apply immediately without reboot. Reset restores the three original frequency colors. Other effects and their existing settings are unaffected. Authenticated `/api/fountain-colors` accepts nine RGB channels (0–255) or `reset=1`; state exposes the effective `fountainColors` palette.

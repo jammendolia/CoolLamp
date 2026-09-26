@@ -137,3 +137,5 @@ fieldset > button, form > button, .connection > button { width: 100%; margin-top
 .vu-zone small{display:block;opacity:.6;font-size:12px;margin-top:4px}
 .vu-zone input[type=color]{width:72px;height:44px;margin:0;flex-shrink:0}
 #applyVu{margin-top:20px;width:100%}
+
+#applyFountain{margin-top:20px;width:100%}

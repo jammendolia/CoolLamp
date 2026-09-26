@@ -15,6 +15,7 @@ LampControlState control{3,100,true};
 LampControlState getLampControlState(){return control;}
 #include "../LampColors.ino"
 #include "../LampVu.cpp"
+#include "../LampFountain.cpp"
 // Host RGB and sine stand-ins exercise the actual effect loops and arithmetic.
 // Hardware compilation separately validates the real FastLED API.
 struct CRGB {
@@ -224,5 +225,22 @@ int main(){
   setLampColor(39,255,255,255);
   audioSnapshot={true,0};for(uint32_t t=501000;t<502000;t+=16)renderAudioEffect(39,t);
   for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
+  // Preserve legacy palette until first explicit three-band save.
+  resetLampColor(45);loadLampFountainColors();assert(!lampFountainCustom);
+  assert(fountainPaletteColor(1)==CRGB(0,230,130));
+  setLampColor(45,90,20,10);setLampEffectOptions(45,{50,100,1,10,40,90});
+  assert(fountainPaletteColor(1)==blend(CRGB(90,20,10),CRGB(10,40,90),128));
+  const FountainColor palette[3]={{255,0,0},{0,255,0},{0,0,255}};
+  Preferences::failWrites=true;assert(!saveLampFountainColors(palette) && !lampFountainCustom);
+  Preferences::failWrites=false;assert(saveLampFountainColors(palette));
+  lampFountainColors[1]={};loadLampFountainColors();assert(lampFountainCustom && lampFountainColors[1].g==255);
+  for(int band=0;band<3;++band){
+    audioSnapshot={true,255,uint16_t(band==0?100:0),uint16_t(band==1?100:0),uint16_t(band==2?100:0),0,0};
+    for(uint32_t t=600000;t<601000;t+=16)renderAudioEffect(45,t);
+    assert(leds[0]==(band==0?CRGB(180,0,0):band==1?CRGB(0,180,0):CRGB(0,0,180)));
+  }
+  const FountainColor black[3]{};assert(saveLampFountainColors(black));renderAudioEffect(45,601016);
+  for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
+  Preferences::storage["fountainV1"][0]=99;loadLampFountainColors();assert(!lampFountainCustom);
   std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }
