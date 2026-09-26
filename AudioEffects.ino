@@ -14,6 +14,26 @@ CRGB audioMix(CRGB a,CRGB b,CRGB c,uint8_t x,uint8_t y,uint8_t z) {
     (uint32_t(a.b)*x+uint32_t(b.b)*y+uint32_t(c.b)*z)/sum);
 }
 
+// Full rainbow for the spark layer only; same locations, timing and amplitude.
+CRGB audioRainbow(uint8_t hue) {
+  const CRGB wheel[7]={CRGB(255,0,0),CRGB(255,255,0),CRGB(0,255,0),CRGB(0,255,255),CRGB(0,0,255),CRGB(255,0,255),CRGB(255,0,0)};
+  const uint16_t phase=uint16_t(hue)*6;
+  return blend(wheel[phase>>8],wheel[(phase>>8)+1],uint8_t(phase));
+}
+
+// Full-amplitude reference for budgeting power before audio modulation.
+void soundGlowPalette(CRGB* frame) {
+  const auto c=getLampColor(MODE_SOUND_GLOW);
+  const auto o=getLampEffectOptions(MODE_SOUND_GLOW);
+  const uint16_t left=lampSplitCount(NUM_LEDS,lampMidpoint);
+  for(uint16_t i=0;i<NUM_LEDS;++i){
+    const uint16_t size=i<left?left:NUM_LEDS-left;
+    const uint16_t height=i<left?i:NUM_LEDS-1-i;
+    const uint8_t position=size>1?uint32_t(height)*255/(size-1):0;
+    frame[i]=o.dual?blend(CRGB(c.r,c.g,c.b),CRGB(o.r,o.g,o.b),position):CRGB(c.r,c.g,c.b);
+  }
+}
+
 void renderAudioEffect(uint8_t mode, uint32_t now) {
   static uint32_t last = 0;
   static uint8_t previousMode = 0, level = 0;
@@ -74,14 +94,14 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
           const int amount=int(bandHeight)*size-int(height)*255;
           CRGB layer=colors[b];layer.nscale8(amount<=0?0:amount>=255?180:uint32_t(amount)*180/255);tint+=layer;
         }
-      } else if(mode==MODE_SPECTRAL_EMBERS) {
+      } else if(mode==MODE_SPECTRAL_EMBERS || mode==MODE_RAINBOW_EMBERS) {
         const uint8_t flame=uint16_t(level)*audioBandLevels[0]/255;
         const int amount=int(flame)*size-int(height)*255;
         tint=blend(bassColor,midColor,position/3);
         const uint8_t flicker=160+effectHash(uint32_t(i)+now/55)%96;
         tint.nscale8(amount<=0?0:amount>=255?flicker:uint32_t(amount)*flicker/255);
         const uint32_t seed=effectHash(uint32_t(i)+now/80);
-        if(level && (seed&255)<uint16_t(level)*audioBandLevels[2]/1024){CRGB spark=highColor;spark.nscale8(level);tint+=spark;}
+        if(level && (seed&255)<uint16_t(level)*audioBandLevels[2]/1024){CRGB spark=mode==MODE_RAINBOW_EMBERS?audioRainbow(uint8_t((seed>>8)+now/32)):highColor;spark.nscale8(level);tint+=spark;}
       } else {
         for(auto& pulse:audioPulses){
           const uint32_t age=now-pulse.born;
@@ -98,7 +118,12 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
     } else if (mode == MODE_SOUND_METER) {
       const int coverage = int(level) * size - int(height) * 255;
       tint.nscale8(coverage <= 0 ? 0 : coverage >= 255 ? 255 : uint8_t(coverage));
-    } else tint.nscale8(level);
+    } else {
+      // A whole-strip glow needs more low-level visibility than a spatial meter.
+      // Concave response boosts quiet sound but preserves exact black at zero.
+      const uint8_t glow=255-uint16_t(255-level)*(255-level)/255;
+      tint.nscale8(glow);
+    }
     leds[i] = tint;
   }
 }

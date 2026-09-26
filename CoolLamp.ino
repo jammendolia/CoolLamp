@@ -78,7 +78,8 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_BEAT_BLOOM 44
 #define MODE_BAND_FOUNTAIN 45
 #define MODE_VU_METER 46
-#define MODE_MAX MODE_VU_METER
+#define MODE_RAINBOW_EMBERS 47
+#define MODE_MAX MODE_RAINBOW_EMBERS
 static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
@@ -194,7 +195,7 @@ void loop() {
   effectClockMs += 16;
   switch (Mode) {
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
-    case MODE_VU_METER:
+    case MODE_VU_METER: case MODE_RAINBOW_EMBERS:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:
       renderAudioEffect(Mode, now); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
@@ -289,6 +290,14 @@ void loop() {
   // Preserve the original frame for effects that fade or accumulate past pixels.
   const bool transform = Mode < 30 && color.enabled;
   ::memcpy(originalFrame, leds, NUM_LEDS * sizeof(CRGB));
+  uint8_t frameBrightness=PowerOn?Brightness:0;
+  if(Mode==MODE_SOUND_GLOW) {
+    // Reserve the power for a full glow first. Limiting the already-modulated
+    // frame can cancel changes in audio amplitude across the whole strip.
+    soundGlowPalette(leds);
+    frameBrightness=calculate_max_brightness_for_power_mW(frameBrightness,uint32_t(lampSettings.milliAmps)*5);
+    ::memcpy(leds,originalFrame,NUM_LEDS*sizeof(CRGB));
+  }
   if (transform) {
     for (int i = 0; i < NUM_LEDS; ++i) {
       // Hue-only rainbows become moving intensity bands with a single color.
@@ -299,7 +308,7 @@ void loop() {
     }
   }
   if (options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
-  FastLED.show();
+  FastLED.show(frameBrightness);
   ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
   ++lampRenderedFrames;
   lampMaxRenderUs = max(lampMaxRenderUs, uint32_t(micros() - renderStarted));

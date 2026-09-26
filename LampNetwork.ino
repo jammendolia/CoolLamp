@@ -45,7 +45,7 @@ const char* const effectNames[] = {
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
   "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain", "VU Meter"
+  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain", "VU Meter", "Rainbow Embers"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 

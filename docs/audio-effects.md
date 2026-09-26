@@ -43,3 +43,9 @@ Capture now settles for 300 ms and measures one second of background RMS before 
 Subsequent one-second windows can lower the learned floor if capture started during louder sound, but cannot raise it and gradually erase sustained music. Starting during continuous music can suppress that music until a quieter interval is observed; restart capture in quiet for calibration. A major later increase in background noise still requires a higher manual cutoff or restarting capture in quiet. Switching between audio effects retains the calibration. No microphone GPIO, sampling-rate or persisted-settings changes.
 
 Audio diagnostics expose `noiseFloor` and `effectiveGate` in raw RMS counts, alongside `effectiveGain`. Tests reproduce the old climb, then verify that a clap followed by five minutes of variable background stays dark after settling and that subsequent loud/sustained audio still responds. These simulated checks do not substitute for confirmation on the physical lamp.
+
+## Rainbow Embers and Sound Glow (1.6.5)
+
+Rainbow Embers is effect 47 in the Audio group. It preserves Spectral Embers' flame calculation, spark positions, timing and audio response. Only the spark colors change to a cycling rainbow. Flame colors remain configurable; spark colors are always rainbow. Existing effect IDs and settings are preserved, including migration of the eight-effect audio settings blob.
+
+Sound Glow now budgets the full-amplitude palette before audio modulation. Previously the frame power limiter could counteract changes in amplitude when the whole strip exceeded its current budget, making the glow appear static. The normal power limiter remains enabled. A concave response also improves quieter-sound visibility while keeping zero exactly black. Explicit black palettes and zero effect intensity remain respected. Physical confirmation is pending.

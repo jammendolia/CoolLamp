@@ -38,7 +38,7 @@ uint16_t beatsin16(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 uint8_t beatsin8(uint16_t,uint8_t,uint8_t,uint32_t,uint8_t){return 0;}
 uint16_t beatsin88(uint16_t,uint16_t,uint16_t,uint32_t,uint16_t){return 0;}
 int NUM_LEDS=134;CRGB* leds=nullptr;
-enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER,MODE_SPECTRUM_RISE,MODE_BASS_LAUNCH,MODE_SPECTRAL_EMBERS,MODE_BEAT_BLOOM,MODE_BAND_FOUNTAIN,MODE_VU_METER};
+enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MODE_STARS,MODE_BREATHING,MODE_BLOBS,MODE_DROPLETS_OUTWARD,MODE_SOUND_GLOW,MODE_SOUND_METER,MODE_SPECTRUM_RISE,MODE_BASS_LAUNCH,MODE_SPECTRAL_EMBERS,MODE_BEAT_BLOOM,MODE_BAND_FOUNTAIN,MODE_VU_METER,MODE_RAINBOW_EMBERS};
 #include "../NewEffects.ino"
 #include "../AudioAnalysis.h"
 struct AudioSnapshot { bool valid=true; uint8_t level=0; uint16_t bass=0,mid=0,treble=0; uint32_t beat=0,bassBeat=0; } audioSnapshot;
@@ -81,10 +81,15 @@ int main(){
   loadLampColors();assert(getLampColor(39).r==17 && getLampEffectOptions(40).speed==75);
   assert(!getLampColor(41).enabled);
   assert(setLampColor(45,1,2,3));assert(saveLampColors());loadLampColors();
-  assert(getLampColor(45).r==1 && Preferences::storage["audioEffectsV1"].size()==81);
+  assert(getLampColor(45).r==1 && Preferences::storage["audioEffectsV1"].size()==91);
   Preferences::storage["audioEffectsV1"].resize(71);
   loadLampColors();assert(getLampColor(45).r==1 && getLampEffectOptions(40).speed==75);
-  assert(setLampColor(46,2,3,4));assert(saveLampColors() && Preferences::storage["audioEffectsV1"].size()==81);
+  assert(setLampColor(46,2,3,4));assert(saveLampColors() && Preferences::storage["audioEffectsV1"].size()==91);
+  // The eight-effect 1.6.4 blob keeps every existing slot when adding effect 47.
+  Preferences::storage["audioEffectsV1"].resize(81);loadLampColors();
+  assert(getLampColor(45).r==1 && getLampColor(46).r==2);
+  assert(setLampColor(47,3,4,5) && saveLampColors());
+  assert(Preferences::storage["audioEffectsV1"].size()==91);
   microphone=false;
   assert(!setLampColor(39,1,2,3) && !setLampEffectOptions(40,{50,100,0,1,2,3}));
   control.mode=37;uint8_t packet[8];getLampEffectPacket(packet);assert(packet[0]==1&&packet[1]==37&&packet[2]==50);
@@ -155,7 +160,7 @@ int main(){
   for(int count:{1,2,3,134,1024}) for(uint16_t midpoint:{0,1,40,1000}) {
     NUM_LEDS=count;lampMidpoint=midpoint;std::vector<CRGB> frame(count+2);leds=frame.data()+1;
     const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
-    for(uint8_t mode=41;mode<=46;++mode) {
+    for(uint8_t mode=41;mode<=47;++mode) {
       resetLampColor(mode);bool lit=false;
       for(uint32_t t=1000;t<5000;t+=16) {
         audioSnapshot={true,200,100,60,30,t/400,t/500};renderAudioEffect(mode,t);
@@ -199,5 +204,25 @@ int main(){
   renderAudioEffect(46,11000);assert(leds[0]==CRGB(10,20,30) && leds[80]==CRGB(70,80,90));
   audioSnapshot={true,128};for(uint32_t t=11016;t<12000;t+=16)renderAudioEffect(46,t);
   assert(leds[0]==CRGB(10,20,30) && leds[60]==CRGB::Black && leds[100]==CRGB::Black);
+  // Rainbow changes only the sparks: without treble, both flame layers match.
+  NUM_LEDS=134;lampMidpoint=40;std::vector<CRGB> emberFrame(NUM_LEDS);leds=emberFrame.data();
+  resetLampColor(43);resetLampColor(47);
+  auto frameFor=[&](uint8_t mode,uint16_t treble){audioSnapshot={true,200,100,60,treble,0,0};for(uint32_t t=400000;t<401000;t+=16)renderAudioEffect(mode,t);return emberFrame;};
+  assert(frameFor(43,0)==frameFor(47,0));
+  assert(frameFor(43,100)!=frameFor(47,100));
+  assert(audioRainbow(0)==CRGB(255,0,0));
+  assert(audioRainbow(85).g>250 && audioRainbow(170).b>250);
+  // Glow responds to quiet sound, remains monotonic, and clears at zero.
+  setLampColor(39,255,255,255);setLampEffectOptions(39,{100,100,0,0,0,0});
+  audioSnapshot={true,32};for(uint32_t t=500000;t<501000;t+=16)renderAudioEffect(39,t);
+  assert(leds[0].r>50 && leds[0].r<80);
+  std::vector<CRGB> powerReference(NUM_LEDS);soundGlowPalette(powerReference.data());
+  for(int i=0;i<NUM_LEDS;++i)assert(powerReference[i]==CRGB(255,255,255));
+  // Reference stays fixed while sound changes; explicit black remains black.
+  setLampColor(39,0,0,0);soundGlowPalette(powerReference.data());
+  for(int i=0;i<NUM_LEDS;++i)assert(powerReference[i]==CRGB::Black);
+  setLampColor(39,255,255,255);
+  audioSnapshot={true,0};for(uint32_t t=501000;t<502000;t+=16)renderAudioEffect(39,t);
+  for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
   std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }
