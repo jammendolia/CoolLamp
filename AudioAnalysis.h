@@ -2,6 +2,36 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// A lower-quartile RMS floor measured over one second at 16kHz. Track downward
+// after calibration so music present at startup cannot permanently mute the lamp.
+// Never learn upward from active sound: sustained notes must not become silence.
+class AudioNoiseFloor {
+  uint16_t blocks[64]{};
+  size_t used=0, elapsed=0;
+  uint16_t floor=0;
+  bool ready=false;
+public:
+  bool calibrated() const { return ready; }
+  uint16_t rms() const { return floor; }
+  void observe(uint16_t level, size_t frames) {
+    if(!frames)return;
+    if(used<64)blocks[used++]=level;
+    elapsed+=frames;
+    if(elapsed<16000)return;
+    // Bounded insertion sort once per second; no allocation.
+    for(size_t i=1;i<used;++i){const auto v=blocks[i];size_t j=i;while(j && blocks[j-1]>v){blocks[j]=blocks[j-1];--j;}blocks[j]=v;}
+    const uint16_t candidate=blocks[used/4];
+    if(!ready || candidate<floor)floor=candidate;
+    ready=true;used=0;elapsed=0;
+  }
+  uint16_t cutoff(uint16_t manual) const {
+    if(!ready)return manual;
+    const uint32_t learned=uint32_t(floor)*2+4;
+    const uint16_t bounded=learned>65535?65535:uint16_t(learned);
+    return bounded> manual?bounded:manual;
+  }
+};
+
 // Hardware-independent analysis of signed 24-bit INMP441 samples in 32-bit slots.
 struct AudioLevel { uint16_t rms, peak; uint8_t level; bool signal; };
 class AudioAnalysis {
@@ -20,6 +50,7 @@ class AudioAnalysis {
     return uint32_t(result);
   }
 public:
+  void resetGain() { reference=0; gateOpen=false; }
   uint16_t effectiveGainHundredths(uint8_t maximum) const {
     return reference ? uint16_t(2048U*256*100/reference) : uint16_t(maximum)*100;
   }

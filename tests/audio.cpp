@@ -59,6 +59,43 @@ int main() {
   for(int n=0;n<4000;++n)value=recovery.process(block,256,30,8);
   assert(value.level>first && value.level>=195 && value.level<=210);
   assert(recovery.effectiveGainHundredths(30)<=3000);
+  // Reproduce the reported sequence using nonzero broadband room noise,
+  // not digital silence: quiet start -> clap -> five minutes of background.
+  {
+    uint32_t seed=12345;
+    auto noise=[&](int amplitude){for(int i=0;i<256;++i){seed=seed*1664525U+1013904223U;block[2*i]=(int((seed>>16)%2001)-1000)*amplitude/1000*65536;}};
+    AudioAnalysis old;
+    noise(6000);old.process(block,256,30,8,120);
+    uint8_t initial=0;
+    for(int n=0;n<2000;++n){noise(180);value=old.process(block,256,30,8,120);if(n==10)initial=value.level;}
+    assert(value.level>initial+100 && value.level>180); // 1.6.3 promotes room noise.
+    AudioAnalysis fixed;AudioNoiseFloor floor;
+    for(int n=0;n<20;++n){noise(180);fixed.process(block,256,30,8,120);}
+    for(int n=0;n<63;++n){noise(180);value=fixed.process(block,256,30,8,120);floor.observe(value.rms,256);}
+    assert(floor.calibrated() && floor.rms()>80 && floor.rms()<120);
+    assert(floor.cutoff(8)>160 && floor.cutoff(1000)==1000);
+    fixed.resetGain();
+    noise(6000);value=fixed.process(block,256,30,floor.cutoff(8),120);assert(value.level>150);
+    for(int n=0;n<18750;++n){
+      noise(180+(n%4)*10);value=fixed.process(block,256,30,floor.cutoff(8),120);floor.observe(value.rms,256);
+      if(n>100)assert(value.level==0);
+    }
+    // Real sound still responds after prolonged quiet, and sustained audio
+    // never raises the learned floor and gets classified as background.
+    const auto baseline=floor.rms();
+    for(int n=0;n<1000;++n){noise(6000);value=fixed.process(block,256,30,floor.cutoff(8),120);floor.observe(value.rms,256);}
+    assert(value.level>150 && floor.rms()==baseline);
+    // Starting capture in music may set a high floor, but subsequent quiet
+    // lowers it within a window, allowing later sound through again.
+    AudioNoiseFloor loudStart;
+    for(int n=0;n<63;++n)loudStart.observe(3000,256);
+    assert(loudStart.cutoff(8)==6004);
+    for(int n=0;n<63;++n)loudStart.observe(100,256);
+    assert(loudStart.cutoff(8)==204);
+    AudioNoiseFloor empty;empty.observe(10,0);assert(!empty.calibrated());
+    for(int n=0;n<63;++n)empty.observe(65535,256);
+    assert(empty.cutoff(8)==65535);
+  }
   // Contrast preserves maximum, has an exact black floor, and is monotonic.
   for (uint16_t scale=100;scale<=400;scale+=5) {
     uint8_t previous=0;

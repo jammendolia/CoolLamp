@@ -33,3 +33,13 @@ In the app, select VU Meter in Audio, then open Light to choose the three zone c
 Shared audio processing now adapts from unclipped RMS, targeting roughly 80% display height for sustained sound after contrast. Gain reduction takes about 80 ms; recovery takes about five seconds of active audio. Sensitivity remains the maximum gain. Below the noise gate, gain recovery freezes and the output remains dark. Short loud attacks can still reach full height. AGC is shared across audio effects and stays continuous when switching effects; it resets when capture restarts. Startup warmup now runs the DC filter and AGC before exposing samples.
 
 The audio diagnostics report `automaticGain: true` and `effectiveGain` in hundredths (100 means 1x). This controls display saturation; it cannot repair clipping in the microphone itself. Host tests cover sustained audio, large volume steps, long silence, contrast settings and capture restart. Physical confirmation of the reported gradual climb remains pending.
+
+## Room-noise rejection (1.6.4)
+
+Version 1.6.3 could raise continuous background noise toward the AGC target whenever that noise exceeded the manual cutoff. A nonzero broadband-noise regression now reproduces that rise after a clap; zero-filled silence did not exercise it.
+
+Capture now settles for 300 ms and measures one second of background RMS before displaying audio. Keep the room quiet during that initial second. The lower quartile of the measured blocks estimates the noise floor; the effective cutoff is the larger of the saved cutoff and twice that floor plus four RMS counts. The usual gate hysteresis applies above this cutoff. AGC and peak-hold state reset after calibration without discarding the settled DC filter.
+
+Subsequent one-second windows can lower the learned floor if capture started during louder sound, but cannot raise it and gradually erase sustained music. Starting during continuous music can suppress that music until a quieter interval is observed; restart capture in quiet for calibration. A major later increase in background noise still requires a higher manual cutoff or restarting capture in quiet. Switching between audio effects retains the calibration. No microphone GPIO, sampling-rate or persisted-settings changes.
+
+Audio diagnostics expose `noiseFloor` and `effectiveGate` in raw RMS counts, alongside `effectiveGain`. Tests reproduce the old climb, then verify that a clap followed by five minutes of variable background stays dark after settling and that subsequent loud/sustained audio still responds. These simulated checks do not substitute for confirmation on the physical lamp.
