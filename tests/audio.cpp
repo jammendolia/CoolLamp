@@ -22,16 +22,43 @@ int main() {
   for(int i=0;i<256;++i) block[2*i]=int32_t(std::sin(i*6.28318530718/16)*1000)*65536;
   AudioAnalysis tone;
   value=tone.process(block,256,8,8);
-  assert(value.rms>680 && value.rms<730 && value.signal && value.level==255);
+  assert(value.rms>680 && value.rms<730 && value.signal && value.level>=200 && value.level<=205);
+  // Fixed/manual math remains testable; AGC must work on unclipped RMS.
+  AudioAnalysis manual;
+  assert(manual.process(block,256,8,8,100,false).level==255);
+  for (int i=0;i<10000;++i) {value=tone.process(block,256,30,8);assert(value.level<220);}
   // Full scale alternation must not overflow; force otherwise irrelevant low bits.
   for(int i=0;i<256;++i) block[2*i]=i%2?INT32_MIN:INT32_MAX;
   AudioAnalysis clipped;
   value=clipped.process(block,256,64,8);
-  assert(value.rms>30000 && value.peak>30000 && value.level==255);
+  assert(value.rms>30000 && value.peak>30000 && value.level>=200 && value.level<=205);
   // A weak tone below the configured noise floor remains dark.
   for(int i=0;i<256;++i) block[2*i]=(i%2?2:-2)*65536;
   AudioAnalysis quiet;
   assert(!quiet.process(block,256,64,8).level);
+  // Sustained loud audio settles below saturation at every contrast setting;
+  // long silence stays black and cannot cause runaway gain on resumption.
+  for(uint16_t contrast:{100,120,200,400}) {
+    AudioAnalysis agc;
+    for(int i=0;i<256;++i)block[2*i]=(i%2?100:-100)*65536;
+    for(int n=0;n<300;++n)agc.process(block,256,30,8,contrast);
+    for(int i=0;i<256;++i)block[2*i]=(i%2?3000:-3000)*65536;
+    for(int n=0;n<300;++n)value=agc.process(block,256,30,8,contrast);
+    assert(value.level>=195 && value.level<=210);
+    for(int i=0;i<256;++i)block[2*i]=0;
+    for(int n=0;n<10000;++n){value=agc.process(block,256,30,8,contrast);if(n>100)assert(value.level==0);}
+    for(int i=0;i<256;++i)block[2*i]=(i%2?3000:-3000)*65536;
+    value=agc.process(block,256,30,8,contrast);assert(value.level<230);
+  }
+  // A quieter source recovers toward the target, but never exceeds sensitivity.
+  AudioAnalysis recovery;
+  for(int i=0;i<256;++i)block[2*i]=(i%2?3000:-3000)*65536;
+  recovery.process(block,256,30,8);
+  for(int i=0;i<256;++i)block[2*i]=(i%2?100:-100)*65536;
+  const auto first=recovery.process(block,256,30,8).level;
+  for(int n=0;n<4000;++n)value=recovery.process(block,256,30,8);
+  assert(value.level>first && value.level>=195 && value.level<=210);
+  assert(recovery.effectiveGainHundredths(30)<=3000);
   // Contrast preserves maximum, has an exact black floor, and is monotonic.
   for (uint16_t scale=100;scale<=400;scale+=5) {
     uint8_t previous=0;

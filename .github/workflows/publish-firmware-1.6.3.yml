@@ -1,0 +1,69 @@
+name: Publish firmware 1.6.3
+on:
+  push:
+    branches: ['release/firmware-1.6.3']
+permissions:
+  contents: write
+concurrency:
+  group: firmware-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      RELEASE_VERSION: '1.6.3'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: '1.3.1'
+      - name: Validate version and test release packaging
+        run: |
+          node -e "require('./tools/package-firmware.cjs').parseVersion(process.env.RELEASE_VERSION)"
+          node --test tests/firmware-release.test.cjs
+          node --test mobile/tests/*.test.js
+          node tests/check.cjs
+          node tests/wifi-page.cjs
+          node tests/update-page.cjs
+          node tests/effects-page.cjs
+          node tests/audio-page.cjs
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/audio.cpp -o /tmp/audio-test
+          /tmp/audio-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/spectrum.cpp -o /tmp/spectrum-test
+          /tmp/spectrum-test
+          g++ -std=c++17 -Itests/stubs -Wall -Wextra -Werror -fsanitize=address,undefined tests/geometry.cpp -o /tmp/geometry-test
+          /tmp/geometry-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/audio-control.cpp -o /tmp/audio-control-test
+          /tmp/audio-control-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/stubs tests/effects.cpp -o /tmp/effects-test
+          /tmp/effects-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/knob.cpp -o /tmp/knob-test
+          /tmp/knob-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/update-http.cpp -o /tmp/update-http-test
+          /tmp/update-http-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/update-io.cpp -o /tmp/update-io-test
+          /tmp/update-io-test
+          g++ -std=c++17 -Wall -Wextra -Werror tests/update-manifest.cpp -o /tmp/update-manifest-test
+          /tmp/update-manifest-test
+      - name: Install pinned firmware dependencies
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install FastLED@3.10.5 ESP32RotaryEncoder@1.2.0
+      - name: Build public firmware and manifest
+        run: |
+          node tools/build-firmware.cjs --public
+          node tools/package-firmware.cjs
+      - name: Publish verified firmware for in-app OTA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "firmware-v${RELEASE_VERSION}" \
+            firmware/public/CoolLamp.ino.bin firmware/public/coollamp-manifest.txt \
+            --target "$GITHUB_SHA" --latest --title "CoolLamp firmware ${RELEASE_VERSION}" \
+            --notes "ESP32-C3 update for the dual 2,031,616-byte OTA layout. Preserves saved settings. Adds automatic gain control with fast attenuation, slow recovery and silence protection; settles audio processing during startup. Existing sensitivity remains the maximum gain. No app update required. Available through Check for updates in the app."

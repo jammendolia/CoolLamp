@@ -27,3 +27,9 @@ USB commands `1` through `5` select IDs 41 through 45 for testing. Host checks c
 Amplitude fills each side from its end toward the saved center boundary. Each side scales independently, so an asymmetric center reaches full height together. Fixed height zones are green below 65%, yellow from 65% to below 80%, and red from 80% to 100%. Silence fades to black; response speed controls the falloff. Shared audio sensitivity, cutoff and contrast apply.
 
 In the app, select VU Meter in Audio, then open Light to choose the three zone colors. Save meter colors applies immediately and persists across restarts; Restore green / yellow / red resets this palette. Color editing requires Wi-Fi and firmware 1.6.2 or newer. Bluetooth can select the effect and adjust its response speed and glow. The palette uses a separate versioned NVS record and does not alter existing effect colors or GPIO assignments.
+
+## Automatic gain control (1.6.3)
+
+Shared audio processing now adapts from unclipped RMS, targeting roughly 80% display height for sustained sound after contrast. Gain reduction takes about 80 ms; recovery takes about five seconds of active audio. Sensitivity remains the maximum gain. Below the noise gate, gain recovery freezes and the output remains dark. Short loud attacks can still reach full height. AGC is shared across audio effects and stays continuous when switching effects; it resets when capture restarts. Startup warmup now runs the DC filter and AGC before exposing samples.
+
+The audio diagnostics report `automaticGain: true` and `effectiveGain` in hundredths (100 means 1x). This controls display saturation; it cannot repair clipping in the microphone itself. Host tests cover sustained audio, large volume steps, long silence, contrast settings and capture restart. Physical confirmation of the reported gradual climb remains pending.

@@ -5,7 +5,7 @@ constexpr uint8_t LAMP_AUDIO_SCK = 5, LAMP_AUDIO_WS = 6, LAMP_AUDIO_SD = 7;
 extern uint32_t lampRenderedFrames, lampMaxRenderUs;
 struct LampAudioFeatures {
   uint32_t sequence, timestamp, errors, overruns, stackFree;
-  uint16_t rms, peak;
+  uint16_t rms, peak, effectiveGain;
   uint16_t bass, mid, treble;
   uint32_t beat, bassBeat;
   uint8_t level;

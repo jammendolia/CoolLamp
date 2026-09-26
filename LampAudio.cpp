@@ -50,8 +50,8 @@ void capture(void*) {
     }
     failures = 0;
     const size_t count = bytes / 8;
-    if (warmup) { warmup = count >= warmup ? 0 : warmup - count; continue; }
     const auto level = analysis.process(samples, count, gain, gate, scale);
+    if (warmup) { warmup = count >= warmup ? 0 : warmup - count; continue; }
     const uint32_t capturedAt = millis();
     const auto bands = spectrum.process(samples,count,level.level,capturedAt);
     const uint8_t heldLevel = peakHold.process(level.level, capturedAt);
@@ -60,6 +60,7 @@ void capture(void*) {
     ++features.sequence; features.timestamp = capturedAt;
     features.bass=bands.bass; features.mid=bands.mid; features.treble=bands.treble;
     features.beat=bands.beat; features.bassBeat=bands.bassBeat;
+    features.effectiveGain = analysis.effectiveGainHundredths(gain);
     features.rms = level.rms; features.peak = level.peak; features.level = heldLevel;
     features.signalSeen |= level.signal; features.valid = true; features.error = 0;
     features.stackFree = stackFree;
@@ -194,10 +195,10 @@ LampAudioFeatures getLampAudioFeatures() {
 }
 String lampAudioJson() {
   const auto f = getLampAudioFeatures();
-  return String("{\"installed\":") + (installed ? "true" : "false") + ",\"liveTuning\":true,\"gain\":" + gain + ",\"gate\":" + gate + ",\"scale\":" + scale +
+  return String("{\"installed\":") + (installed ? "true" : "false") + ",\"liveTuning\":true,\"automaticGain\":true,\"gain\":" + gain + ",\"gate\":" + gate + ",\"scale\":" + scale +
     ",\"running\":" + (f.running ? "true" : "false") + ",\"valid\":" + (f.valid ? "true" : "false") +
     ",\"signalSeen\":" + (f.signalSeen ? "true" : "false") + ",\"level\":" + f.level +
-    ",\"rms\":" + f.rms + ",\"peak\":" + f.peak + ",\"blocks\":" + f.sequence +
+    ",\"effectiveGain\":" + f.effectiveGain + ",\"rms\":" + f.rms + ",\"peak\":" + f.peak + ",\"blocks\":" + f.sequence +
     ",\"errors\":" + f.errors + ",\"overruns\":" + f.overruns + ",\"stackFree\":" + f.stackFree +
     ",\"bass\":" + f.bass + ",\"mid\":" + f.mid + ",\"treble\":" + f.treble +
     ",\"beat\":" + f.beat + ",\"bassBeat\":" + f.bassBeat +

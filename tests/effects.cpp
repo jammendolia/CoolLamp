@@ -185,6 +185,14 @@ int main(){
   assert(leds[64]==CRGB(0,255,0) && leds[65]==CRGB(255,255,0));
   assert(leds[79]==CRGB(255,255,0) && leds[80]==CRGB(255,0,0) && leds[100]==CRGB(255,0,0));
   for(int i=0;i<101;++i)assert(leds[i]==leds[201-i]);
+  // Switching from a bright audio effect must not carry its visual height into VU.
+  audioSnapshot={true,255};renderAudioEffect(39,11016);
+  audioSnapshot={true,128};
+  for(uint32_t t=11032;t<311032;t+=16) {
+    renderAudioEffect(46,t);
+    assert(leds[60]==CRGB::Black && leds[100]==CRGB::Black);
+  }
+  audioSnapshot={true,255};for(uint32_t t=10000;t<11000;t+=16)renderAudioEffect(46,t);
   const VuColor custom[3]={{10,20,30},{40,50,60},{70,80,90}};
   Preferences::failWrites=true;assert(!saveLampVuColors(custom));assert(lampVuColors[0].g==255);
   Preferences::failWrites=false;assert(saveLampVuColors(custom));lampVuColors[0]={};loadLampVuColors();assert(lampVuColors[0].g==20);

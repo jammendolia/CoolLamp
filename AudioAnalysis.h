@@ -7,6 +7,8 @@ struct AudioLevel { uint16_t rms, peak; uint8_t level; bool signal; };
 class AudioAnalysis {
   int32_t dc = 0;
   bool initialized = false, gateOpen = false;
+  // Q8 input reference. Gain remains the maximum sensitivity; AGC only attenuates.
+  uint32_t reference = 0;
   static uint32_t root(uint64_t value) {
     uint64_t bit = uint64_t(1) << 62, result = 0;
     while (bit > value) bit >>= 2;
@@ -18,12 +20,15 @@ class AudioAnalysis {
     return uint32_t(result);
   }
 public:
+  uint16_t effectiveGainHundredths(uint8_t maximum) const {
+    return reference ? uint16_t(2048U*256*100/reference) : uint16_t(maximum)*100;
+  }
   // Scale is hundredths: 100 = original response, 200 = twice the contrast.
   static uint8_t scaleLevel(uint8_t level, uint16_t scale) {
     const int32_t mapped = 255 - (255 - int32_t(level)) * scale / 100;
     return mapped <= 0 ? 0 : uint8_t(mapped);
   }
-  AudioLevel process(const int32_t* stereo, size_t frames, uint8_t gain, uint16_t gate, uint16_t scale = 100) {
+  AudioLevel process(const int32_t* stereo, size_t frames, uint8_t gain, uint16_t gate, uint16_t scale = 100, bool automatic = true) {
     if (!frames) return {};
     uint64_t squares = 0; uint32_t peak = 0;
     int32_t low = 32767, high = -32768;
@@ -42,7 +47,27 @@ public:
     const uint32_t rms = root(squares / frames);
     if (rms > uint32_t(gate) + gate / 2) gateOpen = true;
     else if (rms <= gate) gateOpen = false;
-    const uint32_t scaled = gateOpen ? (rms - gate) * gain * 255 / 2048 : 0;
+    const uint32_t signal = gateOpen ? rms - gate : 0;
+    uint32_t scaled = signal * gain * 255 / 2048;
+    if (automatic) {
+      const uint32_t minimum = 2048U * 256 / (gain ? gain : 1);
+      // Target 80% after contrast, leaving room for attacks above the average.
+      const uint32_t target = 255 - 51U * 100 / (scale < 100 ? 100 : scale);
+      const uint32_t wanted = signal * 255U * 256 / target;
+      const uint32_t desired = wanted > minimum ? wanted : minimum;
+      if (!reference) reference = desired;
+      if (reference < minimum) reference = minimum;
+      // Frame-based 80ms attenuation / 5s recovery at 16kHz. Freeze in silence
+      // so the gain cannot creep upward while the gate is closed.
+      if (signal) {
+        const uint32_t duration = desired > reference ? 1280 : 80000;
+        const uint32_t stepFrames = frames > duration ? duration : uint32_t(frames);
+        const uint32_t distance = desired > reference ? desired-reference : reference-desired;
+        const uint32_t step = (uint64_t(distance)*stepFrames + duration-1)/duration;
+        reference = desired > reference ? reference+step : reference-step;
+      }
+      scaled = signal * 255U * 256 / reference;
+    }
     return {uint16_t(rms > 65535 ? 65535 : rms), uint16_t(peak > 65535 ? 65535 : peak),
       scaleLevel(uint8_t(scaled > 255 ? 255 : scaled), scale), high - low > 2};
   }
