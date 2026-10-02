@@ -13,15 +13,14 @@ const sketch = path.join(stageRoot, 'CoolLamp');
 fs.mkdirSync(sketch, { recursive: true });
 // Keep the sketch path stable for Arduino's compiler cache; remove stale source copies only.
 for (const entry of fs.readdirSync(sketch, { withFileTypes: true })) {
-  if (entry.isFile() && /\.(ino|cpp|h)$/.test(entry.name) && (!fs.existsSync(path.join(root, entry.name)) || (publicRelease && entry.name === 'LampSecrets.h'))) fs.unlinkSync(path.join(sketch, entry.name));
+  if (entry.isFile() && /\.(ino|cpp|h)$/.test(entry.name) && (!fs.existsSync(path.join(root, entry.name)) || (entry.name === 'LampSecrets.h'))) fs.unlinkSync(path.join(sketch, entry.name));
 }
 for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-  if (!entry.isFile() || !/\.(ino|cpp|h)$/.test(entry.name) || (publicRelease && entry.name === 'LampSecrets.h')) continue;
+  if (!entry.isFile() || !/\.(ino|cpp|h)$/.test(entry.name) || (entry.name === 'LampSecrets.h')) continue;
   const source = fs.readFileSync(path.join(root, entry.name));
   const target = path.join(sketch, entry.name);
   if (!fs.existsSync(target) || !source.equals(fs.readFileSync(target))) fs.writeFileSync(target, source);
 }
-if (!publicRelease && !fs.existsSync(path.join(sketch, 'LampSecrets.h'))) throw new Error('Run node tools/setup-secrets.cjs before building.');
 const flavor = publicRelease ? 'public' : wifiOnly ? 'wifi' : 'ble';
 const board = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs';
 const jobs = Math.max(1, Math.min(8, Math.floor(require('node:os').availableParallelism() / 2)));

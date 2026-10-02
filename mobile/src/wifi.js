@@ -1,5 +1,6 @@
 import { legacyCatalog, validateCatalog } from './catalog.js';
 import { lampAddress } from './lamps.js';
+import { parseGroupCode } from './sync.js';
 
 export class WifiTransport {
   constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
@@ -20,7 +21,7 @@ export class WifiTransport {
     try { await this.refresh(expectedId); this.schedule(); return this.raw; }
     catch(e) { await this.disconnect(); throw e; }
   }
-  async refresh(expectedId) {
+  async refresh(expectedId,retryCatalog=true) {
     const result=await this.request('/api/state');
     const raw=typeof result==='string'?JSON.parse(result):result;
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
@@ -28,10 +29,12 @@ export class WifiTransport {
     const legacyIdentity=raw.hostname.replace(/\.local$/,'');
     if (expectedId && identity!==expectedId && expectedId!==legacyIdentity) throw new Error('This address belongs to a different lamp. Find your lamp again.');
     if (this.identity && identity!==this.identity) throw new Error('Lamp identity changed. Reconnect before controlling it.');
-    if (!this.catalog || this.raw?.token!==raw.token) {
+    if (!this.catalog || this.raw?.token!==raw.token || this.catalog.length!==raw.effects.length) {
       if (raw.catalogVersion===1) {
         const data=await this.request('/api/effects');
-        this.catalog=validateCatalog(typeof data==='string'?JSON.parse(data):data,raw.effects.length);
+        const entries=typeof data==='string'?JSON.parse(data):data;
+        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false);
+        this.catalog=validateCatalog(entries,raw.effects.length);
       } else this.catalog=legacyCatalog(raw.effects);
     }
     if(this.catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
@@ -51,6 +54,23 @@ export class WifiTransport {
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
+  async configureSync(role,code='') {
+    if(this.raw?.sync?.version!==1)throw new Error('Update lamp firmware to use Wi-Fi groups.');
+    if(![0,1,2].includes(role))throw new Error('Choose a valid group role.');
+    const fields=role?parseGroupCode(code):{};
+    if(role===1&&fields.leader!==this.identity)throw new Error('Create the group on its coordinator.');
+    if(role===2&&fields.leader===this.identity)throw new Error('A lamp cannot follow itself.');
+    const message=await this.request('/api/sync',{role,...fields});
+    await this.refresh();return message;
+  }
+  async syncAction(action) {
+    if(!['pause','resume'].includes(action)||this.raw?.sync?.version!==1)throw new Error('Group control is unavailable.');
+    const message=await this.request('/api/sync',{action});await this.refresh();return message;
+  }
+  async syncInvite() {
+    if(this.raw?.sync?.role!==1)throw new Error('Select the coordinator to get its group code.');
+    const code=await this.request('/api/sync/invite',{});parseGroupCode(code);return code;
+  }
   async configureGeometry(midpoint) {
     if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');
     if(!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
@@ -104,6 +124,7 @@ export class WifiTransport {
   }
   command(op,value=0) { return this.enqueue(async()=>{
     const epoch=this.epoch;
+    if(this.raw?.sync?.active && ['brightness','effect','saveDefaults','color','resetColor','effectOptions'].includes(op))throw new Error('Edit the coordinator or pause this lamp’s group first.');
     if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
     const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value,keepPower:1}],effect:['/api/preview',{mode:value,brightness:this.state.brightness,keepPower:1}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
     const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;

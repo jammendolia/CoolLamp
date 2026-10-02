@@ -139,3 +139,15 @@ fieldset > button, form > button, .connection > button { width: 100%; margin-top
 #applyVu{margin-top:20px;width:100%}
 
 #applyFountain{margin-top:20px;width:100%}
+
+/* Groups share the light studio's quiet palette and touch targets. */
+.sync-panel{border-color:#b3cda02e;background:linear-gradient(145deg,#202b23,#171d1b 65%)}
+.sync-panel h3{margin:0}.sync-panel h4{margin-top:28px}.sync-panel fieldset{padding:0;border:0;min-width:0}
+.sync-orbit{font-size:34px;color:#bbd9a3;line-height:1;padding:6px 12px;border:1px solid #b3cda02e;border-radius:50%}
+.sync-status{padding:12px 14px;border-left:2px solid #b9d59f;background:#b3cda00a;border-radius:0 8px 8px 0;font-size:14px}
+.sync-banner{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:16px 20px;margin-bottom:20px;border:1px solid #b3cda030;border-radius:18px;background:#1d2721}
+.sync-banner p{margin:4px 0;font-size:13px;line-height:1.6}.sync-banner button{flex-shrink:0}
+.sync-peers{display:grid;gap:8px}.sync-peer{text-align:left;display:grid;gap:4px;width:100%}.sync-peer span{font-size:11px;opacity:.6;overflow-wrap:anywhere}
+#syncCode{box-sizing:border-box;width:100%;resize:vertical;border:1px solid #ffffff24;border-radius:10px;background:#101613;color:#d2e9bd;padding:12px;font:13px/1.7 monospace;overflow-wrap:anywhere}
+#syncFeedback{overflow-wrap:anywhere}#syncJoinCode{width:100%;box-sizing:border-box}
+@media(max-width:380px){.sync-banner{align-items:stretch;flex-direction:column}.sync-banner button{align-self:flex-start}}

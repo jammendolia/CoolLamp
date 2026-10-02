@@ -7,12 +7,15 @@ const page=fs.readFileSync(path.join(__dirname,'../LampPage.h'),'utf8');
 assert(page.includes('minlength="8"'));
 const elements={};
 function el(id){return elements[id]??={value:'',dataset:{},options:[],add(o){this.options.push(o)},replaceChildren(...o){this.options=o},addEventListener(){}}}
-let scanState='complete'; const colorRequests=[];
+let defaultPassword=true;let scanState='complete'; const colorRequests=[];
+let scanFailures=[], scanReads=0, now=0, scanHttpOK=true;
 const unusual='<img src=x onerror=alert(1)> & "network"';
-const context={document:{getElementById:el},Option:function(text,value){this.text=text;this.value=value;this.dataset={}},Date,Error,URLSearchParams,AbortSignal,setTimeout:fn=>setImmediate(fn),fetch:async(url,options)=>{if(url==='/api/color')colorRequests.push(Object.fromEntries(options.body));return({ok:true,text:async()=>'',json:async()=>url==='/api/state'?{token:'token',power:true,mode:3,effects:['Pacifica','Aurora','Rain'],colors:[[0,255,60,110],[0,255,60,110],[0,128,160,255]],ssid:'saved'}:{status:scanState,networks:[{ssid:unusual,rssi:-40,open:false},{ssid:'Guest',rssi:-70,open:true}]}})}};
+const context={document:{getElementById:el},Option:function(text,value){this.text=text;this.value=value;this.dataset={}},Date:{now:()=>now},Error,URLSearchParams,AbortSignal,setTimeout:fn=>{now+=750;return setImmediate(fn)},fetch:async(url,options)=>{if(url==='/api/scan'&&options?.method!=='POST'){scanReads++;if(scanFailures.length){now+=5000;throw Object.assign(new Error('fetch is aborted'),{name:scanFailures.shift()})}}if(url==='/api/color')colorRequests.push(Object.fromEntries(options.body));return({ok:url==='/api/scan'?scanHttpOK:true,text:async()=>'',json:async()=>url==='/api/state'?{token:'token',usingDefaultPassword:defaultPassword,power:true,mode:3,effects:['Pacifica','Aurora','Rain'],colors:[[0,255,60,110],[0,255,60,110],[0,128,160,255]],ssid:'saved'}:{status:scanState,networks:[{ssid:unusual,rssi:-40,open:false},{ssid:'Guest',rssi:-70,open:true}]}})}};
 vm.runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/)[1],context);
 (async()=>{
  await new Promise(r=>setImmediate(r));
+ assert.equal(el('defaultPasswordNotice').hidden,false);
+ defaultPassword=false;await context.load();assert.equal(el('defaultPasswordNotice').hidden,true);
  el('mode').value='3';el('color').value='#ff2300';await el('applyColor').onclick();
  assert.deepEqual(colorRequests.at(-1),{mode:'3',r:'255',g:'35',b:'0'});
  el('mode').value='2';el('mode').onchange();assert.equal(el('color').value,'#ff3c6e');
@@ -21,6 +24,9 @@ vm.runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/)[1],context);
  await el('scan').onclick();assert.equal(el('networks').options.length,3);assert.equal(el('networks').options[1].value,unusual);
  el('networks').selectedOptions=[el('networks').options[2]];el('networks').onchange();assert.equal(el('ssid').value,'Guest');assert.equal(el('openNetwork').checked,true);
  el('networks').selectedOptions=[el('networks').options[1]];el('networks').onchange();assert.equal(el('ssid').value,unusual);assert.equal(el('openNetwork').checked,false);
+ for(const name of ['AbortError','TimeoutError','TypeError']){scanFailures=[name];scanReads=0;await el('scan').onclick();assert.equal(scanReads,2);assert.match(el('scanStatus').textContent,/2 networks found/)}
+ scanFailures=Array(10).fill('TimeoutError');scanReads=0;await el('scan').onclick();assert(scanReads<=6);assert.match(el('scanStatus').textContent,/still connected/);assert.equal(el('scan').disabled,false);scanFailures=[];
+ scanHttpOK=false;await el('scan').onclick();assert.equal(el('scan').disabled,false);scanHttpOK=true;
  scanState='failed';await el('scan').onclick();assert.equal(el('scan').disabled,false);assert.match(el('scanStatus').textContent,/could not finish/);
  console.log('PASS: two-word password generation, existing secret preserved, network selection, literal SSID rendering, open-network selection, scan failure recovery, and per-effect color apply/restore.');
 })().catch(e=>{console.error(e);process.exitCode=1});

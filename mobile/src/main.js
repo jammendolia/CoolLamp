@@ -3,6 +3,7 @@ import { LampTransport } from './transport.js';
 import { firmwareMessage } from './protocol.js';
 import './style.css';
 import { effectSettings } from './effect-settings.js';
+import { createGroupCode, parseGroupCode, groupStatus } from './sync.js';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, lampAddress } from './lamps.js';
 import { WifiTransport } from './wifi.js';
@@ -97,6 +98,7 @@ function renderEffectPane() {
 }
 
 function renderOptions() {
+  renderSync();
   const supported = Boolean(state?.capabilities & 8);
   renderEffectPane();
   $('effectOptions').hidden = !supported || effectTab==='sound';
@@ -134,6 +136,8 @@ const callbacks = {
   onState(next) {
     if(state?.mode!==next.mode){editingOptions=false;editingBrightness=false;}
     state = next;
+    $('defaultPasswordNotice').hidden=next.usingDefaultPassword!==true;
+    $('controls').disabled=busy||Boolean(next.sync?.active);
     filterEffects();
     $('colorControls').hidden = !next.supportsColor;
     $('colorUpgrade').hidden = next.supportsColor;
@@ -154,6 +158,7 @@ const callbacks = {
   },
   onDisconnect() {
     firmware = null; effectOptions = null; vuDirty=false;fountainDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';$('fountainFeedback').textContent='';
+    $('defaultPasswordNotice').hidden=true;
     state = null; filterEffects(); $('controls').disabled = true; $('disconnect').hidden = true;
     renderFirmware();
     renderOptions();
@@ -175,7 +180,7 @@ async function change(operation, value) {
   busy = true; $('controls').disabled = true; renderFirmware();
   try { await lamp.command(operation, value); status(operation === 'saveDefaults' ? 'Startup settings saved.' : 'Connected • Changes applied.'); }
   catch (error) { status(error.message); }
-  finally { busy = false; $('controls').disabled = !state; renderFirmware();renderOptions(); }
+  finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
 }
 async function connect(saved = null) {
   if(connecting||busy)return;
@@ -194,7 +199,7 @@ function connected(kind) {
   document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.category==='all')));
   renderOptions();
   localStorage.setItem('coollamp-selected',selected.id);
-  $('controls').disabled=false; $('disconnect').hidden=false;
+  $('controls').disabled=Boolean(state?.sync?.active); $('disconnect').hidden=false;
   $('favoriteEffect').setAttribute('aria-pressed',String(Boolean(selected.favorites?.includes(state.mode))));
   $('favoriteEffect').textContent=selected.favorites?.includes(state.mode)?'♥':'♡';
   $('connectionBadge').textContent=kind; $('lampTitle').textContent=selected.name;
@@ -399,7 +404,7 @@ $('applyAudio').onclick=async()=>{
     const message=await wifiLamp.enqueue(()=>wifiLamp.tuneAudio(tuning));
     audioDirty=false;$('audioFeedback').textContent=message;status(message);
   }catch(e){if(e.uncertain)await wifiLamp.disconnect();$('audioFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
 };
 $('audioForm').onsubmit=e=>{
   e.preventDefault();
@@ -420,7 +425,7 @@ async function saveVu(reset=false){
   busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
   try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureVuColors(colors));vuDirty=false;$('vuFeedback').textContent=message;status(message);}
   catch(e){if(e.uncertain)await wifiLamp.disconnect();$('vuFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
 }
 $('applyVu').onclick=()=>saveVu();$('resetVu').onclick=()=>saveVu(true);
 
@@ -432,6 +437,69 @@ async function saveFountain(reset=false){
   busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
   try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureFountainColors(colors));fountainDirty=false;$('fountainFeedback').textContent=message;status(message);}
   catch(e){if(e.uncertain)await wifiLamp.disconnect();$('fountainFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
 }
 $('applyFountain').onclick=()=>saveFountain();$('resetFountain').onclick=()=>saveFountain(true);
+
+
+let syncIdentity=null, peerListKey='';
+function renderSync() {
+  const sync=lamp===wifiLamp?state?.sync:null;
+  const identity=lamp===wifiLamp?wifiLamp.identity:null;
+  if(syncIdentity!==identity){
+    syncIdentity=identity;peerListKey='';$('syncCode').value='';$('syncCodeArea').hidden=true;
+    $('syncJoinCode').value='';$('syncFeedback').textContent='';
+  }
+  $('syncStatus').textContent=groupStatus(sync);
+  $('syncFields').disabled=!sync||busy;
+  $('syncIndependent').hidden=Boolean(sync?.role);
+  $('syncCoordinator').hidden=sync?.role!==1;
+  $('syncFollower').hidden=sync?.role!==2;
+  $('syncJoin').hidden=Boolean(sync?.role);
+  $('leaveSync').hidden=!sync?.role;
+  $('pauseSync').hidden=Boolean(sync?.paused);
+  $('resumeSync').hidden=!sync?.paused;
+  $('syncLeaderName').textContent='Coordinator: '+(sync?.peers?.find(p=>p.id===sync.leader)?.name||sync?.leader||'');
+  $('syncBanner').hidden=!sync?.role;
+  $('syncBannerText').textContent=groupStatus(sync)+(sync?.active?'. Change effects on the coordinator, or pause to control this lamp.':'');
+  const peers=(sync?.peers||[]).filter(p=>p.role===1);
+  const key=JSON.stringify(peers.map(p=>[p.id,p.name]));
+  if(peerListKey!==key){
+    peerListKey=key;$('syncPeers').replaceChildren();
+    for(const peer of peers){
+      const button=document.createElement('button');button.type='button';button.className='secondary sync-peer';
+      const title=document.createElement('strong');title.textContent=peer.name||peer.id;
+      const detail=document.createElement('span');detail.textContent=(peer.microphone?'Audio coordinator · ':'Coordinator · ')+peer.id;
+      button.append(title,detail);button.onclick=()=>{$('syncFeedback').textContent='Open '+(peer.name||peer.id)+' in My lamps → Settings → Lamp groups, show its code, then paste it here.';$('syncJoinCode').focus();};
+      $('syncPeers').append(button);
+    }
+  }
+  $('syncDiscoveryHint').textContent=peers.length?'Available coordinators on this network. Paste a coordinator’s code to join.':'No coordinators discovered yet. Create one on another lamp, or paste its code. All lamps must share a home network without client isolation.';
+}
+async function syncAction(action) {
+  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  busy=true;renderSync();
+  try {const result=await wifiLamp.enqueue(action);$('syncFeedback').textContent=result||'Group updated.';}
+  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('syncFeedback').textContent=e.message;}
+  finally{busy=false;renderSync();$('controls').disabled=!state||Boolean(state?.sync?.active);}
+}
+$('manageSync').onclick=()=>{page('settings');$('syncTitle').scrollIntoView({behavior:'smooth',block:'center'});};
+$('createSync').onclick=()=>syncAction(async()=>{
+  const code=createGroupCode(wifiLamp.identity);
+  const result=await wifiLamp.configureSync(1,code);$('syncCode').value=code;$('syncCodeArea').hidden=false;return result+' Copy the code, connect to another lamp, and choose Join a group.';
+});
+$('showSyncCode').onclick=()=>syncAction(async()=>{$('syncCode').value=await wifiLamp.syncInvite();$('syncCodeArea').hidden=false;return 'Copy this code to join other lamps.';});
+$('copySyncCode').onclick=async()=>{
+  try{await navigator.clipboard.writeText($('syncCode').value);$('syncFeedback').textContent='Group code copied.';}
+  catch{$('syncCode').focus();$('syncCode').select();$('syncFeedback').textContent='Code selected. Choose Copy to share it.';}
+};
+$('syncJoinForm').onsubmit=e=>{e.preventDefault();const code=$('syncJoinCode').value;syncAction(async()=>{parseGroupCode(code);const result=await wifiLamp.configureSync(2,code);$('syncJoinCode').value='';return result;});};
+$('pauseSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('pause'));
+$('resumeSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('resume'));
+$('leaveSync').onclick=()=>syncAction(async()=>{const result=await wifiLamp.configureSync(0);$('syncCode').value='';$('syncCodeArea').hidden=true;return result;});
+renderSync();
+
+$('changeDefaultPassword').onclick=()=>{
+  page('settings');$('networkSettings').closest('details').open=true;
+  $('adminPassword').scrollIntoView({behavior:'smooth',block:'center'});$('adminPassword').focus();
+};

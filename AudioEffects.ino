@@ -1,5 +1,11 @@
+VuColor renderVuColor(uint8_t zone) {
+  if(lampSyncVisual && lampSyncVisual->mode==46){const auto* c=lampSyncVisual->vu+zone*3;return {c[0],c[1],c[2]};}
+  return lampVuColors[zone];
+}
+
 // Until a three-color palette is saved, retain the exact legacy color mapping.
 CRGB fountainPaletteColor(uint8_t band) {
+  if(lampSyncVisual && lampSyncVisual->mode==45){const auto* c=lampSyncVisual->fountain+band*3;return CRGB(c[0],c[1],c[2]);}
   if(lampFountainCustom){const auto c=lampFountainColors[band];return CRGB(c.r,c.g,c.b);}
   const auto c=getLampColor(MODE_BAND_FOUNTAIN);const auto o=getLampEffectOptions(MODE_BAND_FOUNTAIN);
   const CRGB bass=c.enabled?CRGB(c.r,c.g,c.b):CRGB(255,65,0);
@@ -48,7 +54,7 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
   static uint8_t previousMode = 0, level = 0;
   const auto options = getLampEffectOptions(mode);
   const auto color = getLampColor(mode);
-  const auto audio = getLampAudioFeatures();
+  const auto audio = getLampRenderAudio();
   if (previousMode != mode || now - last > 250) {
     level=0; audioPeak=0; audioPeakAt=now;
     for(auto& pulse:audioPulses)pulse.strength=0;
@@ -87,7 +93,7 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
     const uint8_t position = size > 1 ? uint32_t(height) * 255 / (size - 1) : 0;
     CRGB tint = options.dual ? blend(primary, secondary, position) : primary;
     if(mode==MODE_VU_METER) {
-      const auto zone=lampVuColors[vuZone(height,size)];
+      const auto zone=renderVuColor(vuZone(height,size));
       tint=CRGB(zone.r,zone.g,zone.b);
       const int coverage=int(level)*size-int(height)*255;
       tint.nscale8(coverage<=0?0:coverage>=255?255:uint8_t(coverage));

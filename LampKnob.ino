@@ -69,6 +69,7 @@ void enterLampKnob(KnobMode next) {
 
 void applyLampGesture(LampGesture gesture) {
   if (gesture == LampGesture::None) return;
+  if(lampSyncFollowing() && gesture!=LampGesture::Wifi && gesture!=LampGesture::Pairing) pauseLampSync();
   knobActivity = millis();
   if (gesture == LampGesture::Wifi || gesture == LampGesture::Pairing) {
     finishLampKnob();
@@ -108,6 +109,7 @@ bool serviceLampKnob() {
       if (delta < -size/2) delta += size;
     }
     if (knobGestures.pressed()) { syncLampKnob(); return changed; }
+    if(lampSyncFollowing()) pauseLampSync();
     // Turning immediately after a click confirms that click without waiting.
     const auto pending = knobGestures.takeClicks();
     applyLampGesture(pending);

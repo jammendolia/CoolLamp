@@ -1,11 +1,7 @@
-name: Build firmware release draft
+name: Publish firmware 1.7.3
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version in LampVersion.h (major.minor.patch)'
-        required: true
-        type: string
+  push:
+    branches: ['release/firmware-1.7.3']
 permissions:
   contents: write
 concurrency:
@@ -16,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_VERSION: '1.7.3'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,11 +65,11 @@ jobs:
         run: |
           node tools/build-firmware.cjs --public
           node tools/package-firmware.cjs
-      - name: Create reviewable release draft
+      - name: Publish verified firmware for in-app OTA
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "firmware-v${RELEASE_VERSION}" \
             firmware/public/CoolLamp.ino.bin firmware/public/coollamp-manifest.txt \
-            --target "$GITHUB_SHA" --draft --title "CoolLamp firmware ${RELEASE_VERSION}" \
-            --notes "ESP32-C3 update for the dual 2,031,616-byte OTA layout. Preserves saved settings. Publishing this release as Latest makes it available to lamps, including automatic installation where enabled."
+            --target "$GITHUB_SHA" --latest --title "CoolLamp firmware ${RELEASE_VERSION}" \
+            --notes "Adds opt-in Wi-Fi lamp groups and authenticated read-only network diagnostics; fixes setup-page network scan timeout handling. New or reset lamps use the default setup password coollamp and show a reminder to change it. Existing saved passwords, settings, LED geometry, and GPIO assignments are preserved. Configuring lamp groups requires the matching phone-app update. ESP32-C3 dual-OTA layout."

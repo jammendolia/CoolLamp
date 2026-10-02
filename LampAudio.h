@@ -23,4 +23,5 @@ void serviceLampAudio(bool wanted, bool blocked);
 bool stopLampAudio(); // Bounded handshake; frees DMA before updater may allocate TLS.
 void diagnoseLampAudio();
 LampAudioFeatures getLampAudioFeatures();
+LampAudioFeatures getLampRenderAudio();
 String lampAudioJson();

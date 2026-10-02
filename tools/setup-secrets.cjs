@@ -1,3 +1,4 @@
+// Legacy pre-1.7.1 provisioning utility. Current builds use LampFactory.h.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');

@@ -13,6 +13,9 @@ bool microphone=false;
 uint8_t lampAvailableEffectCount(){return microphone?LAMP_EFFECT_COUNT:LAMP_BASE_EFFECT_COUNT;}
 LampControlState control{3,100,true};
 LampControlState getLampControlState(){return control;}
+#include "../LampSync.h"
+const LampSyncWire::Visual* lampSyncVisual=nullptr;
+bool lampSyncFollowing(){return lampSyncVisual!=nullptr;}
 #include "../LampColors.ino"
 #include "../LampVu.cpp"
 #include "../LampFountain.cpp"
@@ -43,7 +46,7 @@ enum {MODE_DROPLETS=30,MODE_LIGHTNING,MODE_TIDE,MODE_FIREFLIES,MODE_HEARTBEAT,MO
 #include "../NewEffects.ino"
 #include "../AudioAnalysis.h"
 struct AudioSnapshot { bool valid=true; uint8_t level=0; uint16_t bass=0,mid=0,treble=0; uint32_t beat=0,bassBeat=0; } audioSnapshot;
-AudioSnapshot getLampAudioFeatures(){return audioSnapshot;}
+AudioSnapshot getLampRenderAudio(){return audioSnapshot;}
 #include "../AudioEffects.ino"
 int main(){
   // Migrate the original 29-color blob without losing black or per-mode slots.
@@ -242,5 +245,17 @@ int main(){
   const FountainColor black[3]{};assert(saveLampFountainColors(black));renderAudioEffect(45,601016);
   for(int i=0;i<NUM_LEDS;++i)assert(leds[i]==CRGB::Black);
   Preferences::storage["fountainV1"][0]=99;loadLampFountainColors();assert(!lampFountainCustom);
+  // Group overlays must not replace local effect slots or palettes in NVS.
+  const auto localColor=getLampColor(46);const auto localOptions=getLampEffectOptions(46);
+  const auto stored=Preferences::storage;
+  LampSyncWire::Visual remote{};remote.mode=46;remote.primary[0]=1;remote.primary[1]=77;
+  remote.speed=88;remote.intensity=61;remote.vu[0]=23;lampSyncVisual=&remote;
+  assert(getLampColor(46).r==77 && getLampEffectOptions(46).speed==88);
+  assert(renderVuColor(0).r==23);
+  assert(!setLampColor(46,1,2,3) && !setLampEffectOptions(46,{50,100,0,1,2,3}) && !saveLampColors());
+  remote.mode=45;remote.fountain[3]=17;assert(fountainPaletteColor(1).r==17);
+  lampSyncVisual=nullptr;
+  assert(getLampColor(46).r==localColor.r && getLampEffectOptions(46).speed==localOptions.speed);
+  assert(Preferences::storage==stored);
   std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
 }

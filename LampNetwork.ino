@@ -6,9 +6,7 @@
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
-#ifndef COOL_LAMP_PUBLIC_RELEASE
-#include "LampSecrets.h"
-#endif
+#include "LampFactory.h"
 #include "LampPage.h"
 
 LampSettings lampSettings;
@@ -20,6 +18,10 @@ bool lampIdentifyActive() { return identifyUntil && static_cast<int32_t>(identif
 String lampAPName;
 String lampToken;
 bool scanActive = false;
+uint32_t scanStartedAt = 0;
+uint32_t scanDuration = 0;
+uint32_t scanPolls = 0;
+int scanCount = WIFI_SCAN_FAILED;
 String scanResults = "{\"status\":\"idle\",\"networks\":[]}";
 bool setupAP = false;
 bool lastAPStartOK = false;
@@ -57,13 +59,7 @@ void loadLampSettings()
   defaults.milliAmps = MAX_POWER_MILLIAMPS;
   defaults.brightness = 100;
   defaults.startupMode = MODE_FIRE;
-#ifdef COOL_LAMP_PUBLIC_RELEASE
-  // Public images are OTA-only: normal updates restore existing NVS credentials.
-  // A fresh device receives an unguessable password, never a shared public default.
-  snprintf(defaults.adminPassword, sizeof(defaults.adminPassword), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
-#else
-  strlcpy(defaults.adminPassword, DEFAULT_ADMIN_PASSWORD, sizeof(defaults.adminPassword));
-#endif
+  strlcpy(defaults.adminPassword, LAMP_FACTORY_PASSWORD, sizeof(defaults.adminPassword));
   lampSettings = defaults;
   Preferences prefs;
   if (!prefs.begin("coollamp", true)) return;
@@ -102,6 +98,12 @@ bool authorizedLampRequest(bool mutation)
     lampServer.send(403, "text/plain", "Refresh the page and try again.");
     return false;
   }
+  if(mutation && lampSyncFollowing()) {
+    const String path=lampServer.uri();
+    if(path=="/api/preview"||path=="/api/color"||path=="/api/effect-options"||path=="/api/defaults"||path=="/api/config"||path=="/api/vu-colors"||path=="/api/fountain-colors"||path=="/api/audio/tuning") {
+      lampServer.send(409,"text/plain","This lamp is following a group. Edit the coordinator or pause grouping first.");return false;
+    }
+  }
   apLastActivity = millis();
   return true;
 }
@@ -113,6 +115,8 @@ void serviceLampScan()
   const int count = WiFi.scanComplete();
   if (count == WIFI_SCAN_RUNNING) return;
   scanActive = false;
+  scanCount = count;
+  scanDuration = millis() - scanStartedAt;
   if (count < 0) {
     esp_wifi_scan_stop();
     scanResults = "{\"status\":\"failed\",\"networks\":[]}";
@@ -154,15 +158,22 @@ void serviceLampScan()
   WiFi.scanDelete();
 }
 
+void beginLampScan()
+{
+  if (!scanActive) {
+    scanStartedAt = millis(); scanDuration = 0; scanPolls = 0;
+    WiFi.setScanTimeout(20000);
+    scanCount = WiFi.scanNetworks(true, false, false, 120);
+    scanActive = scanCount == WIFI_SCAN_RUNNING;
+    scanResults = scanActive ? "{\"status\":\"scanning\",\"networks\":[]}" : "{\"status\":\"failed\",\"networks\":[]}";
+  }
+}
+
 void startLampScan()
 {
   if (!authorizedLampRequest(true)) return;
   if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
-  if (!scanActive) {
-    WiFi.setScanTimeout(20000);
-    scanActive = WiFi.scanNetworks(true, false, false, 120) == WIFI_SCAN_RUNNING;
-    scanResults = scanActive ? "{\"status\":\"scanning\",\"networks\":[]}" : "{\"status\":\"failed\",\"networks\":[]}";
-  }
+  beginLampScan();
   lampServer.send(202, "application/json", scanResults);
 }
 
@@ -187,6 +198,30 @@ String lampEffectCatalogEntry(uint8_t mode)
     ",\"category\":" + jsonText(category) + ",\"speed\":" + String(mode >= 21 && mode <= 29 ? "false" : "true") + "}";
 }
 
+// Read-only support snapshot. Deliberately excludes session tokens, SSIDs,
+// passwords, group invitation keys and raw microphone samples.
+void sendLampDiagnostics()
+{
+  if (!authorizedLampRequest(false)) return;
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  String out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
+  out += ",\"hostname\":" + jsonText(lampHost + ".local");
+  out += ",\"uptimeMs\":" + String(millis()) + ",\"resetReason\":" + String(static_cast<int>(esp_reset_reason()));
+  out += ",\"freeHeap\":" + String(ESP.getFreeHeap()) + ",\"minFreeHeap\":" + String(ESP.getMinFreeHeap());
+  out += ",\"largestFreeBlock\":" + String(ESP.getMaxAllocHeap());
+  out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
+  out += ",\"address\":" + jsonText(WiFi.localIP().toString());
+  out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());
+  out += ",\"setupAP\":" + String(setupAP ? "true" : "false") + ",\"apClients\":" + String(WiFi.softAPgetStationNum()) + "}";
+  out += ",\"scan\":{\"active\":" + String(scanActive ? "true" : "false") + ",\"count\":" + String(scanCount);
+  out += ",\"durationMs\":" + String(scanActive ? millis() - scanStartedAt : scanDuration) + ",\"polls\":" + String(scanPolls) + "}";
+  out += ",\"render\":{\"frames\":" + String(lampRenderedFrames) + ",\"maxRenderUs\":" + String(lampMaxRenderUs);
+  out += ",\"power\":" + String(PowerOn ? "true" : "false") + ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
+  out += ",\"leds\":" + String(NUM_LEDS) + ",\"midpoint\":" + String(lampMidpoint) + "}";
+  out += ",\"firmware\":" + lampUpdateJson() + ",\"audio\":" + lampAudioJson() + ",\"sync\":" + lampSyncJson() + "}";
+  lampServer.send(200, "application/json", out);
+}
+
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
@@ -194,14 +229,16 @@ void sendLampState()
   state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
   state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE) + ",\"startupBrightness\":" + String(lampSettings.brightness);
   state += ",\"catalogVersion\":1";
+  state += ",\"usingDefaultPassword\":" + String(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
+  state += ",\"sync\":" + lampSyncJson();
   state += ",\"fountainColors\":[";
   for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=fountainPaletteColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
   state += "]";
   state += ",\"vuColors\":[";
-  for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=lampVuColors[i];state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
+  for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=renderVuColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
   state += "]";
   state += ",\"midpoint\":" + String(lampMidpoint) + ",\"effectiveMidpoint\":" + String(lampSplitCount(NUM_LEDS, lampMidpoint));
   state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
@@ -336,6 +373,21 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/diagnostics", HTTP_GET, sendLampDiagnostics);
+  lampServer.on("/api/sync", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
+    if(lampServer.arg("action")=="pause"){pauseLampSync();lampServer.send(200,"text/plain","Group paused on this lamp.");return;}
+    if(lampServer.arg("action")=="resume"){resumeLampSync();lampServer.send(200,"text/plain","Reconnecting to the coordinator.");return;}
+    uint32_t role;
+    if(!readNumber("role",0,2,role)||!configureLampSync(role,lampServer.arg("leader"),lampServer.arg("key"))){lampServer.send(400,"text/plain","Invalid group code or group settings could not be saved.");return;}
+    lampServer.send(200,"text/plain",role?"Group settings saved.":"Left the group. Local settings restored.");
+  });
+  lampServer.on("/api/sync/invite", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    const String invite=lampSyncInvite();
+    lampServer.send(invite.length()?200:409,"text/plain",invite.length()?invite:"Create a group on this lamp first.");
+  });
   lampServer.on("/api/geometry", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
@@ -431,6 +483,7 @@ void beginLampNetwork()
   lampServer.on("/api/scan", HTTP_POST, startLampScan);
   lampServer.on("/api/scan", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
+    ++scanPolls;
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
@@ -539,7 +592,9 @@ void toggleLampSetup()
     WiFi.softAPdisconnect(true); setupAP = false;
     WiFi.mode(lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
   } else {
-    WiFi.mode(lampSettings.ssid[0] ? WIFI_AP_STA : WIFI_AP);
+    // Scanning needs STA even before home Wi-Fi credentials have been saved.
+    // Enable it before clients join, rather than changing mode mid-request.
+    WiFi.mode(WIFI_AP_STA);
     setupAP = WiFi.softAP(lampAPName.c_str(), lampSettings.adminPassword);
     lastAPStartOK = setupAP;
     apLastActivity = millis();
@@ -565,11 +620,16 @@ void serviceLampUSB()
 {
   static bool statusPending = false;
   static bool audioPending = false;
+  static bool scanPending = false;
   static String audioReply;
   static size_t audioSent = 0;
   while (Serial.available()) {
     const char command = Serial.read();
     if (command == '?') statusPending = true;
+    if (command == 'w') scanPending = true;
+    if (command == 's' && setupAP && !otaActive && !lampRemoteUpdateBusy()) {
+      beginLampScan(); scanPending = true;
+    }
     if (command == 'a' && !otaActive) { toggleLampSetup(); statusPending = true; }
     if (command == 't' && !lampUpdateOwnsResources()) { diagnoseLampAudio(); audioPending = true; }
     if (command == 'u') audioPending = true;
@@ -600,6 +660,15 @@ void serviceLampUSB()
     if (Serial.availableForWrite() >= static_cast<int>(status.length())) {
       Serial.write(reinterpret_cast<const uint8_t*>(status.c_str()), status.length());
       statusPending = false;
+    }
+  }
+  if (scanPending) {
+    // No SSIDs, passwords, or tokens in USB scan diagnostics.
+    String report = "scan=" + String(scanCount) + " active=" + String(scanActive);
+    report += " ms=" + String(scanActive ? millis() - scanStartedAt : scanDuration);
+    report += " polls=" + String(scanPolls) + " clients=" + String(WiFi.softAPgetStationNum()) + "\n";
+    if (Serial.availableForWrite() >= static_cast<int>(report.length())) {
+      Serial.print(report); scanPending = false;
     }
   }
 }
@@ -634,10 +703,12 @@ void serviceLampNetwork()
   }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
+  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen());
 }
 
 bool saveLampDefaults()
 {
+  if(lampSyncFollowing()) return false;
   LampSettings next = lampSettings;
   next.brightness = Brightness;
   next.startupMode = Mode;
@@ -652,6 +723,7 @@ bool saveLampDefaults()
 
 bool saveLampKnobBrightness()
 {
+  if(lampSyncFollowing()) return false;
   // Knob brightness edits must not replace the chosen startup effect or Wi-Fi.
   if (lampSettings.brightness == Brightness) return true;
   LampSettings next = lampSettings;

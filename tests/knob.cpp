@@ -34,6 +34,8 @@ LampColor getLampColor(uint8_t m){return colors[m];}
 bool setLampColor(uint8_t m,uint8_t r,uint8_t g,uint8_t b){colors[m]={1,r,g,b};return true;}
 bool saveLampColors(){++colorSaves;return !failSave;}
 bool saveLampKnobBrightness(){++brightnessSaves;return !failSave;}
+bool lampSyncFollowing(){return false;}
+void pauseLampSync(){}
 bool lampIsUpdating(){return updating;}
 bool lampPairingOpen(){return pairing;}
 void setLampPairingWindow(bool p){pairing=p;++pairToggles;}

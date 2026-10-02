@@ -2,6 +2,13 @@
 
 ESP32-C3 / WS2812B lamp with 38 effects, rotary controls, saved settings, Wi-Fi setup, and browser OTA updates.
 
+See the [schematic and wiring diagrams](docs/wiring.md) for the fixed firmware
+pin map and prototype hardware notes. The prototype uses direct LED data with
+no external resistors and is owner-confirmed working with the checked-in code.
+
+For read-only support snapshots from one or more lamps on the LAN, see
+[Wi-Fi debugging](docs/wifi-debugging.md).
+
 ## Physical layout
 
 The lamp uses one continuous LED strip arranged as a vertical helix. Both ends
@@ -25,7 +32,7 @@ appears to fall. Name directional effects by this physical motion.
 
 1. Hold the knob for three seconds.
 2. Join `CoolLamp-XXXXXX` on this lamp. Other boards use their own MAC suffix.
-3. Use the initial password in `LampSecrets.h` for both the hotspot and web login.
+3. New lamps use **`coollamp`** for both the hotspot and web login. We recommend changing it during setup; existing lamps retain their saved password.
 4. Open **http://192.168.4.1/**. Web username: **lamp**.
 5. Use **Find nearby networks** to select a 2.4 GHz network, or enter a hidden network manually. Scanning keeps the setup hotspot open.
 6. Preview effects/brightness, or save LED count, brightness, startup effect, LED current limit, home Wi-Fi, and a new access password. Saving restarts the lamp.
@@ -105,7 +112,9 @@ select its original 29 effects. See [effect release notes](docs/effects-1.3.md).
 
 ## Build and update
 
-After cloning, run `node tools/setup-secrets.cjs` once to create a private initial password header made from two randomly selected common words (for example, `cactus-piano`). It will not overwrite an existing header. Node.js is needed for this helper and the tests.
+New-device builds use the public factory setup password in `LampFactory.h`: **`coollamp`**. No private header generation is required. Both local and public builds preserve valid saved owner passwords; OTA never resets them to the default. The web page and Wi-Fi app connection encourage changing the factory password without requiring it. Node.js is needed for the build helper and tests.
+
+`LampSecrets.h` and `tools/setup-secrets.cjs` are legacy setup artifacts for older installations; current builds exclude the private header. Keep an existing private header if you still need the setup password for a lamp flashed with an older version.
 
 Board target: `esp32:esp32:esp32c3:CDCOnBoot=cdc`. Dependencies: Arduino ESP32 core 3.3.11, FastLED 3.10.5, ESP32RotaryEncoder 1.2.0. WiFi, WebServer, Preferences, ESPmDNS, and Update come with the ESP32 core.
 
@@ -156,4 +165,8 @@ Firmware 1.2.0 adds version display, update detection, **Update now**, and optio
 
 ## Phone app prototype
 
+Firmware 1.5.0 on `feature/audio-input` adds an optional INMP441 microphone, Sound glow and Sound meter. Microphone-free lamps retain their original 38 effects. See [audio setup, product provisioning, and diagnostics](docs/audio-firmware.md).
+
 See [mobile/README.md](mobile/README.md) for the Android/iOS projects and [Bluetooth app notes](docs/bluetooth-app.md) for gestures, pairing and prototype limits. USB installation and startup are verified; phone pairing and physical gesture tests remain pending.
+
+Wi-Fi discovery and mirrored lamp groups are documented in [Lamp groups](docs/lamp-groups.md), including app setup and current timing limits.

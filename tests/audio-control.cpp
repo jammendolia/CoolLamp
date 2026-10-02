@@ -4,6 +4,9 @@
 #include "../LampControl.h"
 bool installed=false;
 bool lampHasMicrophone(){return installed;}
+bool following=false;
+bool lampSyncFollowing(){return following;}
+void pauseLampSync(){following=false;}
 constexpr uint8_t MODE_MAX=47;
 uint8_t Mode=4,Brightness=100;
 bool PowerOn=true;
@@ -24,5 +27,9 @@ int main(){
   installed=false;
   assert(!setLampControl(47,100,true));
   assert(setLampControl(4,100,true));
+  following=true;
+  assert(lampAvailableEffectCount()==47);
+  assert(setLampControl(4,100,true));
+  assert(!following && lampAvailableEffectCount()==38);
   std::cout<<"PASS: real control path accepts audio only on configured microphone variants\n";
 }

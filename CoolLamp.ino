@@ -7,6 +7,7 @@
 #include "LampConfig.h"
 #include "LampGeometry.h"
 #include "LampControl.h"
+#include "LampSync.h"
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
 #include "LampGestures.h"
@@ -112,6 +113,7 @@ void setup() {
   loadLampColors();
   loadLampVuColors();
   loadLampFountainColors();
+  beginLampSync();
   activeLedCount = lampSettings.ledCount;
   // Reserve only the configured strip length; leave RAM for Wi-Fi TLS buffers.
   leds = new (std::nothrow) CRGB[2 * NUM_LEDS]{};
@@ -143,7 +145,7 @@ void loop() {
   serviceLampNetwork();
   serviceLampBluetooth();
   serviceLampUpdater();
-  serviceLampAudio(PowerOn && Mode > LAMP_BASE_EFFECT_COUNT, lampUpdateOwnsResources());
+  serviceLampAudio(PowerOn && Mode > LAMP_BASE_EFFECT_COUNT && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing());
   bool renderNow = serviceLampKnob();
   if (lampIsUpdating()) { delay(1); return; }
 
@@ -193,13 +195,19 @@ void loop() {
   effectBudget -= steps * 4096;
   if (renderNow && steps == 0) steps = 1;
   if (Mode > LAMP_BASE_EFFECT_COUNT) steps = 1; // Audio follows real time, independently of speed.
+  if (lampSyncFollowing()) {
+    const uint32_t target = lampSyncEffectClock(effectClockMs) & ~uint32_t(15);
+    const int32_t distance = int32_t(target - effectClockMs);
+    steps = Mode > LAMP_BASE_EFFECT_COUNT ? 1 : distance > 0 ? min(uint32_t(distance) / 16, uint32_t(4)) : 0;
+    if (distance < 0 || distance > 64 || Mode > LAMP_BASE_EFFECT_COUNT) { steps = 1; effectClockMs = target - 16; }
+  }
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
   switch (Mode) {
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
     case MODE_VU_METER: case MODE_RAINBOW_EMBERS:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:
-      renderAudioEffect(Mode, now); break;
+      renderAudioEffect(Mode, lampSyncRenderTime(now)); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
     case MODE_HEARTBEAT: case MODE_STARS: case MODE_BREATHING: case MODE_BLOBS:
       renderNewEffect(Mode, effectClockMs); break;

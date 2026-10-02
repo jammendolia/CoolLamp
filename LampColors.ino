@@ -1,4 +1,5 @@
 #include <Preferences.h>
+#include "LampSync.h"
 
 // Separate, versioned storage preserves the existing Wi-Fi/settings layout.
 static LampColor effectColors[LAMP_EFFECT_COUNT];
@@ -67,11 +68,13 @@ void loadLampColors()
 
 LampColor getLampColor(uint8_t mode)
 {
+  if(lampSyncVisual && mode==lampSyncVisual->mode){const auto* c=lampSyncVisual->primary;return {c[0],c[1],c[2],c[3]};}
   return mode >= 1 && mode <= LAMP_EFFECT_COUNT ? effectColors[mode - 1] : LampColor{0, 0, 0, 0};
 }
 
 bool setLampColor(uint8_t mode, uint8_t r, uint8_t g, uint8_t b)
 {
+  if(lampSyncFollowing()) return false;
   if (mode < 1 || mode > lampAvailableEffectCount()) return false;
   const LampColor next{1, r, g, b};
   const auto old = effectColors[mode - 1];
@@ -82,6 +85,7 @@ bool setLampColor(uint8_t mode, uint8_t r, uint8_t g, uint8_t b)
 
 bool resetLampColor(uint8_t mode)
 {
+  if(lampSyncFollowing()) return false;
   if (mode < 1 || mode > lampAvailableEffectCount()) return false;
   const auto next = defaultLampColor(mode);
   const auto old = effectColors[mode - 1];
@@ -94,6 +98,7 @@ bool resetLampColor(uint8_t mode)
 
 bool saveLampColors()
 {
+  if(lampSyncFollowing()) return false;
   if (!colorsDirty && !optionsDirty) return true;
   uint8_t data[1 + LAMP_BASE_EFFECT_COUNT * 4] = {1};
   for (uint8_t i = 0; i < LAMP_BASE_EFFECT_COUNT; ++i) {
@@ -126,9 +131,11 @@ bool saveLampColors()
 }
 
 LampEffectOptions getLampEffectOptions(uint8_t mode) {
+  if(lampSyncVisual && mode==lampSyncVisual->mode){const auto& v=*lampSyncVisual;return {v.speed,v.intensity,v.dual,v.secondary[0],v.secondary[1],v.secondary[2]};}
   return mode >= 1 && mode <= LAMP_EFFECT_COUNT ? effectOptions[mode - 1] : defaultEffectOptions(1);
 }
 bool setLampEffectOptions(uint8_t mode, LampEffectOptions o) {
+  if(lampSyncFollowing()) return false;
   if (mode < 1 || mode > lampAvailableEffectCount() || o.speed < 1 || o.speed > 100 || o.intensity > 100 || o.dual > 1) return false;
   const auto old = effectOptions[mode - 1];
   optionsDirty |= old.speed!=o.speed || old.intensity!=o.intensity || old.dual!=o.dual || old.r!=o.r || old.g!=o.g || old.b!=o.b;
