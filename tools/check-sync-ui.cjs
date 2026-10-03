@@ -8,6 +8,8 @@ const raw={token:'test-token',deviceId:'aabbccddeeff',hostname:'coollamp-test.lo
 const catalog=names.map((name,i)=>({id:i+1,name,category:i>=38?'audio':i>=3&&i<=11?'fire':i>=20&&i<=28?'color':'calm',speed:!(i>=20&&i<=28)}));
 fs.mkdirSync(path.join(root,'.build/ui-check'),{recursive:true});
 raw.sync={version:1,role:0,peers:[{id:'112233445566',name:'Living room',role:1,microphone:true}]};
+const second=structuredClone(raw);Object.assign(second,{deviceId:'112233445566',hostname:'coollamp-second.local',name:'Second lamp'});second.sync={version:1,role:0,peers:[]};
+const globalRaw=raw;
 const requests=[],errors=[];
 const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];const file=path.join(dist,pathname==='/'?'index.html':pathname);if(!fs.existsSync(file)){res.writeHead(404);return res.end();}res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(file));});
 (async()=>{
@@ -16,8 +18,9 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
  try {
   const page=await browser.newPage({viewport:{width:393,height:852},deviceScaleFactor:1});
   page.on('pageerror',e=>errors.push(e.message));
-  await page.route('http://192.168.1.42/**',async route=>{
+  await page.route(/^http:\/\/192\.168\.1\.(42|43)\//,async route=>{
    const req=route.request(),url=new URL(req.url()),data=Object.fromEntries(new URLSearchParams(req.postData()||''));
+   const raw=url.hostname==='192.168.1.43'?second:globalRaw;
    let body='Saved';
    if(req.method()==='POST'){
     requests.push({path:url.pathname,data});
@@ -48,6 +51,24 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
   await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Coordinating'));
   const code=await page.locator('#syncCode').inputValue();assert.match(code,/^CL1-aabbccddeeff-[a-f0-9]{32}$/);
   assert(await page.locator('#syncCodeArea').isVisible());
+  // Switch to a different device, then back using saved lamp cards.
+  await page.locator('[data-page=lamps]').click();
+  assert(await page.locator('.lamp-card').filter({hasText:'Studio lamp'}).isEnabled(),'saved lamps must remain selectable after connecting');
+  await page.locator('#addLamp').evaluate(e=>e.open=true);
+  await page.locator('#address').fill('192.168.1.43');await page.locator('#password').fill('test-password');
+  await page.locator('#wifiConnect button').click();
+  await page.waitForFunction(()=>document.getElementById('lampTitle').textContent==='Second lamp');
+  await page.locator('[data-page=settings]').click();
+  assert.match(await page.locator('#syncStatus').textContent(),/Independent/);
+  assert(await page.locator('#syncCoordinator').isHidden());
+  assert(await page.locator('#syncJoinForm').isVisible());
+  assert.equal(await page.locator('#syncCode').inputValue(),'');
+  await page.locator('[data-page=lamps]').click();
+  await page.locator('.lamp-card').filter({hasText:'Studio lamp'}).click();
+  await page.waitForFunction(()=>document.getElementById('lampTitle').textContent==='Studio lamp');
+  await page.locator('[data-page=settings]').click();
+  assert.match(await page.locator('#syncStatus').textContent(),/Coordinating/);
+  assert.equal(second.sync.role,0,'switching must not change another lamp role');
   await page.locator('#leaveSync').click();await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Independent'));
   assert.equal(await page.locator('#syncCode').inputValue(),'');
   await page.locator('#syncJoinCode').fill('CL1-112233445566-0123456789abcdef0123456789abcdef');

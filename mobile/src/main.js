@@ -192,7 +192,7 @@ async function connect(saved = null) {
     selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp'});
     savedDevice=device; connected('Bluetooth');
   } catch(e) { status(e.message||'Could not connect over Bluetooth.'); }
-  finally { connecting=false; $('connect').disabled=false; }
+  finally { connecting=false; $('connect').disabled=false; renderLamps(); }
 }
 function connected(kind) {
   category='all'; $('effectSearch').value='';
@@ -225,7 +225,7 @@ async function connectWifi(entry,password) {
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
   } catch(e) { status(e.message); }
-  finally { connecting=false; }
+  finally { connecting=false; renderLamps(); }
 }
 $('connect').onclick=()=>connect();
 $('reconnect').onclick=()=>connect(savedDevice);
