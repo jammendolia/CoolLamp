@@ -1,6 +1,7 @@
 import { legacyCatalog, validateCatalog } from './catalog.js';
 import { lampAddress } from './lamps.js';
 import { parseGroupCode } from './sync.js';
+import { groupSceneSettings } from './group-scenes.js';
 
 export class WifiTransport {
   constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
@@ -54,8 +55,24 @@ export class WifiTransport {
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
+  async configureGroupScene(patch) {
+    if(this.raw?.sync?.version!==2||this.raw.sync.role!==1)throw Error('Connect to the coordinator running firmware 1.8.0 or newer.');
+    const v=groupSceneSettings(this.raw.sync,patch);
+    const message=await this.request('/api/sync/scene',{scene:v.scene,speed:v.speed,intensity:v.intensity,
+      r:v.primary[0],g:v.primary[1],b:v.primary[2],r2:v.secondary[0],g2:v.secondary[1],b2:v.secondary[2]});
+    await this.refresh();return message;
+  }
+  async configureGroupOrder(ids) {
+    const order=this.raw?.sync?.order;
+    if(this.raw?.sync?.version!==2||this.raw.sync.role!==1||!Array.isArray(order))throw Error('Connect to the coordinator to arrange lamps.');
+    if(!Array.isArray(ids)||ids.length<1||ids.length>9||new Set(ids).size!==ids.length||
+       !ids.includes(this.identity)||ids.some(id=>!order.some(x=>x.id===id))||
+       order.some(x=>x.online&&!ids.includes(x.id)))throw Error('Keep every connected lamp in the order.');
+    const message=await this.request('/api/sync/order',{order:ids.join(',')});
+    await this.refresh();return message;
+  }
   async configureSync(role,code='') {
-    if(this.raw?.sync?.version!==1)throw new Error('Update lamp firmware to use Wi-Fi groups.');
+    if(![1,2].includes(this.raw?.sync?.version))throw new Error('Update lamp firmware to use Wi-Fi groups.');
     if(![0,1,2].includes(role))throw new Error('Choose a valid group role.');
     const fields=role?parseGroupCode(code):{};
     if(role===1&&fields.leader!==this.identity)throw new Error('Create the group on its coordinator.');
@@ -64,12 +81,28 @@ export class WifiTransport {
     await this.refresh();return message;
   }
   async syncAction(action) {
-    if(!['pause','resume'].includes(action)||this.raw?.sync?.version!==1)throw new Error('Group control is unavailable.');
+    if(!['pause','resume'].includes(action)||![1,2].includes(this.raw?.sync?.version))throw new Error('Group control is unavailable.');
     const message=await this.request('/api/sync',{action});await this.refresh();return message;
   }
   async syncInvite() {
     if(this.raw?.sync?.role!==1)throw new Error('Select the coordinator to get its group code.');
     const code=await this.request('/api/sync/invite',{});parseGroupCode(code);return code;
+  }
+  async calibrateLeds(action,position) {
+    if(!this.raw?.calibration)throw Error('Update lamp firmware to use LED setup.');
+    if(!['start','move','save','cancel'].includes(action))throw Error('Choose a valid setup action.');
+    if(action==='start' && this.raw.sync?.role)throw Error('Leave the lamp group before sizing this lamp, then rejoin afterward.');
+    if(action==='move' && (!Number.isInteger(position)||position<1||position>1024))throw Error('Choose an LED from 1 to 1024.');
+    const message=await this.request('/api/calibration',{action,...(action==='move'?{position}:{})});
+    if(action!=='save')await this.refresh();
+    return message;
+  }
+  async configureRotation({enabled,random,category,seconds}) {
+    if(!this.raw?.rotation)throw Error('Update lamp firmware to rotate effects.');
+    if(typeof enabled!=='boolean'||typeof random!=='boolean'||![0,1,2].includes(category)||!Number.isInteger(seconds)||seconds<5||seconds>86400)throw Error('Choose an interval from 5 seconds to 24 hours.');
+    if(enabled && (this.raw.sync?.role===2 || this.raw.sync?.scene || (category===2&&!this.raw.audio?.installed)))throw Error('Use the controller with Mirror effects selected. Audio-only needs a microphone.');
+    const message=await this.request('/api/rotation',{enabled:Number(enabled),random:Number(random),category,seconds});
+    await this.refresh();return message;
   }
   async configureGeometry(midpoint) {
     if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');
@@ -130,7 +163,7 @@ export class WifiTransport {
     const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;
     if(mode!==null && !this.catalog?.some(x=>x.id===mode))throw new Error('This effect is not available on the selected lamp.');
     if(!paths[op])throw new Error('Unsupported command.');
-    try { await this.request(...paths[op]); await this.refresh(); }
+    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene)await this.configureGroupScene({scene:0}); await this.request(...paths[op]); await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }
   async disconnect() { clearTimeout(this.timer);this.epoch++;this.identity=null;this.catalog=null;this.raw=null;this.state=null;this.authorization=null;this.callbacks.onDisconnect?.(); }

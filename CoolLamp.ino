@@ -7,7 +7,9 @@
 #include "LampConfig.h"
 #include "LampGeometry.h"
 #include "LampControl.h"
+#include "LampPlayback.h"
 #include "LampSync.h"
+#include "LampGroupScenes.h"
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
 #include "LampGestures.h"
@@ -110,6 +112,7 @@ void setup() {
   beginLampAudio();
   loadLampSettings();
   loadLampGeometry();
+  loadLampRotation();
   loadLampColors();
   loadLampVuColors();
   loadLampFountainColors();
@@ -145,8 +148,12 @@ void loop() {
   serviceLampNetwork();
   serviceLampBluetooth();
   serviceLampUpdater();
-  serviceLampAudio(PowerOn && Mode > LAMP_BASE_EFFECT_COUNT && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing());
+  serviceLampRotation();
+  const uint8_t groupScene=lampGroupScene();
+  const bool needsAudio=groupScene?(groupScene==2||groupScene==3||groupScene==4||groupScene==7):Mode>LAMP_BASE_EFFECT_COUNT;
+  serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing());
   bool renderNow = serviceLampKnob();
+  if (renderLampCalibration()) return;
   if (lampIsUpdating()) { delay(1); return; }
 
   // No serial writes here: USB backpressure must never delay lamp controls.
@@ -194,15 +201,19 @@ void loop() {
   unsigned steps = min(effectBudget / 4096, uint32_t(4));
   effectBudget -= steps * 4096;
   if (renderNow && steps == 0) steps = 1;
-  if (Mode > LAMP_BASE_EFFECT_COUNT) steps = 1; // Audio follows real time, independently of speed.
+  if (lampGroupScene() || Mode > LAMP_BASE_EFFECT_COUNT) steps = 1; // Audio follows real time, independently of speed.
   if (lampSyncFollowing()) {
     const uint32_t target = lampSyncEffectClock(effectClockMs) & ~uint32_t(15);
     const int32_t distance = int32_t(target - effectClockMs);
     steps = Mode > LAMP_BASE_EFFECT_COUNT ? 1 : distance > 0 ? min(uint32_t(distance) / 16, uint32_t(4)) : 0;
     if (distance < 0 || distance > 64 || Mode > LAMP_BASE_EFFECT_COUNT) { steps = 1; effectClockMs = target - 16; }
   }
+  if(lampGroupScene())steps=1; // Group scenes use their own shared real-time clock.
+  static uint8_t previousGroupScene=0;
+  if(previousGroupScene!=lampGroupScene()){fill_solid(leds,NUM_LEDS,CRGB::Black);previousGroupScene=lampGroupScene();}
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
+  if(lampGroupScene()) { renderGroupScene(lampSyncRenderTime(now)); continue; }
   switch (Mode) {
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
     case MODE_VU_METER: case MODE_RAINBOW_EMBERS:
@@ -298,10 +309,10 @@ void loop() {
   }
   const auto color = getLampColor(Mode);
   // Preserve the original frame for effects that fade or accumulate past pixels.
-  const bool transform = Mode < 30 && color.enabled;
+  const bool transform = !lampGroupScene() && Mode < 30 && color.enabled;
   ::memcpy(originalFrame, leds, NUM_LEDS * sizeof(CRGB));
   uint8_t frameBrightness=PowerOn?Brightness:0;
-  if(Mode==MODE_SOUND_GLOW) {
+  if(!lampGroupScene() && Mode==MODE_SOUND_GLOW) {
     // Reserve the power for a full glow first. Limiting the already-modulated
     // frame can cancel changes in audio amplitude across the whole strip.
     soundGlowPalette(leds);
@@ -317,7 +328,7 @@ void loop() {
       leds[i] = CRGB(uint16_t(tint.r) * level / 255, uint16_t(tint.g) * level / 255, uint16_t(tint.b) * level / 255);
     }
   }
-  if (options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
+  if (!lampGroupScene() && options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
   FastLED.show(frameBrightness);
   ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
   ++lampRenderedFrames;

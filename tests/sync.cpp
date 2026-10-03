@@ -4,7 +4,7 @@
 #include <limits>
 using namespace LampSyncWire;
 Packet frame(){
-  Packet p{};memcpy(p.magic,"CLSY",4);p.version=1;p.kind=Frame;p.role=1;
+  Packet p{};memcpy(p.magic,"CLSY",4);p.version=2;p.kind=Frame;p.role=1;
   strcpy(p.sender,"aabbccddeeff");strcpy(p.leader,p.sender);strcpy(p.name,"Studio");
   p.session=123;p.target=456;p.sequence=1;p.time=1000;
   p.visual.mode=46;p.visual.brightness=100;p.visual.speed=50;p.visual.power=1;
@@ -13,7 +13,7 @@ Packet frame(){
 int main(){
   auto p=frame();assert(valid(p,sizeof(p)));
   assert(!valid(p,sizeof(p)-1));assert(!valid(p,sizeof(p)+1));
-  auto bad=p;bad.version=2;assert(!valid(bad,sizeof(bad)));
+  auto bad=p;bad.version=1;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.kind=5;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.name[48]='x';assert(!valid(bad,sizeof(bad)));
   bad=p;bad.sender[12]='x';assert(!valid(bad,sizeof(bad)));
@@ -27,6 +27,11 @@ int main(){
   bad=p;bad.visual.power=2;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.target=0;assert(!valid(bad,sizeof(bad)));
   assert(rate(50)==256&&rate(100)==1024&&rate(1)==36);
+  bad=p;bad.visual.scene=9;assert(!valid(bad,sizeof(bad)));
+  bad=p;bad.visual.count=10;assert(!valid(bad,sizeof(bad)));
+  bad=p;bad.visual.count=2;bad.visual.position=2;assert(!valid(bad,sizeof(bad)));
+  bad=p;bad.visual.scene=1;bad.visual.count=2;bad.visual.sceneSpeed=50;assert(valid(bad,sizeof(bad)));
+  bad.visual.sceneIntensity=101;assert(!valid(bad,sizeof(bad)));
   Receiver r;assert(r.stale(0));
   assert(!r.accept(p,10,999));assert(r.accept(p,10,456));
   assert(!r.accept(p,11,456)); // duplicate cannot refresh heartbeat

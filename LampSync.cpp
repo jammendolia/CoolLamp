@@ -18,6 +18,43 @@ uint64_t nonce=0;
 uint32_t sequence=0,lastBeacon=0,lastFrame=0,lastSubscribe=0,ping=0;
 Receiver receiver;
 Visual received{};
+struct SceneConfig {
+  uint8_t version=1,count=1,scene=0,speed=50,intensity=85;
+  uint8_t primary[3]{70,220,255},secondary[3]{255,65,170};
+  char order[9][13]{};
+} sceneConfig;
+uint32_t sceneStart=0,sceneBeatAt=0,sceneBeat=0,lastAudioBeat=0;
+uint8_t sceneBeatLevel=0;
+uint32_t sceneMotion=0,sceneMotionAt=0,sceneMotionFraction=0;
+bool validScene(const SceneConfig& s) {
+  if(s.version!=1||s.count<1||s.count>9||s.scene>8||s.speed<1||s.speed>100||s.intensity>100)return false;
+  bool self=false;
+  for(unsigned i=0;i<s.count;++i){
+    if(!id(s.order[i]))return false;
+    self|=!strcmp(s.order[i],identity);
+    for(unsigned j=0;j<i;++j)if(!strcmp(s.order[i],s.order[j]))return false;
+  }
+  return self;
+}
+bool saveScene(const SceneConfig& next) {
+  Preferences prefs;if(!prefs.begin("coollamp",false))return false;
+  const bool ok=prefs.putBytes("groupSceneV1",&next,sizeof(next))==sizeof(next);prefs.end();
+  if(ok){sceneConfig=next;sceneStart=millis()+300;sceneBeatAt=0;sceneBeatLevel=0;sceneMotion=0;sceneMotionAt=sceneStart;sceneMotionFraction=0;}
+  return ok;
+}
+unsigned positionOf(const char* id) {for(unsigned i=0;i<sceneConfig.count;++i)if(!strcmp(sceneConfig.order[i],id))return i;return 9;}
+bool admitPosition(const char* id) {
+  if(positionOf(id)<9)return true;
+  if(sceneConfig.count>=9)return false;
+  auto next=sceneConfig;strlcpy(next.order[next.count++],id,13);return saveScene(next);
+}
+void addScene(Visual& v,const char* id) {
+  v.scene=sceneConfig.scene;v.position=positionOf(id);v.count=sceneConfig.count;
+  v.sceneSpeed=sceneConfig.speed;v.sceneIntensity=sceneConfig.intensity;
+  memcpy(v.scenePrimary,sceneConfig.primary,3);memcpy(v.sceneSecondary,sceneConfig.secondary,3);
+  v.groupMotion=sceneMotion;v.groupMotionAt=sceneMotionAt;
+  v.groupStart=sceneStart;v.groupBeatAt=sceneBeatAt;v.groupBeat=sceneBeat;v.groupBeatLevel=sceneBeatLevel;
+}
 uint32_t frameTime=0;
 uint8_t keyBytes[16]{};
 uint64_t randomSession(){uint64_t v=uint64_t(esp_random())<<32|esp_random();return v?v:1;}
@@ -33,7 +70,7 @@ void clearFollower(){
   receiver.reset();nonce=randomSession();lastSubscribe=0;
 }
 Packet packet(Kind kind,const String& name){
-  Packet p{};memcpy(p.magic,"CLSY",4);p.version=1;p.kind=kind;p.role=config.role;p.microphone=lampHasMicrophone();
+  Packet p{};memcpy(p.magic,"CLSY",4);p.version=2;p.kind=kind;p.role=config.role;p.microphone=lampHasMicrophone();
   strlcpy(p.sender,identity,sizeof(p.sender));strlcpy(p.leader,config.leader,sizeof(p.leader));strlcpy(p.name,name.c_str(),sizeof(p.name));
   p.session=nonce;p.sequence=++sequence;p.time=millis();return p;
 }
@@ -52,10 +89,17 @@ String quote(const char* value){String s="\"";for(size_t i=0;value[i];++i){const
 }
 const Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return lampSyncVisual!=nullptr;}
+bool leaveLampSceneForEffect(){
+  if(config.role!=1||!sceneConfig.scene)return true;
+  auto next=sceneConfig;next.scene=0;return saveScene(next);
+}
 void beginLampSync(){
   snprintf(identity,sizeof(identity),"%012llx",ESP.getEfuseMac()&0xffffffffffffULL);
   Preferences prefs;
   if(prefs.begin("coollamp",true)){Config saved{};if(prefs.getBytesLength("syncV1")==sizeof(saved)&&prefs.getBytes("syncV1",&saved,sizeof(saved))==sizeof(saved)&&saved.version==1&&saved.role<=2&&saved.leader[12]==0&&saved.key[32]==0&&(!saved.role||(id(saved.leader)&&decodeKey(saved.key,keyBytes))))config=saved;prefs.end();}
+  strlcpy(sceneConfig.order[0],identity,13);
+  if(prefs.begin("coollamp",true)){SceneConfig saved{};if(prefs.getBytesLength("groupSceneV1")==sizeof(saved)&&prefs.getBytes("groupSceneV1",&saved,sizeof(saved))==sizeof(saved)&&validScene(saved))sceneConfig=saved;prefs.end();}
+  sceneStart=millis()+300;sceneMotionAt=sceneStart;
   nonce=randomSession();
 }
 bool configureLampSync(uint8_t role,const String& leader,const String& key){
@@ -65,6 +109,34 @@ bool configureLampSync(uint8_t role,const String& leader,const String& key){
   Preferences prefs;if(!prefs.begin("coollamp",false))return false;const bool ok=prefs.putBytes("syncV1",&next,sizeof(next))==sizeof(next);prefs.end();if(!ok)return false;
   clearFollower();config=next;memcpy(keyBytes,decoded,16);paused=false;sequence=0;for(auto& p:peers)p.joined=false;return true;
 }
+bool configureLampScene(uint8_t scene,uint8_t speed,uint8_t intensity,const uint8_t* primary,const uint8_t* secondary) {
+  if(config.role!=1||scene>8||speed<1||speed>100||intensity>100)return false;
+  // These scenes require sound; do not silently offer a nonfunctional scene.
+  if((scene==3||scene==4||scene==7)&&!lampHasMicrophone())return false;
+  auto next=sceneConfig;next.scene=scene;next.speed=speed;next.intensity=intensity;
+  memcpy(next.primary,primary,3);memcpy(next.secondary,secondary,3);
+  return saveScene(next);
+}
+bool configureLampOrder(const String& order) {
+  if(config.role!=1||order.length()<12||order.length()>116||(order.length()+1)%13)return false;
+  auto next=sceneConfig;next.count=(order.length()+1)/13;
+  for(unsigned i=0;i<next.count;++i){
+    if(i&&order.c_str()[i*13-1]!=',')return false;
+    memcpy(next.order[i],order.c_str()+i*13,12);next.order[i][12]=0;
+    if(positionOf(next.order[i])>=9)return false;
+  }
+  if(!validScene(next))return false;
+  // Connected followers cannot disappear from the spatial layout.
+  for(const auto& p:peers)if(p.joined&&uint32_t(millis()-p.subscribed)<Timeout){
+    bool found=false;for(unsigned i=0;i<next.count;++i)found|=!strcmp(p.info.sender,next.order[i]);if(!found)return false;
+  }
+  return saveScene(next);
+}
+Visual lampGroupVisual() {
+  if(lampSyncVisual)return *lampSyncVisual;
+  Visual v{};if(config.role==1){captureLampSyncVisual(v);addScene(v,identity);}return v;
+}
+uint8_t lampGroupScene(){return lampSyncVisual?lampSyncVisual->scene:config.role==1?sceneConfig.scene:0;}
 void pauseLampSync(){if(config.role==2){paused=true;clearFollower();}}
 void resumeLampSync(){paused=false;clearFollower();}
 String lampSyncInvite(){return config.role==1?String("CL1-")+config.leader+"-"+config.key:String();}
@@ -90,14 +162,26 @@ void serviceLampSync(const String& name,bool blocked){
     if(p.kind==Discover){auto* item=peer(p.sender,now);if(item && (!item->joined || uint32_t(now-item->subscribed)>=Timeout)){item->info=p;item->ip=source;item->seen=now;}continue;}
     if(!config.role||strcmp(p.leader,config.leader)||!authenticated(p))continue;
     if(config.role==1&&p.kind==Subscribe&&p.target==nonce&&p.role==2){
-      auto* item=peer(p.sender,now,true);if(!item)continue;item->info=p;item->ip=source;item->seen=now;item->subscribed=now;item->joined=true;
-      auto reply=packet(ClockReply,name);reply.target=p.session;reply.echo=p.time;captureLampSyncVisual(reply.visual);send(reply,source);
+      auto* item=peer(p.sender,now,true);if(!item||!admitPosition(p.sender))continue;item->info=p;item->ip=source;item->seen=now;item->subscribed=now;item->joined=true;
+      auto reply=packet(ClockReply,name);reply.target=p.session;reply.echo=p.time;captureLampSyncVisual(reply.visual);addScene(reply.visual,p.sender);send(reply,source);
     }else if(config.role==2&&!paused&&(p.kind==Frame||p.kind==ClockReply)&&p.role==1&&!strcmp(p.sender,config.leader)){
       if(!receiver.locked&&p.kind!=ClockReply)continue;
       if(p.kind==ClockReply&&(p.echo!=ping||uint32_t(now-ping)>200))continue;
       if(!receiver.accept(p,now,nonce))continue;
       if(p.kind==ClockReply)receiver.clock(p.time,p.echo,now);
       received=p.visual;frameTime=p.time;lampSyncVisual=&received;applyLampSyncControl(&received);
+    }
+  }
+  if(config.role==1){
+    const auto audio=getLampAudioFeatures();
+    if(int32_t(now-sceneMotionAt)>=0){
+      const uint32_t dt=now-sceneMotionAt;
+      const uint64_t advance=uint64_t(dt)*(256+(audio.valid?audio.level:0))+sceneMotionFraction;
+      sceneMotion+=advance/256;sceneMotionFraction=advance%256;sceneMotionAt=now;
+    }
+    if(audio.valid&&audio.beat!=lastAudioBeat){
+      lastAudioBeat=audio.beat;
+      if(audio.level){++sceneBeat;sceneBeatAt=now+120;sceneBeatLevel=audio.level;}
     }
   }
   if(now-lastBeacon>=2000){lastBeacon=now;auto p=packet(Discover,name);IPAddress broadcast=ip;const auto mask=WiFi.subnetMask();for(unsigned i=0;i<4;++i)broadcast[i]=ip[i]|uint8_t(~mask[i]);send(p,broadcast);}
@@ -107,12 +191,26 @@ void serviceLampSync(const String& name,bool blocked){
   }
   if(config.role==1&&now-lastFrame>=40){
     lastFrame=now;auto p=packet(Frame,name);captureLampSyncVisual(p.visual);
-    for(auto& item:peers)if(item.joined&&uint32_t(now-item.subscribed)<Timeout){p.target=item.info.session;send(p,item.ip);}
+    for(auto& item:peers)if(item.joined&&uint32_t(now-item.subscribed)<Timeout){p.target=item.info.session;addScene(p.visual,item.info.sender);send(p,item.ip);}
   }
 }
 String lampSyncJson(){
   const uint32_t now=millis();unsigned members=0;for(auto& p:peers)if(p.joined&&uint32_t(now-p.subscribed)<Timeout)++members;
-  String s="{\"version\":1,\"role\":"+String(config.role)+",\"leader\":"+quote(config.leader)+",\"paused\":"+(paused?"true":"false")+",\"active\":"+(lampSyncFollowing()?"true":"false")+",\"members\":"+String(members)+",\"peers\":[";
+  String s="{\"version\":2,\"role\":"+String(config.role)+",\"leader\":"+quote(config.leader)+",\"paused\":"+(paused?"true":"false")+",\"active\":"+(lampSyncFollowing()?"true":"false")+",\"members\":"+String(members)+",\"peers\":[";
   bool comma=false;for(auto& p:peers)if(p.info.sender[0]&&uint32_t(now-p.seen)<PeerTimeout){if(comma)s+=',';comma=true;s+="{\"id\":"+quote(p.info.sender)+",\"name\":"+quote(p.info.name)+",\"address\":"+quote(p.ip.toString().c_str())+",\"role\":"+String(p.info.role)+",\"microphone\":"+(p.info.microphone?"true":"false")+"}";}
+  s+="]";
+  const auto v=lampGroupVisual();
+  s+=",\"scene\":"+String(v.scene)+",\"position\":"+String(v.position)+",\"count\":"+String(v.count)+",\"sceneSpeed\":"+String(v.sceneSpeed)+",\"sceneIntensity\":"+String(v.sceneIntensity);
+  s+=",\"scenePrimary\":["+String(v.scenePrimary[0])+","+String(v.scenePrimary[1])+","+String(v.scenePrimary[2])+"],\"sceneSecondary\":["+String(v.sceneSecondary[0])+","+String(v.sceneSecondary[1])+","+String(v.sceneSecondary[2])+"]";
+  s+=",\"order\":[";
+  if(config.role==1)for(unsigned i=0;i<sceneConfig.count;++i){
+    if(i)s+=",";
+    const char* label=!strcmp(sceneConfig.order[i],identity)?"This lamp":sceneConfig.order[i];bool online=!strcmp(sceneConfig.order[i],identity);
+    for(const auto& p:peers)if(!strcmp(p.info.sender,sceneConfig.order[i])){label=p.info.name;online=p.joined&&uint32_t(now-p.subscribed)<Timeout;break;}
+    s+="{\"id\":"+quote(sceneConfig.order[i])+",\"name\":"+quote(label)+",\"online\":"+(online?"true":"false")+"}";
+  }
   return s+"]}";
+
 }
+
+uint8_t lampSyncRole(){return config.role;}

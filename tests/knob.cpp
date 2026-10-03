@@ -1,3 +1,11 @@
+bool calibrating=false,calibrationSaved=false;
+unsigned short position=134;
+void syncLampKnob();
+void resetLampCalibrationKnob();
+bool lampCalibrationActive(){return calibrating;}
+unsigned short lampCalibrationPosition(){return position;}
+void moveLampCalibration(unsigned short p){position=p;syncLampKnob();}
+bool finishLampCalibration(bool save){calibrationSaved=save;calibrating=false;resetLampCalibrationKnob();return true;}
 #include <algorithm>
 #include "../LampGeometry.h"
 uint16_t lampMidpoint=0;
@@ -85,5 +93,11 @@ int main(){
   clicks(1);turn(1);failSave=true;clicks(3);assert(!PowerOn&&knobMode==KnobMode::Effects);
   const int attempts=brightnessSaves;tick(4000);assert(brightnessSaves==attempts);
   failSave=false;tick(1100);assert(brightnessSaves==attempts+1&&!knobBrightnessPending);
+  // Calibration owns the knob and never changes the underlying effect or brightness.
+  const auto oldMode=Mode,oldBrightness=Brightness;
+  button=true;tick(80);button=false;tick(100); // A click pending before app setup must not save it.
+  calibrating=true;resetLampCalibrationKnob();tick(500);assert(calibrating);turn(10000);assert(position==1024&&Mode==oldMode&&Brightness==oldBrightness);
+  turn(-10000);assert(position==1);turn(199);clicks(1);assert(!calibrating&&calibrationSaved&&position==200);
+  calibrating=true;syncLampKnob();clicks(2);assert(!calibrating&&!calibrationSaved);
   std::cout<<"PASS: single/double/triple clicks, click-and-turn, debounce, long holds, live preview, save-once, inactivity, bounds, remote changes, OTA suppression and clock wrap.\n";
 }

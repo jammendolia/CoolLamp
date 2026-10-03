@@ -21,7 +21,10 @@ static const uint8_t knobPalette[][3] = {
 static constexpr int knobPaletteSize = sizeof(knobPalette) / sizeof(knobPalette[0]);
 
 void syncLampKnob() {
-  if (knobMode == KnobMode::Brightness) {
+  if (lampCalibrationActive()) {
+    rotaryEncoder.setBoundaries(1, 1024, false);
+    rotaryEncoder.setEncoderValue(lampCalibrationPosition());
+  } else if (knobMode == KnobMode::Brightness) {
     rotaryEncoder.setBoundaries(1, 255, false);
     rotaryEncoder.setEncoderValue(Brightness);
   } else if (knobMode == KnobMode::Color) {
@@ -93,6 +96,13 @@ bool serviceLampKnob() {
     syncLampKnob();
     return false;
   }
+  if(lampCalibrationActive()) {
+    const auto gesture=knobGestures.poll(now,down);
+    if(rotaryEncoder.encoderChanged() && !knobGestures.pressed())moveLampCalibration(rotaryEncoder.getEncoderValue());
+    if(gesture==LampGesture::Single)finishLampCalibration(true);
+    else if(gesture!=LampGesture::None)finishLampCalibration(false);
+    return true;
+  }
   // A phone/web effect or power change ends adjustment of the previous effect.
   if (knobMode != KnobMode::Effects && (Mode != knobEffect || !PowerOn)) finishLampKnob();
   const auto gesture = knobGestures.poll(now, down);
@@ -131,4 +141,10 @@ bool serviceLampKnob() {
   if (knobMode != KnobMode::Effects && !knobGestures.pressed() && !knobGestures.pending() && uint32_t(now-knobActivity) >= 5000) finishLampKnob();
   if (knobMode == KnobMode::Effects && (knobBrightnessPending || knobColorsPending) && uint32_t(now-knobSaveAttempt) >= 5000) savePendingLampKnob();
   return changed;
+}
+
+void resetLampCalibrationKnob() {
+  knobGestures.reset(millis(),digitalRead(DI_ENCODER_SW)==LOW);
+  knobMode=KnobMode::Effects;
+  syncLampKnob();
 }

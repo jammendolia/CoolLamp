@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
-// Version 1 is a fixed-size little-endian wire format, independent of LED geometry.
+// Version 2 adds ordered group scenes; all members must update. It is a fixed-size little-endian wire format, independent of LED geometry.
 // No IP credentials, access passwords, PCM audio or per-pixel data go on the wire.
 namespace LampSyncWire {
 constexpr uint16_t Port = 49732;
@@ -12,6 +12,8 @@ constexpr uint32_t Timeout = 3000, AudioTimeout = 200, PeerTimeout = 7000;
 enum Kind : uint8_t { Discover = 1, Subscribe = 2, Frame = 3, ClockReply = 4 };
 #pragma pack(push,1)
 struct Visual {
+  uint32_t groupStart, groupBeatAt, groupBeat, groupMotion, groupMotionAt;
+  uint8_t scene, position, count, sceneSpeed, sceneIntensity, scenePrimary[3], sceneSecondary[3], groupBeatLevel;
   uint32_t clock, beat, bassBeat;
   uint16_t bass, mid, treble;
   uint8_t mode, brightness, power, audioValid, level;
@@ -35,10 +37,10 @@ inline bool id(const char* s) {
 inline bool newer(uint32_t a,uint32_t b) { return int32_t(a-b)>0; }
 inline uint32_t rate(uint8_t speed) { return speed<=50?32+uint32_t(speed)*224/50:256+uint32_t(speed-50)*768/50; }
 inline bool validVisual(const Visual& v) {
-  return v.mode>=1&&v.mode<=47&&v.brightness&&v.power<=1&&v.audioValid<=1&&v.speed>=1&&v.speed<=100&&v.intensity<=100&&v.dual<=1&&v.primary[0]<=1;
+  return v.scene<=8&&v.count<=9&&v.position<(v.count?v.count:1)&&(!v.scene||(v.count&&v.sceneSpeed>=1&&v.sceneSpeed<=100&&v.sceneIntensity<=100))&&v.mode>=1&&v.mode<=47&&v.brightness&&v.power<=1&&v.audioValid<=1&&v.speed>=1&&v.speed<=100&&v.intensity<=100&&v.dual<=1&&v.primary[0]<=1;
 }
 inline bool valid(const Packet& p,size_t length) {
-  return length==sizeof(Packet)&&memcmp(p.magic,"CLSY",4)==0&&p.version==1&&p.kind>=Discover&&p.kind<=ClockReply&&
+  return length==sizeof(Packet)&&memcmp(p.magic,"CLSY",4)==0&&p.version==2&&p.kind>=Discover&&p.kind<=ClockReply&&
     p.role<=2&&p.microphone<=1&&id(p.sender)&&p.name[48]==0&&
     (p.kind==Discover||(id(p.leader)&&p.session&&p.target&&(p.kind==Subscribe||validVisual(p.visual))));
 }

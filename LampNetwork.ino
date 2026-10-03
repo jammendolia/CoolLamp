@@ -234,6 +234,8 @@ void sendLampState()
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
   state += ",\"sync\":" + lampSyncJson();
+  state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+"}";
+  state += ",\"rotation\":{\"enabled\":"+String(lampRotation.enabled?"true":"false")+",\"random\":"+String(lampRotation.random?"true":"false")+",\"category\":"+String(lampRotation.category)+",\"seconds\":"+String(lampRotation.seconds)+"}";
   state += ",\"fountainColors\":[";
   for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=fountainPaletteColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
   state += "]";
@@ -383,10 +385,45 @@ void beginLampNetwork()
     if(!readNumber("role",0,2,role)||!configureLampSync(role,lampServer.arg("leader"),lampServer.arg("key"))){lampServer.send(400,"text/plain","Invalid group code or group settings could not be saved.");return;}
     lampServer.send(200,"text/plain",role?"Group settings saved.":"Left the group. Local settings restored.");
   });
+  lampServer.on("/api/sync/scene", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
+    uint32_t scene,speed,intensity,r,g,b,r2,g2,b2;
+    if(!readNumber("scene",0,8,scene)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||
+       !readNumber("r",0,255,r)||!readNumber("g",0,255,g)||!readNumber("b",0,255,b)||
+       !readNumber("r2",0,255,r2)||!readNumber("g2",0,255,g2)||!readNumber("b2",0,255,b2)){lampServer.send(400,"text/plain","Invalid scene settings.");return;}
+    const uint8_t primary[]={uint8_t(r),uint8_t(g),uint8_t(b)},secondary[]={uint8_t(r2),uint8_t(g2),uint8_t(b2)};
+    const bool ok=configureLampScene(scene,speed,intensity,primary,secondary);
+    lampServer.send(ok?200:409,"text/plain",ok?"Group scene saved.":"Select the coordinator, check its microphone, and try again.");
+  });
+  lampServer.on("/api/sync/order", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
+    const bool ok=configureLampOrder(lampServer.arg("order"));
+    lampServer.send(ok?200:409,"text/plain",ok?"Lamp order saved.":"Order changed or could not be saved. Refresh and try again.");
+  });
   lampServer.on("/api/sync/invite", HTTP_POST, []() {
     if(!authorizedLampRequest(true))return;
     const String invite=lampSyncInvite();
     lampServer.send(invite.length()?200:409,"text/plain",invite.length()?invite:"Create a group on this lamp first.");
+  });
+  lampServer.on("/api/calibration", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
+    const String action=lampServer.arg("action");bool ok=false;
+    if(action=="start")ok=beginLampCalibration();
+    else if(action=="move") {uint32_t position;if(lampCalibrationActive() && readNumber("position",1,MAX_LED_COUNT,position)){moveLampCalibration(position);ok=true;}}
+    else if(action=="save" || action=="cancel")ok=finishLampCalibration(action=="save");
+    lampServer.send(ok?200:409,"text/plain",ok?(action=="save"?"LED count saved. Restarting lamp…":action=="cancel"?"Setup canceled. Previous LED count kept.":"Move the teal light to the last LED. Click the knob to save; double-click to cancel."):"Could not complete setup. Leave any lamp group before starting; retry if saving failed.");
+  });
+  lampServer.on("/api/rotation", HTTP_POST, []() {
+    if(!authorizedLampRequest(true))return;
+    if(lampUpdateOwnsResources() || lampCalibrationActive()){lampServer.send(409,"text/plain","Finish setup or updating first.");return;}
+    uint32_t enabled,random,category,seconds;
+    if(!readNumber("enabled",0,1,enabled)||!readNumber("random",0,1,random)||!readNumber("category",0,2,category)||!readNumber("seconds",5,86400,seconds)){lampServer.send(400,"text/plain","Choose an interval from 5 seconds to 24 hours.");return;}
+    LampRotation next;next.enabled=enabled;next.random=random;next.category=category;next.seconds=seconds;
+    const bool ok=saveLampRotation(next);
+    lampServer.send(ok?200:409,"text/plain",ok?"Effect rotation saved.":"Use an independent lamp or the group controller in Mirror effects. Audio-only needs a microphone.");
   });
   lampServer.on("/api/geometry", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
@@ -734,4 +771,13 @@ bool saveLampKnobBrightness()
   prefs.end();
   if (saved) lampSettings = next;
   return saved;
+}
+
+// Keep network credentials, startup settings, and power limits unchanged.
+bool saveLampLedCount(uint16_t count) {
+  if(!count || count>MAX_LED_COUNT)return false;
+  LampSettings next=lampSettings;next.ledCount=count;
+  Preferences prefs;if(!prefs.begin("coollamp",false))return false;
+  const bool ok=prefs.putBytes("settings",&next,sizeof(next))==sizeof(next);prefs.end();
+  if(ok){lampSettings=next;restartAt=millis()+1200;}return ok;
 }

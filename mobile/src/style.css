@@ -151,3 +151,26 @@ fieldset > button, form > button, .connection > button { width: 100%; margin-top
 #syncCode{box-sizing:border-box;width:100%;resize:vertical;border:1px solid #ffffff24;border-radius:10px;background:#101613;color:#d2e9bd;padding:12px;font:13px/1.7 monospace;overflow-wrap:anywhere}
 #syncFeedback{overflow-wrap:anywhere}#syncJoinCode{width:100%;box-sizing:border-box}
 @media(max-width:380px){.sync-banner{align-items:stretch;flex-direction:column}.sync-banner button{align-self:flex-start}}
+
+.group-scene-pane { border:1px solid #71618c; background:linear-gradient(140deg,#292738,#1a1f1d); }
+.group-scene-choices { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:18px 0; }
+.group-scene-choices button { min-width:0;margin:0;padding:14px 10px;text-align:left;background:#30323c;color:#eee; }
+.group-scene-choices button[aria-pressed=true] { background:#dac6fa;color:#292136;box-shadow:inset 0 0 0 2px #f0e6ff; }
+.group-scene-colors { display:grid;grid-template-columns:1fr 1fr;gap:14px; }
+.group-order { padding:0;list-style:none; }
+.group-order li { display:flex;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid #ffffff1c; }
+.group-order span { flex:1;min-width:0;overflow-wrap:anywhere; }
+.group-order button { width:auto;margin:0;padding:8px 12px; }
+
+.playback-pane { border:1px solid #bfa6ff40; background:linear-gradient(135deg,#252333,#161c20); margin:1rem 0; }
+.playback-pane summary { display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+.playback-interval { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+.playback-interval > div { min-width:0; }
+.calibration-pane { border:1px solid #70e1c950; margin:1.5rem 0; }
+.calibration-readout { display:flex; align-items:baseline; justify-content:space-between; color:#70e1c9; padding:1rem 0; }
+.calibration-readout output { font-size:3rem; font-variant-numeric:tabular-nums; }
+.calibration-steps { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.5rem; margin:1rem 0; }
+.calibration-steps button { padding:.85rem .2rem; }
+
+.playback-pane fieldset, .calibration-pane fieldset { border:0; background:transparent; padding:0; margin:1rem 0 0; }
+.calibration-readout > span { white-space:nowrap; }

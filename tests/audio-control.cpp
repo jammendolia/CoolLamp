@@ -1,3 +1,7 @@
+bool lampCalibrationActive(){return false;}
+unsigned short lampCalibrationPosition(){return 1;}
+void moveLampCalibration(unsigned short){}
+bool finishLampCalibration(bool){return true;}
 #include <cassert>
 #include <cstdint>
 #include <iostream>
@@ -6,6 +10,7 @@ bool installed=false;
 bool lampHasMicrophone(){return installed;}
 bool following=false;
 bool lampSyncFollowing(){return following;}
+bool leaveLampSceneForEffect(){return true;}
 void pauseLampSync(){following=false;}
 constexpr uint8_t MODE_MAX=47;
 uint8_t Mode=4,Brightness=100;

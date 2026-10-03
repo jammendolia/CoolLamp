@@ -11,12 +11,14 @@ LampControlState getLampControlState()
 
 bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
 {
+  if (lampCalibrationActive()) return false;
   if (lampSyncFollowing()) {
     pauseLampSync();
     if (mode > lampAvailableEffectCount()) mode = Mode;
   }
   if (mode < 1 || mode > lampAvailableEffectCount() || brightness < 1 || brightness > 255) return false;
   if (Mode != mode) {
+    if(!leaveLampSceneForEffect())return false;
     Mode = mode;
     fill_solid(leds, NUM_LEDS, CRGB::Black);
   }

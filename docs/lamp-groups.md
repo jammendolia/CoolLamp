@@ -1,9 +1,59 @@
-# Wi-Fi lamp groups (firmware 1.7.0)
+# Wi-Fi lamp groups and spatial scenes (firmware 1.8.0)
 
-This first version mirrors one coordinator's effect, brightness, power, colors,
+Mirror mode mirrors one coordinator's effect, brightness, power, colors,
 motion settings and audio features onto up to eight followers. Each lamp renders
 its own strip and keeps its LED count, center point and current limit. GPIOs and
 the PCB design are unchanged. There is no cloud service or ESP-NOW dependency.
+
+## Spatial group scenes
+
+Firmware 1.8.0 adds eight group scenes alongside the original 47 mirrored effects.
+Install the matching app and update **every group member to 1.8.0** before testing:
+the authenticated UDP packet format is now version 2. Version 1.7.x lamps cannot
+synchronize with 1.8.0 lamps. Existing group credentials and membership are retained,
+so updated lamps can reconnect without making a new invitation code.
+
+The controller's **Light → Group scenes** pane selects the scene, two colors,
+scene brightness, and travel/flow/bloom speed. Audio scenes expose shared sensitivity,
+cutoff, and scale on that pane. These are the controller's existing audio settings.
+Scene appearance settings are shared between scenes. Choose **Mirror effects**
+to return to ordinary effects, or select a normal effect from the library.
+Turning the controller's knob to a different effect also exits a scene.
+Overall lamp power and brightness still apply.
+
+| Scene | Spatial behavior | Sound |
+|---|---|---|
+| Portal | A comet climbs one lamp and emerges down the next. | Not required |
+| Ping-pong | A light ball bounces through the shared route. Sound accelerates its continuous motion. | Optional |
+| Stereo fountain | Odd positions respond to bass; even positions respond to treble, with flowing intensity ripples. This is a frequency split of one microphone, not stereo channels. | Required |
+| Duet | Beat accents move between lamps; strong accents light all positions together. | Required |
+| Orbit | Two contrasting bands circulate through the ordered group. | Not required |
+| Storm front | Flickering strikes travel across the lamps, changing direction between storms. | Not required |
+| Ember exchange | Audio flames surround an ember that rises out of one lamp, descends into the next, and bursts on arrival. | Required |
+| Color wave | A continuous two-color blend rolls through the group. | Not required |
+
+**Settings → Lamp groups → Lamp order** provides earlier/later buttons.
+The controller starts at position 1 but can be moved anywhere. Newly authenticated
+followers are appended; order is saved separately from normal effect settings.
+Up to nine positions are supported (one controller and eight followers).
+Offline lamps retain their positions so a brief disconnect does not shift everyone
+else. Remove an offline position explicitly when a lamp is no longer part of the
+installation. A lamp that later rejoins is appended again.
+
+Each lamp maps height from both strip ends to its own configured center. The route
+alternates upward/downward across positions. Different strip lengths do not change
+travel duration. A scene waits dark until the ordered layout has at least two lamps.
+No microphone is needed on followers. Controllers without microphones can select
+the non-audio scenes and Ping-pong; required-audio scenes are disabled/rejected.
+
+Scene switches and order changes schedule a common start 300 ms ahead; beat-driven
+scenes use a 120 ms event delay. These provide time for packets to arrive, but do not
+guarantee simultaneous playback on a congested LAN. Rendering is deterministic for
+a given position, shared clock and packet. No per-pixel data is transmitted.
+
+Scene API (existing authentication and mutation token required):
+- POST /api/sync/scene: controller-only scene (0–8), speed, intensity and two RGB colors.
+- POST /api/sync/order: controller-only comma-separated device IDs; connected members cannot be removed.
 
 ## App workflow
 
@@ -114,3 +164,22 @@ a microphone-free follower, coordinator power/effect/palette changes, VU silence
 router loss/rejoin, coordinator reboot, local knob pause and OTA. Check timing and
 frame-rate/heap diagnostics under sustained audio and Wi-Fi load. Firmware and app
 builds alone cannot establish wireless timing or capacity on the hardware.
+
+## Two-lamp scene acceptance test
+
+1. Install 1.8.0 on both lamps and the matching app; confirm controller/follower status.
+2. Arrange the two lamps left to right and set that order on the controller.
+3. Select Portal. Verify a comet rises on the first lamp and descends on the second.
+4. Reverse the order; verify the route reverses without changing either lamp's midpoint.
+5. Try Ping-pong, Orbit, Storm front, and Color wave; vary speed, palette and brightness.
+6. Play music near the controller. Try Stereo fountain, Duet, and Ember exchange.
+   Sound near the follower alone must not become its independent control input.
+7. In silence, the three required-audio scenes should fall dark after their last event.
+8. Pause/resume the follower, then power-cycle it. Verify membership and order persist.
+9. Select Mirror effects and a normal effect; verify ordinary grouped playback returns.
+
+Automated coverage includes all eight rendering signatures, boundary handoff, band
+splitting, beat ownership, silence, 1–1024 LED geometry, clock rollover, position
+authentication, failed writes, persisted order, scene API validation, and browser
+selection/reordering at 320/393/768px widths. Physical timing/performance on multiple
+lamps must still be evaluated after installation; these tests do not measure LAN jitter.

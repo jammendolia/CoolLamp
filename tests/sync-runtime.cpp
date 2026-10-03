@@ -2,7 +2,9 @@
 #include "../LampSync.cpp"
 #include <cassert>
 #include <iostream>
-bool lampHasMicrophone(){return true;}
+bool microphone=true;
+bool lampHasMicrophone(){return microphone;}
+LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures a{};a.valid=true;a.level=100;a.beat=1;return a;}
 unsigned applied=0,restored=0;
 void applyLampSyncControl(const Visual* v){if(v)++applied;else ++restored;}
 void captureLampSyncVisual(Visual& v){v={};v.mode=46;v.power=1;v.brightness=150;v.speed=50;v.audioValid=1;v.level=140;}
@@ -41,6 +43,22 @@ int main(){
  auto subscribe=packet(Subscribe,"Follower");strcpy(subscribe.sender,"112233445566");subscribe.role=2;subscribe.session=777;subscribe.target=nonce;receive(subscribe);
  fakeNow+=40;serviceLampSync("Leader",false);
  bool found=false;for(const auto& b:WiFiUDP::outgoing){Packet p{};memcpy(&p,b.data(),sizeof(p));if(p.kind==Frame&&p.target==777){found=true;assert(authenticated(p));assert(p.visual.mode==46);}}
- assert(found);assert(lampSyncInvite()==String("CL1-aabbccddeeff-")+key);
+ assert(found);
+ assert(sceneConfig.count==2);
+ const uint8_t primary[]={1,2,3},secondary[]={4,5,6};
+ assert(configureLampScene(1,60,80,primary,secondary));
+ assert(lampGroupScene()==1);
+ const auto sceneSaved=Preferences::storage["groupSceneV1"];
+ Preferences::failWrites=true;assert(!configureLampScene(8,60,80,primary,secondary));assert(lampGroupScene()==1);Preferences::failWrites=false;
+ assert(!configureLampOrder("aabbccddeeff,aabbccddeeff"));
+ assert(!configureLampOrder("aabbccddeeff,998877665544"));
+ assert(!configureLampOrder("aabbccddeeff")); // connected follower must remain
+ assert(configureLampOrder("112233445566,aabbccddeeff"));
+ assert(lampGroupVisual().position==1);
+ microphone=false;assert(!configureLampScene(3,50,80,primary,secondary));assert(configureLampScene(5,50,80,primary,secondary));microphone=true;
+ fakeNow+=40;WiFiUDP::outgoing.clear();serviceLampSync("Leader",false);
+ for(const auto& b:WiFiUDP::outgoing){Packet p{};memcpy(&p,b.data(),sizeof(p));if(p.kind==Frame){assert(p.visual.position==0&&p.visual.count==2&&p.visual.scene==5);assert(authenticated(p));}}
+ const auto orderSaved=Preferences::storage["groupSceneV1"];beginLampSync();assert(sceneConfig.count==2&&positionOf("aabbccddeeff")==1);assert(Preferences::storage["groupSceneV1"]==orderSaved);
+ assert(lampSyncInvite()==String("CL1-aabbccddeeff-")+key);
  std::cout<<"PASS: actual sync service handshake, authentication rejection, stale audio, reconnect, failed save, pause, OTA shutdown, leader stream and NVS isolation\n";
 }
