@@ -3,7 +3,7 @@ name: iOS TestFlight upload
 on:
   workflow_dispatch:
   push:
-    branches: [testflight/lamp-switch-fix, release/firmware-1.8.0, release/firmware-1.8.1, testflight/power-controls]
+    branches: [testflight/lamp-switch-fix, release/firmware-1.8.0, release/firmware-1.8.1, testflight/power-controls, testflight/ui-redesign]
     paths: ['mobile/**']
 
 permissions:

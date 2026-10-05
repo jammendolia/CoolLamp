@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>CoolLamp helix app icon</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#253b49"/><stop offset="1" stop-color="#10141d"/></linearGradient>
+    <radialGradient id="atmosphere"><stop stop-color="#a9f0d8" stop-opacity=".14"/><stop offset="1" stop-color="#a9f0d8" stop-opacity="0"/></radialGradient>
+    <linearGradient id="helix" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#a9f0d8"/><stop offset=".55" stop-color="#ffffff"/><stop offset="1" stop-color="#a9f0d8"/></linearGradient>
+    <filter id="glow" x="-60%" y="-30%" width="220%" height="160%"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#background)"/>
+  <ellipse cx="512" cy="460" rx="420" ry="450" fill="url(#atmosphere)"/>
+  <g transform="translate(147 92) scale(3.65)"><ellipse cx="100" cy="207" rx="56" ry="10" fill="#0b1422" opacity=".7"/>
+  <path d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197" fill="none" stroke="#778b9a" stroke-width="13" stroke-linecap="round"/>
+  <path d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197" fill="none" stroke="#a9f0d8" stroke-width="11" stroke-linecap="round" opacity=".8" filter="url(#glow)"/>
+  <path d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197" fill="none" stroke="url(#helix)" stroke-width="8" stroke-linecap="round"/>
+  <rect x="61" y="192" width="78" height="18" rx="8" fill="#15202b" stroke="#6b8590" stroke-width="1.4"/></g>
+</svg>

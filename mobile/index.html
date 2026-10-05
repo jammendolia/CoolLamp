@@ -1,114 +1,394 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#101313"><title>CoolLamp</title></head>
-<body><main>
-  <header class="app-header"><div><p class="eyebrow">LIGHT STUDIO</p><h1>CoolLamp<span class="brand-dot">.</span></h1></div><span id="connectionBadge" class="badge">Not connected</span></header>
-<nav aria-label="Main navigation"><button data-page="lamps" aria-current="page">My lamps</button><button data-page="light">Light</button><button data-page="settings">Settings</button></nav>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10141d">
+<title>CoolLamp</title>
+</head>
+<body>
+<main id="app">
+<div id="toast" class="toast" hidden aria-hidden="true"></div>
+  <header class="app-header">
+<div class="brand">
+<span class="brand-mark" aria-hidden="true">c</span>
+<div>
+<h1>CoolLamp</h1>
+<p class="eyebrow">Light, composed.</p>
+</div>
+</div>
+<span id="connectionBadge" class="badge">Not connected</span>
+</header>
+<nav aria-label="Main navigation">
+<button data-page="lamps" aria-current="page">
+<svg viewBox="0 0 24 24" aria-hidden="true">
+<rect x="4" y="4" width="6" height="6" rx="2">
+</rect>
+<rect x="14" y="4" width="6" height="6" rx="2">
+</rect>
+<rect x="4" y="14" width="6" height="6" rx="2">
+</rect>
+<rect x="14" y="14" width="6" height="6" rx="2">
+</rect>
+</svg>
+<span>Lamps</span>
+</button>
+<button data-page="light">
+<svg viewBox="0 0 24 24" aria-hidden="true">
+<path d="M9 18h6m-5 3h4M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2Z">
+</path>
+</svg>
+<span>Light</span>
+</button>
+<button data-page="settings">
+<svg viewBox="0 0 24 24" aria-hidden="true">
+<path d="M4 7h16M4 17h16">
+</path>
+<circle cx="9" cy="7" r="3">
+</circle>
+<circle cx="15" cy="17" r="3">
+</circle>
+</svg>
+<span>Settings</span>
+</button>
+</nav>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
-  <aside id="defaultPasswordNotice" class="sync-banner" hidden><div><p class="eyebrow">MAKE IT YOURS</p><p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p></div><button id="changeDefaultPassword" class="secondary compact">Change password</button></aside>
-  <section id="page-lamps"><div class="section-title"><div><p class="eyebrow">AT HOME</p><h2>My lamps</h2></div><button id="discover" class="compact">Find on Wi-Fi</button></div>
-<div id="lampList" class="lamp-list"></div><p id="emptyLamps" class="hint">Your lamps will appear here. Give each one a name and a room to make it your own.</p>
-<details id="addLamp"><summary>Add or connect a lamp</summary>
-<form id="wifiConnect"><label for="address">Lamp address</label><input id="address" placeholder="coollamp-50b9ac.local" autocapitalize="none" autocomplete="off" required><label for="password">Lamp access password</label><input id="password" type="password" autocomplete="current-password"><p class="hint">New lamps use coollamp. If changed, use your chosen lamp password. Saved securely on this phone.</p><button>Connect over Wi-Fi</button></form>
-  <div class="connection"><button id="reconnect" hidden>Reconnect to my lamp</button><button id="connect">Find a lamp flashing blue</button><button id="disconnect" class="secondary" hidden>Disconnect</button></div>
-<p class="hint">For a new Bluetooth pairing, hold the knob for six seconds until the lamp flashes blue.</p></details></section>
-<section id="page-light" hidden><div class="section-title"><div><p class="eyebrow" id="lampRoom">YOUR LAMP</p><h2 id="lampTitle">Choose a lamp</h2></div></div><section class="power-panel" aria-label="Lamp power"><button id="power" type="button" aria-pressed="false" disabled>Turn on</button><p id="powerHint" class="hint">Connect to a lamp to control its power.</p></section><div id="lampArt" class="lamp-art" aria-hidden="true"><svg viewBox="0 0 360 100"><path d="M25 74 C70 74 78 18 119 18 S161 83 202 83 S254 18 300 18 S334 50 340 50"/></svg></div>
-  <aside id="syncBanner" class="sync-banner" hidden><div><p class="eyebrow">CONNECTED LIGHT</p><p id="syncBannerText"></p></div><button id="manageSync" class="secondary compact">Manage group</button></aside>
-  <details id="rotationPane" class="panel playback-pane" hidden><summary>Effect rotation <span id="rotationBadge" class="small-badge">Off</span></summary>
-    <p class="hint">A changing light show, even when the app is closed. Each effect keeps its own colors and motion settings.</p>
-    <form id="rotationForm"><fieldset id="rotationFields"><legend class="sr-only">Effect rotation</legend>
-      <label class="switch-row">Rotate effects automatically<input id="rotationEnabled" type="checkbox"></label>
-      <label for="rotationOrder">Play order</label><select id="rotationOrder"><option value="random">Random · no immediate repeats</option><option value="sequential">Sequential · catalog order</option></select>
-      <label for="rotationCategory">Include</label><select id="rotationCategory"><option value="0">All available effects</option><option value="1">Light effects only</option><option value="2">Audio effects only</option></select>
-      <div class="playback-interval"><div><label for="rotationInterval">Change every</label><input id="rotationInterval" type="number" min="1" max="86400" step="1" value="30" required></div><div><label for="rotationUnit">Unit</label><select id="rotationUnit"><option value="1">Seconds</option><option value="60">Minutes</option></select></div></div>
-      <p class="hint">5 seconds to 24 hours. Pauses while powered off, in LED setup, or displaying a group scene. In a group, configure rotation on the controller with Mirror effects selected.</p>
-      <button>Save rotation</button>
-    </fieldset></form><p id="rotationFeedback" class="hint" role="status"></p>
-  </details>
+  <aside id="defaultPasswordNotice" class="sync-banner" hidden>
+<div>
+<p class="eyebrow">MAKE IT YOURS</p>
+<p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p>
+</div>
+<button id="changeDefaultPassword" class="secondary compact">Change password</button>
+</aside>
+  <section id="page-lamps">
+<div class="section-title">
+<div>
+<p class="eyebrow">AT HOME</p>
+<h2 tabindex="-1">Your lamps</h2>
+</div>
+<button id="discover" class="compact">Find on Wi-Fi</button>
+</div>
+<p class="page-intro">A little atmosphere, in every corner.</p>
+<div id="lampList" class="lamp-list">
+</div>
+<p id="emptyLamps" class="empty-state">Find lamps on your Wi-Fi, or connect a new lamp below. Your saved lamps stay here between visits.</p>
+<details id="addLamp" class="panel connection-panel">
+<summary>Connect a lamp</summary>
+<form id="wifiConnect">
+<label for="address">Lamp address</label>
+<input id="address" placeholder="coollamp-50b9ac.local" autocapitalize="none" autocomplete="off" required>
+<label for="password">Lamp access password</label>
+<input id="password" type="password" autocomplete="current-password">
+<p class="hint">New lamps use coollamp. If changed, use your chosen lamp password. Saved securely on this phone.</p>
+<button>Connect over Wi-Fi</button>
+</form>
+  <div class="connection">
+<button id="reconnect" hidden>Reconnect to my lamp</button>
+<button id="connect">Find a lamp flashing blue</button>
+<button id="disconnect" class="secondary" hidden>Disconnect</button>
+</div>
+<p class="hint">For a new Bluetooth pairing, hold the knob for six seconds until the lamp flashes blue.</p>
+</details>
+</section>
+<section id="page-light" hidden>
+<div class="section-title">
+<div>
+<p class="eyebrow" id="lampRoom">YOUR LAMP</p>
+<h2 id="lampTitle" tabindex="-1">Choose a lamp</h2>
+</div>
+<button type="button" data-goto="lamps" class="text-button compact">Change lamp</button>
+</div>
+<section class="light-hero" aria-label="Power and brightness">
+<section class="power-panel" aria-label="Lamp power">
+<button id="power" type="button" aria-pressed="false" disabled>Turn on</button>
+<p id="powerHint" class="hint">Connect to a lamp to control its power.</p>
+</section>
+<div id="lampArt" class="lamp-art" aria-hidden="true">
+<svg viewBox="0 0 200 230" aria-hidden="true">
+<defs>
+<linearGradient id="lampGradient" x1="0" y1="0" x2="1" y2="1">
+<stop stop-color="var(--lamp-color)">
+</stop>
+<stop offset=".55" stop-color="#ffffff">
+</stop>
+<stop offset="1" stop-color="var(--lamp-color)">
+</stop>
+</linearGradient>
+</defs>
+<ellipse class="lamp-shadow" cx="100" cy="207" rx="60" ry="11">
+</ellipse>
+<path class="lamp-outline" d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197">
+</path>
+<path class="lamp-glow" d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197">
+</path>
+<path class="lamp-core" d="M88 194C25 166 166 145 108 119S29 70 101 26C151 3 174 46 103 86S39 134 105 162S145 185 113 197">
+</path>
+<rect class="lamp-base" x="61" y="192" width="78" height="18" rx="8">
+</rect>
+</svg>
+</div>
+<div class="hero-meta">
+<span id="lightModeBadge" class="small-badge">Choose an effect</span>
+<span id="powerState" class="hint">Not connected</span>
+</div>
+<div id="lightControls" class="hero-brightness">
+        <p class="section-kicker">LIGHT</p>
+        <label for="brightness">Brightness <output id="brightnessValue">39%</output>
+</label>
+        <input id="brightness" type="range" min="1" max="255" value="100" aria-describedby="brightnessHelp">
+        <div class="range-captions">
+<span>Soft</span>
+<span>Luminous</span>
+</div>
+        <p class="micro-copy" id="brightnessHelp">Shared lamp brightness. Group followers follow the coordinator’s brightness.</p>
+      </div>
+</section>
+<aside id="lightEmpty" class="empty-state">
+<h3>Your light starts here</h3>
+<p>Connect to a lamp to explore its effects, colors and sound response.</p>
+<button type="button" data-goto="lamps">Choose a lamp</button>
+</aside>
+  <aside id="syncBanner" class="sync-banner" hidden>
+<div>
+<p class="eyebrow">CONNECTED LIGHT</p>
+<p id="syncBannerText">
+</p>
+</div>
+<button id="manageSync" class="secondary compact">Manage group</button>
+</aside>
+
   <section id="groupScenePane" class="panel group-scene-pane" hidden aria-labelledby="groupSceneTitle">
-    <div class="section-title"><div><p class="eyebrow">LIGHT ACROSS THE ROOM</p><h3 id="groupSceneTitle">Group scenes</h3></div><span id="groupScenePosition" class="hint"></span></div>
-    <p id="groupSceneDescription" class="hint"></p>
+    <div class="section-title">
+<div>
+<p class="eyebrow">LIGHT ACROSS THE ROOM</p>
+<h3 id="groupSceneTitle" tabindex="-1">Group scenes</h3>
+</div>
+<span id="groupScenePosition" class="hint">
+</span>
+</div>
+    <p id="groupSceneDescription" class="hint">
+</p>
     <p id="groupSceneWaiting" class="hint" hidden>Join a second lamp to see the scene. Each lamp needs firmware 1.8.0 or newer.</p>
-    <div id="groupSceneChoices" class="group-scene-choices" role="group" aria-label="Group scenes"></div>
-    <fieldset id="groupSceneFields"><legend class="sr-only">Group scene appearance</legend>
-      <label for="groupSceneSpeed"><span id="groupSceneSpeedLabel">Travel speed</span> <output id="groupSceneSpeedValue"></output></label><input id="groupSceneSpeed" type="range" min="1" max="100" value="50">
-      <label for="groupSceneIntensity">Scene brightness <output id="groupSceneIntensityValue"></output></label><input id="groupSceneIntensity" type="range" min="0" max="100" value="85">
-      <div class="group-scene-colors"><label>First color<input id="groupScenePrimary" type="color" value="#46dcff"></label><label>Second color<input id="groupSceneSecondary" type="color" value="#ff41aa"></label></div>
+    <details id="groupSceneLibrary" class="scene-library">
+<summary>Explore group scenes <span id="sceneLibraryCount" class="summary-detail">18 scenes</span>
+</summary>
+<input id="sceneSearch" type="search" placeholder="Search group scenes" aria-label="Search group scenes">
+<div id="groupSceneChoices" class="group-scene-choices" role="group" aria-label="Group scenes">
+</div>
+<p id="sceneSearchEmpty" class="hint" hidden>No scenes match. Try another name.</p>
+</details>
+    <fieldset id="groupSceneFields">
+<legend class="sr-only">Group scene appearance</legend>
+      <label for="groupSceneSpeed">
+<span id="groupSceneSpeedLabel">Travel speed</span> <output id="groupSceneSpeedValue">
+</output>
+</label>
+<input id="groupSceneSpeed" type="range" min="1" max="100" value="50">
+      <label for="groupSceneIntensity">Scene brightness <output id="groupSceneIntensityValue">
+</output>
+</label>
+<input id="groupSceneIntensity" type="range" min="0" max="100" value="85">
+      <div class="group-scene-colors">
+<label>First color<input id="groupScenePrimary" type="color" value="#46dcff">
+</label>
+<label>Second color<input id="groupSceneSecondary" type="color" value="#ff41aa">
+</label>
+</div>
       <button id="applyGroupScene" type="button">Apply scene settings</button>
     </fieldset>
-    <fieldset id="groupSceneAudio" hidden><legend>Shared sound response</legend>
-      <label for="groupAudioGain">Sensitivity <output id="groupAudioGainValue"></output></label><input id="groupAudioGain" type="range" min="1" max="64">
-      <label for="groupAudioGate">Noise cutoff <output id="groupAudioGateValue"></output></label><input id="groupAudioGate" type="range" min="0" max="1024">
-      <label for="groupAudioScale">Scale factor <output id="groupAudioScaleValue"></output></label><input id="groupAudioScale" type="range" min="100" max="400">
+    <fieldset id="groupSceneAudio" hidden>
+<legend>Shared sound response</legend>
+      <label for="groupAudioGain">Sensitivity <output id="groupAudioGainValue">
+</output>
+</label>
+<input id="groupAudioGain" type="range" min="1" max="64">
+      <label for="groupAudioGate">Quiet cutoff <output id="groupAudioGateValue">
+</output>
+</label>
+<input id="groupAudioGate" type="range" min="0" max="1024">
+      <label for="groupAudioScale">Contrast <output id="groupAudioScaleValue">
+</output>
+</label>
+<input id="groupAudioScale" type="range" min="100" max="400">
+      <p class="micro-copy">Tune the coordinator’s microphone. Shared with its other audio effects; followers use this sound response.</p>
       <button id="applyGroupAudio" type="button">Apply shared sound response</button>
     </fieldset>
-    <p id="groupSceneFeedback" class="hint" role="status"></p>
+    <p id="groupSceneFeedback" class="hint" role="status">
+</p>
   </section>
-  <fieldset id="controls" disabled><legend class="sr-only">Light & effects</legend>
-    <details id="effectLibrary" class="effect-library"><summary>Change effect <span id="libraryCount" class="summary-detail">Explore the collection</span></summary>
-    <div class="section-title"><h3 class="effects-heading">Find your next mood</h3></div><input id="effectSearch" type="search" placeholder="Search effects" aria-label="Search effects"><div id="effectCategories" class="chips" aria-label="Effect categories"><button type="button" data-category="all" aria-pressed="true">All</button><button type="button" data-category="favorites" aria-pressed="false">Favorites</button><button type="button" data-category="calm" aria-pressed="false">Calm</button><button type="button" data-category="fire" aria-pressed="false">Fire</button><button type="button" data-category="color" aria-pressed="false">Color</button><button type="button" data-category="audio" aria-pressed="false" hidden>Audio</button></div><p id="currentEffect" class="hint"></p><div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect"></div><select id="effect" hidden aria-hidden="true" tabindex="-1"></select>
+  <fieldset id="controls" disabled>
+<legend class="sr-only">Light & effects</legend>
+    <details id="effectLibrary" class="effect-library">
+<summary>Change effect <span id="libraryCount" class="summary-detail">Explore the collection</span>
+</summary>
+    <div class="section-title">
+<h3 class="effects-heading">Find your next mood</h3>
+</div>
+<input id="effectSearch" type="search" placeholder="Search effects" aria-label="Search effects">
+<div id="effectCategories" class="chips" role="group" aria-label="Effect categories">
+<button type="button" data-category="all" aria-pressed="true">All</button>
+<button type="button" data-category="favorites" aria-pressed="false">Favorites</button>
+<button type="button" data-category="calm" aria-pressed="false">Calm</button>
+<button type="button" data-category="fire" aria-pressed="false">Fire</button>
+<button type="button" data-category="color" aria-pressed="false">Color</button>
+<button type="button" data-category="audio" aria-pressed="false" hidden>Audio</button>
+</div>
+<p id="currentEffect" class="hint">
+</p>
+<div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect">
+</div>
+<select id="effect" hidden aria-hidden="true" tabindex="-1">
+</select>
     </details>
     <section id="effectPane" class="effect-pane" aria-labelledby="effectTitle" hidden>
-      <div class="effect-heading"><div><p id="effectFamily" class="eyebrow">LIGHT STUDIO</p><h2 id="effectTitle">Your effect</h2></div><button id="favoriteEffect" class="favorite-button secondary" aria-pressed="false" aria-label="Favorite this effect">♡</button></div>
-      <p id="effectDescription" class="effect-description"></p>
+      <div class="effect-heading">
+<div>
+<p id="effectFamily" class="eyebrow">LIGHT STUDIO</p>
+<h2 id="effectTitle" tabindex="-1">Your effect</h2>
+</div>
+<button id="favoriteEffect" class="favorite-button secondary" aria-pressed="false" aria-label="Favorite this effect">♡</button>
+</div>
+      <p id="effectDescription" class="effect-description">
+</p>
       <div id="effectTabs" class="effect-tabs" role="tablist" aria-label="Effect settings">
-        <button id="effect-tab-look" type="button" role="tab" data-effect-tab="look" aria-controls="effectBody" aria-selected="true">Light</button>
+        <button id="effect-tab-look" type="button" role="tab" data-effect-tab="look" aria-controls="effectBody" aria-selected="true">Color</button>
         <button id="effect-tab-motion" type="button" role="tab" data-effect-tab="motion" aria-controls="effectBody" aria-selected="false" tabindex="-1">Motion</button>
         <button id="effect-tab-sound" type="button" role="tab" data-effect-tab="sound" aria-controls="effectBody" aria-selected="false" tabindex="-1" hidden>Sound</button>
       </div>
       <div id="effectBody" role="tabpanel" aria-labelledby="effect-tab-look">
-      <div id="lightControls" class="control-section">
-        <p class="section-kicker">LIGHT</p>
-        <label for="brightness">Brightness <output id="brightnessValue">39%</output></label>
-        <input id="brightness" type="range" min="1" max="255" value="100">
-        <div class="range-captions"><span>Soft</span><span>Luminous</span></div>
-        <p class="micro-copy">Shared lamp brightness</p>
-      </div>
+
       <div id="colorControls" class="control-section" hidden>
-        <div class="section-title"><p class="section-kicker">PALETTE</p><span id="paletteState" class="small-badge">Original</span></div>
-        <label for="color" id="primaryColorLabel">Primary color</label><input id="color" type="color" value="#ff3c6e">
-        <p id="colorHint" class="hint"></p>
-      </div>
+        <div class="section-title">
+<p class="section-kicker">PALETTE</p>
+<span id="paletteState" class="small-badge">Original</span>
+</div>
+        <label for="color" id="primaryColorLabel">Primary color</label>
+<input id="color" type="color" value="#ff3c6e">
+        <p id="colorHint" class="hint">
+</p>
+      <div class="palette-options">
+<label class="switch-row">
+<span>Two-color palette</span>
+<input id="dual" type="checkbox" role="switch">
+</label>
+<div id="secondaryColorRow">
+<label for="secondaryColor" id="secondaryColorLabel">Secondary color</label>
+<input id="secondaryColor" type="color" value="#23a0ff">
+</div>
+</div>
+</div>
       <p id="colorUpgrade" class="hint" hidden>Update the lamp firmware to unlock custom colors.</p>
       <section id="vuControls" class="control-section" hidden>
-        <div class="control-heading"><span class="section-kicker">METER COLORS</span><span class="small-badge">Fixed height zones</span></div>
-        <div id="vuPreview" class="vu-preview" aria-hidden="true"></div>
-        <fieldset id="vuFields"><legend class="sr-only">VU meter zone colors</legend>
-          <label class="vu-zone" for="vuLow"><span>Low <small>0–65%</small></span><input id="vuLow" type="color" value="#00ff00"></label>
-          <label class="vu-zone" for="vuMid"><span>Mid <small>65–80%</small></span><input id="vuMid" type="color" value="#ffff00"></label>
-          <label class="vu-zone" for="vuPeak"><span>Peak <small>80–100%</small></span><input id="vuPeak" type="color" value="#ff0000"></label>
+        <div class="control-heading">
+<span class="section-kicker">METER COLORS</span>
+<span class="small-badge">Fixed height zones</span>
+</div>
+        <div id="vuPreview" class="vu-preview" aria-hidden="true">
+</div>
+        <fieldset id="vuFields">
+<legend class="sr-only">VU meter zone colors</legend>
+          <label class="vu-zone" for="vuLow">
+<span>Low <small>0–65%</small>
+</span>
+<input id="vuLow" type="color" value="#00ff00">
+</label>
+          <label class="vu-zone" for="vuMid">
+<span>Mid <small>65–80%</small>
+</span>
+<input id="vuMid" type="color" value="#ffff00">
+</label>
+          <label class="vu-zone" for="vuPeak">
+<span>Peak <small>80–100%</small>
+</span>
+<input id="vuPeak" type="color" value="#ff0000">
+</label>
           <button id="applyVu" type="button">Save meter colors</button>
           <button id="resetVu" class="text-button" type="button">Restore green / yellow / red</button>
         </fieldset>
-        <p id="vuFeedback" class="hint" role="status"></p>
+        <p id="vuFeedback" class="hint" role="status">
+</p>
       </section>
       <section id="fountainControls" class="control-section" hidden>
-        <div class="control-heading"><span class="section-kicker">FREQUENCY COLORS</span><span class="small-badge">Three independent bands</span></div>
-        <div id="fountainPreview" class="vu-preview" aria-hidden="true"></div>
-        <fieldset id="fountainFields"><legend class="sr-only">Fountain band colors</legend>
-          <label class="vu-zone" for="fountainLow"><span>Bass <small>Low frequencies</small></span><input id="fountainLow" type="color" value="#ff4100"></label>
-          <label class="vu-zone" for="fountainMid"><span>Midrange <small>Middle frequencies</small></span><input id="fountainMid" type="color" value="#00e682"></label>
-          <label class="vu-zone" for="fountainPeak"><span>Treble <small>High frequencies</small></span><input id="fountainPeak" type="color" value="#4b1eff"></label>
+        <div class="control-heading">
+<span class="section-kicker">FREQUENCY COLORS</span>
+<span class="small-badge">Three independent bands</span>
+</div>
+        <div id="fountainPreview" class="vu-preview" aria-hidden="true">
+</div>
+        <fieldset id="fountainFields">
+<legend class="sr-only">Fountain band colors</legend>
+          <label class="vu-zone" for="fountainLow">
+<span>Bass <small>Low frequencies</small>
+</span>
+<input id="fountainLow" type="color" value="#ff4100">
+</label>
+          <label class="vu-zone" for="fountainMid">
+<span>Midrange <small>Middle frequencies</small>
+</span>
+<input id="fountainMid" type="color" value="#00e682">
+</label>
+          <label class="vu-zone" for="fountainPeak">
+<span>Treble <small>High frequencies</small>
+</span>
+<input id="fountainPeak" type="color" value="#4b1eff">
+</label>
           <button id="applyFountain" type="button">Save fountain colors</button>
           <button id="resetFountain" class="text-button" type="button">Restore frequency colors</button>
         </fieldset>
-        <p id="fountainFeedback" class="hint" role="status"></p>
+        <p id="fountainFeedback" class="hint" role="status">
+</p>
       </section>
-      <fieldset id="effectOptions" hidden disabled><legend class="sr-only">Effect settings</legend>
-        <div class="palette-options"><label class="switch-row"><span>Two-color palette</span><input id="dual" type="checkbox"></label><div id="secondaryColorRow"><label for="secondaryColor" id="secondaryColorLabel">Secondary color</label><input id="secondaryColor" type="color" value="#23a0ff"></div></div>
-        <div id="motionControls" class="control-section"><p class="section-kicker">MOVEMENT</p><label for="speed"><span id="speedLabel">Motion speed</span> <output id="speedValue">50%</output></label><input id="speed" type="range" min="1" max="100" value="50"><div class="range-captions"><span>Slow</span><span>Fast</span></div><p id="speedHint" class="hint"></p></div>
-        <div id="intensityControls" class="control-section"><label for="intensity"><span id="intensityLabel">Effect glow</span> <output id="intensityValue">100%</output></label><input id="intensity" type="range" min="0" max="100" value="100"><p id="intensityHint" class="hint"></p></div>
+      <fieldset id="effectOptions" hidden disabled>
+<legend class="sr-only">Effect settings</legend>
+
+        <div id="motionControls" class="control-section">
+<p class="section-kicker">MOVEMENT</p>
+<label for="speed">
+<span id="speedLabel">Motion speed</span> <output id="speedValue">50%</output>
+</label>
+<input id="speed" type="range" min="1" max="100" value="50">
+<div class="range-captions">
+<span>Slow</span>
+<span>Fast</span>
+</div>
+<p id="speedHint" class="hint">
+</p>
+</div>
+        <div id="intensityControls" class="control-section">
+<label for="intensity">
+<span id="intensityLabel">Effect glow</span> <output id="intensityValue">100%</output>
+</label>
+<input id="intensity" type="range" min="0" max="100" value="100">
+<p id="intensityHint" class="hint">
+</p>
+</div>
       </fieldset>
       <div id="effectAudio" class="control-section audio-section" hidden>
-        <div class="section-title"><p class="section-kicker">AUDIO RESPONSE</p><span class="small-badge">Shared</span></div>
+        <div class="section-title">
+<p class="section-kicker">AUDIO RESPONSE</p>
+<span class="small-badge">Shared</span>
+</div>
         <p class="hint">Tune once. Every audio effect follows.</p>
-        <p id="audioConnectionHint" class="hint" role="status"></p>
-        <fieldset id="audioTuning" disabled><legend class="sr-only">Shared audio tuning</legend>
-          <label for="audioGain">Sensitivity <output id="audioGainValue">8</output></label><input id="audioGain" type="range" min="1" max="64" value="8"><p class="micro-copy">Amplify quieter sounds.</p>
-          <label for="audioGate">Quiet cutoff <output id="audioGateValue">8</output></label><input id="audioGate" type="range" min="0" max="1024" value="8"><p class="micro-copy">Raise to ignore room noise.</p>
-          <label for="audioScale">Contrast <output id="audioScaleValue">1.00×</output></label><input id="audioScale" type="range" min="100" max="400" step="5" value="100"><p class="micro-copy">Scale factor: deeper darkness for quiet sounds, full brightness for loud ones.</p>
+        <p id="audioConnectionHint" class="hint" role="status">
+</p>
+        <fieldset id="audioTuning" disabled>
+<legend class="sr-only">Shared audio tuning</legend>
+          <label for="audioGain">Sensitivity <output id="audioGainValue">8</output>
+</label>
+<input id="audioGain" type="range" min="1" max="64" value="8">
+<p class="micro-copy">Amplify quieter sounds.</p>
+          <label for="audioGate">Quiet cutoff <output id="audioGateValue">8</output>
+</label>
+<input id="audioGate" type="range" min="0" max="1024" value="8">
+<p class="micro-copy">Raise to ignore room noise.</p>
+          <label for="audioScale">Contrast <output id="audioScaleValue">1.00×</output>
+</label>
+<input id="audioScale" type="range" min="100" max="400" step="5" value="100">
+<p class="micro-copy">Scale factor: deeper darkness for quiet sounds, full brightness for loud ones.</p>
           <button id="applyAudio" type="button">Apply to all audio effects</button>
         </fieldset>
-        <p id="audioFeedback" class="hint" role="status" aria-live="polite"></p>
+        <p id="audioFeedback" class="hint" role="status" aria-live="polite">
+</p>
       </div>
       <button id="resetColor" class="text-button" type="button">Restore effect defaults</button>
       </div>
@@ -116,41 +396,268 @@
     <button id="save" class="secondary">Use these settings at startup</button>
     <p class="hint save-hint">Remembers the current effect, lamp brightness and your effect customizations. Audio tuning saves separately.</p>
   </fieldset>
-</section><section id="page-settings" hidden><h2>Lamp settings</h2><p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
-<form id="identityForm" class="panel"><h3>Make it yours</h3><label for="lampName">Lamp name</label><input id="lampName" maxlength="48" required><label for="room">Room</label><input id="room" maxlength="48"><button id="saveIdentity">Save name & room</button><button id="identify" type="button" class="secondary">Identify lamp</button><p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p></form>
-<section class="panel sync-panel" aria-labelledby="syncTitle">
-  <div class="section-title"><div><p class="eyebrow">BETTER TOGETHER</p><h3 id="syncTitle">Lamp groups</h3></div><span class="sync-orbit" aria-hidden="true">◉</span></div>
+<details id="rotationPane" class="panel playback-pane" hidden>
+<summary>Effect rotation <span id="rotationBadge" class="small-badge">Off</span>
+</summary>
+    <p class="hint">A changing light show, even when the app is closed. Each effect keeps its own colors and motion settings.</p>
+    <form id="rotationForm">
+<fieldset id="rotationFields">
+<legend class="sr-only">Effect rotation</legend>
+      <label class="switch-row">Rotate effects automatically<input id="rotationEnabled" type="checkbox">
+</label>
+      <label for="rotationOrder">Play order</label>
+<select id="rotationOrder">
+<option value="random">Random · no immediate repeats</option>
+<option value="sequential">Sequential · catalog order</option>
+</select>
+      <label for="rotationCategory">Include</label>
+<select id="rotationCategory">
+<option value="0">All available effects</option>
+<option value="1">Light effects only</option>
+<option value="2">Audio effects only</option>
+</select>
+      <div class="playback-interval">
+<div>
+<label for="rotationInterval">Change every</label>
+<input id="rotationInterval" type="number" min="1" max="86400" step="1" value="30" required inputmode="numeric">
+</div>
+<div>
+<label for="rotationUnit">Unit</label>
+<select id="rotationUnit">
+<option value="1">Seconds</option>
+<option value="60">Minutes</option>
+</select>
+</div>
+</div>
+      <p class="hint">5 seconds to 24 hours. Pauses while powered off, in LED setup, or displaying a group scene. In a group, configure rotation on the controller with Mirror effects selected.</p>
+      <button>Save rotation</button>
+    </fieldset>
+</form>
+<p id="rotationFeedback" class="hint" role="status">
+</p>
+  </details>
+</section>
+<section id="page-settings" hidden>
+<h2 tabindex="-1">Lamp settings</h2>
+<p class="page-intro">The details that make this lamp yours.</p>
+<p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
+<div class="settings-navigation" role="group" aria-label="Settings sections">
+<button type="button" data-settings-section="overview" aria-pressed="true">Overview</button>
+<button type="button" data-settings-section="groups" aria-pressed="false">Groups</button>
+<button type="button" data-settings-section="hardware" aria-pressed="false">Hardware</button>
+<button type="button" data-settings-section="network" aria-pressed="false">Network</button>
+<button type="button" data-settings-section="updates" aria-pressed="false">Updates</button>
+</div>
+<p id="settingsHint" class="hint" hidden></p>
+<section id="lampSummary" class="device-summary" data-settings-panel="overview">
+<div>
+<span>Firmware</span>
+<strong id="summaryVersion">—</strong>
+</div>
+<div>
+<span>Strip length</span>
+<strong id="summaryLeds">—</strong>
+</div>
+<div>
+<span>Connection</span>
+<strong id="summaryTransport">—</strong>
+</div>
+</section>
+<form id="identityForm" class="panel identity-panel" data-settings-panel="overview">
+<h3>Make it yours</h3>
+<label for="lampName">Lamp name</label>
+<input id="lampName" maxlength="48" required>
+<label for="room">Room</label>
+<input id="room" maxlength="48">
+<button id="saveIdentity" disabled>Save name & room</button>
+<button id="identify" disabled type="button" class="secondary">Identify lamp</button>
+<p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p>
+</form>
+<section class="panel sync-panel" aria-labelledby="syncTitle" data-settings-panel="groups">
+  <div class="section-title">
+<div>
+<p class="eyebrow">BETTER TOGETHER</p>
+<h3 id="syncTitle">Lamp groups</h3>
+</div>
+<span class="sync-orbit" aria-hidden="true">◉</span>
+</div>
   <p class="hint">One lamp leads. The others share its effect, colors and sound, each shaped to its own strip.</p>
   <p id="syncStatus" class="sync-status" role="status">Connect over Wi-Fi to firmware with lamp groups.</p>
-  <fieldset id="syncFields" disabled><legend class="sr-only">Group configuration</legend>
-    <div id="syncIndependent"><button id="createSync" type="button">Use this lamp as coordinator</button><p class="hint">For audio effects, choose a lamp with a microphone. Up to eight lamps can follow.</p></div>
-    <div id="syncCoordinator" hidden><button id="showSyncCode" type="button" class="secondary">Show group code</button><div id="syncCodeArea" hidden><label for="syncCode">Share with lamps you want to join</label><textarea id="syncCode" readonly rows="3" spellcheck="false"></textarea><button id="copySyncCode" type="button" class="secondary compact">Copy code</button><p class="hint">This code grants control of the group. It stays hidden until you ask to share it.</p></div></div>
-    <div id="syncFollower" hidden><p class="hint" id="syncLeaderName"></p><button id="pauseSync" type="button" class="secondary">Pause on this lamp</button><button id="resumeSync" type="button">Resume following</button></div>
-    <div id="syncJoin"><h4>Join a group</h4><div id="syncPeers" class="sync-peers"></div><p class="hint" id="syncDiscoveryHint">Lamps on the same home network appear automatically. Discovery does not join a group.</p><form id="syncJoinForm"><label for="syncJoinCode">Coordinator’s group code</label><input id="syncJoinCode" placeholder="CL1-…" autocapitalize="none" autocomplete="off" spellcheck="false" required><button>Join this group</button></form></div>
-    <section id="groupOrderPane" hidden><h4>Lamp order</h4><p class="hint">Arrange lamps from left to right. Offline positions stay reserved. Group scenes travel through this order.</p><ol id="groupOrder" class="group-order"></ol></section>
-    <button id="leaveSync" type="button" class="text-button" hidden>Leave group</button>
-  </fieldset><p id="syncFeedback" class="hint" role="status"></p>
+  <fieldset id="syncFields" disabled>
+<legend class="sr-only">Group configuration</legend>
+    <div id="syncIndependent">
+<button id="createSync" type="button">Use this lamp as coordinator</button>
+<p class="hint">For audio effects, choose a lamp with a microphone. Up to eight lamps can follow.</p>
+</div>
+    <div id="syncCoordinator" hidden>
+<button id="showSyncCode" type="button" class="secondary">Show group code</button>
+<div id="syncCodeArea" hidden>
+<label for="syncCode">Share with lamps you want to join</label>
+<textarea id="syncCode" readonly rows="3" spellcheck="false">
+</textarea>
+<button id="copySyncCode" type="button" class="secondary compact">Copy code</button>
+<p class="hint">This code grants control of the group. It stays hidden until you ask to share it.</p>
+</div>
+</div>
+    <div id="syncFollower" hidden>
+<p class="hint" id="syncLeaderName">
+</p>
+<button id="pauseSync" type="button" class="secondary">Pause on this lamp</button>
+<button id="resumeSync" type="button">Resume following</button>
+</div>
+    <div id="syncJoin">
+<h4>Join a group</h4>
+<div id="syncPeers" class="sync-peers">
+</div>
+<p class="hint" id="syncDiscoveryHint">Lamps on the same home network appear automatically. Discovery does not join a group.</p>
+<form id="syncJoinForm">
+<label for="syncJoinCode">Coordinator’s group code</label>
+<input id="syncJoinCode" placeholder="CL1-…" autocapitalize="none" autocomplete="off" spellcheck="false" required>
+<button>Join this group</button>
+</form>
+</div>
+    <section id="groupOrderPane" hidden>
+<h4>Lamp order</h4>
+<p class="hint">Arrange lamps from left to right. Offline positions stay reserved. Group scenes travel through this order.</p>
+<ol id="groupOrder" class="group-order">
+</ol>
 </section>
-<details class="panel"><summary>Wi-Fi & advanced settings</summary><p class="hint" id="wifiSettingsHint">Connect over Wi-Fi to manage these settings. For first-time setup, hold the knob for three seconds, join its hotspot, then connect to 192.168.4.1 here.</p><fieldset id="networkSettings" disabled><form id="networkForm">
-<button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button><label for="networks">Nearby networks</label><select id="networks"><option value="">Choose a network or enter its name below</option></select><label for="ssid">Network name</label><input id="ssid" maxlength="32" autocomplete="off"><label for="wifiPassword">Wi-Fi password</label><input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password"><label class="toggle"><input id="openNetwork" type="checkbox"> Password-free network</label><label class="toggle"><input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
-<label for="leds">LED count</label><input id="leds" type="number" min="1" max="1024" required><label for="milliamps">Power limit (mA)</label><input id="milliamps" type="number" min="100" max="20000" required><label for="startupMode">Startup effect</label><select id="startupMode"></select><label for="startupBrightness">Startup brightness (1–255)</label><input id="startupBrightness" type="number" min="1" max="255" required><label for="adminPassword">New lamp access password</label><input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password"><p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p><button>Save & restart lamp</button></form><section id="calibrationPane" class="panel calibration-pane" hidden aria-labelledby="calibrationTitle">
-  <p class="eyebrow">MAKE IT FIT</p><h3 id="calibrationTitle">Find the last LED</h3>
+    <button id="leaveSync" type="button" class="text-button" hidden>Leave group</button>
+  </fieldset>
+<p id="syncFeedback" class="hint" role="status">
+</p>
+</section>
+<fieldset id="networkSettings" disabled class="settings-container">
+<form id="networkForm" class="panel" data-settings-panel="network">
+<div class="section-title">
+<div>
+<p class="eyebrow">STAY CONNECTED</p>
+<h3>Wi-Fi & security</h3>
+</div>
+</div>
+<p class="hint" id="wifiSettingsHint">Connect over Wi-Fi to manage these settings. For first-time setup, hold the knob for three seconds, join its hotspot, then connect to 192.168.4.1 here.</p>
+<button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
+<label for="networks">Nearby networks</label>
+<select id="networks">
+<option value="">Choose a network or enter its name below</option>
+</select>
+<label for="ssid">Network name</label>
+<input id="ssid" maxlength="32" autocomplete="off">
+<label for="wifiPassword">Wi-Fi password</label>
+<input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password">
+<label class="toggle">
+<input id="openNetwork" type="checkbox"> Password-free network</label>
+<label class="toggle">
+<input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
+<label for="adminPassword">New lamp access password</label>
+<input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password">
+<p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p>
+<button>Save & restart lamp</button>
+</form>
+<form id="hardwareForm" class="panel" data-settings-panel="hardware">
+<p class="eyebrow">BUILT FOR YOUR LAMP</p>
+<h3>Strip & startup</h3>
+<p class="hint">Set the strip length, power budget and the light your lamp wakes up to.</p>
+<label for="leds">LED count</label>
+<input id="leds" type="number" min="1" max="1024" required form="hardwareForm" inputmode="numeric">
+<label for="milliamps">Power limit (mA)</label>
+<input id="milliamps" type="number" min="100" max="20000" required form="hardwareForm" inputmode="numeric">
+<label for="startupMode">Startup effect</label>
+<select id="startupMode" form="hardwareForm">
+</select>
+<label for="startupBrightness">Startup brightness (1–255)</label>
+<input id="startupBrightness" type="number" min="1" max="255" required form="hardwareForm" inputmode="numeric">
+<button type="submit" form="hardwareForm">Save strip & startup · restart</button>
+</form>
+<section id="calibrationPane" class="panel calibration-pane" hidden aria-labelledby="calibrationTitle" data-settings-panel="hardware">
+  <p class="eyebrow">MAKE IT FIT</p>
+<h3 id="calibrationTitle">Find the last LED</h3>
   <p class="hint">Move a single teal light to the physical end of the strip. The position of that LED becomes your strip length—no counting needed.</p>
   <button id="startCalibration" type="button">Start LED setup</button>
-  <fieldset id="calibrationFields" hidden><legend class="sr-only">LED position</legend>
-    <div class="calibration-readout"><span>LED position</span><output id="calibrationPositionLabel" aria-live="polite">1</output></div>
-    <label for="calibrationPosition">Move to LED</label><input id="calibrationPosition" type="number" min="1" max="1024" value="1">
-    <div class="calibration-steps"><button type="button" data-led-step="-10" class="secondary" aria-label="Back ten LEDs">−10</button><button type="button" data-led-step="-1" class="secondary" aria-label="Previous LED">−1</button><button type="button" data-led-step="1" class="secondary" aria-label="Next LED">+1</button><button type="button" data-led-step="10" class="secondary" aria-label="Forward ten LEDs">+10</button></div>
+  <fieldset id="calibrationFields" hidden>
+<legend class="sr-only">LED position</legend>
+    <div class="calibration-readout">
+<span>LED position</span>
+<output id="calibrationPositionLabel" aria-live="polite">1</output>
+</div>
+    <label for="calibrationPosition">Move to LED</label>
+<input id="calibrationPosition" type="number" min="1" max="1024" value="1" inputmode="numeric">
+    <div class="calibration-steps">
+<button type="button" data-led-step="-10" class="secondary" aria-label="Back ten LEDs">−10</button>
+<button type="button" data-led-step="-1" class="secondary" aria-label="Previous LED">−1</button>
+<button type="button" data-led-step="1" class="secondary" aria-label="Next LED">+1</button>
+<button type="button" data-led-step="10" class="secondary" aria-label="Forward ten LEDs">+10</button>
+</div>
     <p class="hint">Or turn the knob. If the light disappears past the end, move back until the last LED lights. Click the knob to save, or double-click to cancel. Setup cancels after 5 minutes without movement.</p>
-    <button id="saveCalibration" type="button">Save count & restart</button><button id="cancelCalibration" type="button" class="text-button">Cancel setup</button>
-  </fieldset><p id="calibrationFeedback" class="hint" role="status"></p>
-</section><section id="geometrySettings" hidden><form id="geometryForm"><h3>Effect center</h3><label for="midpoint">Center after LED (0 = automatic)</label><input id="midpoint" type="number" min="0" max="1023" value="0" required><p class="hint">Count from the data-input end. The center lies between this LED and the next. Each side scales independently. Save LED-count changes first. If the strip gets shorter, the center is limited to its last boundary.</p><button>Save center point</button></form></section><section id="audioSettings" hidden><form id="audioForm"><h3>Microphone hardware</h3><label class="switch-row"><span>Microphone installed</span><input id="microphoneInstalled" type="checkbox"></label><p class="hint">Enable audio effects on lamps fitted with a microphone. Sound tuning lives with each audio effect.</p><button>Save hardware setting & restart</button></form></section><button id="pairingStatus" class="secondary">Check pairing status</button><button id="forgetPhones" class="secondary">Forget paired phones</button></fieldset></details>
-  <fieldset id="firmwareControls" disabled><legend>Lamp firmware</legend>
-    <p>Installed: <strong id="firmwareVersion">Connect to view</strong></p>
-    <p id="firmwareStatus" role="status"></p>
-    <label><input id="autoUpdate" type="checkbox"> Install updates automatically</label>
+    <button id="saveCalibration" type="button">Save count & restart</button>
+<button id="cancelCalibration" type="button" class="text-button">Cancel setup</button>
+  </fieldset>
+<p id="calibrationFeedback" class="hint" role="status">
+</p>
+</section>
+<section id="geometrySettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="geometryForm">
+<h3>Effect center</h3>
+<label for="midpoint">Center after LED (0 = automatic)</label>
+<input id="midpoint" type="number" min="0" max="1023" value="0" required inputmode="numeric">
+<p class="hint">Count from the data-input end. The center lies between this LED and the next. Each side scales independently. Save LED-count changes first. If the strip gets shorter, the center is limited to its last boundary.</p>
+<button>Save center point</button>
+</form>
+</section>
+<section id="audioSettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="audioForm">
+<h3>Microphone hardware</h3>
+<label class="switch-row">
+<span>Microphone installed</span>
+<input id="microphoneInstalled" type="checkbox" role="switch">
+</label>
+<p class="hint">Enable audio effects on lamps fitted with a microphone. Sound tuning lives with each audio effect.</p>
+<button>Save hardware setting & restart</button>
+</form>
+</section>
+<section class="panel" data-settings-panel="network">
+<h3>Bluetooth pairing</h3>
+<p class="hint">Hold the knob for six seconds to open pairing. Only forget paired phones when you want to remove their access.</p>
+<button id="pairingStatus" class="secondary">Check pairing status</button>
+<button id="forgetPhones" class="secondary">Forget paired phones</button>
+</section>
+</fieldset>
+  <fieldset id="firmwareControls" disabled data-settings-panel="updates" class="panel firmware-panel">
+<legend>Lamp firmware</legend>
+    <p>Installed: <strong id="firmwareVersion">Connect to view</strong>
+</p>
+    <p id="firmwareStatus" role="status">
+</p>
+    <label class="switch-row">
+<span>Install updates automatically</span><input id="autoUpdate" type="checkbox" role="switch"></label>
     <p class="hint">The lamp needs home Wi-Fi with internet access. Updates briefly pause the light and restart the lamp.</p>
     <button id="checkFirmware" class="secondary">Check for updates</button>
     <button id="installFirmware" disabled>Update now</button>
-  </fieldset>
-<button id="forgetLamp" class="text-button">Remove lamp from this phone</button><p class="hint">The setup webpage remains available by holding the knob for three seconds and opening 192.168.4.1 on its hotspot.</p></section></main><script type="module" src="/src/main.js"></script></body></html>
+  <progress id="firmwareProgress" max="100" value="0" hidden aria-label="Firmware update progress">
+</progress>
+</fieldset>
+<button id="forgetLamp" disabled class="text-button" data-settings-panel="overview">Remove lamp from this phone</button>
+<p class="hint" data-settings-panel="overview">The setup webpage remains available by holding the knob for three seconds and opening 192.168.4.1 on its hotspot.</p>
+<details class="panel knob-guide" data-settings-panel="overview">
+<summary>Using the knob</summary>
+<dl>
+<dt>Turn</dt>
+<dd>Change effect.</dd>
+<dt>Click, then turn</dt>
+<dd>Adjust brightness.</dd>
+<dt>Double-click, then turn</dt>
+<dd>Choose a color.</dd>
+<dt>Triple-click</dt>
+<dd>Turn off. Single-click to turn back on.</dd>
+<dt>Hold 3 seconds</dt>
+<dd>Open Wi-Fi setup; connect to its hotspot and visit 192.168.4.1.</dd>
+<dt>Hold 6 seconds</dt>
+<dd>Open Bluetooth pairing.</dd>
+</dl>
+</details>
+</section>
+</main>
+<script type="module" src="/src/main.js">
+</script>
+</body>
+</html>
