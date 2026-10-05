@@ -102,7 +102,16 @@ function renderEffectPane() {
   paintRanges();
 }
 
+function renderPower() {
+  const sync=lamp===wifiLamp?state?.sync:null;
+  const scope=sync?.role===1?'group':sync?.role===2?'this lamp':'lamp';
+  $('power').textContent='Turn '+scope+(state?.power?' off':' on');
+  $('power').setAttribute('aria-pressed',String(Boolean(state?.power)));
+  $('power').disabled=!state||busy||connecting||Boolean(state?.calibration?.active);
+  $('powerHint').textContent=!state?'Connect to a lamp to control its power.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Lamp groups when you are ready.':'Turns the light off while keeping the lamp connected.';
+}
 function renderOptions() {
+  renderPower();
   renderPlaybackTools();
   renderSync();
   const supported = Boolean(state?.capabilities & 8);
@@ -183,7 +192,7 @@ lamp=bleLamp;
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
 async function change(operation, value) {
   if (busy) return;
-  busy = true; $('controls').disabled = true; renderFirmware();
+  busy = true; $('controls').disabled = true; renderPower(); renderFirmware();
   try { await lamp.command(operation, value); status(operation === 'saveDefaults' ? 'Startup settings saved.' : 'Connected • Changes applied.'); }
   catch (error) { status(error.message); }
   finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
@@ -198,7 +207,7 @@ async function connect(saved = null) {
     selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp'});
     savedDevice=device; connected('Bluetooth');
   } catch(e) { status(e.message||'Could not connect over Bluetooth.'); }
-  finally { connecting=false; $('connect').disabled=false; renderLamps(); }
+  finally { connecting=false; $('connect').disabled=false; renderLamps(); renderPower(); }
 }
 function connected(kind) {
   category='all'; $('effectSearch').value='';
@@ -231,12 +240,12 @@ async function connectWifi(entry,password) {
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
   } catch(e) { status(e.message); }
-  finally { connecting=false; renderLamps(); }
+  finally { connecting=false; renderLamps(); renderPower(); }
 }
 $('connect').onclick=()=>connect();
 $('reconnect').onclick=()=>connect(savedDevice);
 $('disconnect').onclick=()=>lamp.disconnect();
-$('power').onclick = () => change('power', state.power ? 0 : 1);
+$('power').onclick = () => { if(state&&!connecting&&!state.calibration?.active)change('power', state.power ? 0 : 1); };
 $('effect').onchange = () => change('effect', Number($('effect').value));
 $('brightness').oninput = () => { editingBrightness = true; brightnessLabel(); };
 $('brightness').onchange = async () => { const value = Number($('brightness').value); editingBrightness = false; await change('brightness', value); };
@@ -520,6 +529,7 @@ function groupSceneLabels(){
   $('groupAudioScaleValue').value=(Number($('groupAudioScale').value)/100).toFixed(2);
 }
 function renderSync() {
+  renderPower();
   const sync=lamp===wifiLamp?state?.sync:null;
   const identity=lamp===wifiLamp?wifiLamp.identity:null;
   if(syncIdentity!==identity){
@@ -596,6 +606,7 @@ $('applyGroupAudio').onclick=()=>syncAction(async()=>{
 // Drafts belong to a lamp identity, never to the previously selected device.
 var playbackIdentity=null, rotationDirty=false;
 function renderPlaybackTools() {
+  renderPower();
   $('controls').disabled=busy||!state||Boolean(state?.sync?.active)||Boolean(state?.calibration?.active);
   const raw=lamp===wifiLamp?state:null;
   const identity=raw?wifiLamp.identity:null;

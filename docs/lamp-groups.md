@@ -24,6 +24,13 @@ to return to ordinary effects, or select a normal effect from the library.
 Turning the controller's knob to a different effect also exits a scene.
 Overall lamp power and brightness still apply.
 
+The Light screen places its power button above the scene lists. On a controller,
+**Turn group off/on** controls the controller and connected followers without changing
+the selected scene. On a follower, **Turn this lamp off/on** is local; a power change
+pauses active group following. Resume through Settings → Lamp groups to follow again.
+The control remains available while the light is off, and is disabled during LED sizing.
+The relocated power control requires the next app build; existing firmware supports it.
+
 | Scene | Spatial behavior | Sound |
 |---|---|---|
 | Portal | A comet climbs one lamp and emerges down the next. | Not required |

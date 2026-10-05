@@ -39,6 +39,7 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
       if(data.action==='cancel'||data.action==='save')raw.calibration.active=false;
     }
     if(url.pathname==='/api/sync/order'){raw.sync.order=data.order.split(',').map(id=>raw.sync.order.find(x=>x.id===id));raw.sync.position=raw.sync.order.findIndex(x=>x.id===raw.deviceId);}
+    if(url.pathname==='/api/power'){raw.power=data.on==='1';if(raw.sync.active)Object.assign(raw.sync,{active:false,paused:true});}
     if(url.pathname==='/api/preview'){raw.mode=Number(data.mode);raw.brightness=Number(data.brightness);}
     if(url.pathname==='/api/fountain-colors')raw.fountainColors=data.reset?[[255,65,0],[0,230,130],[75,30,255]]:[0,1,2].map(i=>['r','g','b'].map(k=>Number(data[k+i])));
     if(url.pathname==='/api/vu-colors')raw.vuColors=data.reset?[[0,255,0],[255,255,0],[255,0,0]]:[0,1,2].map(i=>['r','g','b'].map(k=>Number(data[k+i])));
@@ -85,6 +86,17 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
     await page.waitForFunction(name=>document.getElementById('groupSceneTitle').textContent===name,name);
     assert(await page.locator('#effectPane').isHidden());
   }
+  // Power is above the long scene list and toggles without replacing the selected scene.
+  await page.locator('#power').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#power').textContent(),'Turn group off');
+  assert(await page.locator('#power').evaluate(e=>e.getBoundingClientRect().top<document.getElementById('groupScenePane').getBoundingClientRect().top));
+  const activeScene=raw.sync.scene;
+  await page.locator('#power').click();
+  await page.waitForFunction(()=>document.getElementById('power').textContent==='Turn group on'&&!document.getElementById('power').disabled);
+  assert.equal(raw.power,false);assert.equal(raw.sync.scene,activeScene);
+  await page.locator('#power').click();
+  await page.waitForFunction(()=>document.getElementById('power').textContent==='Turn group off'&&!document.getElementById('power').disabled);
+  assert.equal(raw.power,true);assert.equal(raw.sync.scene,activeScene);
   await page.locator('#groupSceneChoices button').filter({hasText:'Prism split'}).click();
   await page.waitForFunction(()=>document.getElementById('groupSceneTitle').textContent==='Prism split');
   assert(await page.locator('.group-scene-colors').isHidden());
@@ -143,7 +155,16 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
   assert.equal(raw.leds,134);assert(await page.locator('#power').isEnabled());
   await page.locator('#syncJoinCode').fill('CL1-112233445566-0123456789abcdef0123456789abcdef');
   await page.locator('#syncJoinForm button').click();await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Following'));
-  assert(await page.locator('#power').isDisabled());
+  assert(await page.locator('#power').isEnabled());
+  assert.equal(await page.locator('#power').textContent(),'Turn this lamp off');
+  await page.locator('[data-page=light]').click();
+  await page.locator('#power').click();
+  await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Paused')&&!document.getElementById('power').disabled);
+  assert.equal(raw.power,false);assert.equal(raw.sync.paused,true);
+  await page.locator('#power').click();
+  await page.waitForFunction(()=>document.getElementById('power').textContent==='Turn this lamp off'&&!document.getElementById('power').disabled);
+  await page.locator('[data-page=settings]').click();
+  await page.locator('#resumeSync').click();await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Following'));
   assert(await page.locator('#rotationFields').evaluate(e=>e.disabled));
   await page.locator('#pauseSync').click();await page.waitForFunction(()=>document.getElementById('syncStatus').textContent.includes('Paused'));
   assert(await page.locator('#power').isEnabled());
@@ -154,6 +175,6 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
   await page.locator('[data-page=light]').click();assert(await page.locator('#syncBanner').isVisible());
   await page.locator('#manageSync').click();assert(await page.locator('#syncStatus').isVisible());
   assert.deepEqual(errors,[]);
-  console.log('PASS: group discovery, create/code, leave, join, pause/resume, control locking, rotation, LED calibration and 320/393/768px layouts');
+  console.log('PASS: group discovery, create/code, leave, join, pause/resume, controller/follower power, control locking, rotation, LED calibration and 320/393/768px layouts');
  }finally{await browser.close();server.close();}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1});
