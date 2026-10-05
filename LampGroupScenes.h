@@ -119,7 +119,7 @@ inline RGB pixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t now){
    else if(t>=leg && t<leg+(v.count-1)*hop){
      const uint32_t travel=t-leg,index=travel/hop;
      if(slot==index || slot==index+1)light=uint32_t(glow(h,14000))*glow(distance(travel%hop,slot==index?0:hop),hop)/255;
-   }else if(t>=leg+(v.count-1)*hop && slot==v.count-1){
+   }else if(t>=leg+(v.count-1)*hop && slot==uint32_t(v.count-1)){
      const uint32_t age=t-leg-(v.count-1)*hop,remaining=leg-age;
      light=glow(distance(h,65535-uint64_t(remaining)*remaining*65535/(leg*leg)),12000);
    }
