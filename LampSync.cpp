@@ -27,7 +27,7 @@ uint32_t sceneStart=0,sceneBeatAt=0,sceneBeat=0,lastAudioBeat=0;
 uint8_t sceneBeatLevel=0;
 uint32_t sceneMotion=0,sceneMotionAt=0,sceneMotionFraction=0;
 bool validScene(const SceneConfig& s) {
-  if(s.version!=1||s.count<1||s.count>9||s.scene>8||s.speed<1||s.speed>100||s.intensity>100)return false;
+  if(s.version!=1||s.count<1||s.count>9||s.scene>SceneCount||s.speed<1||s.speed>100||s.intensity>100)return false;
   bool self=false;
   for(unsigned i=0;i<s.count;++i){
     if(!id(s.order[i]))return false;
@@ -110,9 +110,9 @@ bool configureLampSync(uint8_t role,const String& leader,const String& key){
   clearFollower();config=next;memcpy(keyBytes,decoded,16);paused=false;sequence=0;for(auto& p:peers)p.joined=false;return true;
 }
 bool configureLampScene(uint8_t scene,uint8_t speed,uint8_t intensity,const uint8_t* primary,const uint8_t* secondary) {
-  if(config.role!=1||scene>8||speed<1||speed>100||intensity>100)return false;
+  if(config.role!=1||scene>SceneCount||speed<1||speed>100||intensity>100)return false;
   // These scenes require sound; do not silently offer a nonfunctional scene.
-  if((scene==3||scene==4||scene==7)&&!lampHasMicrophone())return false;
+  if(sceneNeedsAudio(scene)&&!lampHasMicrophone())return false;
   auto next=sceneConfig;next.scene=scene;next.speed=speed;next.intensity=intensity;
   memcpy(next.primary,primary,3);memcpy(next.secondary,secondary,3);
   return saveScene(next);
@@ -199,6 +199,7 @@ String lampSyncJson(){
   String s="{\"version\":2,\"role\":"+String(config.role)+",\"leader\":"+quote(config.leader)+",\"paused\":"+(paused?"true":"false")+",\"active\":"+(lampSyncFollowing()?"true":"false")+",\"members\":"+String(members)+",\"peers\":[";
   bool comma=false;for(auto& p:peers)if(p.info.sender[0]&&uint32_t(now-p.seen)<PeerTimeout){if(comma)s+=',';comma=true;s+="{\"id\":"+quote(p.info.sender)+",\"name\":"+quote(p.info.name)+",\"address\":"+quote(p.ip.toString().c_str())+",\"role\":"+String(p.info.role)+",\"microphone\":"+(p.info.microphone?"true":"false")+"}";}
   s+="]";
+  s+=",\"sceneCount\":"+String(SceneCount);
   const auto v=lampGroupVisual();
   s+=",\"scene\":"+String(v.scene)+",\"position\":"+String(v.position)+",\"count\":"+String(v.count)+",\"sceneSpeed\":"+String(v.sceneSpeed)+",\"sceneIntensity\":"+String(v.sceneIntensity);
   s+=",\"scenePrimary\":["+String(v.scenePrimary[0])+","+String(v.scenePrimary[1])+","+String(v.scenePrimary[2])+"],\"sceneSecondary\":["+String(v.sceneSecondary[0])+","+String(v.sceneSecondary[1])+","+String(v.sceneSecondary[2])+"]";

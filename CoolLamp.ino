@@ -150,7 +150,7 @@ void loop() {
   serviceLampUpdater();
   serviceLampRotation();
   const uint8_t groupScene=lampGroupScene();
-  const bool needsAudio=groupScene?(groupScene==2||groupScene==3||groupScene==4||groupScene==7):Mode>LAMP_BASE_EFFECT_COUNT;
+  const bool needsAudio=groupScene?(groupScene==2||LampSyncWire::sceneNeedsAudio(groupScene)):Mode>LAMP_BASE_EFFECT_COUNT;
   serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing());
   bool renderNow = serviceLampKnob();
   if (renderLampCalibration()) return;

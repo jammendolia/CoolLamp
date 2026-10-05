@@ -3,7 +3,7 @@ import { LampTransport } from './transport.js';
 import { firmwareMessage } from './protocol.js';
 import './style.css';
 import { effectSettings } from './effect-settings.js';
-import { groupScenes, groupSceneSettings, moveGroupLamp } from './group-scenes.js';
+import { availableGroupScenes, groupScenes, groupSceneSettings, moveGroupLamp } from './group-scenes.js';
 import { createGroupCode, parseGroupCode, groupStatus } from './sync.js';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, LampDiscoverySession, lampAddress } from './lamps.js';
@@ -458,16 +458,18 @@ function renderGroupScenes() {
   if(!ready)return;
   const scene=groupScenes.find(x=>x.id===sync.scene)||groupScenes[0];
   $('groupSceneTitle').textContent=scene.id?scene.name:'Group scenes';
-  $('groupSceneSpeedLabel').textContent=({3:'Flow speed',4:'Bloom speed',6:'Storm pace',8:'Wave speed'})[scene.id]||'Travel speed';
-  $('groupSceneDescription').textContent=scene.description+(controller?'':' Choose and tune scenes on the coordinator.');
+  $('groupSceneSpeedLabel').textContent=scene.speedLabel||({3:'Flow speed',4:'Bloom speed',6:'Storm pace',8:'Wave speed'})[scene.id]||'Travel speed';
+  $('groupSceneDescription').textContent=scene.description+(scene.id>8?' Requires firmware 1.8.1 or newer on every lamp.':'')+(controller?'':' Choose and tune scenes on the coordinator.');
   $('groupScenePosition').textContent=sync.count?'Lamp '+(sync.position+1)+' of '+sync.count:'';
   $('groupSceneWaiting').hidden=!controller||sync.members>=1;
+  $('groupSceneWaiting').textContent='Join a second lamp to see the scene. Each lamp needs firmware '+(scene.id>8?'1.8.1':'1.8.0')+' or newer.';
   $('groupSceneFields').hidden=!controller||!scene.id;
   $('groupSceneFields').disabled=busy;
-  const key=JSON.stringify([sync.scene,controller,Boolean(state.audio?.installed)]);
+  document.querySelector('.group-scene-colors').hidden=Boolean(scene.fixedColors);
+  const key=JSON.stringify([sync.scene,sync.sceneCount,controller,Boolean(state.audio?.installed)]);
   if(sceneChoicesKey!==key){
     sceneChoicesKey=key;$('groupSceneChoices').replaceChildren();
-    if(controller)for(const item of groupScenes){
+    if(controller)for(const item of availableGroupScenes(sync)){
       const button=document.createElement('button');button.type='button';button.textContent=item.name;
       button.setAttribute('aria-pressed',String(item.id===sync.scene));
       button.dataset.needsMic=String(item.audio&&!item.optionalAudio);

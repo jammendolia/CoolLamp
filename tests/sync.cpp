@@ -27,7 +27,7 @@ int main(){
   bad=p;bad.visual.power=2;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.target=0;assert(!valid(bad,sizeof(bad)));
   assert(rate(50)==256&&rate(100)==1024&&rate(1)==36);
-  bad=p;bad.visual.scene=9;assert(!valid(bad,sizeof(bad)));
+  bad=p;bad.visual.scene=19;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.count=10;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.count=2;bad.visual.position=2;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.scene=1;bad.visual.count=2;bad.visual.sceneSpeed=50;assert(valid(bad,sizeof(bad)));

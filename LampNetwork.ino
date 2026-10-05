@@ -389,7 +389,7 @@ void beginLampNetwork()
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
     uint32_t scene,speed,intensity,r,g,b,r2,g2,b2;
-    if(!readNumber("scene",0,8,scene)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||
+    if(!readNumber("scene",0,LampSyncWire::SceneCount,scene)||!readNumber("speed",1,100,speed)||!readNumber("intensity",0,100,intensity)||
        !readNumber("r",0,255,r)||!readNumber("g",0,255,g)||!readNumber("b",0,255,b)||
        !readNumber("r2",0,255,r2)||!readNumber("g2",0,255,g2)||!readNumber("b2",0,255,b2)){lampServer.send(400,"text/plain","Invalid scene settings.");return;}
     const uint8_t primary[]={uint8_t(r),uint8_t(g),uint8_t(b)},secondary[]={uint8_t(r2),uint8_t(g2),uint8_t(b2)};

@@ -1,4 +1,4 @@
-# Wi-Fi lamp groups and spatial scenes (firmware 1.8.0)
+# Wi-Fi lamp groups and spatial scenes (firmware 1.8.1)
 
 Mirror mode mirrors one coordinator's effect, brightness, power, colors,
 motion settings and audio features onto up to eight followers. Each lamp renders
@@ -7,8 +7,11 @@ the PCB design are unchanged. There is no cloud service or ESP-NOW dependency.
 
 ## Spatial group scenes
 
-Firmware 1.8.0 adds eight group scenes alongside the original 47 mirrored effects.
-Install the matching app and update **every group member to 1.8.0** before testing:
+Firmware 1.8.1 expands the eight scenes from 1.8.0 to eighteen, alongside the original 47 mirrored effects.
+The ten new scenes require **1.8.1 on every group member**. The packet layout is unchanged;
+1.8.0 supports the original eight scenes only. The app reads `sync.sceneCount` and hides
+new choices on older controllers. Followers also need updating; the controller cannot verify their renderer version.
+Install the matching app and update **every group member to 1.8.1** before testing:
 the authenticated UDP packet format is now version 2. Version 1.7.x lamps cannot
 synchronize with 1.8.0 lamps. Existing group credentials and membership are retained,
 so updated lamps can reconnect without making a new invitation code.
@@ -31,6 +34,16 @@ Overall lamp power and brightness still apply.
 | Storm front | Flickering strikes travel across the lamps, changing direction between storms. | Not required |
 | Ember exchange | Audio flames surround an ember that rises out of one lamp, descends into the next, and bursts on arrival. | Required |
 | Color wave | A continuous two-color blend rolls through the group. | Not required |
+| Newton’s cradle | A ball falls on the first lamp, transfers along the bases, and rises on the last; the direction reverses. | Not required |
+| Conversation | A three-note motif travels from lamp to lamp with varied color replies. | Not required |
+| Constellation | Twinkling stars are traced in sequence across the room. | Not required |
+| Tidal basin | Normalized water levels transfer a shared volume between lamps. | Not required |
+| Firefly courtship | Wandering fireflies answer neighboring flashes, followed by a shared flash. | Not required |
+| Rocket relay | A rocket rises on one lamp and explodes on the next, which becomes the next launcher. | Not required |
+| Prism split | White light becomes a fixed spectrum and returns to white. Palette controls are hidden for this scene. | Not required |
+| Rhythm section | Repeating bass, midrange and treble roles. Two lamps combine mids and treble on the second. | Required |
+| Beat chase | Beats advance accents; direction alternates every eight beats and strong beats add an opposite accent. | Required |
+| Shared heartbeat | Double pulses gradually converge in time, then spread apart again. | Not required |
 
 **Settings → Lamp groups → Lamp order** provides earlier/later buttons.
 The controller starts at position 1 but can be moved anywhere. Newly authenticated
@@ -52,7 +65,7 @@ guarantee simultaneous playback on a congested LAN. Rendering is deterministic f
 a given position, shared clock and packet. No per-pixel data is transmitted.
 
 Scene API (existing authentication and mutation token required):
-- POST /api/sync/scene: controller-only scene (0–8), speed, intensity and two RGB colors.
+- POST /api/sync/scene: controller-only scene (0–18), speed, intensity and two RGB colors.
 - POST /api/sync/order: controller-only comma-separated device IDs; connected members cannot be removed.
 
 ## App workflow
@@ -183,3 +196,15 @@ splitting, beat ownership, silence, 1–1024 LED geometry, clock rollover, posit
 authentication, failed writes, persisted order, scene API validation, and browser
 selection/reordering at 320/393/768px widths. Physical timing/performance on multiple
 lamps must still be evaluated after installation; these tests do not measure LAN jitter.
+
+
+## 1.8.1 verification
+
+The new renderers use only the authenticated shared clock, event counters, audio features,
+and lamp position. Local random generators and per-pixel network messages are not used.
+Tests cover all eighteen distinct signatures, endpoint handoff, tidal level reversal,
+rocket launch/burst ownership, white prism input, beat ownership, invalid/silent audio,
+geometry extremes, two/three/nine positions, speed limits, persistence and packet bounds.
+The app checks supported IDs and hides fixed-spectrum palette controls. Browser checks
+exercise all eighteen selections and phone/tablet layouts. Physical synchronization and
+appearance still need testing on actual lamps before publication.

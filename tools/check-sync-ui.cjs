@@ -7,7 +7,7 @@ const names=[...fs.readFileSync('LampNetwork.ino','utf8').match(/effectNames\[\]
 const raw={token:'test-token',deviceId:'aabbccddeeff',hostname:'coollamp-test.local',name:'Studio lamp',ssid:'Studio',leds:134,milliamps:500,midpoint:40,mode:41,brightness:170,startupMode:41,startupBrightness:170,power:true,apiVersion:2,catalogVersion:1,effects:names,colors:names.map((_,i)=>[i>=40?0:1,255,80,0]),effectOptions:names.map(()=>[50,85,1,65,35,255]),fountainColors:[[255,65,0],[0,230,130],[75,30,255]],vuColors:[[0,255,0],[255,255,0],[255,0,0]],audio:{installed:true,gain:30,gate:32,scale:120,liveTuning:true},firmware:{version:'1.6.1',phase:0,wifi:true,automatic:false}};
 const catalog=names.map((name,i)=>({id:i+1,name,category:i>=38?'audio':i>=3&&i<=11?'fire':i>=20&&i<=28?'color':'calm',speed:!(i>=20&&i<=28)}));
 fs.mkdirSync(path.join(root,'.build/ui-check'),{recursive:true});
-raw.sync={version:2,scene:0,sceneSpeed:50,sceneIntensity:85,scenePrimary:[70,220,255],sceneSecondary:[255,65,170],position:0,count:2,order:[{id:'aabbccddeeff',name:'Studio lamp',online:true},{id:'112233445566',name:'Second lamp',online:true}],role:0,peers:[{id:'112233445566',name:'Living room',role:1,microphone:true}]};
+raw.sync={version:2,sceneCount:18,scene:0,sceneSpeed:50,sceneIntensity:85,scenePrimary:[70,220,255],sceneSecondary:[255,65,170],position:0,count:2,order:[{id:'aabbccddeeff',name:'Studio lamp',online:true},{id:'112233445566',name:'Second lamp',online:true}],role:0,peers:[{id:'112233445566',name:'Living room',role:1,microphone:true}]};
 raw.rotation={enabled:false,random:true,category:0,seconds:30};raw.calibration={active:false,position:134};
 const second=structuredClone(raw);Object.assign(second,{deviceId:'112233445566',hostname:'coollamp-second.local',name:'Second lamp'});second.sync={version:2,role:0,peers:[],scene:0,count:1};
 const globalRaw=raw;
@@ -80,11 +80,19 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
   assert.equal(second.sync.role,0,'switching must not change another lamp role');
   await page.locator('[data-page=light]').click();
   assert(await page.locator('#groupScenePane').isVisible());
-  for(const name of ['Portal','Ping-pong','Stereo fountain','Duet','Orbit','Storm front','Ember exchange','Color wave']){
+  for(const name of ['Portal','Ping-pong','Stereo fountain','Duet','Orbit','Storm front','Ember exchange','Color wave','Newton’s cradle','Conversation','Constellation','Tidal basin','Firefly courtship','Rocket relay','Prism split','Rhythm section','Beat chase','Shared heartbeat']){
     await page.locator('#groupSceneChoices button').filter({hasText:new RegExp('^'+name+'$')}).click();
     await page.waitForFunction(name=>document.getElementById('groupSceneTitle').textContent===name,name);
     assert(await page.locator('#effectPane').isHidden());
   }
+  await page.locator('#groupSceneChoices button').filter({hasText:'Prism split'}).click();
+  await page.waitForFunction(()=>document.getElementById('groupSceneTitle').textContent==='Prism split');
+  assert(await page.locator('.group-scene-colors').isHidden());
+  assert.equal(await page.locator('#groupSceneSpeedLabel').textContent(),'Prism speed');
+  await page.locator('#groupSceneChoices button').filter({hasText:'Rhythm section'}).click();
+  await page.waitForFunction(()=>document.getElementById('groupSceneTitle').textContent==='Rhythm section');
+  assert(await page.locator('#groupSceneAudio').isVisible());
+  await page.locator('#groupScenePane').screenshot({path:'.build/ui-check/group-scenes-expanded.png'});
   await page.locator('#groupSceneChoices button').filter({hasText:'Duet'}).click();
   await page.waitForFunction(()=>document.getElementById('groupSceneTitle').textContent==='Duet');
   assert(await page.locator('#groupSceneAudio').isVisible());
