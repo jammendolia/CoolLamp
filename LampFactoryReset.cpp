@@ -67,5 +67,6 @@ bool completeLampFactoryReset(){
   if(!bondErase)return true;
   Preferences recovery;if(!recovery.begin(RESET_NAMESPACE,false))return false;
   const bool ok=recovery.remove(RESET_KEY);recovery.end();
-  if(ok)bondErase=false;return ok;
+  if (ok) bondErase=false;
+  return ok;
 }
