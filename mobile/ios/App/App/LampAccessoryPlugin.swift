@@ -53,7 +53,8 @@ private final class LampAccessoryCoordinator {
     private var migrating = false
     private var pickerPresented = false
     private var pickerPending = false
-    private var chosen: ASAccessory?
+    private var selection = LampAccessorySelection()
+    private var pickerDismissed = false
     private var pickerError: Error?
     private var migrationIDs: Set<UUID> = []
     private let service = "7b610001-6e2b-4f3d-9a71-28e45c001001"
@@ -86,7 +87,8 @@ private final class LampAccessoryCoordinator {
     }
     private func begin(_ call: CAPPluginCall, migrating: Bool) -> Bool {
         guard pending == nil else { call.reject("Accessory setup is already in progress."); return false }
-        pending = call; self.migrating = migrating; chosen = nil; pickerError = nil; pickerPresented = false; pickerPending = true
+        pending = call; self.migrating = migrating; pickerError = nil; pickerPresented = false; pickerPending = true; pickerDismissed = false
+        selection.begin(knownIDs: Set(session.accessories.compactMap { $0.bluetoothIdentifier }))
         migrationIDs = []
         return true
     }
@@ -146,15 +148,25 @@ private final class LampAccessoryCoordinator {
         let call = pending; pending = nil; pickerPending = false
         call?.resolve(["supported": true, "devices": devices])
     }
+    private var inventory: [LampAccessoryRecord] {
+        session.accessories.map { LampAccessoryRecord(id: $0.bluetoothIdentifier, name: $0.displayName) }
+    }
+    private func finishSelection() -> Bool {
+        guard pickerPending, pickerDismissed, !migrating,
+            let record = selection.resolve(inventory), let id = record.id else { return false }
+        let call = pending; pending = nil; pickerPending = false
+        call?.resolve(["deviceId": id.uuidString, "name": record.name, "accessoryManaged": true])
+        return true
+    }
     private func fail(_ message: String, error: Error? = nil) {
         let call = pending; pending = nil; pickerPending = false
         let nsError = error as NSError?
         var code = "ACCESSORY_SETUP_FAILED"
         if nsError?.domain == ASErrorDomain && nsError?.code == 700 { code = "PAIRING_CANCELLED" }
         if message.localizedCaseInsensitiveContains("peer removed pairing information") { code = "PAIRING_KEYS_CHANGED" }
-        let data: JSObject? = chosen.flatMap { accessory in
-            guard let id = accessory.bluetoothIdentifier else { return nil }
-            return ["device": ["deviceId": id.uuidString, "name": accessory.displayName]]
+        let data: JSObject? = selection.resolve(inventory).flatMap { record in
+            guard let id = record.id else { return nil }
+            return ["device": ["deviceId": id.uuidString, "name": record.name]]
         }
         call?.reject(message, code, error, data)
     }
@@ -170,24 +182,42 @@ private final class LampAccessoryCoordinator {
             fail(error.localizedDescription, error: error)
         case .pickerDidPresent: if pickerPending { pickerPresented = true }
         case .accessoryAdded:
-            if pickerPending, !migrating, pending != nil { chosen = event.accessory }
+            if pickerPending, !migrating, pending != nil, let accessory = event.accessory {
+                selection.added(LampAccessoryRecord(id: accessory.bluetoothIdentifier, name: accessory.displayName))
+                _ = finishSelection()
+            }
+        case .accessoryChanged:
+            if pickerPending, !migrating, pending != nil, let accessory = event.accessory {
+                selection.changed(LampAccessoryRecord(id: accessory.bluetoothIdentifier, name: accessory.displayName))
+                _ = finishSelection()
+            }
         case .pickerSetupFailed:
             if pickerPending {
                 pickerError = event.error
-                if chosen == nil { chosen = event.accessory }
+                if selection.candidate == nil, let accessory = event.accessory {
+                    selection.added(LampAccessoryRecord(id: accessory.bluetoothIdentifier, name: accessory.displayName))
+                }
             }
         case .migrationComplete:
             if pickerPending, migrating, pending != nil, !pickerPresented,
                 migrationIDs.isSubset(of: Set(session.accessories.compactMap { $0.bluetoothIdentifier })) { finishMigration() }
         case .pickerDidDismiss:
             guard pending != nil, pickerPending else { return }
+            pickerDismissed = true
             if let error = pickerError ?? event.error { fail(error.localizedDescription, error: error); return }
             if migrating { finishMigration(); return }
-            guard let accessory = chosen, let id = accessory.bluetoothIdentifier else {
-                fail("Accessory setup was cancelled.", error: NSError(domain: ASErrorDomain, code: 700)); return
+            if finishSelection() { return }
+            // Allow delayed accessoryChanged/list updates after the picker closes.
+            let request = pending
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self = self, self.pending === request, self.pickerPending else { return }
+                if self.finishSelection() { return }
+                if self.selection.candidate != nil {
+                    self.fail("Apple finished setup, but the lamp's Bluetooth identity was not ready. Reopen the Lamps screen and retry.")
+                } else {
+                    self.fail("Accessory setup was cancelled.", error: NSError(domain: ASErrorDomain, code: 700))
+                }
             }
-            let call = pending; pending = nil; pickerPending = false
-            call?.resolve(["deviceId": id.uuidString, "name": accessory.displayName, "accessoryManaged": true])
         default: break
         }
     }

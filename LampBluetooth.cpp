@@ -46,6 +46,11 @@ std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
 uint32_t pairingStarted = 0;
 String bluetoothName;
 std::atomic<bool> advertisingDirty{false};
+// Retain transport milestones after disconnect. No addresses or command payloads.
+std::atomic<uint32_t> connects{0}, authentications{0}, writes{0}, acknowledgments{0}, rejectedWrites{0};
+std::atomic<uint8_t> lastOperation{0}, lastCommandId{0}, lastAckId{0};
+std::atomic<int> lastNotifyStatus{-1}, lastNotifyCode{0};
+std::atomic<bool> lastEncrypted{false}, lastBonded{false};
 uint32_t revision = 0;
 uint8_t lastState[16] = {};
 
@@ -72,6 +77,7 @@ class Connections final : public BLEServerCallbacks {
       return;
     }
     secure = false;
+    ++connects;
     knownPeer = bonded(event->peer_id_addr);
     ++generation;
     extendedControls = false;
@@ -96,6 +102,9 @@ class Security final : public BLESecurityCallbacks {
   bool onConfirmPIN(uint32_t) override { return false; }
   void onAuthenticationComplete(ble_gap_conn_desc* result) override {
     if (connection != result->conn_handle) return;
+    ++authentications;
+    lastEncrypted = result->sec_state.encrypted;
+    lastBonded = result->sec_state.bonded;
     secure = result->sec_state.encrypted && (knownPeer || pairing);
     if (!secure && connection != NO_CONNECTION) {
       if (!knownPeer) ble_store_util_delete_peer(&result->peer_id_addr);
@@ -105,6 +114,9 @@ class Security final : public BLESecurityCallbacks {
 };
 
 class StateReads final : public BLECharacteristicCallbacks {
+  void onStatus(BLECharacteristic*, Status status, uint32_t code) override {
+    lastNotifyStatus = static_cast<int>(status); lastNotifyCode = code;
+  }
   void onRead(BLECharacteristic* characteristic, ble_gap_conn_desc*) override {
     // A newly connected older app may read before the loop has refreshed the
     // previous client's extended catalog. Always provide its initial baseline.
@@ -120,8 +132,10 @@ class StateReads final : public BLECharacteristicCallbacks {
 
 class Writes final : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic, ble_gap_conn_desc* event) override {
-    if (!secure || connection != event->conn_handle) return;
+    ++writes;
+    if (!secure || connection != event->conn_handle) { ++rejectedWrites; return; }
     const String value = characteristic->getValue();
+    if (value.length() >= 3) { lastCommandId = uint8_t(value[1]); lastOperation = uint8_t(value[2]); }
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
     const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : uint8_t(value[2])==21?5:4) : 4;
     const bool wifiFrame = value.length() >= 3 && uint8_t(value[2]) >= WifiSetupWire::CONTROL && uint8_t(value[2]) <= WifiSetupWire::COMMIT;
@@ -249,7 +263,27 @@ void setLampPairingWindow(bool open)
 }
 
 bool lampPairingOpen() { return pairing; }
+// Stop the visual cue as soon as a radio connection is accepted. Keep the
+// enrollment window open until secure bonding finishes; closing it in
+// onConnect would reject a new phone's authentication request.
+bool lampPairingCueActive() { return pairing && connection == NO_CONNECTION; }
 bool lampBluetoothReady() { return BLEDevice::getInitialized() && server; }
+String lampBluetoothStatusJson() {
+  ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+  return String("{\"enabled\":") + (lampBluetoothReady()?"true":"false") +
+    ",\"pairing\":" + (lampPairingOpen()?"true":"false") +
+    ",\"cue\":" + (lampPairingCueActive()?"true":"false") +
+    ",\"connected\":" + (connection!=NO_CONNECTION?"true":"false") +
+    ",\"secure\":" + (secure?"true":"false") +
+    ",\"knownPeer\":" + (knownPeer?"true":"false") +
+    ",\"bonds\":" + bondedPeers(peers) +
+    ",\"connects\":" + connects.load() + ",\"authentications\":" + authentications.load() +
+    ",\"lastEncrypted\":" + (lastEncrypted?"true":"false") + ",\"lastBonded\":" + (lastBonded?"true":"false") +
+    ",\"writes\":" + writes.load() + ",\"rejectedWrites\":" + rejectedWrites.load() +
+    ",\"lastOperation\":" + lastOperation.load() + ",\"lastCommandId\":" + lastCommandId.load() +
+    ",\"acknowledgments\":" + acknowledgments.load() + ",\"lastAckId\":" + lastAckId.load() +
+    ",\"notifyStatus\":" + lastNotifyStatus.load() + ",\"notifyCode\":" + lastNotifyCode.load() + "}";
+}
 
 void forgetLampPhones()
 {
@@ -326,6 +360,7 @@ void serviceLampBluetooth()
         default: result = 2;
       }
     }
+    ++acknowledgments; lastAckId = id;
     publish(id, result, true);
     memset(command.bytes, 0, sizeof(command.bytes));
   } else {
@@ -344,6 +379,8 @@ void beginLampBluetooth(const String&) {}
 void serviceLampBluetooth() {}
 void setLampPairingWindow(bool) {}
 bool lampPairingOpen() { return false; }
+bool lampPairingCueActive() { return false; }
+String lampBluetoothStatusJson() { return "{\"enabled\":false,\"pairing\":false,\"cue\":false,\"connected\":false,\"secure\":false,\"knownPeer\":false,\"bonds\":0}"; }
 bool lampBluetoothReady() { return false; }
 void forgetLampPhones() {}
 #endif

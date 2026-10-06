@@ -170,7 +170,7 @@ void loop() {
   const uint32_t now = millis();
   static bool wasPairing = false;
   static bool pairingFlashOn = false;
-  const bool pairingNow = lampPairingOpen();
+  const bool pairingNow = lampPairingCueActive();
   const bool setupNow = lampSetupPulse();
   const bool identifying = lampIdentifyActive();
   static bool lastPairing = false;

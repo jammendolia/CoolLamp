@@ -29,6 +29,11 @@ export function wifiCredentials(ssid, password, open=false) {
 }
 const integer=(n,min,max)=>Number.isInteger(n)&&n>=min&&n<=max;
 export function decodeWifiSetup(data, expectedId) {
+  if(data&&'join' in data) {
+    if(!Array.isArray(data.join)||data.join.length!==4||!integer(data.join[0],0,3)||
+      !integer(data.join[1],0,65535)||!integer(data.join[2],0,1)||!integer(data.join[3],0,1))throw Error('Invalid Wi-Fi join diagnostics.');
+    data={...data,lastJoinError:data.join[0],wifiReason:data.join[1],associated:Boolean(data.join[2]),gotIp:Boolean(data.join[3])};
+  }
   if(!data||data.version!==1||!integer(data.scanId,0,65535)||
      typeof data.ssid!=='string'||new TextEncoder().encode(data.ssid).length>32||data.ssid.includes('\0'))throw Error('Invalid Wi-Fi setup response.');
   if('index' in data) {
@@ -37,13 +42,27 @@ export function decodeWifiSetup(data, expectedId) {
     typeof data.connected!=='boolean'||typeof data.usingDefaultPassword!=='boolean'||
     typeof data.address!=='string'||typeof data.hostname!=='string'||!/^coollamp-[a-z0-9-]+\.local$/.test(data.hostname)||
     !/^[0-9a-f]{12}$/.test(data.deviceId)||expectedId&&data.deviceId!==expectedId)throw Error('Invalid Wi-Fi setup status or lamp identity.');
+  if('wifiReason' in data&&!integer(data.wifiReason,0,65535)||
+     'lastJoinError' in data&&!integer(data.lastJoinError,0,3)||
+     'associated' in data&&typeof data.associated!=='boolean'||
+     'gotIp' in data&&typeof data.gotIp!=='boolean')throw Error('Invalid Wi-Fi join diagnostics.');
   return data;
+}
+function wifiJoinFailure(s) {
+  const reason=s.wifiReason;
+  if([210,211].includes(reason))return 'The lamp could not find that network with compatible security (Wi-Fi reason '+reason+'). Check the router’s personal WPA2/WPA3 settings.';
+  if(reason===201)return 'The lamp could not find that network while joining (Wi-Fi reason 201). Check its signal and 2.4 GHz availability.';
+  if(reason===212)return 'The network’s signal was below the connection threshold (Wi-Fi reason 212). Try moving the lamp closer to the router.';
+  if([2,6,15,16,23,202,204].includes(reason))return 'Wi-Fi authentication did not complete (Wi-Fi reason '+reason+'). Verify the password and the router’s security settings.';
+  if(s.associated&&!s.gotIp)return 'The lamp joined the router, but did not receive an IP address. Check the router’s DHCP settings or device limit.';
+  if(reason)return 'The lamp could not finish joining Wi-Fi (reason '+reason+'). Check the router and signal, then retry.';
+  return 'Wi-Fi joining timed out. The lamp did not report a specific failure reason. Check the router, signal and network settings, then retry.';
 }
 export function wifiSetupMessage(s) {
   if(s?.phase===1)return 'Finding nearby 2.4 GHz Wi-Fi networks…';
   if(s?.phase===3)return 'Connecting the lamp to Wi-Fi…';
   if(s?.phase===4&&s.connected)return 'Connected to '+s.ssid+'. Wi-Fi settings saved.';
-  if(s?.phase===5)return ['','Wi-Fi scan failed. Try again.','Could not join that network. Check the password, signal, and 2.4 GHz support, then retry.','The lamp connected but could not save Wi-Fi settings. Please retry.'][s.error]||'Wi-Fi setup failed. Try again.';
+  if(s?.phase===5)return ['','Wi-Fi scan failed. Try again.',wifiJoinFailure(s),'The lamp connected but could not save Wi-Fi settings. Please retry.'][s.error]||'Wi-Fi setup failed. Try again.';
   if(s?.phase===2)return s.count?'Choose a network below.':'No nearby networks found. Try again or enter a hidden network name.';
   return s?.connected?'Currently connected to '+s.ssid+'.':'Choose your home Wi-Fi. Your phone stays connected over Bluetooth.';
 }

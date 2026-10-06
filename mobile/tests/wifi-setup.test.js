@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {LampTransport} from '../src/transport.js';
 import {STATE} from '../src/protocol.js';
-import {WIFI_SETUP,encodeWifiSetup,wifiCredentials,decodeWifiSetup} from '../src/wifi-setup.js';
+import {WIFI_SETUP,encodeWifiSetup,wifiCredentials,decodeWifiSetup,wifiSetupMessage} from '../src/wifi-setup.js';
 
 const view=value=>new DataView(new TextEncoder().encode(JSON.stringify(value)).buffer);
 class SetupRadio {
@@ -58,7 +58,7 @@ test('scan paging and credential submission are acknowledged, scoped and seriali
 });
 test('failed joins keep Bluetooth usable and report a retry without replaying credentials',async()=>{
   const {radio,lamp}=await connect();radio.fail=true;
-  await assert.rejects(lamp.configureWifi('Home','password'),/Check the password/);
+  await assert.rejects(lamp.configureWifi('Home','password'),/timed out/);
   assert.equal(lamp.id,'lamp-1');assert.equal(radio.writes.filter(x=>x[2]===18).length,1);
   await lamp.command('power',0);await lamp.disconnect();
 });
@@ -74,4 +74,18 @@ test('old firmware is rejected locally and response identities cannot cross lamp
   await assert.rejects(lamp.scanWifi(),/1.9.0/);assert.equal(radio.writes.length,count);
   assert.throws(()=>decodeWifiSetup(radio.status(),'aabbccddeeff'),/identity/);
   await lamp.disconnect();
+});
+
+test('Wi-Fi failure messages distinguish security, association, signal and DHCP without assuming a bad password',()=>{
+  const base={...new SetupRadio().status(),phase:5,error:2};
+  const decoded=decodeWifiSetup({...base,join:[2,202,0,0]});
+  assert.equal(decoded.wifiReason,202);assert.equal(decoded.associated,false);
+  assert.match(wifiSetupMessage(decoded),/authentication.*202/);
+  assert.match(wifiSetupMessage({...base,wifiReason:210}),/compatible security/);
+  assert.match(wifiSetupMessage({...base,wifiReason:201}),/could not find/);
+  assert.match(wifiSetupMessage({...base,wifiReason:212}),/signal/);
+  assert.match(wifiSetupMessage({...base,associated:true,gotIp:false}),/IP address.*DHCP/);
+  assert.match(wifiSetupMessage({...base,wifiReason:203}),/reason 203/);
+  assert.match(wifiSetupMessage(base),/did not report a specific failure reason/);
+  for(const join of [[2,202,0],[2,202,0,2],[4,202,0,0],[2,-1,0,0]])assert.throws(()=>decodeWifiSetup({...base,join}));
 });

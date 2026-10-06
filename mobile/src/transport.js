@@ -5,15 +5,18 @@ import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wi
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
   constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
-    selectDevice = null, onRadioReady = () => {} } = {}) {
+    selectDevice = null, onRadioReady = () => {}, onDeviceSelected = () => {} } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
     this.onFirmware = onFirmware;
     this.onOptions = onOptions;
     this.selectDevice = selectDevice; this.onRadioReady = onRadioReady;
+    this.onDeviceSelected = onDeviceSelected;
+    this.connectionAttempts = new Set();
     this.initialization = null;
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
-  disconnected() {
+  disconnected(confirmedId = null) {
+    if(confirmedId)this.connectionAttempts.delete(confirmedId);
     const hadConnection = this.id !== null;
     this.epoch++; this.id = null; this.state = null; this.catalog = null; this.deviceIdentity=null;
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
@@ -32,10 +35,38 @@ export class LampTransport {
       if (state.result) pending.reject(Object.assign(new Error(resultError(state.result)), {confirmed:true})); else pending.resolve(state);
     }
   }
+  async retrieveSelectedDevice(device,epoch) {
+    const matches=peripheral=>peripheral?.deviceId?.toLowerCase()===device.deviceId.toLowerCase();
+    let peripheral=(await this.ble.getDevices([device.deviceId])).find(matches);
+    if(peripheral||!device.accessoryManaged)return peripheral;
+    // Apple's authorized inventory can precede Core Bluetooth's peripheral cache.
+    await new Promise(resolve=>setTimeout(resolve,250));
+    if(epoch!==this.epoch)throw Error('Connection changed.');
+    peripheral=(await this.ble.getDevices([device.deviceId])).find(matches);
+    if(!peripheral&&typeof this.ble.getConnectedDevices==='function')
+      peripheral=(await this.ble.getConnectedDevices([SERVICE])).find(matches);
+    if(peripheral)return peripheral;
+    if(typeof this.ble.requestLEScan!=='function'||typeof this.ble.stopLEScan!=='function')return null;
+    // Outside enrollment, the lamp intentionally omits its service/name from
+    // advertising. Scan without those filters, but accept ONLY the authorized UUID.
+    let finish,timer;
+    const found=new Promise(resolve=>{finish=resolve;});
+    try {
+      timer=setTimeout(()=>finish(null),8000);
+      await this.ble.requestLEScan({allowDuplicates:false},result=>{
+        if(epoch===this.epoch&&matches(result.device))finish(result.device);
+      });
+      peripheral=await found;
+    } finally {clearTimeout(timer);await this.ble.stopLEScan();}
+    if(epoch!==this.epoch)throw Error('Connection changed.');
+    return peripheral;
+  }
   async connect(savedDevice = null) {
     await this.disconnect();
     // ASK authorization/migration must precede creation of CBCentralManager.
     const selected = this.selectDevice ? await this.selectDevice(savedDevice) : savedDevice;
+    // Authorization is a durable event even if initialization/GATT later fails.
+    if(selected)await this.onDeviceSelected(selected);
     // The iOS plugin recreates CBCentralManager on every initialize call but
     // keeps its peripheral cache. Keep one manager for this app session.
     if(!this.initialization)this.initialization=this.ble.initialize({ androidNeverForLocation: true }).catch(error=>{
@@ -48,17 +79,22 @@ export class LampTransport {
     this.id = device.deviceId;
     try {
       if(selected && typeof this.ble.getDevices==='function') {
-        const devices=await this.ble.getDevices([device.deviceId]);
-        const peripheral=devices.find(d=>d.deviceId.toLowerCase()===device.deviceId.toLowerCase());
-        if(!peripheral)throw new Error('The phone could not retrieve this lamp. Remove its card and set it up again.');
+        const peripheral=await this.retrieveSelectedDevice(device,epoch);
+        if(!peripheral)throw new Error('The iPhone could not retrieve this authorized lamp. Keep its card, bring the lamp nearby, and retry connecting.');
+        if(epoch!==this.epoch)throw Error('Connection changed.');
+        device.deviceId=peripheral.deviceId;this.id=device.deviceId;
         device.bluetoothName=peripheral.name||device.bluetoothName||'CoolLamp';
         if(device.accessoryManaged)device.accessoryName=device.name;
-        // End any unfinished connection to this same saved peripheral before
-        // reconnecting. CBCentralManager doesn't emit didConnect twice for an
-        // already-connected device. Other lamps are left alone.
-        await this.ble.disconnect(device.deviceId);
+        // Apple's setup picker may still own the link for a fresh authorization.
+        // Only clean up a connection this transport actually attempted itself.
+        if(device.newAuthorization)this.connectionAttempts.delete(device.deviceId);
+        if(this.connectionAttempts.has(device.deviceId)) {
+          await this.ble.disconnect(device.deviceId);
+          this.connectionAttempts.delete(device.deviceId);
+        }
       } else device.bluetoothName=device.name||device.bluetoothName||'CoolLamp';
-      await this.ble.connect(this.id, () => { if (epoch === this.epoch) this.disconnected(); });
+      this.connectionAttempts.add(device.deviceId);
+      await this.ble.connect(this.id, () => { if (epoch === this.epoch) this.disconnected(device.deviceId); });
       // Protected read triggers the phone's pairing prompt before subscriptions or commands.
       const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: 60000 });
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
@@ -72,6 +108,9 @@ export class LampTransport {
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
       this.receive(initial);
+      // Continue beyond the cached acknowledgment from the previous connection.
+      // A readback must never mistake that reply for our first new command.
+      this.sequence = this.state.id;
       if (this.state.capabilities & 8) {
         await this.command('enableEffects', (this.state.capabilities & 32) ? 3 : (this.state.capabilities & 16) ? 2 : 1);
         if (this.state.capabilities & 32) {
@@ -106,12 +145,16 @@ export class LampTransport {
       if(this.supportsWifiSetup&&!this.deviceIdentity)throw Error('Could not verify this lamp’s Bluetooth identity. Reconnect before setting up Wi-Fi.');
       await this.command('refresh'); // Closes the read/subscribe race.
       return device;
-    } catch (error) { error.device=device; await this.disconnect(); throw error; }
+    } catch (error) {
+      if(error.code==='COMMAND_NOT_CONFIRMED'&&device.accessoryManaged)
+        error.message='Bluetooth connected, but the lamp did not confirm setup. Tap its saved card to reconnect.';
+      error.device=device; await this.disconnect(); throw error;
+    }
   }
   async disconnect() {
     const id = this.id;
     this.disconnected();
-    if (id) { try { await this.ble.disconnect(id); } catch {} }
+    if (id) { try { await this.ble.disconnect(id);this.connectionAttempts.delete(id); } catch {} }
   }
   command(operation, value = 0, responseCharacteristic = null) {
     const epoch = this.epoch;
@@ -129,11 +172,25 @@ export class LampTransport {
       // Install the listener BEFORE writing: notifications may precede the write response.
       let settle;
       const response = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Lamp did not confirm the change. Reconnect before trying again.')), this.timeout);
-        this.pending = settle = { id, resolve, reject, timer };
+        const timer = setTimeout(() => reject(Object.assign(new Error('Lamp did not confirm the change. Reconnect before trying again.'),
+          {code:'COMMAND_NOT_CONFIRMED',operation})), this.timeout);
+        this.pending = settle = { id, resolve, reject, timer, probeTimer: null };
       });
       try {
-        const [, state] = await Promise.all([this.ble.write(this.id, SERVICE, COMMAND, frame), response]);
+        const deviceId = this.id;
+        const write = this.ble.write(deviceId, SERVICE, COMMAND, frame).then(() => {
+          if(this.pending!==settle||epoch!==this.epoch)return;
+          // A notification can be lost during the first encrypted subscription.
+          // Read the lamp's exact acknowledgment once; never resend the command.
+          settle.probeTimer = setTimeout(async () => {
+            if(this.pending!==settle||epoch!==this.epoch)return;
+            try {
+              const data=await this.ble.read(deviceId,SERVICE,STATE,{timeout:this.timeout/2});
+              if(this.pending===settle&&epoch===this.epoch&&decodeState(data).id===id)this.receive(data);
+            } catch { /* The original deadline still bounds an unconfirmed write. */ }
+          },this.timeout/2);
+        });
+        const [, state] = await Promise.all([write, response]);
         if(responseCharacteristic) {
           const data=await this.ble.read(this.id,SERVICE,responseCharacteristic);
           if(epoch!==this.epoch)throw Error('Connection changed.');
@@ -145,6 +202,7 @@ export class LampTransport {
         if (!error.confirmed) await this.disconnect(); throw error;
       } finally {
         clearTimeout(settle.timer);
+        clearTimeout(settle.probeTimer);
         if (this.pending === settle) this.pending = null;
       }
     };

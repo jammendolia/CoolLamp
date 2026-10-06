@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        A19300000000000000000001 /* LampAccessorySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19300000000000000000002; };
         A19200000000000000000001 /* LampAccessoryPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19200000000000000000002; };
         A14000000000000000000001 /* LampNetworkPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14000000000000000000002; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
@@ -21,6 +22,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+        A19300000000000000000002 /* LampAccessorySelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampAccessorySelection.swift; sourceTree = "<group>"; };
         A19200000000000000000002 /* LampAccessoryPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampAccessoryPlugin.swift; sourceTree = "<group>"; };
         A14000000000000000000002 /* LampNetworkPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampNetworkPlugin.swift; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
                 A14000000000000000000002 /* LampNetworkPlugin.swift */,
                 A19200000000000000000002 /* LampAccessoryPlugin.swift */,
+                A19300000000000000000002 /* LampAccessorySelection.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -167,6 +170,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
                 A14000000000000000000001 /* LampNetworkPlugin.swift in Sources */,
                 A19200000000000000000001 /* LampAccessoryPlugin.swift in Sources */,
+                A19300000000000000000001 /* LampAccessorySelection.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

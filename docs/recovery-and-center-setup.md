@@ -143,9 +143,10 @@ All 63 mobile tests and both browser checks passed for that version.
 
 The native iOS BLE plugin recreates `CBCentralManager` on each `initialize`
 while retaining its peripheral cache. The app now initializes it once per
-session, retrieves a saved peripheral before reconnecting, and ends any
-unfinished link to that same peripheral before connecting. Unrelated lamps
-remain connected. This also allows a saved lamp to reconnect after app restart
+session, retrieves a saved peripheral before reconnecting, and ends an
+unfinished connection only when this transport initiated it. A fresh Apple
+authorization is handed over without forcibly disconnecting the picker's link.
+This also allows a saved lamp to reconnect after app restart
 without discovery. Failed initialization remains retryable.
 
 All 76 mobile tests pass, including A → B → A switching, cold reconnect,
@@ -159,3 +160,56 @@ phone test; browser and simulator checks cannot verify these system/radio
 operations. Android native compilation is unavailable on the development Mac
 because the Android SDK and Java runtime are not installed; its existing
 native code is unchanged and the updated web assets synchronize successfully.
+
+## Pairing completion and Wi-Fi setup in 1.9.3
+
+The app saves an Apple-authorized accessory before attempting the encrypted
+GATT handshake. Explicit reauthorization clears the removed-card tombstone;
+cancelled pickers and late unrelated results cannot resurrect deleted cards.
+The native picker resolves final identifiers and names from session inventory,
+including late accessory events, without choosing an arbitrary existing lamp.
+An unsuccessful control connection keeps the authorized card available to retry.
+If Apple's inventory is ahead of Core Bluetooth's cache, reconnect retries
+retrieval, checks system-connected peripherals, then briefly scans for the exact
+authorized UUID. Other lamps are ignored, even if they share a display name.
+This recovery does not reopen the picker or discard the pairing. The scan omits
+service/name filters because saved lamps omit those fields outside enrollment.
+
+Firmware stops the blue cue when it accepts a radio connection, while keeping
+the enrollment window open until encrypted bonding completes. A failed new
+authentication resumes the cue while that window remains open. Saved phones
+remain subject to the existing bond check. Blue stopping alone does not mean
+that the app completed its control setup.
+
+The app still requires the lamp's application-level acknowledgment for each
+command. If its notification is missing, it reads the state once within the
+original deadline and accepts only that command's exact identifier and result.
+It never resends an uncertain command. Initial command identifiers start beyond
+the cached reply from the previous connection, and old connection callbacks or
+readbacks cannot confirm a new connection's command.
+
+Wi-Fi settings explain the first scan step, disable the button with **Scanning…**,
+report completion, and open a network chooser automatically. A password eye
+button temporarily reveals the typed password and hides it on leaving setup or
+submitting. Bluetooth and Wi-Fi connections share these controls.
+
+The ten-minute hotspot expiry is deferred during a scan or Bluetooth Wi-Fi join,
+so it cannot turn a first-time lamp's radio off while provisional credentials are
+being tested. Wi-Fi diagnostics retain the last driver disconnect reason,
+association, DHCP milestone and setup error through cancellation. They report
+compatible-security, signal and DHCP failures when known; a timeout without a
+driver reason is not treated as evidence of an incorrect password.
+
+USB **q** and authenticated `GET /api/bluetooth` retain connection/authentication,
+command and acknowledgment counts, last command operation/identifier and
+notification status after disconnect. They exclude command payloads, phone
+identifiers and credentials. USB **p** includes compact `join` diagnostics in
+the order setup error, driver reason, associated, received IP. USB polling can
+use `--poll-command q` or `--poll-command p`; the audio default remains `u`.
+
+Regression checks compile the actual firmware connection/security callbacks and
+Wi-Fi provisioning engine, including hotspot expiry during a first-time join.
+Mobile tests cover missing notifications, stale/late readbacks and failed Apple
+handoff. Native host tests cover provisional identifiers, final names, late
+inventory, cancellation and ambiguous accessories. Physical Wi-Fi join success
+and Apple radio behavior require a phone retry; host checks cannot establish them.

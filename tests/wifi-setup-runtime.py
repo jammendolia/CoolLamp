@@ -30,6 +30,7 @@ inline size_t strlcpy(char* dst,const char* src,size_t n){size_t len=strlen(src)
         stubs = r'''
 #include <cassert>
 #include <iostream>
+#include <functional>
 #include "LampConfig.h"
 #include "LampFactory.h"
 #include "LampVersion.h"
@@ -37,6 +38,9 @@ inline size_t strlcpy(char* dst,const char* src,size_t n){size_t len=strlen(src)
 #include "Preferences.h"
 uint32_t clockMs=0;uint32_t millis(){return clockMs;}
 constexpr int WIFI_OFF=0,WIFI_STA=1,WIFI_AP_STA=3,WL_CONNECTED=3;
+using arduino_event_id_t=int;
+struct arduino_event_info_t {struct {uint16_t reason=0;}wifi_sta_disconnected;};
+constexpr int ARDUINO_EVENT_WIFI_STA_CONNECTED=1,ARDUINO_EVENT_WIFI_STA_GOT_IP=2,ARDUINO_EVENT_WIFI_STA_DISCONNECTED=3;
 struct IPAddress {
  int octets[4];IPAddress(int a=0,int b=0,int c=0,int d=0):octets{a,b,c,d}{}
  bool operator!=(const IPAddress& o)const{return memcmp(octets,o.octets,sizeof(octets))!=0;}
@@ -44,14 +48,18 @@ struct IPAddress {
 };
 struct Wifi {
  int state=0,radioMode=0;String name,lastPassword;bool automatic=true;IPAddress address;
+ std::function<void(arduino_event_id_t,arduino_event_info_t)> callback;
+ void onEvent(std::function<void(arduino_event_id_t,arduino_event_info_t)> fn){callback=fn;}
  int status(){return state;}String SSID(){return name;}IPAddress localIP(){return address;}
  void mode(int n){radioMode=n;}void setAutoReconnect(bool b){automatic=b;}
  void disconnect(bool,bool){state=0;address={};}
+ void softAPdisconnect(bool){radioMode=WIFI_STA;}
  void begin(const char* ssid,const char* pass){name=ssid;lastPassword=pass;}
  void scanDelete(){}
 } WiFi;
 LampSettings lampSettings;
 bool setupAP=false,scanActive=false,updating=false;
+bool otaActive=false;uint32_t apLastActivity=0;
 void beginLampScan(){scanActive=true;}void esp_wifi_scan_stop(){}
 bool lampIsUpdating(){return updating;}bool lampUpdateOwnsResources(){return updating;}
 bool lampFactoryResetPending(){return false;}
@@ -66,16 +74,27 @@ void credentials(){
  assert(command(chunk,sizeof(chunk))==0);
 }
 int main(){
+ beginLampWifiSetupDiagnostics();
  lampSettings={};lampSettings.version=1;lampSettings.ledCount=205;lampSettings.milliAmps=500;
  lampSettings.brightness=100;lampSettings.startupMode=4;
  strcpy(lampSettings.adminPassword,"coollamp");strcpy(lampSettings.ssid,"Previous");
  strcpy(lampSettings.wifiPassword,"previous-password");
  uint8_t commit[]={1,3,18,0},scan[]={1,1,14,1},cancel[]={1,1,14,2};
+ // An expired setup hotspot must not disable a first-time BLE Wi-Fi join.
+ lampSettings.ssid[0]=0;setupAP=true;clockMs=600001;
+ credentials();assert(command(commit,sizeof(commit))==0);expireHotspot();
+ assert(setupAP&&WiFi.radioMode==WIFI_AP_STA);
+ assert(command(cancel,sizeof(cancel))==0);expireHotspot();assert(!setupAP&&WiFi.radioMode==WIFI_OFF);
+ setupAP=true;assert(command(scan,sizeof(scan))==0);expireHotspot();assert(setupAP);
+ assert(command(cancel,sizeof(cancel))==0);scanActive=true;expireHotspot();assert(setupAP);
+ scanActive=false;expireHotspot();assert(!setupAP);clockMs=0;
+ strcpy(lampSettings.ssid,"Previous");
  assert(command(commit,sizeof(commit))==2);
  credentials();assert(command(commit,sizeof(commit),99)==2);
  credentials();assert(command(commit,sizeof(commit))==0);
  assert(lampWifiSetupBusy());assert(Preferences::storage["settings"].empty());
  assert(!strcmp(lampSettings.ssid,"Previous"));
+ WiFi.callback(ARDUINO_EVENT_WIFI_STA_CONNECTED,{});WiFi.callback(ARDUINO_EVENT_WIFI_STA_GOT_IP,{});
  WiFi.state=WL_CONNECTED;WiFi.address={192,168,1,123};serviceLampWifiSetup();
  assert(LampWifiSetup::phase==LampWifiSetup::CONNECTED);
  assert(lampSettings.ledCount==205&&lampSettings.milliAmps==500);
@@ -84,7 +103,11 @@ int main(){
  assert(LampWifiSetup::candidatePassword[0]==0&&LampWifiSetup::transfer.ssidSize==0);
  assert(lampWifiSetupJson().find("password")==String::npos);
  credentials();assert(command(commit,sizeof(commit))==0);
+ arduino_event_info_t reason;reason.wifi_sta_disconnected.reason=202;WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
  clockMs+=35000;serviceLampWifiSetup();assert(LampWifiSetup::error==2);
+ assert(LampWifiSetup::disconnectReason==202&&LampWifiSetup::lastJoinError==2);
+ assert(command(cancel,sizeof(cancel))==0&&LampWifiSetup::disconnectReason==202&&LampWifiSetup::lastJoinError==2);
+ assert(lampWifiSetupJson().find("\"join\":[2,202,0,0]")!=String::npos);
  assert(!strcmp(lampSettings.ssid,"Home")&&WiFi.name=="Home");
  credentials();assert(command(commit,sizeof(commit))==0);
  Preferences::failWrites=true;WiFi.state=WL_CONNECTED;WiFi.address={192,168,1,123};
@@ -111,11 +134,13 @@ int main(){
 }
 '''
         engine = (ROOT / 'LampWifiSetup.ino').read_text().replace('#include "LampWifiSetup.h"', '')
+        network = (ROOT / 'LampNetwork.ino').read_text()
+        expiry = network[network.index('  if (setupAP && !otaActive && !lampWifiSetupBusy()'):network.index('  const bool connected = WiFi.status()', network.index('void serviceLampNetwork()'))]
         with tempfile.TemporaryDirectory(prefix='coollamp-wifi-setup-') as directory:
             directory = pathlib.Path(directory)
             (directory / 'Arduino.h').write_text(arduino)
             source, binary = directory / 'test.cpp', directory / 'test'
-            source.write_text(stubs + engine + main)
+            source.write_text(stubs + engine + '\nvoid expireHotspot(){const uint32_t now=millis();\n' + expiry + '}\n' + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                             '-fsanitize=address,undefined', '-I'+str(directory), '-I'+str(ROOT),
                             '-I'+str(ROOT/'tests/stubs'), str(source), '-o', str(binary)], check=True)

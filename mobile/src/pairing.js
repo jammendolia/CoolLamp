@@ -60,9 +60,9 @@ export class LampPairing {
     if(saved?.deviceId) {
       const enrolled=current.devices.find(d=>d.deviceId.toLowerCase()===saved.deviceId.toLowerCase());
       if(!enrolled)throw new Error('This lamp is no longer authorized on this iPhone. Remove its app card, then use Find a lamp flashing blue to set it up again.');
-      return {...saved,...enrolled,accessoryManaged:true};
+      return {...saved,...enrolled,accessoryManaged:true,newAuthorization:false};
     }
-    return {...await this.native.select(),accessoryManaged:true};
+    return {...await this.native.select(),accessoryManaged:true,newAuthorization:true};
   }
   async remove(entry,{appOnly=false}={}) {
     if(!entry?.deviceId)return {removed:false,manual:false};

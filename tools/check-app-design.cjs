@@ -99,7 +99,7 @@ const server=http.createServer((req,res)=>{const pathname=req.url.split('?')[0];
   await page.locator('[data-settings-section=network]').click();
   assert(await page.locator('#geometrySettings').isHidden());await page.waitForTimeout(2700);assert(await page.locator('#geometrySettings').isHidden(),'polls must not reveal hardware in network');
   await page.locator('#scanWifi').click();await page.waitForFunction(()=>document.querySelector('#networks option[value="Home test"]'));
-  await page.locator('#networks').selectOption('Home test');assert.equal(await page.locator('#ssid').inputValue(),'Home test');
+  await page.locator('.wifi-network-choice').filter({hasText:'Home test'}).click();assert.equal(await page.locator('#ssid').inputValue(),'Home test');
   await page.locator('#wifiPassword').fill('network-pass');
   await screenshot('phone-network');await audit('network');
   page.on('dialog',dialog=>dialog.accept());

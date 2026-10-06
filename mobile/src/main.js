@@ -18,6 +18,7 @@ const discovery = new LampDiscoverySession();
 let selected = null, lamp = null, connecting = false, discovered = [], category = 'all';
 let effectListKey = '', settingsView = 'overview';
 let bleWifiStatus=null, wifiSetupAbort=null, wifiSetupSerial=0;
+let wifiScanning=false,wifiScanSerial=0;
 let resetTarget=null;
 let pairingRecoveryTarget=null;
 const removedAccessoryIds=new Set();
@@ -31,6 +32,7 @@ async function credential(id, value) {
   return {value:sessionPasswords.get(id)||''};
 }
 function page(name) {
+  if(name!=='settings')hideWifiPassword();
   if(name==='lamps')renderLamps();
   for (const item of ['lamps','light','settings']) $('page-'+item).hidden=item!==name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
@@ -187,9 +189,14 @@ function renderSettings() {
   const bleNetwork=bluetoothWifiAvailable();
   $('networkSettings').disabled=!state||(lamp!==wifiLamp&&!bleNetwork)||busy||updatingLamp();
   $('wifiSecurityControls').hidden=bleNetwork;
-  $('wifiSettingsHint').textContent=bleNetwork?'Choose a 2.4 GHz network. Your phone stays connected over Bluetooth; no lamp hotspot is needed. Wi-Fi settings are saved only after the lamp connects.':'Connect over Wi-Fi to manage network and security settings. The lamp’s hotspot remains available for recovery.';
+  $('wifiSettingsHint').textContent=bleNetwork?'Start with Find Wi-Fi networks, then choose your 2.4 GHz home network. Your phone stays connected over Bluetooth. Settings are saved only after the lamp connects.':'To choose a different network, start with Find Wi-Fi networks. The lamp’s hotspot remains available for recovery.';
+  $('scanWifi').textContent=wifiScanning?'Scanning…':'Find Wi-Fi networks';
+  $('scanWifi').setAttribute('aria-busy',String(wifiScanning));
+  $('scanWifi').disabled=wifiScanning||busy||connecting||!state||(!bleNetwork&&lamp!==wifiLamp);
   $('saveWifi').textContent=bleNetwork?'Connect lamp to Wi-Fi':'Save & restart lamp';
-  $('wifiPassword').disabled=bleNetwork&&$('openNetwork').checked;
+  $('wifiPassword').disabled=$('openNetwork').checked;
+  $('toggleWifiPassword').disabled=$('wifiPassword').disabled||busy||connecting||!state;
+  if($('wifiPassword').disabled)hideWifiPassword();
   $('cancelWifiSetup').hidden=!wifiSetupAbort;
   $('switchToWifi').hidden=!bleNetwork||!bleWifiStatus?.connected||!bleWifiStatus?.ssid||busy;
   $('saveIdentity').disabled=!selected||busy||connecting||updatingLamp();
@@ -203,7 +210,7 @@ function renderSettings() {
   $('room').disabled=!selected||busy||connecting;
   renderCenterTool();
 }
-function settingsSection(name) { settingsView=name;renderSettings(); }
+function settingsSection(name) { if(name!=='network')hideWifiPassword();settingsView=name;renderSettings(); }
 for(const button of document.querySelectorAll('[data-settings-section]'))button.onclick=()=>settingsSection(button.dataset.settingsSection);
 for(const button of document.querySelectorAll('[data-goto]'))button.onclick=()=>page(button.dataset.goto);
 let savedDevice = null;
@@ -238,6 +245,8 @@ const callbacks = {
     renderOptions();
   },
   onDisconnect() {
+    wifiScanning=false;++wifiScanSerial;hideWifiPassword();
+    if($('wifiNetworksDialog').open){$('wifiNetworksDialog').returnValue='cancel';$('wifiNetworksDialog').close();}
     clearTimeout(centerTimer);centerTimer=null;centerStatus=null;centerWasActive=false;++centerSerial;$('centerFeedback').textContent='';
     resetTarget=null;
     if($('factoryResetDialog').open){$('factoryResetDialog').returnValue='cancel';$('factoryResetDialog').close();}
@@ -255,6 +264,7 @@ const callbacks = {
     $('connectionBadge').textContent='Not connected';
     $('networkSettings').disabled=true;
     $('identify').disabled=true;
+    renderSettings();
     if (!connecting) status('Disconnected. Choose a lamp to reconnect.');
   }
 };
@@ -268,7 +278,13 @@ async function rememberAuthorizedAccessories() {
   renderLamps();renderSettings();
 }
 const bleLamp = new LampTransport(BleClient, {...callbacks,
-  ...(phonePlatform==='ios'?{selectDevice:device=>pairing.select(device),onRadioReady:()=>{pairing.radioStarted=true;}}:{})});
+  ...(phonePlatform==='ios'?{selectDevice:device=>pairing.select(device),onRadioReady:()=>{pairing.radioStarted=true;},
+    onDeviceSelected:device=>{
+      if(!device.accessoryManaged)return;
+      if(device.newAuthorization)removedAccessoryIds.delete(device.deviceId.toLowerCase());
+      rememberAccessories(store,[device],removedAccessoryIds);renderLamps();
+      status('Authorized '+device.name+'. Connecting to the lamp…');
+    }}:{})});
 const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:e=>{status(e.message); if(selected?.deviceId && !connecting) connect(selected);}});
 lamp=bleLamp;
 
@@ -544,27 +560,65 @@ $('identityForm').onsubmit=async e=>{
 $('identify').onclick=()=>networkAction(async()=>status(await wifiLamp.request('/api/identify',{})));
 $('pairingStatus').onclick=()=>networkAction(async()=>{const result=await wifiLamp.request('/api/bluetooth');const value=typeof result==='string'?JSON.parse(result):result;status(value.pairing?'Pairing is open.':'Pairing is closed. Hold the knob for six seconds to open it.');});
 $('forgetPhones').onclick=()=>{if(confirm('Remove every phone paired with this lamp? Hold its knob for six seconds to open pairing first.'))networkAction(async()=>status(await wifiLamp.request('/api/bluetooth/forget',{})));};
-$('scanWifi').onclick=()=>{
-  if(bluetoothWifiAvailable())return bluetoothNetworkAction(async options=>{
-    status('Finding nearby Wi-Fi networks…');
-    $('wifiSetupFeedback').textContent='Finding nearby 2.4 GHz Wi-Fi networks…';
-    const networks=await bleLamp.scanWifi(options);
-    if(options.signal.aborted)return;
-    $('networks').replaceChildren(new Option('Choose a network or enter its name below',''),...networks.map(x=>{
-      const strength=x.rssi>=-60?'Strong signal':x.rssi>=-75?'Good signal':'Weak signal';
-      const option=new Option(x.ssid+(x.open?' (open)':'')+' · '+strength,x.ssid);option.dataset.open=String(x.open);return option;
-    }));
-  });
-  return networkAction(async()=>{
-  status('Scanning Wi-Fi networks…');await wifiLamp.request('/api/scan',{});
-  const epoch=wifiLamp.epoch;
-  for(let attempt=0;attempt<25;attempt++) {
-    await new Promise(r=>setTimeout(r,1000));if(epoch!==wifiLamp.epoch)throw new Error('Connection changed.');
-    const result=await wifiLamp.request('/api/scan');const scan=typeof result==='string'?JSON.parse(result):result;
-    if(scan.status==='failed')throw new Error('Wi-Fi scan failed. Try again.');
-    if(scan.status==='complete'){$('networks').replaceChildren(new Option('Choose a network or enter its name below',''),...scan.networks.map(x=>{const o=new Option(x.ssid+(x.open?' (open)':''),x.ssid);o.dataset.open=String(x.open);return o;}));status('Wi-Fi scan complete.');return;}
-  }throw new Error('Wi-Fi scan timed out. Try again.');
-  });
+function showWifiNetworks(networks) {
+  $('networks').replaceChildren(new Option('Choose a network or enter its name below',''),...networks.map(x=>{
+    const strength=typeof x.rssi==='number'?(x.rssi>=-60?'Strong signal':x.rssi>=-75?'Good signal':'Weak signal'):'';
+    const option=new Option(x.ssid+(x.open?' (open)':'')+(strength?' · '+strength:''),x.ssid);option.dataset.open=String(x.open);return option;
+  }));
+  const message=networks.length?'Scan complete — '+networks.length+' network'+(networks.length===1?'':'s')+' found. Choose your network.':
+    'Scan complete — no nearby networks found. Try again or enter a hidden network name.';
+  $('wifiSetupFeedback').textContent=message;status(message);
+  $('wifiNetworkChoices').replaceChildren(...Array.from($('networks').options).slice(1).map(option=>{
+    const button=document.createElement('button');button.type='button';button.className='wifi-network-choice';
+    const name=document.createElement('strong');name.textContent=option.value;
+    const detail=document.createElement('span');detail.textContent=(option.dataset.open==='true'?'Password-free':'Password required')+
+      (option.textContent.includes(' · ')?' · '+option.textContent.split(' · ').at(-1):'');
+    button.append(name,detail);button.onclick=()=>{
+      $('networks').value=option.value;$('networks').dispatchEvent(new Event('change'));
+      $('wifiNetworksDialog').returnValue='selected';$('wifiNetworksDialog').close();
+    };return button;
+  }));
+  if(networks.length&&settingsView==='network'&&!$('page-settings').hidden) {
+    $('wifiNetworksDescription').textContent=networks.length+' nearby network'+(networks.length===1?'':'s')+'. Select your 2.4 GHz home Wi-Fi.';
+    $('wifiNetworksDialog').showModal();
+  }
+}
+$('wifiNetworksDialog').addEventListener('close',()=>{
+  if($('wifiNetworksDialog').returnValue==='manual')$('ssid').focus();
+  if($('wifiNetworksDialog').returnValue==='selected'&&!$('openNetwork').checked)$('wifiPassword').focus();
+});
+function hideWifiPassword() {
+  const input=$('wifiPassword'),button=$('toggleWifiPassword');if(!input||!button)return;
+  input.type='password';button.setAttribute('aria-pressed','false');button.setAttribute('aria-label','Show Wi-Fi password');
+  button.querySelector('[data-password-slash]').setAttribute('hidden','');
+}
+$('toggleWifiPassword').onpointerdown=e=>e.preventDefault();
+$('toggleWifiPassword').onclick=()=>{
+  const input=$('wifiPassword'),shown=input.type==='password';input.type=shown?'text':'password';
+  $('toggleWifiPassword').setAttribute('aria-pressed',String(shown));
+  $('toggleWifiPassword').setAttribute('aria-label',shown?'Hide Wi-Fi password':'Show Wi-Fi password');
+  $('toggleWifiPassword').querySelector('[data-password-slash]').toggleAttribute('hidden',!shown);
+};
+$('scanWifi').onclick=async()=>{
+  if(busy||connecting||!state||wifiScanning||(!bluetoothWifiAvailable()&&lamp!==wifiLamp))return;
+  const serial=++wifiScanSerial;wifiScanning=true;renderSettings();
+  $('wifiSetupFeedback').textContent='Please wait, scanning nearby 2.4 GHz Wi-Fi networks…';
+  try {
+    if(bluetoothWifiAvailable())await bluetoothNetworkAction(async options=>{
+      status('Finding nearby Wi-Fi networks…');const networks=await bleLamp.scanWifi(options);
+      if(!options.signal.aborted&&serial===wifiScanSerial)showWifiNetworks(networks);
+    });
+    else await networkAction(async()=>{
+      status('Scanning Wi-Fi networks…');await wifiLamp.request('/api/scan',{});
+      const epoch=wifiLamp.epoch;
+      for(let attempt=0;attempt<25;attempt++) {
+        await new Promise(r=>setTimeout(r,1000));if(epoch!==wifiLamp.epoch)throw new Error('Connection changed.');
+        const result=await wifiLamp.request('/api/scan');const scan=typeof result==='string'?JSON.parse(result):result;
+        if(scan.status==='failed')throw new Error('Wi-Fi scan failed. Try again.');
+        if(scan.status==='complete'){if(serial===wifiScanSerial)showWifiNetworks(scan.networks);return;}
+      }throw new Error('Wi-Fi scan timed out. Try again.');
+    });
+  }finally{if(serial===wifiScanSerial){wifiScanning=false;renderSettings();}}
 };
 $('networks').onchange=()=>{if($('networks').value){$('ssid').value=$('networks').value;$('openNetwork').checked=$('networks').selectedOptions[0].dataset.open==='true';if($('openNetwork').checked)$('wifiPassword').value='';renderSettings();}};
 $('openNetwork').onchange=()=>{if($('openNetwork').checked)$('wifiPassword').value='';renderSettings();};
@@ -572,6 +626,7 @@ for(const [id,section] of [['networkForm','network'],['hardwareForm','hardware']
   if(section==='network'&&bluetoothWifiAvailable()) {
     e.preventDefault();if(busy||connecting)return;
     const ssid=$('ssid').value,password=$('wifiPassword').value,open=$('openNetwork').checked;
+    hideWifiPassword();
     $('wifiPassword').value='';
     status('Connecting the lamp to Wi-Fi…');
     bluetoothNetworkAction(options=>bleLamp.configureWifi(ssid,password,open,options)).then(value=>{

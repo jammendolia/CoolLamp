@@ -3,7 +3,7 @@ name: iOS TestFlight upload
 on:
   workflow_dispatch:
   push:
-    branches: [testflight/lamp-switch-fix, release/firmware-1.8.0, release/firmware-1.8.1, testflight/power-controls, testflight/ui-redesign, release/firmware-1.9.1, release/firmware-1.9.2]
+    branches: [testflight/lamp-switch-fix, release/firmware-1.8.0, release/firmware-1.8.1, testflight/power-controls, testflight/ui-redesign, release/firmware-1.9.1, release/firmware-1.9.2, release/firmware-1.9.3]
     paths: ['mobile/**']
 
 permissions:
@@ -38,6 +38,10 @@ jobs:
           pnpm test
           pnpm build
           pnpm exec cap sync ios
+      - name: Test native accessory event ordering
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampAccessorySelection.swift ios/tests/main.swift -o "$RUNNER_TEMP/coollamp-accessory-events"
+          "$RUNNER_TEMP/coollamp-accessory-events"
       - name: Set unique build number
         env:
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}

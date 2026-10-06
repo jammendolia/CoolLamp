@@ -10,3 +10,4 @@ void captureLampWifiSetupNetwork(uint8_t index, const String& ssid, int rssi, bo
 void finishLampWifiSetupScan(bool success);
 String lampWifiSetupJson();
 bool lampWifiSetupBusy();
+void beginLampWifiSetupDiagnostics();

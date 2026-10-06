@@ -94,6 +94,40 @@ test('timeout disconnects and queued changes never replay', async () => {
   assert.match(results[0].reason.message, /confirm/); assert.equal(lamp.id, null);
   assert.equal(radio.writes.length, 2);
 });
+test('a lost notification recovers only the matching cached acknowledgment without replay', async () => {
+  class ReadbackRadio extends Radio {
+    cached=packet(19);
+    async read(id,service,char) { assert.equal(char,STATE);return this.cached; }
+    async write(id,service,char,frame) {
+      this.writes.push([...new Uint8Array(frame.buffer)]);
+      this.cached=packet(frame.getUint8(1),this.result,frame.getUint8(2)===2?frame.getUint8(3):100);
+    }
+  }
+  const radio=new ReadbackRadio(),lamp=new LampTransport(radio,{timeout:40});
+  await lamp.connect();assert.equal(radio.writes[0][1],20);
+  const state=await lamp.command('brightness',173);
+  assert.equal(state.brightness,173);assert.equal(radio.writes.length,2);
+  radio.result=4;await assert.rejects(lamp.command('saveDefaults'),/could not save/);
+  assert.equal(lamp.id,'lamp-1');await lamp.disconnect();
+});
+test('a stale readback cannot claim success for an unprocessed command', async () => {
+  class StaleRadio extends Radio {
+    async read(id,service,char) { assert.equal(char,STATE);return packet(1); }
+  }
+  const radio=new StaleRadio(),lamp=new LampTransport(radio,{timeout:40});
+  await lamp.connect();radio.reply=false;
+  await assert.rejects(lamp.command('power',0),/confirm/);
+  assert.equal(lamp.id,null);assert.equal(radio.writes.length,2);
+});
+test('readback finishing after disconnect cannot acknowledge a new connection', async () => {
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:50});await lamp.connect();
+  radio.reply=false;let release;
+  radio.read=()=>new Promise(resolve=>{release=resolve;});
+  const command=lamp.command('power',0),rejected=assert.rejects(command,/disconnected/);
+  await new Promise(resolve=>setTimeout(resolve,30));assert.equal(typeof release,'function');
+  await lamp.disconnect();await rejected;
+  release(packet(2));await new Promise(resolve=>setTimeout(resolve,5));assert.equal(lamp.state,null);
+});
 test('disconnect rejects pending command and ignores an old connection callback', async () => {
   const radio = new Radio(); const lamp = new LampTransport(radio);
   await lamp.connect(); const staleCallback = radio.disconnected;

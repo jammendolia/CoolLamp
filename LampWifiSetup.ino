@@ -1,4 +1,5 @@
 #include "LampWifiSetup.h"
+#include <atomic>
 
 namespace LampWifiSetup {
 enum Phase : uint8_t { IDLE, SCANNING, SCANNED, CONNECTING, CONNECTED, FAILED };
@@ -10,6 +11,9 @@ Phase phase = IDLE;
 uint32_t started = 0;
 WifiSetupWire::Credentials transfer;
 char candidateSsid[33]{}, candidatePassword[64]{};
+std::atomic<bool> observing{false}, associated{false}, gotIp{false};
+std::atomic<uint16_t> disconnectReason{0};
+uint8_t lastJoinError=0;
 
 void clearCandidate() {
   memset(candidateSsid, 0, sizeof(candidateSsid));
@@ -23,8 +27,26 @@ void restoreStation() {
   if (lampSettings.ssid[0]) WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
 }
 void fail(uint8_t reason) {
+  observing=false;lastJoinError=reason;
   phase = FAILED; error = reason; clearCandidate(); transfer.clear(); restoreStation();
 }
+}
+
+void beginLampWifiSetupDiagnostics() {
+  // Network events run on another task. Only atomics are touched here; no
+  // credentials, NVS, Strings, or radio changes are accessed by the callback.
+  WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
+    using namespace LampWifiSetup;
+    if(!observing.load())return;
+    if(event==ARDUINO_EVENT_WIFI_STA_CONNECTED)associated=true;
+    if(event==ARDUINO_EVENT_WIFI_STA_GOT_IP){associated=true;gotIp=true;}
+    if(event==ARDUINO_EVENT_WIFI_STA_DISCONNECTED){
+      associated=false;
+      // ASSOC_LEAVE is also sent by our deliberate pre-join disconnect. Keep
+      // meaningful router/driver failures rather than overwriting them with it.
+      if(info.wifi_sta_disconnected.reason!=8)disconnectReason=info.wifi_sta_disconnected.reason;
+    }
+  });
 }
 
 bool lampWifiSetupBusy() { return LampWifiSetup::phase == LampWifiSetup::CONNECTING || LampWifiSetup::phase == LampWifiSetup::SCANNING; }
@@ -38,7 +60,11 @@ String lampWifiSetupJson() {
     ",\"ssid\":" + jsonText(phase == CONNECTING ? String(candidateSsid) : String(lampSettings.ssid)) +
     ",\"address\":" + jsonText(online ? WiFi.localIP().toString() : String("0.0.0.0")) +
     ",\"hostname\":" + jsonText(lampHost + ".local") + ",\"deviceId\":" + jsonText(lampIdentity()) +
-    ",\"usingDefaultPassword\":" + (lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false") + "}";
+    ",\"usingDefaultPassword\":" + (lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
+  // Compact diagnostics keep even escaped 32-byte SSIDs within the GATT
+  // attribute size: [last join error, Wi-Fi reason, associated, got IPv4].
+  reply += String(",\"join\":[") + lastJoinError + "," + disconnectReason.load() + "," +
+    unsigned(associated.load()) + "," + unsigned(gotIp.load()) + "]}";
   return reply;
 }
 void captureLampWifiSetupNetwork(uint8_t index, const String& ssid, int rssi, bool open) {
@@ -61,6 +87,7 @@ uint8_t lampWifiSetupCommand(const uint8_t* frame, size_t size, uint32_t owner, 
   if (op == WifiSetupWire::CONTROL && value == 0) { reply = lampWifiSetupJson(); return 0; }
   if (lampIsUpdating() || lampUpdateOwnsResources() || lampFactoryResetPending()) return 3;
   if (op == WifiSetupWire::CONTROL && value == 2) {
+    observing=false;
     transfer.clear();
     if (phase == CONNECTING) { clearCandidate(); restoreStation(); }
     if (phase == SCANNING) { esp_wifi_scan_stop(); WiFi.scanDelete(); scanActive = false; restoreStation(); }
@@ -89,9 +116,10 @@ uint8_t lampWifiSetupCommand(const uint8_t* frame, size_t size, uint32_t owner, 
   memcpy(candidateSsid, transfer.bytes, transfer.ssidSize); candidateSsid[transfer.ssidSize] = 0;
   memcpy(candidatePassword, transfer.bytes + transfer.ssidSize, transfer.passwordSize); candidatePassword[transfer.passwordSize] = 0;
   transfer.clear(); error = 0; phase = CONNECTING; started = millis();
+  observing=false;lastJoinError=0;disconnectReason=0;associated=false;gotIp=false;
   WiFi.setAutoReconnect(false); WiFi.disconnect(false, false);
   WiFi.mode(setupAP ? WIFI_AP_STA : WIFI_STA);
-  WiFi.begin(candidateSsid, candidatePassword);
+  observing=true;WiFi.begin(candidateSsid, candidatePassword);
   reply = lampWifiSetupJson(); return 0;
 }
 void serviceLampWifiSetup() {
@@ -109,6 +137,6 @@ void serviceLampWifiSetup() {
     if (!prefs.begin("coollamp", false)) { fail(3); return; }
     const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next); prefs.end();
     if (!saved) { fail(3); return; }
-    lampSettings = next; phase = CONNECTED; error = 0; clearCandidate(); WiFi.setAutoReconnect(true);
+    observing=false;lampSettings = next; phase = CONNECTED; error = 0; clearCandidate(); WiFi.setAutoReconnect(true);
   } else if (uint32_t(millis() - started) >= 35000) fail(2);
 }

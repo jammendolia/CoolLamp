@@ -553,7 +553,12 @@
 <label for="ssid">Network name</label>
 <input id="ssid" maxlength="32" autocomplete="off">
 <label for="wifiPassword">Wi-Fi password</label>
+<div class="password-field">
 <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password">
+<button id="toggleWifiPassword" type="button" class="password-toggle" aria-label="Show Wi-Fi password" aria-controls="wifiPassword" aria-pressed="false">
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path data-password-slash d="m3 3 18 18" hidden/></svg>
+</button>
+</div>
 <label class="toggle">
 <input id="openNetwork" type="checkbox"> Password-free network</label>
 <div id="wifiSecurityControls">
@@ -701,6 +706,13 @@
 <p class="hint">After resetting, we’ll help you clear the phone’s old pairing so you can set the lamp up again.</p>
 <div class="dialog-actions"><button value="cancel" class="secondary" autofocus>Cancel</button><button value="reset" class="danger-button">Factory reset</button></div>
 </form>
+</dialog>
+<dialog id="wifiNetworksDialog" aria-labelledby="wifiNetworksTitle" aria-describedby="wifiNetworksDescription">
+<p class="eyebrow">SCAN COMPLETE</p>
+<h2 id="wifiNetworksTitle">Choose your network</h2>
+<p id="wifiNetworksDescription" class="hint">Select your 2.4 GHz home Wi-Fi network.</p>
+<div id="wifiNetworkChoices" class="wifi-network-choices"></div>
+<form method="dialog" class="dialog-actions"><button value="manual" class="secondary">Enter name manually</button><button value="cancel" class="text-button">Cancel</button></form>
 </dialog>
 <script type="module" src="/src/main.js">
 </script>

@@ -14,7 +14,7 @@ class Accessories {
     if(this.cancel)throw Error('Migration cancelled');
     this.devices.push(...devices.map(d=>({...d,accessoryManaged:true})));
   }
-  async select(){this.events.push('select');return {...a,name:'New helix',accessoryManaged:true};}
+  async select(){this.events.push('select');const device={...a,name:'New helix',accessoryManaged:true};this.devices=this.devices.filter(d=>d.deviceId!==device.deviceId);this.devices.push(device);return device;}
   async remove({deviceId}){
     this.events.push('remove:'+deviceId);
     if(this.cancel)throw Error('Removal cancelled');
@@ -34,6 +34,50 @@ class Radio {
   async startNotifications(id,service,char,fn){this.listener=fn;}
   async write(id,service,char,frame){this.listener(this.packet(frame.getUint8(1)));}
 }
+test('authorized reconnect recovers a late peripheral cache without another picker',async()=>{
+  class LateRadio extends Radio {
+    attempts=0;
+    async getDevices(ids){return ++this.attempts===1?[]:super.getDevices(ids);}
+  }
+  const events=[],radio=new LateRadio(events),lamp=new LampTransport(radio);
+  const device=await lamp.connect({...a,accessoryManaged:true});
+  assert.equal(device.deviceId,a.deviceId);assert.equal(radio.attempts,2);
+  assert(!events.includes('legacy-picker'));await lamp.disconnect();
+});
+test('authorized reconnect can hydrate the exact system-connected accessory',async()=>{
+  class ConnectedRadio extends Radio {
+    async getDevices(){return [];}
+    async getConnectedDevices(){return [b,{...a,deviceId:a.deviceId.toLowerCase()}];}
+  }
+  const radio=new ConnectedRadio([]),lamp=new LampTransport(radio);
+  await lamp.connect({...a,accessoryManaged:true});assert.equal(lamp.id,a.deviceId.toLowerCase());await lamp.disconnect();
+});
+test('authorized recovery scans without service filters but never selects a different same-named lamp',async()=>{
+  class ScanRadio extends Radio {
+    stops=0;
+    async getDevices(){return [];}
+    async getConnectedDevices(){return [b];}
+    async requestLEScan(options,callback){
+      assert.equal(options.services,undefined);
+      callback({device:{...b,name:a.name}});callback({device:a});
+    }
+    async stopLEScan(){++this.stops;}
+  }
+  const radio=new ScanRadio([]),lamp=new LampTransport(radio);
+  await lamp.connect({...a,accessoryManaged:true});assert.equal(lamp.id,a.deviceId);assert.equal(radio.stops,1);
+  await lamp.disconnect();
+});
+test('failed authorized recovery retains the selected identity and closes its scan',async()=>{
+  class FailedRadio extends Radio {
+    stops=0;
+    async getDevices(){return [];}
+    async requestLEScan(){throw Error('Bluetooth is unavailable.');}
+    async stopLEScan(){++this.stops;}
+  }
+  const radio=new FailedRadio([]),lamp=new LampTransport(radio);
+  await assert.rejects(lamp.connect({...a,accessoryManaged:true}),error=>error.device.deviceId===a.deviceId&&/unavailable/.test(error.message));
+  assert.equal(radio.stops,1);assert(!radio.events.includes('connect'));
+});
 test('migrates every saved iPhone lamp before BLE initialization, then retrieves only the selected UUID',async()=>{
   const native=new Accessories(),pairing=new LampPairing({platform:'ios',native,knownDevices:()=>[a,b]});
   const radio=new Radio(native.events);
@@ -123,15 +167,48 @@ test('a saved lamp can reconnect after app restart, and a failed BLE initializat
   assert.equal(attempts,2);assert.deepEqual(events,['retrieve','connect']);
   await lamp.disconnect();await lamp.connect(b);assert.equal(attempts,2);await lamp.disconnect();
 });
-test('clears an unfinished connection only to the saved target before asking native iOS to connect again',async()=>{
+test('clears only an app-owned unfinished connection after an unsuccessful cleanup',async()=>{
   class ConnectedRadio extends Radio {
-    connected=new Set([a.deviceId,b.deviceId]);disconnections=[];
-    async connect(id,callback){assert(!this.connected.has(id),'native didConnect must be able to fire');this.connected.add(id);return super.connect(id,callback);}
-    async disconnect(id){this.disconnections.push(id);this.connected.delete(id);return super.disconnect();}
+    connected=new Set([b.deviceId]);disconnections=[];fail=true;
+    async connect(id,callback){assert(!this.connected.has(id),'native didConnect must be able to fire');this.connected.add(id);if(this.fail)throw Error('Connection timeout');return super.connect(id,callback);}
+    async disconnect(id){this.disconnections.push(id);if(this.fail)throw Error('Cleanup timeout');this.connected.delete(id);return super.disconnect();}
   }
   const radio=new ConnectedRadio([]),lamp=new LampTransport(radio);
-  await lamp.connect(a);assert.deepEqual(radio.disconnections,[a.deviceId]);assert(radio.connected.has(b.deviceId));
+  await assert.rejects(lamp.connect(a),/Connection timeout/);radio.fail=false;
+  await lamp.connect(a);assert.deepEqual(radio.disconnections,[a.deviceId,a.deviceId]);assert(radio.connected.has(b.deviceId));
   await lamp.disconnect();
+});
+test('fresh Apple authorization never cancels the picker’s connection before the app connects',async()=>{
+  class AppleRadio extends Radio {
+    appConnected=false;disconnections=[];
+    async connect(id,callback){this.appConnected=true;return super.connect(id,callback);}
+    async disconnect(id){if(!this.appConnected)throw Error('The picker owns this connection');this.disconnections.push(id);this.appConnected=false;return super.disconnect();}
+  }
+  const native=new Accessories(),pairing=new LampPairing({platform:'ios',native}),radio=new AppleRadio([]);
+  const lamp=new LampTransport(radio,{selectDevice:d=>pairing.select(d)});
+  const device=await lamp.connect();assert.equal(device.newAuthorization,true);assert.deepEqual(radio.disconnections,[]);
+  await lamp.disconnect();assert.deepEqual(radio.disconnections,[a.deviceId]);
+});
+test('remove → reauthorize immediately saves the renamed card even if BLE initialization fails',async()=>{
+  const data=new Map(),store=new LampStore({getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)});
+  store.upsert(a);store.remove(a.id);const removed=new Set([a.deviceId.toLowerCase()]);
+  const native=new Accessories(),pairing=new LampPairing({platform:'ios',native});
+  const radio=new Radio([]);radio.initialize=async()=>{throw Error('Bluetooth is off');};
+  const lamp=new LampTransport(radio,{selectDevice:d=>pairing.select(d),onDeviceSelected:d=>{
+    if(d.newAuthorization)removed.delete(d.deviceId.toLowerCase());
+    rememberAccessories(store,[d],removed);
+  }});
+  await assert.rejects(lamp.connect(),/Bluetooth is off/);
+  assert.equal(store.items.length,1);assert.equal(store.items[0].name,'New helix');assert.equal(store.items[0].accessoryManaged,true);
+  assert.equal(removed.size,0);assert.equal(lamp.state,null);
+  assert.equal((await pairing.select({...store.items[0],newAuthorization:true})).newAuthorization,false);
+});
+test('cancelling setup never revives a removed card',async()=>{
+  const removed=new Set([a.deviceId.toLowerCase()]),native=new Accessories();
+  native.select=async()=>{throw Object.assign(Error('Setup cancelled'),{code:'PAIRING_CANCELLED'});};
+  const pairing=new LampPairing({platform:'ios',native}),radio=new Radio([]);let selections=0;
+  const lamp=new LampTransport(radio,{selectDevice:d=>pairing.select(d),onDeviceSelected:d=>{selections++;removed.delete(d.deviceId.toLowerCase());}});
+  await assert.rejects(lamp.connect(),/cancelled/);assert.equal(selections,0);assert.equal(removed.size,1);
 });
 test('keeps OS-authorized lamps available after app restart or failed GATT setup without resurrecting removals',()=>{
   const data=new Map(),store=new LampStore({getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v),removeItem:k=>data.delete(k)});

@@ -168,6 +168,17 @@ dialog p { line-height: 1.6; overflow-wrap: anywhere; }
 .dialog-actions { display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
 .dialog-actions button { flex: 1; min-width: 110px; }
 .connection-panel { margin-top: 24px; }
+.password-field { position: relative; }
+.password-field input { padding-right: 58px; }
+.password-toggle { position: absolute; right: 4px; top: 0; bottom: 0; margin: auto 0; width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center; background: transparent; color: var(--muted); }
+.password-toggle svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.password-toggle:hover:not(:disabled),.password-toggle[aria-pressed=true] { color: var(--accent); }
+#wifiNetworksDialog { width: min(430px,calc(100vw - 32px)); max-height: min(80vh,700px); overflow-y: auto; }
+.wifi-network-choices { display: grid; gap: 8px; max-height: 42vh; overflow-y: auto; margin-top: 18px; }
+.wifi-network-choice { width: 100%; text-align: left; background: #25374a; color: #f4f3ed; border: 1px solid #65768c; padding: 14px 16px; }
+.wifi-network-choice strong { display: block; font-size: .9375rem; overflow-wrap: anywhere; }
+.wifi-network-choice span { display: block; color: var(--muted); font-size: .75rem; margin-top: 4px; }
+.wifi-network-choice:hover:not(:disabled),.wifi-network-choice:focus-visible { background: #314d50; border-color: var(--accent); }
 /* Settings are task groups, with capability checks on each lamp. */
 .settings-navigation { margin-top: 22px; }
 .device-summary { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border: 1px solid var(--line); border-radius: 20px; background: #1b2636; padding: 18px 6px; margin: 18px 0; }

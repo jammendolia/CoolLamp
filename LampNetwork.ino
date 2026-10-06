@@ -361,6 +361,7 @@ void receiveLampUpdate()
 
 void beginLampNetwork()
 {
+  beginLampWifiSetupDiagnostics();
   const uint64_t mac = ESP.getEfuseMac();
   char suffix[7]; snprintf(suffix, sizeof(suffix), "%02X%02X%02X", static_cast<uint8_t>(mac >> 24), static_cast<uint8_t>(mac >> 32), static_cast<uint8_t>(mac >> 40));
   lampHost = String("coollamp-") + suffix; lampHost.toLowerCase();
@@ -592,8 +593,7 @@ void beginLampNetwork()
   });
   lampServer.on("/api/bluetooth", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
-    lampServer.send(200, "application/json", String("{\"enabled\":") + (lampBluetoothReady() ? "true" : "false") +
-      ",\"pairing\":" + (lampPairingOpen() ? "true" : "false") + "}");
+    lampServer.send(200, "application/json", lampBluetoothStatusJson());
   });
   lampServer.on("/api/bluetooth/forget", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
@@ -675,6 +675,7 @@ void serviceLampUSB()
   static bool scanPending = false;
   static bool wifiSetupPending = false;
   static bool centerPending = false;
+  static bool bluetoothPending = false;
   static String audioReply;
   static size_t audioSent = 0;
   while (Serial.available()) {
@@ -686,6 +687,7 @@ void serviceLampUSB()
       lampWifiSetupCommand(scan, sizeof(scan), 0, response); wifiSetupPending = true;
     }
     if (command == 'p') wifiSetupPending = true;
+    if (command == 'q') bluetoothPending = true;
     if (command == 'c') { beginLampCenterCalibration(); centerPending = true; }
     if (command == 'j') centerPending = true;
     if (command == 's' && setupAP && !otaActive && !lampRemoteUpdateBusy()) {
@@ -708,6 +710,7 @@ void serviceLampUSB()
     }
   }
   if (wifiSetupPending && audioReply.isEmpty()) { audioReply = lampWifiSetupJson() + "\n"; audioSent = 0; wifiSetupPending = false; }
+  if (bluetoothPending && audioReply.isEmpty()) { audioReply = lampBluetoothStatusJson() + "\n"; audioSent = 0; bluetoothPending = false; }
   if (centerPending && audioReply.isEmpty()) { audioReply = lampCenterCalibrationJson() + "\n"; audioSent = 0; centerPending = false; }
   if (audioPending && audioReply.isEmpty()) { audioReply = lampAudioJson() + "\n"; audioSent = 0; audioPending = false; }
   if (!audioReply.isEmpty()) {
@@ -744,7 +747,9 @@ void serviceLampNetwork()
   const uint32_t now = millis();
   if (restartAt && static_cast<int32_t>(now - restartAt) >= 0) ESP.restart();
   if (otaActive && now - otaLastActivity > 30000) failLampUpdate("Upload timed out.");
-  if (setupAP && !otaActive && now - apLastActivity > 600000) {
+  // A BLE join keeps credentials provisional until DHCP succeeds. Expiring the
+  // hotspot during that attempt would otherwise switch a new lamp's radio OFF.
+  if (setupAP && !otaActive && !lampWifiSetupBusy() && !scanActive && now - apLastActivity > 600000) {
     WiFi.softAPdisconnect(true); setupAP = false;
     WiFi.mode(lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
   }
