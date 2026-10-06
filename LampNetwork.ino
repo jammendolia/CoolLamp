@@ -206,6 +206,8 @@ String lampEffectCatalogEntry(uint8_t mode)
 String lampDiagnosticsJson()
 {
   const bool connected = WiFi.status() == WL_CONNECTED;
+  wifi_ps_type_t sleepMode = WIFI_PS_NONE;
+  const int powerSave = esp_wifi_get_ps(&sleepMode) == ESP_OK ? static_cast<int>(sleepMode) : -1;
   String out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
   out += ",\"hostname\":" + jsonText(lampHost + ".local");
   out += ",\"uptimeMs\":" + String(millis()) + ",\"resetReason\":" + String(static_cast<int>(esp_reset_reason()));
@@ -214,6 +216,7 @@ String lampDiagnosticsJson()
   out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
   out += ",\"address\":" + jsonText(WiFi.localIP().toString());
   out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());
+  out += ",\"powerSave\":" + String(powerSave);
   out += ",\"accessPoint\":" + jsonText(connected ? WiFi.BSSIDstr() : String());
   out += ",\"subnet\":" + jsonText(WiFi.subnetMask().toString()) + ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
   out += ",\"setupAP\":" + String(setupAP ? "true" : "false") + ",\"apClients\":" + String(WiFi.softAPgetStationNum()) + "}";
@@ -636,6 +639,9 @@ void beginLampNetwork()
   }, receiveLampUpdate);
   lampServer.onNotFound([]() { lampServer.send(404, "text/plain", "Not found."); });
   WiFi.persistent(false);
+  // The lamp is mains-powered; keep reception responsive for phone controls
+  // and group discovery rather than waiting for the router's DTIM interval.
+  WiFi.setSleep(false);
   WiFi.setHostname(lampHost.c_str());
   if (lampSettings.ssid[0]) {
     WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);

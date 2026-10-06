@@ -64,3 +64,27 @@ failed. Thus the observed startup delivery failure does not depend on the
 updater's later transient memory peak. The router's client-isolation toggle was
 reported disabled; further diagnosis requires checking direct peer addresses,
 setup-mode suspension on the coordinator, and network forwarding rules.
+
+Further checks confirmed that the coordinator is running firmware 1.9.3 with
+role 1 and no setup hotspot. Its live peer list and member count are empty;
+the two entries in its scene order are saved positions, including an offline
+CoolLamp 1, rather than evidence of an active group connection. Restarting the
+coordinator did not restore reception on the new lamp.
+
+On the iPhone connected to the IoT network, the coordinator's numeric address
+loaded immediately, while the new lamp initially took 20–30 seconds. An isolated
+build disabling modem sleep on the new lamp then loaded promptly on repeated
+Safari requests. Firmware 1.9.4 therefore requests `WIFI_PS_NONE` before station
+startup and reports the driver's actual `wifi.powerSave` value (`0` none, `1`
+minimum modem sleep, `2` maximum modem sleep, `-1` unavailable). This is a
+measured improvement on that prototype, not proof that every network-path issue
+is resolved. The new lamp still received no group packets, and a separate,
+temporary direct TCP probe from it to the coordinator timed out after five
+seconds. The probe is isolated under `.build/` and is not part of release firmware.
+
+The iPhone discovery plugin now uses the numeric IPv4 address already resolved
+by `NetService`, matching Android's existing behavior, rather than discarding
+that address and relying on another `.local` lookup for HTTP. Empty, truncated
+or incompatible socket records fall back to the hostname. Device identity is
+still checked before controls are enabled. Refresh the app's Wi-Fi list once
+after installing this change to replace older session discoveries.

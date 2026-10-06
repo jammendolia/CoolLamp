@@ -9,8 +9,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   release:
-    # Hold OTA publication while Wi-Fi/group packet delivery is being diagnosed.
-    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -81,4 +79,4 @@ jobs:
           gh release create "firmware-v${RELEASE_VERSION}" \
             firmware/public/CoolLamp.ino.bin firmware/public/coollamp-manifest.txt \
             --target "$GITHUB_SHA" --latest --title "CoolLamp firmware ${RELEASE_VERSION}" \
-            --notes "Refreshes bonded phones Bluetooth service caches after successful encryption, fixing invalid state reads after firmware updates while retaining pairing. Adds state-read diagnostics and keeps transient Wi-Fi authentication retries active within the setup deadline. Existing hardware settings, saved Wi-Fi, effects and GPIO assignments are preserved. The matching app retries one invalid initial Apple Bluetooth state read before sending commands and distinguishes initial Wi-Fi authentication timeouts from password rejection. ESP32-C3 dual-OTA layout."
+            --notes "Fixes bonded-phone Bluetooth authorization using the live encrypted connection and refreshes service caches after firmware updates. Keeps Wi-Fi reception awake for responsive control and discovery, and retains a reduced transmit-power profile only after a successful Wi-Fi join. Adds read-only USB/network/group diagnostics. Preserves pairing, saved Wi-Fi, hardware settings, effects and GPIO assignments. The matching iPhone app uses resolved IP addresses, provides explicit Wi-Fi retry, and distinguishes saved group membership from active following. Group forwarding on the test network remains under investigation; this release does not claim to resolve every group connectivity failure. ESP32-C3 dual-OTA layout."

@@ -42,6 +42,9 @@ struct {
 } ESP;
 struct IP {String value="192.168.1.222";String toString(){return value;}};
 constexpr int WL_CONNECTED=3;
+enum wifi_ps_type_t {WIFI_PS_NONE=0,WIFI_PS_MIN_MODEM=1};
+constexpr int ESP_OK=0;
+int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}
 struct {
  int status(){return 3;} IP localIP(){return {};}
  int RSSI(){return -62;} int channel(){return 6;}
@@ -73,6 +76,7 @@ int main(){
             data = json.loads(subprocess.check_output([str(binary)], text=True))
         self.assertEqual(data['diagnosticsVersion'], 1)
         self.assertEqual(data['wifi']['rssi'], -62)
+        self.assertEqual(data['wifi']['powerSave'], 0)
         self.assertEqual(data['wifi']['subnet'], '255.255.255.0')
         self.assertEqual(data['wifi']['gateway'], '192.168.1.1')
         self.assertEqual(data['scan']['count'], 8)

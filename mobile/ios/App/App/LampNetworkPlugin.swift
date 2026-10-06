@@ -42,11 +42,11 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
         services.append(service); service.delegate = self; service.resolve(withTimeout: 5)
     }
     public func netServiceDidResolveAddress(_ sender: NetService) {
-        guard pending != nil, services.contains(sender), sender.port == 80, let host = sender.hostName else { return }
+        guard pending != nil, services.contains(sender), sender.port == 80,
+              let address = LampNetworkAddress.url(addresses: sender.addresses ?? [], hostname: sender.hostName) else { return }
         let txt = NetService.dictionary(fromTXTRecord: sender.txtRecordData() ?? Data())
         guard let idData = txt["id"], let id = String(data:idData,encoding:.utf8), !id.isEmpty else { return }
         let name = txt["name"].flatMap { String(data:$0,encoding:.utf8) } ?? sender.name
-        let address = "http://" + host.trimmingCharacters(in: CharacterSet(charactersIn: "."))
         found.removeAll { $0["id"] == id }; found.append(["id":id,"name":name,"address":address])
     }
     @objc func credential(_ call: CAPPluginCall) {
