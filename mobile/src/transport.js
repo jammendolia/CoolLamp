@@ -61,7 +61,7 @@ export class LampTransport {
     if(epoch!==this.epoch)throw Error('Connection changed.');
     return peripheral;
   }
-  async connect(savedDevice = null) {
+  async connect(savedDevice = null, retryInitialState = true) {
     await this.disconnect();
     // ASK authorization/migration must precede creation of CBCentralManager.
     const selected = this.selectDevice ? await this.selectDevice(savedDevice) : savedDevice;
@@ -98,7 +98,8 @@ export class LampTransport {
       // Protected read triggers the phone's pairing prompt before subscriptions or commands.
       const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: 60000 });
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
-      decodeState(initial); // Fail visibly on incompatible firmware.
+      try { decodeState(initial); } // Fail visibly on incompatible firmware.
+      catch(error) { error.initialStateRead=true;throw error; }
       // Optional on older firmware. The short protected value matches Wi-Fi discovery.
       try {
         const identity = await this.ble.read(this.id, SERVICE, '7b610006-6e2b-4f3d-9a71-28e45c001001');
@@ -148,7 +149,16 @@ export class LampTransport {
     } catch (error) {
       if(error.code==='COMMAND_NOT_CONFIRMED'&&device.accessoryManaged)
         error.message='Bluetooth connected, but the lamp did not confirm setup. Tap its saved card to reconnect.';
-      error.device=device; await this.disconnect(); throw error;
+      error.device=device; await this.disconnect();
+      if(retryInitialState&&device.accessoryManaged&&error.initialStateRead&&error.code==='INVALID_STATE_PACKET') {
+        // Service Changed may invalidate iOS's old handles during the first
+        // encrypted read after an update. No commands have been sent yet.
+        const retryEpoch=this.epoch;
+        await new Promise(resolve=>setTimeout(resolve,250));
+        if(retryEpoch!==this.epoch)throw error;
+        return this.connect({...device,newAuthorization:false},false);
+      }
+      throw error;
     }
   }
   async disconnect() {

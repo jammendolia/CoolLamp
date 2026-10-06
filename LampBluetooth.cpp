@@ -11,6 +11,7 @@
 #include <BLEServer.h>
 #include <BLESecurity.h>
 #include <host/ble_store.h>
+#include <services/gatt/ble_svc_gatt.h>
 #if !defined(CONFIG_NIMBLE_ENABLED)
 #error CoolLamp Bluetooth requires the NimBLE backend shipped with ESP32-C3 Arduino core 3.3.11.
 #endif
@@ -51,6 +52,9 @@ std::atomic<uint32_t> connects{0}, authentications{0}, writes{0}, acknowledgment
 std::atomic<uint8_t> lastOperation{0}, lastCommandId{0}, lastAckId{0};
 std::atomic<int> lastNotifyStatus{-1}, lastNotifyCode{0};
 std::atomic<bool> lastEncrypted{false}, lastBonded{false};
+std::atomic<uint32_t> stateReads{0};
+std::atomic<uint16_t> lastReadLength{0};
+std::atomic<uint32_t> serviceRefreshes{0};
 uint32_t revision = 0;
 uint8_t lastState[16] = {};
 
@@ -106,6 +110,12 @@ class Security final : public BLESecurityCallbacks {
     lastEncrypted = result->sec_state.encrypted;
     lastBonded = result->sec_state.bonded;
     secure = result->sec_state.encrypted && (knownPeer || pairing);
+    if (secure) {
+      // Existing phones cache ATT handles across firmware updates. The pinned
+      // wrapper registers characteristics by allocation address, so that cache
+      // can become stale even when UUIDs and creation order have not changed.
+      ble_svc_gatt_changed(0x0001, 0xffff); ++serviceRefreshes;
+    }
     if (!secure && connection != NO_CONNECTION) {
       if (!knownPeer) ble_store_util_delete_peer(&result->peer_id_addr);
       server->disconnect(connection);
@@ -118,6 +128,7 @@ class StateReads final : public BLECharacteristicCallbacks {
     lastNotifyStatus = static_cast<int>(status); lastNotifyCode = code;
   }
   void onRead(BLECharacteristic* characteristic, ble_gap_conn_desc*) override {
+    ++stateReads; lastReadLength = characteristic->getLength();
     // A newly connected older app may read before the loop has refreshed the
     // previous client's extended catalog. Always provide its initial baseline.
     if (extendedControls) return;
@@ -282,7 +293,10 @@ String lampBluetoothStatusJson() {
     ",\"writes\":" + writes.load() + ",\"rejectedWrites\":" + rejectedWrites.load() +
     ",\"lastOperation\":" + lastOperation.load() + ",\"lastCommandId\":" + lastCommandId.load() +
     ",\"acknowledgments\":" + acknowledgments.load() + ",\"lastAckId\":" + lastAckId.load() +
-    ",\"notifyStatus\":" + lastNotifyStatus.load() + ",\"notifyCode\":" + lastNotifyCode.load() + "}";
+    ",\"notifyStatus\":" + lastNotifyStatus.load() + ",\"notifyCode\":" + lastNotifyCode.load() +
+    ",\"stateReads\":" + stateReads.load() + ",\"lastReadLength\":" + lastReadLength.load() +
+    ",\"stateBytes\":" + (stateCharacteristic?stateCharacteristic->getLength():0) +
+    ",\"serviceRefreshes\":" + serviceRefreshes.load() + "}";
 }
 
 void forgetLampPhones()

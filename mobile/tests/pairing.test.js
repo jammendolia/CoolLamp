@@ -34,6 +34,41 @@ class Radio {
   async startNotifications(id,service,char,fn){this.listener=fn;}
   async write(id,service,char,frame){this.listener(this.packet(frame.getUint8(1)));}
 }
+test('stale initial iPhone state reconnects once after Service Changed without repeating pairing or commands',async()=>{
+  class CachedRadio extends Radio {
+    reads=0;connections=0;commands=0;
+    async connect(...args){++this.connections;return super.connect(...args);}
+    async read(id,service,char){if(char===STATE&&++this.reads===1)return new DataView(Uint8Array.of(123,125).buffer);return super.read(id,service,char);}
+    async write(...args){++this.commands;return super.write(...args);}
+  }
+  const native=new Accessories();native.devices=[a];
+  const pairing=new LampPairing({platform:'ios',native}),radio=new CachedRadio(native.events);
+  const lamp=new LampTransport(radio,{selectDevice:d=>pairing.select(d)});
+  await lamp.connect({...a,accessoryManaged:true});
+  assert.equal(radio.connections,2);assert.equal(radio.commands,1);assert(!native.events.includes('select'));
+  await lamp.disconnect();
+});
+test('invalid state recovery stops after one retry and sends no control commands',async()=>{
+  class InvalidRadio extends Radio {
+    connections=0;
+    async connect(...args){++this.connections;return super.connect(...args);}
+    async read(){return new DataView(new ArrayBuffer(0));}
+    async write(){assert.fail('Invalid initial state cannot permit a command.');}
+  }
+  const radio=new InvalidRadio([]),lamp=new LampTransport(radio);
+  await assert.rejects(lamp.connect({...a,accessoryManaged:true}),/0 bytes/);
+  assert.equal(radio.connections,2);assert.equal(lamp.id,null);
+});
+test('an incompatible protocol is never retried as a stale cache',async()=>{
+  class IncompatibleRadio extends Radio {
+    connections=0;
+    async connect(...args){++this.connections;return super.connect(...args);}
+    async read(){const value=this.packet();value.setUint8(0,2);return value;}
+  }
+  const radio=new IncompatibleRadio([]),lamp=new LampTransport(radio);
+  await assert.rejects(lamp.connect({...a,accessoryManaged:true}),/different app/);
+  assert.equal(radio.connections,1);assert.equal(lamp.id,null);
+});
 test('authorized reconnect recovers a late peripheral cache without another picker',async()=>{
   class LateRadio extends Radio {
     attempts=0;

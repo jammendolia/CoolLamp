@@ -213,3 +213,41 @@ Mobile tests cover missing notifications, stale/late readbacks and failed Apple
 handoff. Native host tests cover provisional identifiers, final names, late
 inventory, cancellation and ambiguous accessories. Physical Wi-Fi join success
 and Apple radio behavior require a phone retry; host checks cannot establish them.
+
+## Stale Bluetooth services in 1.9.4
+
+The pinned ESP32 Arduino BLE wrapper registers characteristics by allocation
+address, not their creation order. Consequently, an unchanged UUID can acquire
+a different ATT handle across builds. A bonded iPhone can retain its old handle
+cache and read a different attribute, producing **Invalid response from lamp**
+even though encryption succeeds. Appending characteristics alone does not ensure
+stable handles in this wrapper.
+
+After successful encryption and the existing owner/enrollment checks, firmware
+sends the standard Service Changed indication for the complete attribute range.
+The app retries one connection automatically only when the initial protected
+state read has an invalid packet shape on an Apple-managed accessory. No control
+commands have been sent at this point. It keeps the authorized device, does not
+reopen the picker, does not replay commands, and does not retry an incompatible
+protocol. A second invalid initial packet ends the attempt with its byte count.
+
+USB **q** additionally reports state-read count, last read length, stored packet
+length and service-refresh count. The USB lamp physically reproduced the failure
+with encrypted connections and zero control writes. After the cache-refresh
+firmware was flashed, the existing pairing connected on the second attempt,
+read a 16-byte state packet, and acknowledged 51 commands without notification
+errors. The upcoming app makes that initial retry automatic.
+
+The first live Bluetooth Wi-Fi join then timed out with driver reason **2**
+(AUTH_EXPIRE), before association or DHCP. Setup now leaves the driver's existing
+transient-authentication retries enabled within the original 35-second deadline;
+it still preserves prior settings on failure/cancellation and saves candidates
+only after obtaining an address. The app identifies reason 2 as an initial
+exchange timeout, which does not establish that the password was incorrect.
+Enabling retries still requires a live join test; it is not proof that the router
+will accept the connection.
+
+The live retry and a further attempt with the iPhone's Bluetooth disabled both
+still ended with reason 2 before association. The two working lamps were found
+to use a different IoT SSID. Joining that known-working network is the next
+comparison; the main-network Wi-Fi failure is not claimed fixed by this release.

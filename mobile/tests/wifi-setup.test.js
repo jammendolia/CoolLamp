@@ -82,6 +82,8 @@ test('Wi-Fi failure messages distinguish security, association, signal and DHCP 
   assert.equal(decoded.wifiReason,202);assert.equal(decoded.associated,false);
   assert.match(wifiSetupMessage(decoded),/authentication.*202/);
   assert.match(wifiSetupMessage({...base,wifiReason:210}),/compatible security/);
+  assert.match(wifiSetupMessage({...base,wifiReason:2}),/initial Wi-Fi authentication exchange/);
+  assert.match(wifiSetupMessage({...base,wifiReason:2}),/does not confirm an incorrect password/);
   assert.match(wifiSetupMessage({...base,wifiReason:201}),/could not find/);
   assert.match(wifiSetupMessage({...base,wifiReason:212}),/signal/);
   assert.match(wifiSetupMessage({...base,associated:true,gotIp:false}),/IP address.*DHCP/);

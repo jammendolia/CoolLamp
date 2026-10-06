@@ -93,6 +93,7 @@ int main(){
  credentials();assert(command(commit,sizeof(commit),99)==2);
  credentials();assert(command(commit,sizeof(commit))==0);
  assert(lampWifiSetupBusy());assert(Preferences::storage["settings"].empty());
+ assert(WiFi.automatic); // Transient authentication retries stay within the setup deadline.
  assert(!strcmp(lampSettings.ssid,"Previous"));
  WiFi.callback(ARDUINO_EVENT_WIFI_STA_CONNECTED,{});WiFi.callback(ARDUINO_EVENT_WIFI_STA_GOT_IP,{});
  WiFi.state=WL_CONNECTED;WiFi.address={192,168,1,123};serviceLampWifiSetup();

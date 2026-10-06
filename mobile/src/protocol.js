@@ -38,7 +38,9 @@ export function encodeCommand(id, operation, value = 0, effectCount = effects.le
   return new DataView(Uint8Array.of(1, id, op, value).buffer);
 }
 export function decodeState(data) {
-  if (!(data instanceof DataView) || ![12,16].includes(data.byteLength)) throw new Error('Invalid response from lamp.');
+  if (!(data instanceof DataView) || ![12,16].includes(data.byteLength)) throw Object.assign(
+    new Error('Invalid response from lamp'+(data instanceof DataView?' ('+data.byteLength+' bytes; expected 12 or 16).':'.')),
+    {code:'INVALID_STATE_PACKET'});
   if (data.getUint8(0) !== 1) throw new Error('This lamp needs a different app version.');
   const state = { id: data.getUint8(1), result: data.getUint8(2), mode: data.getUint8(3),
     brightness: data.getUint8(4), power: data.getUint8(5) === 1, effectCount: data.getUint8(6),

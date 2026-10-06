@@ -53,7 +53,8 @@ function wifiJoinFailure(s) {
   if([210,211].includes(reason))return 'The lamp could not find that network with compatible security (Wi-Fi reason '+reason+'). Check the router’s personal WPA2/WPA3 settings.';
   if(reason===201)return 'The lamp could not find that network while joining (Wi-Fi reason 201). Check its signal and 2.4 GHz availability.';
   if(reason===212)return 'The network’s signal was below the connection threshold (Wi-Fi reason 212). Try moving the lamp closer to the router.';
-  if([2,6,15,16,23,202,204].includes(reason))return 'Wi-Fi authentication did not complete (Wi-Fi reason '+reason+'). Verify the password and the router’s security settings.';
+  if(reason===2)return 'The router did not finish the initial Wi-Fi authentication exchange (reason 2). Retry with the lamp closer to the router. This timeout does not confirm an incorrect password.';
+  if([6,15,16,23,202,204].includes(reason))return 'Wi-Fi authentication did not complete (Wi-Fi reason '+reason+'). Verify the password and the router’s security settings.';
   if(s.associated&&!s.gotIp)return 'The lamp joined the router, but did not receive an IP address. Check the router’s DHCP settings or device limit.';
   if(reason)return 'The lamp could not finish joining Wi-Fi (reason '+reason+'). Check the router and signal, then retry.';
   return 'Wi-Fi joining timed out. The lamp did not report a specific failure reason. Check the router, signal and network settings, then retry.';

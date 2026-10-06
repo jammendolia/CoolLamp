@@ -117,7 +117,9 @@ uint8_t lampWifiSetupCommand(const uint8_t* frame, size_t size, uint32_t owner, 
   memcpy(candidatePassword, transfer.bytes + transfer.ssidSize, transfer.passwordSize); candidatePassword[transfer.passwordSize] = 0;
   transfer.clear(); error = 0; phase = CONNECTING; started = millis();
   observing=false;lastJoinError=0;disconnectReason=0;associated=false;gotIp=false;
-  WiFi.setAutoReconnect(false); WiFi.disconnect(false, false);
+  // Keep transient-authentication retries active within the setup deadline.
+  // Candidate credentials remain provisional until DHCP succeeds.
+  WiFi.setAutoReconnect(true); WiFi.disconnect(false, false);
   WiFi.mode(setupAP ? WIFI_AP_STA : WIFI_STA);
   observing=true;WiFi.begin(candidateSsid, candidatePassword);
   reply = lampWifiSetupJson(); return 0;
