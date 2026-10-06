@@ -4,10 +4,13 @@ import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wi
 
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
-  constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000 } = {}) {
+  constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
+    selectDevice = null, onRadioReady = () => {} } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
     this.onFirmware = onFirmware;
     this.onOptions = onOptions;
+    this.selectDevice = selectDevice; this.onRadioReady = onRadioReady;
+    this.initialization = null;
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
   disconnected() {
@@ -31,11 +34,30 @@ export class LampTransport {
   }
   async connect(savedDevice = null) {
     await this.disconnect();
-    await this.ble.initialize({ androidNeverForLocation: true });
-    const device = savedDevice || await this.ble.requestDevice({ services: [SERVICE] });
+    // ASK authorization/migration must precede creation of CBCentralManager.
+    const selected = this.selectDevice ? await this.selectDevice(savedDevice) : savedDevice;
+    // The iOS plugin recreates CBCentralManager on every initialize call but
+    // keeps its peripheral cache. Keep one manager for this app session.
+    if(!this.initialization)this.initialization=this.ble.initialize({ androidNeverForLocation: true }).catch(error=>{
+      this.initialization=null;throw error;
+    });
+    await this.initialization;
+    this.onRadioReady();
+    const device = selected || await this.ble.requestDevice({ services: [SERVICE] });
     const epoch = ++this.epoch;
     this.id = device.deviceId;
     try {
+      if(selected && typeof this.ble.getDevices==='function') {
+        const devices=await this.ble.getDevices([device.deviceId]);
+        const peripheral=devices.find(d=>d.deviceId.toLowerCase()===device.deviceId.toLowerCase());
+        if(!peripheral)throw new Error('The phone could not retrieve this lamp. Remove its card and set it up again.');
+        device.bluetoothName=peripheral.name||device.bluetoothName||'CoolLamp';
+        if(device.accessoryManaged)device.accessoryName=device.name;
+        // End any unfinished connection to this same saved peripheral before
+        // reconnecting. CBCentralManager doesn't emit didConnect twice for an
+        // already-connected device. Other lamps are left alone.
+        await this.ble.disconnect(device.deviceId);
+      } else device.bluetoothName=device.name||device.bluetoothName||'CoolLamp';
       await this.ble.connect(this.id, () => { if (epoch === this.epoch) this.disconnected(); });
       // Protected read triggers the phone's pairing prompt before subscriptions or commands.
       const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: 60000 });
@@ -84,7 +106,7 @@ export class LampTransport {
       if(this.supportsWifiSetup&&!this.deviceIdentity)throw Error('Could not verify this lamp’s Bluetooth identity. Reconnect before setting up Wi-Fi.');
       await this.command('refresh'); // Closes the read/subscribe race.
       return device;
-    } catch (error) { await this.disconnect(); throw error; }
+    } catch (error) { error.device=device; await this.disconnect(); throw error; }
   }
   async disconnect() {
     const id = this.id;

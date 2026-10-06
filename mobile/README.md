@@ -4,6 +4,7 @@ Capacitor app with a bundled web interface, Wi-Fi discovery/control, and the com
 No cloud or Wi-Fi is required for Bluetooth control.
 See [implementation and protocol](../docs/bluetooth-app.md).
 See [multi-lamp app, discovery, design, and validation](../docs/app-1.4.md).
+See [pairing removal, migration, recovery, and reconnection](../docs/recovery-and-center-setup.md).
 
 ## Development
 

@@ -75,5 +75,8 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
 }
 
 class LampViewController: CAPBridgeViewController {
-    override func capacitorDidLoad() { bridge?.registerPluginInstance(LampNetworkPlugin()) }
+    override func capacitorDidLoad() {
+        bridge?.registerPluginInstance(LampNetworkPlugin())
+        bridge?.registerPluginInstance(LampAccessoryPlugin())
+    }
 }

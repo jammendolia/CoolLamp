@@ -10,6 +10,14 @@
     <array><string>_coollamp._tcp</string></array>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>NSAccessorySetupKitSupports</key>
+    <array><string>Bluetooth</string></array>
+    <key>NSAccessorySetupSupports</key>
+    <array><string>Bluetooth</string></array>
+    <key>NSAccessorySetupBluetoothServices</key>
+    <array><string>7B610001-6E2B-4F3D-9A71-28E45C001001</string></array>
+    <key>NSAccessorySetupBluetoothNames</key>
+    <array><string>CoolLamp</string></array>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>CoolLamp uses Bluetooth to find, pair with, and control your lamp.</string>
   <key>CAPACITOR_DEBUG</key>

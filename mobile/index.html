@@ -89,6 +89,14 @@
 </div>
 <p class="hint">For a new Bluetooth pairing, hold the knob for six seconds until the lamp flashes blue.</p>
 </details>
+<section id="pairingRecovery" class="panel recovery-panel" hidden aria-labelledby="pairingRecoveryTitle">
+<p class="eyebrow">BLUETOOTH PAIRING</p>
+<h3 id="pairingRecoveryTitle">Clear the old phone pairing</h3>
+<p id="pairingRecoverySteps" class="hint"></p>
+<button id="repairPairing" hidden>Remove old pairing &amp; try again</button>
+<button id="openBluetoothSettings" class="secondary" hidden>Open Bluetooth settings</button>
+<button id="dismissPairingRecovery" class="text-button">Done</button>
+</section>
 </section>
 <section id="page-light" hidden>
 <div class="section-title">
@@ -655,6 +663,7 @@
 </progress>
 </fieldset>
 <button id="forgetLamp" disabled class="text-button" data-settings-panel="overview">Remove lamp from this phone</button>
+<p id="bluetoothIdentity" class="hint" data-settings-panel="overview" hidden></p>
 <section class="panel recovery-panel" data-settings-panel="overview">
 <p class="eyebrow">START FRESH</p>
 <h3>Factory reset</h3>
@@ -689,7 +698,7 @@
 <p class="eyebrow">START FRESH</p>
 <h2 id="factoryResetTitle">Reset this lamp?</h2>
 <p id="factoryResetDescription">All Wi-Fi, phone pairings, access password, name, effects and group settings will be cleared. Hardware settings stay intact. The lamp will restart and be removed from this app.</p>
-<p class="hint">For fresh Bluetooth pairing on iPhone, also forget the lamp in Settings → Bluetooth before pairing again.</p>
+<p class="hint">After resetting, we’ll help you clear the phone’s old pairing so you can set the lamp up again.</p>
 <div class="dialog-actions"><button value="cancel" class="secondary" autofocus>Cancel</button><button value="reset" class="danger-button">Factory reset</button></div>
 </form>
 </dialog>

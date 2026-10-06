@@ -6,15 +6,41 @@ features. C3 GPIO assignments are unchanged.
 
 ## Remove a lamp from the phone
 
-The **Lamps** screen now has a **Remove** action beside each lamp. The same
+The **Lamps** screen has a trash icon inside the lower-right corner of each lamp
+card, with a separate 44-point tap target and the existing confirmation. The same
 action is available under **Settings → Overview**. It removes the app's saved
 lamp, stored access password, reconnect target, and cached discovery record.
 Removing an offline lamp works without connecting to it. Removing one lamp
 does not disconnect another lamp that is currently selected.
 
-The lamp itself retains its settings and Bluetooth bonds. Phone-level
-Bluetooth pairing is managed by the operating system. For fresh pairing on
-iPhone, use **Settings → Bluetooth → the lamp → Forget This Device**.
+The lamp itself retains its settings and Bluetooth bonds. The updated app uses
+AccessorySetupKit on iOS 18 and later to remove its authorized iPhone pairing
+with the app record. Apple may ask for confirmation. Cancelling or failing that
+operation keeps the app record and access password intact. Existing saved
+peripherals are migrated together using Apple's authorization picker before
+initializing Core Bluetooth. A cancelled or incomplete migration cannot connect
+or discard records. Saved, authorized lamps reconnect without the setup picker.
+
+Android, iOS 15–17, and unrecognized legacy pairings retain manual unpairing.
+The app shows the pairing name and instructions; Android also has an **Open
+Bluetooth settings** button. On iPhone use **Settings → Bluetooth → the lamp →
+Forget This Device**. If a legacy pairing cannot be migrated, a separate
+confirmation allows removing only its app record and provides manual steps.
+Cancelling Apple's prompt never selects this fallback automatically.
+
+Firmware **1.9.2** advertises the unique hardware name, such as
+`CoolLamp-E2EA24`, instead of `CoolLamp`. The Apple picker also allows naming the
+lamp. Settings → Overview shows the Apple pairing name and hardware Bluetooth
+name separately. Changing the lamp name in the app does not silently rename
+its iPhone pairing. Old generic Settings entries remain ambiguous until replaced.
+
+The `Peer removed pairing information` error opens named recovery instructions
+and an iPhone **Remove old pairing & try again** action when the peripheral
+identifier is known. This uses Apple's removal operation without resetting the
+lamp again. A knob reset followed by deletion of the old app record may still
+require manual unpairing, because its old iPhone identifier is no longer known.
+OS-authorized accessories remain available as app cards after a failed GATT
+connection or an app restart; late results cannot restore a removed card.
 
 Late results from a scan already in progress cannot reinsert a removed lamp.
 An explicit **Find on Wi-Fi / Refresh Wi-Fi list** allows rediscovery. A lamp
@@ -45,8 +71,11 @@ The lamp restarts with these user settings cleared:
 It preserves the physical hardware configuration: **LED count, effect center,
 power limit, and microphone presence**. This keeps a 205-LED microphone lamp
 correctly configured after reset. Firmware and hardware identity are retained.
-The default light is Fire at brightness 100. After reset, forget the old
-phone-level Bluetooth pairing and hold six seconds to pair again.
+The default light is Fire at brightness 100. After an app reset, authorized
+iPhone pairings are also removed. If cleanup fails or is unsupported, the app
+shows recovery steps and correctly reports that the lamp reset already started.
+After a physical knob reset, clear the old phone pairing through the app or
+phone Settings. Hold six seconds to pair again.
 
 Reset is deferred briefly so Bluetooth/HTTP can acknowledge it. A versioned,
 checked hardware recovery record is saved in a separate NVS namespace before
@@ -108,5 +137,25 @@ On 2026-10-05, firmware 1.9.1 was USB-flashed and hash-verified on
 then became inactive after ten seconds without input. The saved midpoint stayed
 zero (automatic), normal rendering resumed, and microphone presence remained
 enabled. Home Wi-Fi was still unset. No physical factory reset was executed.
-All 63 mobile tests and both browser checks passed; the updated iPhone interface
-still needs a TestFlight publication.
+All 63 mobile tests and both browser checks passed for that version.
+
+## Reconnection fix for the next app build
+
+The native iOS BLE plugin recreates `CBCentralManager` on each `initialize`
+while retaining its peripheral cache. The app now initializes it once per
+session, retrieves a saved peripheral before reconnecting, and ends any
+unfinished link to that same peripheral before connecting. Unrelated lamps
+remain connected. This also allows a saved lamp to reconnect after app restart
+without discovery. Failed initialization remains retryable.
+
+All 76 mobile tests pass, including A → B → A switching, cold reconnect,
+migration before initialization, cancellation, incomplete authorization,
+target-specific removal, OS accessory recovery, and platform fallbacks. Both
+browser checks pass. The native iPhone app compiles against Xcode 26.3, with
+AccessorySetupKit explicitly weak-linked and availability guards preserving
+iOS 15–17. Firmware 1.9.2 compiles and packages with the original GPIOs.
+The actual Apple accessory picker, migration, and removal still need a real
+phone test; browser and simulator checks cannot verify these system/radio
+operations. Android native compilation is unavailable on the development Mac
+because the Android SDK and Java runtime are not installed; its existing
+native code is unchanged and the updated web assets synchronize successfully.

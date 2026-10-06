@@ -44,6 +44,7 @@ std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0};
 std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
 uint32_t pairingStarted = 0;
+String bluetoothName;
 std::atomic<bool> advertisingDirty{false};
 uint32_t revision = 0;
 uint8_t lastState[16] = {};
@@ -153,7 +154,7 @@ void updateAdvertising()
   // lamps deliberately put into pairing mode. Saved phones connect by device ID.
   if (pairing) {
     data.setCompleteServices(BLEUUID(SERVICE));
-    response.setName("CoolLamp");
+    response.setName(bluetoothName);
   }
   advertising->setAdvertisementData(data);
   advertising->setScanResponseData(response);
@@ -189,6 +190,7 @@ void publish(uint8_t id, uint8_t result, bool acknowledge)
 
 void beginLampBluetooth(const String& name)
 {
+  bluetoothName = name;
   commands = xQueueCreate(8, sizeof(Command));
   if (!commands) return;
   BLEDevice::init(name);

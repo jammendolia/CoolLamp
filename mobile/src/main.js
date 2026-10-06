@@ -10,13 +10,17 @@ import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, LampDiscoverySession, lampAddress } from './lamps.js';
 import { WifiTransport } from './wifi.js';
 import { wifiSetupMessage } from './wifi-setup.js';
+import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
+const accessoryNative = registerPlugin('LampAccessory');
 const store = new LampStore(localStorage);
 const discovery = new LampDiscoverySession();
 let selected = null, lamp = null, connecting = false, discovered = [], category = 'all';
 let effectListKey = '', settingsView = 'overview';
 let bleWifiStatus=null, wifiSetupAbort=null, wifiSetupSerial=0;
 let resetTarget=null;
+let pairingRecoveryTarget=null;
+const removedAccessoryIds=new Set();
 let centerStatus=null,centerTimer=null,centerSerial=0,centerWasActive=false;
 const bluetoothWifiAvailable=()=>lamp===bleLamp&&bleLamp.supportsWifiSetup&&Boolean(state);
 const isNative = Capacitor.isNativePlatform();
@@ -190,6 +194,9 @@ function renderSettings() {
   $('switchToWifi').hidden=!bleNetwork||!bleWifiStatus?.connected||!bleWifiStatus?.ssid||busy;
   $('saveIdentity').disabled=!selected||busy||connecting||updatingLamp();
   $('forgetLamp').disabled=!selected||busy||connecting;
+  $('bluetoothIdentity').hidden=settingsView!=='overview'||!selected?.deviceId;
+  $('bluetoothIdentity').textContent=selected?.deviceId?'Phone pairing: '+pairingLabel(selected)+
+    (selected.bluetoothName&&selected.bluetoothName!==pairingLabel(selected)?' · Device: '+selected.bluetoothName:''):'';
   $('factoryReset').disabled=!state||!selected||busy||connecting||updatingLamp()||!(state.capabilities&128);
   $('factoryResetHint').textContent=!state?'Connect to the lamp to reset it.':!(state.capabilities&128)?'Update this lamp to firmware 1.9.1 or newer for factory reset.':'Available over Bluetooth or Wi-Fi. Only this lamp will be reset.';
   $('lampName').disabled=!selected||busy||connecting;
@@ -251,7 +258,17 @@ const callbacks = {
     if (!connecting) status('Disconnected. Choose a lamp to reconnect.');
   }
 };
-const bleLamp = new LampTransport(BleClient, callbacks);
+const phonePlatform=Capacitor.getPlatform();
+const pairing=new LampPairing({platform:phonePlatform,native:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean)});
+async function rememberAuthorizedAccessories() {
+  if(phonePlatform!=='ios')return;
+  const result=await accessoryNative.list();
+  if(!result.supported)return;
+  rememberAccessories(store,result.devices,removedAccessoryIds);
+  renderLamps();renderSettings();
+}
+const bleLamp = new LampTransport(BleClient, {...callbacks,
+  ...(phonePlatform==='ios'?{selectDevice:device=>pairing.select(device),onRadioReady:()=>{pairing.radioStarted=true;}}:{})});
 const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:e=>{status(e.message); if(selected?.deviceId && !connecting) connect(selected);}});
 lamp=bleLamp;
 
@@ -274,10 +291,19 @@ async function connect(saved = null) {
   await lamp.disconnect(); lamp=bleLamp;
   try {
     const device=await lamp.connect(saved?.deviceId?saved:null);
+    removedAccessoryIds.delete(device.deviceId.toLowerCase());
     const prior=store.items.find(x=>x.id===device.lampId || x.deviceId===device.deviceId);
-    selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp'});
+    selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp',
+      bluetoothName:device.bluetoothName,accessoryName:device.accessoryName,accessoryManaged:Boolean(device.accessoryManaged)});
+    $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
     savedDevice=device; connected('Bluetooth');
-  } catch(e) { status(e.message||'Could not connect over Bluetooth.'); }
+  } catch(e) {
+    // Authorization may have succeeded even if GATT setup did not. Keep that
+    // OS accessory available as a saved card for reconnect/removal.
+    await rememberAuthorizedAccessories().catch(()=>{});
+    const error=pairingError(e,saved);status(error.message);
+    if(error.recovery)showPairingRecovery(error.device);
+  }
   finally { connecting=false; $('connect').disabled=false; renderLamps(); renderPower(); }
 }
 function connected(kind) {
@@ -378,9 +404,10 @@ function renderLamps() {
         if(!state&&entry.deviceId)await connect(entry);
       } else await connect(entry);
     };
-    const remove=document.createElement('button');remove.type='button';remove.className='lamp-remove text-button';remove.textContent='Remove';
+    const remove=document.createElement('button');remove.type='button';remove.className='lamp-remove';
+    remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
     remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting;
-    remove.onclick=()=>removeLampFromPhone(entry).catch(()=>{});
+    remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
     wrapper.append(button,remove);$('lampList').append(wrapper);
   }
 }
@@ -642,19 +669,58 @@ $('audioForm').onsubmit=e=>{
 };
 async function removeLampFromPhone(entry,confirmed=false) {
   if(!entry||busy||connecting)return;
-  if(!confirmed&&!confirm('Remove '+(entry.name||'this lamp')+' from this app? The lamp’s settings and phone Bluetooth pairing stay unchanged.'))return;
+  if(!confirmed&&!confirm('Remove '+(entry.name||'this lamp')+' from this phone? '+
+    (phonePlatform==='ios'?'Its iPhone pairing will also be removed where supported.':'You may also need to forget its pairing in Bluetooth settings.')+
+    ' The lamp’s settings stay unchanged.'))return;
   busy=true;connecting=true;renderLamps();renderSettings();
   try {
     if(selected?.id===entry.id&&state)await lamp.disconnect();
+    let result;
+    try { result=await pairing.remove(entry); }
+    catch(error) {
+      if(!error.manualPairingRemoval||!confirm('The old iPhone pairing could not be authorized for automatic removal. Remove this lamp from the app only? You will need to forget its pairing in Bluetooth settings.'))throw error;
+      result=await pairing.remove(entry,{appOnly:true});
+    }
+    if(entry.deviceId)removedAccessoryIds.add(entry.deviceId.toLowerCase());
     await credential(entry.id,'');
     store.remove(entry.id);discovered=discovery.forget(entry.id);
     if(localStorage.getItem('coollamp-selected')===entry.id)localStorage.removeItem('coollamp-selected');
     if(savedDevice&&(savedDevice.lampId===entry.id||savedDevice.deviceId===entry.deviceId)){savedDevice=null;localStorage.removeItem('coollamp-device');$('reconnect').hidden=true;}
     if(selected?.id===entry.id)selected=null;
-    page('lamps');status('Lamp removed from this app. Its settings and Bluetooth pairing are unchanged.');
+    page('lamps');status(result.removed?'Lamp and iPhone pairing removed. The lamp’s settings are unchanged.':
+      result.manual?'Lamp removed from this app. Finish clearing its phone pairing below.':'Lamp removed from this app. The lamp’s settings are unchanged.');
+    $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
+    if(result.manual)showPairingRecovery(entry);
+    return result;
   }catch(e){status('Could not finish removing the lamp: '+e.message);throw e;}
   finally{connecting=false;busy=false;renderLamps();renderSettings();}
 }
+function showPairingRecovery(device={}) {
+  page('lamps');
+  pairingRecoveryTarget=device;
+  $('pairingRecovery').hidden=false;
+  $('pairingRecoverySteps').textContent=pairingInstructions(phonePlatform,device);
+  $('repairPairing').hidden=phonePlatform!=='ios'||!device.deviceId;
+  $('openBluetoothSettings').hidden=phonePlatform!=='android';
+  $('pairingRecovery').scrollIntoView({block:'nearest'});
+}
+$('dismissPairingRecovery').onclick=()=>{$('pairingRecovery').hidden=true;pairingRecoveryTarget=null;};
+$('openBluetoothSettings').onclick=()=>BleClient.openBluetoothSettings().catch(()=>status('Open your phone’s Settings → Bluetooth to forget the lamp.'));
+$('repairPairing').onclick=async()=>{
+  const target=pairingRecoveryTarget;if(!target||busy||connecting)return;
+  busy=true;$('repairPairing').disabled=true;renderLamps();
+  try {
+    await bleLamp.disconnect();
+    const result=await pairing.remove(target);
+    if(!result.removed){status('This old pairing needs to be forgotten in iPhone Settings. Follow the steps below.');return;}
+    const record=store.items.find(d=>d.deviceId===target.deviceId);
+    if(record)store.upsert({...record,accessoryManaged:true});
+    status('Old pairing removed. Keep the lamp flashing blue and select it again.');
+    $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
+    busy=false;await connect();
+  }catch(e){status(pairingError(e,target).message);}
+  finally{busy=false;$('repairPairing').disabled=false;renderLamps();renderSettings();}
+};
 $('forgetLamp').onclick=()=>removeLampFromPhone(selected).catch(()=>{});
 $('factoryReset').onclick=()=>{
   if(!selected||!state||busy||connecting||!(state.capabilities&128))return;
@@ -667,14 +733,21 @@ $('factoryResetDialog').addEventListener('close',async()=>{
     selected.id!==reset.entry.id||lamp!==reset.transport||lamp.epoch!==reset.epoch)return;
   const entry=reset.entry,target=reset.transport;
   busy=true;renderSettings();
+  let resetConfirmed=false;
   try {
-    await target.factoryReset();busy=false;
-    await removeLampFromPhone(entry,true);
-    status('Factory reset started. Forget the lamp in your phone’s Bluetooth settings, then pair again.');
-  }catch(e){status(e.confirmed?e.message:'Factory reset was not confirmed. Check the lamp before retrying. '+e.message);}
+    await target.factoryReset();resetConfirmed=true;busy=false;
+    const result=await removeLampFromPhone(entry,true);
+    status(result?.manual?'Factory reset started. Clear the phone’s old pairing using the steps below.':
+      'Factory reset started. Hold the knob for six seconds until blue to pair again.');
+  }catch(e){
+    status(resetConfirmed?'Factory reset started, but phone pairing cleanup did not finish. '+e.message:
+      e.confirmed?e.message:'Factory reset was not confirmed. Check the lamp before retrying. '+e.message);
+    if(resetConfirmed)showPairingRecovery(entry);
+  }
   finally{busy=false;renderSettings();}
 });
 paintRanges();renderLamps();
+if(phonePlatform==='ios')rememberAuthorizedAccessories().catch(()=>{});
 if(isNative)discover();
 
 function paintVu(){const [a,b,c]=['vuLow','vuMid','vuPeak'].map(id=>$(id).value);$('vuPreview').style.background=`linear-gradient(to right,${a} 0 65%,${b} 65% 80%,${c} 80% 100%)`;}
