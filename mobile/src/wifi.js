@@ -47,10 +47,30 @@ export class WifiTransport {
     this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
     return raw;
   }
+  async refreshFirmware() {
+    const result=await this.request('/api/firmware');
+    const next=typeof result==='string'?JSON.parse(result):result;
+    if(!next || typeof next.version!=='string' || typeof next.latest!=='string' || !Number.isInteger(next.phase) || next.phase<0 || next.phase>5 ||
+       !Number.isInteger(next.progress) || next.progress<0 || next.progress>100 ||
+       !Number.isInteger(next.error) || next.error<0 || next.error>8 || typeof next.wifi!=='boolean' ||
+       typeof next.available!=='boolean' || typeof next.automatic!=='boolean')throw Error('Invalid firmware status from lamp.');
+    // A restart requires a fresh identity, token and catalog before controls.
+    if(next.version!==this.raw?.firmware?.version){await this.refresh();return this.raw.firmware;}
+    this.raw.firmware=next;this.state.firmware=next;
+    this.callbacks.onFirmware?.(next);return next;
+  }
+  async poll() {
+    if(Number.isInteger(this.raw?.firmware?.phase)) {
+      const version=this.raw.firmware.version;
+      const next=await this.refreshFirmware();
+      if([1,3,4].includes(next.phase)||next.version!==version)return;
+    }
+    await this.refresh();
+  }
   schedule() {
     const epoch=this.epoch;
     this.timer=setTimeout(async()=>{
-      try { await this.enqueue(()=>this.refresh()); if(epoch===this.epoch)this.schedule(); }
+      try { await this.enqueue(()=>this.poll()); if(epoch===this.epoch)this.schedule(); }
       catch(e) { if(epoch===this.epoch){await this.disconnect();this.callbacks.onError?.(e);} }
     },2500);
   }
@@ -175,7 +195,8 @@ export class WifiTransport {
     const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;
     if(mode!==null && !this.catalog?.some(x=>x.id===mode))throw new Error('This effect is not available on the selected lamp.');
     if(!paths[op])throw new Error('Unsupported command.');
-    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene)await this.configureGroupScene({scene:0}); await this.request(...paths[op]); await this.refresh(); }
+    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene)await this.configureGroupScene({scene:0}); await this.request(...paths[op]);
+      if(['checkFirmware','installFirmware','autoUpdate'].includes(op))await this.refreshFirmware();else await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }
   async disconnect() { clearTimeout(this.timer);this.epoch++;this.identity=null;this.catalog=null;this.raw=null;this.state=null;this.authorization=null;this.callbacks.onDisconnect?.(); }

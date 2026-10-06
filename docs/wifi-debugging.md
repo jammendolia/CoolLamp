@@ -88,3 +88,34 @@ that address and relying on another `.local` lookup for HTTP. Empty, truncated
 or incompatible socket records fall back to the hostname. Device identity is
 still checked before controls are enabled. Refresh the app's Wi-Fi list once
 after installing this change to replace older session discoveries.
+
+## Secure updater memory pressure
+
+Both published OTA manifest URLs were independently verified to return 1.9.4.
+An isolated USB-lamp diagnostic then captured the failure beneath the generic
+network error: RSA public-key verification returned `-0x4290`, composed of
+`MBEDTLS_ERR_RSA_PUBLIC_FAILED` (`-0x4280`) and
+`MBEDTLS_ERR_MPI_ALLOC_FAILED` (`-0x0010`). Minimum free heap fell to 572 bytes;
+after the failing verification returned, free heap was 10,268 bytes and the
+largest block was 7,668 bytes. Subsequent trials sometimes succeeded with only
+about 1 KB of minimum free heap. This establishes memory exhaustion on the USB
+prototype, rather than proving an outage or certificate-expiry problem. A
+matching fresh diagnostic is still needed to attribute CoolLamp 2's failure.
+
+The app now reads `/api/firmware` immediately after firmware actions and while
+the updater is checking, downloading or restarting. It checks this compact
+status before periodic full-state reads, then resumes normal state refreshes
+when the updater is idle, available or failed. If the firmware version changes,
+it reloads state to verify identity and obtain the new token and effect catalog.
+This reduces HTTP response allocations during TLS and works with existing
+firmware. Failed firmware downloads retain a functioning Wi-Fi connection;
+they are not treated as phone-to-lamp transport failures. No uncertain POST is
+replayed. Host and browser checks cover progress, errors, restart identity/token
+refresh, malformed/stale replies and the absence of full-state reads after an
+update begins.
+
+Temporary TLS probes under `.build/` record error codes, allocation sizes and
+memory metrics only. They preserve certificate-verification results, contain no
+credentials or audio, and are not part of published firmware. Restricting TLS
+groups/ciphers alone did not eliminate the measured low-memory failure, so that
+experiment has not been adopted as a release fix.

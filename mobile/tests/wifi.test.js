@@ -6,10 +6,55 @@ import { LampStore, lampAddress } from '../src/lamps.js';
 const fixture = () => ({token:'boot-token',deviceId:'aabbccddeeff',hostname:'coollamp-ddeeff.local',name:'Desk',mode:1,brightness:100,power:true,effects:['Rain'],colors:[[1,255,40,70]],effectOptions:[[50,75,0,0,100,255]],firmware:{version:'1.4.0'}});
 function setup() {
   const calls=[];let raw=fixture();
-  const http={request:async options=>{calls.push(options);return {status:200,data:options.method==='GET'?JSON.stringify(raw):'OK'};}};
+  const http={request:async options=>{calls.push(options);return {status:200,data:options.method==='GET'?JSON.stringify(options.url.endsWith('/api/firmware')?raw.firmware:raw):'OK'};}};
   const states=[];const lamp=new WifiTransport(http,{onState:s=>states.push(s)});
   return {lamp,http,calls,states,setRaw:v=>raw=v};
 }
+const updateStatus=(phase=0)=>({version:'1.4.0',latest:'1.9.4',phase,progress:0,error:0,wifi:true,available:phase===2,automatic:false});
+test('update actions and busy polling use compact status without allocating full lamp responses',async()=>{
+  const {lamp,calls,setRaw,states}=setup();
+  const raw={...fixture(),firmware:updateStatus()};setRaw(raw);
+  const firmware=[];lamp.callbacks.onFirmware=s=>firmware.push(s);
+  await lamp.connect('192.168.1.9','test');
+  try {
+    const stateCount=states.length;
+    for(const [op,phase] of [['checkFirmware',1],['installFirmware',3],['autoUpdate',3]]) {
+      raw.firmware=updateStatus(phase);setRaw(raw);calls.length=0;
+      await lamp.command(op,1);
+      assert.equal(calls.length,2);assert.equal(calls[0].method,'POST');
+      assert.equal(calls[1].url,'http://192.168.1.9/api/firmware');
+      assert.equal(states.length,stateCount);assert.equal(firmware.at(-1).phase,phase);
+    }
+    raw.firmware={...updateStatus(3),progress:47};calls.length=0;
+    await lamp.poll();assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware']);
+    assert.equal(lamp.state.firmware.progress,47);assert.equal(states.length,stateCount);
+    raw.firmware=updateStatus(4);calls.length=0;await lamp.poll();assert.equal(calls.length,1);
+    raw.firmware=updateStatus(2);calls.length=0;await lamp.poll();
+    assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware','http://192.168.1.9/api/state']);
+    assert.equal(states.length,stateCount+1);assert.equal(lamp.state.mode,1);
+  } finally {await lamp.disconnect();}
+});
+test('a firmware restart refreshes identity, token and catalog before controls resume',async()=>{
+  const {lamp,calls,setRaw}=setup();setRaw({...fixture(),firmware:updateStatus(3)});
+  await lamp.connect('192.168.1.9','test');
+  try {
+    setRaw({...fixture(),token:'new-boot-token',firmware:{...updateStatus(),version:'1.9.4'}});calls.length=0;
+    await lamp.poll();assert.equal(lamp.raw.token,'new-boot-token');assert.equal(lamp.state.firmware.version,'1.9.4');
+    assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware','http://192.168.1.9/api/state']);
+    setRaw({...fixture(),deviceId:'different-lamp',firmware:{...updateStatus(),version:'1.9.5'}});
+    await assert.rejects(lamp.poll(),/identity changed/);assert.equal(lamp.identity,'aabbccddeeff');
+  } finally {await lamp.disconnect();}
+});
+test('malformed and stale compact firmware responses cannot update the selected lamp',async()=>{
+  const {lamp,http,setRaw}=setup();setRaw({...fixture(),firmware:updateStatus()});
+  await lamp.connect('192.168.1.9','test');
+  setRaw({...fixture(),firmware:{...updateStatus(1),progress:999}});
+  await assert.rejects(lamp.refreshFirmware(),/Invalid firmware status/);assert.equal(lamp.state.firmware.phase,0);
+  let complete;http.request=()=>new Promise(resolve=>complete=resolve);
+  const pending=lamp.refreshFirmware();await lamp.disconnect();
+  complete({status:200,data:JSON.stringify(updateStatus(1))});
+  await assert.rejects(pending,/Connection changed/);assert.equal(lamp.state,null);
+});
 test('Wi-Fi maps state and sends authenticated, token-bound form commands',async()=>{
   const {lamp,calls}=setup();
   await lamp.connect('coollamp-ddeeff.local','test-password','aabbccddeeff');
