@@ -367,7 +367,7 @@ async function connectWifi(entry,password) {
     const raw=await wifiLamp.connect(entry.address,password,entry.id);
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
     const prior=store.items.find(x=>x.id===id || x.id===entry.id);
-    selected=store.upsert({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
+    selected=store.upsertWifi({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
   } catch(e) { status(e.message); }

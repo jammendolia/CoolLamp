@@ -37,6 +37,17 @@ export class LampStore {
     this.items = this.items.filter(x => !matches.includes(x));
     this.items.push(entry); this.save(); return entry;
   }
+  upsertWifi(value, previousId) {
+    // A new lamp reports its hardware name until named over Wi-Fi. Preserve
+    // the phone/picker nickname during handoff; an explicit server name wins.
+    const hardwareName = name => !name || /^CoolLamp(?:-[0-9a-f]{6})?$/i.test(name);
+    if (hardwareName(value.name)) {
+      const matches = this.items.filter(x => x.id === value.id || x.id === previousId || (value.deviceId && x.deviceId === value.deviceId));
+      const nickname = [...matches].reverse().flatMap(x => [x.name, x.accessoryName]).find(name => !hardwareName(name));
+      if (nickname) value = {...value, name:nickname};
+    }
+    return this.upsert(value, previousId);
+  }
   remove(id) { this.items = this.items.filter(x=>x.id!==id); this.save(); }
   save() { this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }
 }

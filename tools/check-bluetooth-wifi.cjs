@@ -55,7 +55,7 @@ function fakeBluetooth(capabilities){
  try {
   const page=await browser.newPage({viewport:{width:393,height:852}});page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(fakeBluetooth,193);let reachable=false;
-  const raw={token:'test-token',deviceId:'24eae26e9e9c',hostname:'coollamp-e2ea24.local',name:'Larger helix',ssid:'Home test',leds:205,milliamps:500,
+  const raw={token:'test-token',deviceId:'24eae26e9e9c',hostname:'coollamp-e2ea24.local',name:'CoolLamp-E2EA24',ssid:'Home test',leds:205,milliamps:500,
     mode:4,startupMode:4,startupBrightness:100,brightness:100,power:true,effects:names.slice(0,38),usingDefaultPassword:true,factoryReset:true,
     midpoint:0,effectiveMidpoint:103,calibration:{active:false,kind:'leds',position:205,centerSupported:true}};
   await page.route('http://192.168.1.42/**',async route=>{
@@ -91,6 +91,8 @@ function fakeBluetooth(capabilities){
   fs.mkdirSync('.build/ui-check',{recursive:true});await page.locator('#toast').evaluate(el=>el.hidden=true);await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:'.build/ui-check/bluetooth-wifi.png',fullPage:true});
   await page.setViewportSize({width:320,height:740});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   reachable=true;await page.locator('#switchToWifi').click();await page.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Wi-Fi');
+  assert.equal(await page.locator('#lampTitle').textContent(),'Larger helix','handoff preserves the Bluetooth nickname over the factory hardware name');
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('coollamp-lamps'))[0].name),'Larger helix');
   assert.equal(await page.locator('#ssid').inputValue(),'Home test');assert.equal(await page.locator('#leds').inputValue(),'205');
   assert.deepEqual(errors,[]);
   page.on('dialog',dialog=>dialog.accept());

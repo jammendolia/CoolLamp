@@ -100,6 +100,30 @@ test('a firmware upgrade migrates legacy Wi-Fi identity without a duplicate lamp
   assert.equal(store.items.length,1);assert.equal(store.items[0].room,'Office');await lamp.disconnect();
 });
 
+test('Bluetooth to Wi-Fi handoff retains nickname, pairing and per-lamp preferences across restart',()=>{
+  const data=new Map(),storage={getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)};
+  const store=new LampStore(storage);
+  store.upsert({id:'ble:phone-id',deviceId:'phone-id',name:'Big Ass CoolLamp',accessoryName:'Big Ass CoolLamp',room:'Workshop',favorites:[4,47]});
+  const lamp=store.upsertWifi({id:'24eae26e9e9c',address:'http://192.168.1.220',name:'CoolLamp-E2EA24'},'ble:phone-id');
+  assert.equal(store.items.length,1);assert.equal(lamp.name,'Big Ass CoolLamp');assert.equal(lamp.deviceId,'phone-id');
+  assert.equal(lamp.room,'Workshop');assert.deepEqual(lamp.favorites,[4,47]);
+  assert.equal(new LampStore(storage).items[0].name,'Big Ass CoolLamp');
+});
+test('a hardware-name overwrite recovers the Apple picker nickname but a custom server rename wins',()=>{
+  const data=new Map(),store=new LampStore({getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)});
+  store.upsert({id:'24eae26e9e9c',name:'CoolLamp-E2EA24',accessoryName:'Big Ass CoolLamp'});
+  assert.equal(store.upsertWifi({id:'24eae26e9e9c',name:'CoolLamp-E2EA24'}).name,'Big Ass CoolLamp');
+  assert.equal(store.upsertWifi({id:'24eae26e9e9c',name:'Living room helix'}).name,'Living room helix');
+  assert.equal(store.upsertWifi({id:'24eae26e9e9c',name:'Living room helix'}).name,'Living room helix');
+});
+test('Wi-Fi nickname matching cannot borrow a different lamp name',()=>{
+  const data=new Map(),store=new LampStore({getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)});
+  store.upsert({id:'other',name:'Bedroom'});
+  assert.equal(store.upsertWifi({id:'new',name:'CoolLamp-ABCDEF'}).name,'CoolLamp-ABCDEF');
+  store.upsert({id:'new',name:'Desk'});
+  assert.equal(store.upsertWifi({id:'new',name:'CoolLamp'}).name,'Desk');
+});
+
 test('Wi-Fi loads lamp-specific categories and speed support and clears them when switching',async()=>{
   const {lamp,http,setRaw}=setup();let count=2;
   setRaw({...fixture(),catalogVersion:1,effects:['Still sky','Spark'],colors:[[1,1,2,3],[1,4,5,6]]});
