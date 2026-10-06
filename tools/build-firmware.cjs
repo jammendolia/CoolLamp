@@ -26,11 +26,15 @@ const board = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs';
 const jobs = Math.max(1, Math.min(8, Math.floor(require('node:os').availableParallelism() / 2)));
 const args = ['compile', '--fqbn', board, '--jobs', String(jobs), '--build-path', path.join(root, '.build/cache-' + flavor),
   '--output-dir', path.join(root, 'firmware', flavor)];
-args.push('--build-property', 'compiler.c.elf.extra_flags=-Wl,--wrap=esp_wifi_init,--wrap=esp_bt_controller_init');
 if (wifiOnly) args.push('--build-property', 'compiler.cpp.extra_flags=-DCOOL_LAMP_BLE=0');
 if (publicRelease) args.push('--build-property', 'compiler.cpp.extra_flags=-DCOOL_LAMP_PUBLIC_RELEASE=1');
 args.push(sketch);
-console.log('Building ' + flavor + ' firmware from an isolated sketch. No device will be flashed.');
-const result = spawnSync(cli, args, { stdio: 'inherit', windowsHide: true });
-if (result.error) throw result.error;
-process.exitCode = result.status ?? 1;
+(async()=>{
+  const library=await require('./build-tls-library.cjs').ensureTlsLibrary({cli,board,sketch,root});
+  const quoted='"'+library.replace(/\\/g,'/').replace(/"/g,'\\"')+'"';
+  args.push('--build-property','compiler.c.elf.extra_flags=-Wl,--wrap=esp_wifi_init,--wrap=esp_bt_controller_init -Wl,--whole-archive '+quoted+' -Wl,--no-whole-archive');
+  console.log('Building ' + flavor + ' firmware from an isolated sketch. No device will be flashed.');
+  const result = spawnSync(cli, args, { stdio: 'inherit', windowsHide: true });
+  if (result.error) throw result.error;
+  process.exitCode = result.status ?? 1;
+})().catch(error=>{console.error(error.message);process.exitCode=1;});

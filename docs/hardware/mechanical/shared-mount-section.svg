@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="760" viewBox="0 0 1000 760">
+<rect width="1000" height="760" fill="#f6f8fa"/>
+<style>text{font-family:Arial,sans-serif;fill:#203242}.title{font-size:28px;font-weight:bold}.label{font-size:18px}.note{font-size:16px}.dim{font-size:16px;fill:#315c85}</style>
+<text x="40" y="48" class="title">CoolLamp — shared mounting study</text>
+<text x="40" y="79" class="note">Side section • Not to scale • Encoder position and hardware sizes are provisional</text>
+<!-- Stem shown spanning inside panel to its measured tip -->
+<rect x="270" y="140" width="44" height="365" fill="#a7afb8" stroke="#455768"/>
+<!-- panel with stem and encoder openings -->
+<path d="M100 140 H270 V160 H100 Z M314 140 H657 V160 H314 Z M683 140 H830 V160 H683 Z" fill="#52606d"/>
+<text x="100" y="123" class="label">Metal top panel</text>
+<!-- insulator each side of stem -->
+<rect x="233" y="160" width="37" height="105" fill="#e9d5a1" stroke="#8c7445"/>
+<rect x="314" y="160" width="37" height="105" fill="#e9d5a1" stroke="#8c7445"/>
+<text x="110" y="202" class="label">Insulating</text><text x="110" y="225" class="label">spacer</text>
+<!-- encoder simplified body and shaft -->
+<rect x="614" y="160" width="112" height="105" fill="#b7c3ce" stroke="#455768"/>
+<rect x="658" y="101" width="24" height="59" fill="#7c8b98"/>
+<text x="744" y="204" class="label">Encoder</text>
+<text x="744" y="227" class="note">simplified body</text>
+<!-- PCB with through hole -->
+<path d="M170 265 H265 V302 H170 Z M319 265 H780 V302 H319 Z" fill="#27816c" stroke="#145747"/>
+<text x="465" y="290" class="label" style="fill:white">PCB</text>
+<!-- washer and nut split for section -->
+<path d="M225 302 H270 V323 H225 Z M314 302 H359 V323 H314 Z" fill="#e9d5a1" stroke="#8c7445"/>
+<path d="M243 323 H270 V377 H243 Z M314 323 H341 V377 H314 Z" fill="#758391" stroke="#455768"/>
+<path d="M359 313 H418 M341 350 H418" fill="none" stroke="#455768"/>
+<text x="430" y="320" class="label">Insulating load-spreading washer</text>
+<text x="430" y="357" class="label">Existing stem nut</text>
+<path d="M860 160 V265 M850 160 H870 M850 265 H870" stroke="#315c85" fill="none"/>
+<text x="875" y="216" class="dim">4.5 mm</text>
+<path d="M860 265 V302 M850 302 H870" stroke="#315c85" fill="none"/>
+<text x="875" y="290" class="dim">1.6 mm*</text>
+<path d="M90 160 V505 M80 160 H100 M80 505 H100" stroke="#315c85" fill="none"/>
+<text x="104" y="451" class="dim">15 mm stem intrusion</text>
+<path d="M365 302 V505 M355 302 H375 M355 505 H375" stroke="#315c85" fill="none"/>
+<text x="390" y="430" class="dim">8.9 mm nominal remaining</text>
+<text x="390" y="453" class="note">before washer / nut / thread allowances</text>
+<text x="40" y="555" class="label">Confirmed: 4.5 mm seating distance • 15 mm stem projection • 15.5 mm nut width</text>
+<text x="40" y="592" class="note">*1.6 mm PCB thickness is proposed. Encoder outline, terminal geometry and washer thickness are unverified.</text>
+<text x="40" y="619" class="note">Board hole must clear the stem; washer must overlap the hole and bear on an insulated, copper-free area.</text>
+<text x="40" y="646" class="note">Match spacer height to encoder seating. Account for additional washers; avoid bending the board.</text>
+<text x="40" y="673" class="note">Stem bore / LED wire exit omitted from this section: confirm routing before releasing spacer geometry.</text>
+<text x="40" y="716" class="note">Mechanical concept only — not an assembly instruction or manufacturing release.</text>
+</svg>

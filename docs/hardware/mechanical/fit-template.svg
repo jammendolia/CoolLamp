@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="215.9mm" height="279.4mm" viewBox="0 0 215.9 279.4">
+<rect width="215.9" height="279.4" fill="white"/>
+<style>text{font-family:Arial,sans-serif;fill:#172630} .small{font-size:3.1px} .label{font-size:3.7px}</style>
+<text x="15" y="18" font-size="6">CoolLamp — insert fit study A</text>
+<text x="15" y="26" class="label">Print at 100% / actual size. Disable “fit to page”.</text>
+<text x="15" y="33" class="label">View from open underside. NOT a fabrication drawing.</text>
+<g transform="translate(107.95 104)">
+
+<path d="M -40,-45 V 45 M -45,-40 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M -30,-45 V 45 M -45,-30 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M -20,-45 V 45 M -45,-20 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M -10,-45 V 45 M -45,-10 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M 0,-45 V 45 M -45,0 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M 10,-45 V 45 M -45,10 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M 20,-45 V 45 M -45,20 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M 30,-45 V 45 M -45,30 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<path d="M 40,-45 V 45 M -45,40 H 45" stroke="#e2e5e8" stroke-width="0.2"/>
+<circle r="49.53" fill="none" stroke="#172630" stroke-width="0.35"/>
+<circle r="48.53" fill="none" stroke="#007e87" stroke-width="0.4" stroke-dasharray="2 1"/>
+<circle r="44.53" fill="none" stroke="#007e87" stroke-width="0.25"/>
+<path d="M -49,0 H 49 M 0,-49 V 49" stroke="#84919a" stroke-width="0.25"/>
+<rect x="-22.5" y="-17.5" width="45" height="35" fill="none" stroke="#9a6900" stroke-width="0.35" stroke-dasharray="1 1"/>
+<text x="0" y="2" text-anchor="middle" class="small">Provisional PCB 45 × 35</text>
+
+<circle cx="-18" cy="-13" r="3.5" fill="none" stroke="#9a6900" stroke-width="0.3"/>
+<circle cx="-18" cy="13" r="3.5" fill="none" stroke="#9a6900" stroke-width="0.3"/>
+<circle cx="18" cy="-13" r="3.5" fill="none" stroke="#9a6900" stroke-width="0.3"/>
+<circle cx="18" cy="13" r="3.5" fill="none" stroke="#9a6900" stroke-width="0.3"/>
+<text x="0" y="-52" text-anchor="middle" class="label">Mark USB socket direction here ↑</text>
+</g>
+<text x="15" y="165" class="label">Outer black circle: reported cavity Ø99.06 mm</text>
+<text x="15" y="172" class="label">Teal dashed circle: proposed insert Ø97.06 mm (fit study)</text>
+<text x="15" y="179" class="label">Grid: 10 mm. Brown: unconfirmed PCB/support positions.</text>
+<text x="15" y="191" class="label">Mark actual body outlines, hole centres, and wire exits:</text>
+<text x="18" y="199" class="small">• Encoder (body projects 8 mm from top panel)</text>
+<text x="18" y="206" class="small">• USB inlet (include inner body and cable bend)</text>
+<text x="18" y="213" class="small">• Stem hardware and proposed microphone sound hole</text>
+<text x="15" y="227" class="label">Scale check: this line must measure exactly 50 mm.</text>
+<path d="M 15,239 H 65 M 15,236 V 242 M 65,236 V 242" stroke="black" stroke-width="0.4"/>
+<text x="40" y="248" text-anchor="middle" class="label">50 mm</text>
+<text x="15" y="263" class="small">Confirm fit, retention, acoustic path, antenna clearance, and tolerances before printing.</text>
+</svg>

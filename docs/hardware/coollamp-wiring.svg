@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1240" viewBox="0 0 1400 1240" role="img" aria-labelledby="title desc">
+<title id="title">CoolLamp — HW-040 wiring diagram</title><desc id="desc">Fixed GPIO assignments with photographed HW-040 breakout and INMP441 microphone. Onboard resistor routing and switch bias require verification.</desc>
+<style>text{font-family:Arial,Helvetica,sans-serif;fill:#172b40;font-size:19px}.small{font-size:17px;fill:#526579}.head{font-size:23px;font-weight:bold}.title{font-size:34px;font-weight:bold}</style><rect width="1400" height="1240" fill="white"/>
+<text x="45" y="55" class="title">CoolLamp / wiring diagram</text>
+<text x="45" y="92" class="small">HW-040 breakout • ESP32-C3 SuperMini • INMP441 • GPIO assignments unchanged</text>
+<rect x="45" y="140" width="385" height="885" rx="12" fill="#f5f8fb" stroke="#b8c7d4" stroke-width="2"/>
+<text x="65" y="180" class="head">ESP32-C3 SuperMini</text>
+<rect x="800" y="140" width="550" height="220" rx="12" fill="#f5f8fb" stroke="#b8c7d4" stroke-width="2"/>
+<text x="825" y="180" class="head">WS2812B strip</text>
+<rect x="800" y="395" width="550" height="310" rx="12" fill="#f5f8fb" stroke="#b8c7d4" stroke-width="2"/>
+<text x="825" y="434" class="head">HW-040 encoder breakout</text>
+<rect x="800" y="740" width="550" height="285" rx="12" fill="#f5f8fb" stroke="#b8c7d4" stroke-width="2"/>
+<text x="825" y="780" class="head">INMP441 microphone</text>
+<text x="65" y="236" class="">5V / supply +5V</text>
+<text x="825" y="236" class="">5V</text>
+<polyline points="430,230 800,230" fill="none" stroke="#bd303a" stroke-width="3"/>
+<text x="500" y="222" class="small" style="fill:#bd303a">+5V</text>
+<text x="65" y="281" class="">GPIO0</text>
+<text x="825" y="281" class="">DIN</text>
+<polyline points="430,275 800,275" fill="none" stroke="#108467" stroke-width="3"/>
+<text x="500" y="267" class="small" style="fill:#108467">LED_DATA</text>
+<text x="65" y="326" class="">GND</text>
+<text x="825" y="326" class="">GND</text>
+<polyline points="430,320 800,320" fill="none" stroke="#354250" stroke-width="3"/>
+<text x="500" y="312" class="small" style="fill:#354250">GND</text>
+<text x="65" y="484" class="">GPIO4 / encoder A</text>
+<text x="825" y="484" class="">CLK  (header 5)</text>
+<polyline points="430,478 800,478" fill="none" stroke="#2869ba" stroke-width="3"/>
+<text x="500" y="470" class="small" style="fill:#2869ba">ENC_A</text>
+<text x="65" y="527" class="">GPIO3 / encoder B</text>
+<text x="825" y="527" class="">DT  (header 4)</text>
+<polyline points="430,521 800,521" fill="none" stroke="#8340aa" stroke-width="3"/>
+<text x="500" y="513" class="small" style="fill:#8340aa">ENC_B</text>
+<text x="65" y="570" class="">GPIO2 / button</text>
+<text x="825" y="570" class="">SW  (header 3)</text>
+<polyline points="430,564 800,564" fill="none" stroke="#ab650e" stroke-width="3"/>
+<text x="500" y="556" class="small" style="fill:#ab650e">ENC_SW</text>
+<text x="65" y="613" class="">GPIO1 / reference HIGH</text>
+<text x="825" y="613" class="">+  (header 2)</text>
+<polyline points="430,607 800,607" fill="none" stroke="#bd303a" stroke-width="3"/>
+<text x="500" y="599" class="small" style="fill:#bd303a">ENC_REF</text>
+<text x="65" y="656" class="">GND</text>
+<text x="825" y="656" class="">GND  (header 1)</text>
+<polyline points="430,650 800,650" fill="none" stroke="#354250" stroke-width="3"/>
+<text x="500" y="642" class="small" style="fill:#354250">GND</text>
+<text x="65" y="827" class="">3V3</text>
+<text x="825" y="827" class="">VDD</text>
+<polyline points="430,821 800,821" fill="none" stroke="#bd303a" stroke-width="3"/>
+<text x="500" y="813" class="small" style="fill:#bd303a">+3V3</text>
+<text x="65" y="861" class="">GND</text>
+<text x="825" y="861" class="">GND</text>
+<polyline points="430,855 800,855" fill="none" stroke="#354250" stroke-width="3"/>
+<text x="500" y="847" class="small" style="fill:#354250">GND</text>
+<text x="65" y="895" class="">GND</text>
+<text x="825" y="895" class="">L/R (left channel)</text>
+<polyline points="430,889 800,889" fill="none" stroke="#354250" stroke-width="3"/>
+<text x="500" y="881" class="small" style="fill:#354250">GND</text>
+<text x="65" y="929" class="">GPIO5</text>
+<text x="825" y="929" class="">SCK</text>
+<polyline points="430,923 800,923" fill="none" stroke="#bc680c" stroke-width="3"/>
+<text x="500" y="915" class="small" style="fill:#bc680c">MIC_SCK</text>
+<text x="65" y="963" class="">GPIO6</text>
+<text x="825" y="963" class="">WS</text>
+<polyline points="430,957 800,957" fill="none" stroke="#2869ba" stroke-width="3"/>
+<text x="500" y="949" class="small" style="fill:#2869ba">MIC_WS</text>
+<text x="65" y="997" class="">GPIO7</text>
+<text x="825" y="997" class="">SD</text>
+<polyline points="430,991 800,991" fill="none" stroke="#108467" stroke-width="3"/>
+<text x="500" y="983" class="small" style="fill:#108467">MIC_SD</text>
+<text x="45" y="1060" class="small">Encoder front view, shaft toward you and header pointing down: GND, +, SW, DT, CLK (left → right).</text>
+<text x="45" y="1090" class="small">R2/R3: 10 kΩ resistors visible onboard. R1 appears unpopulated; SW pull-up and resistor routing unverified.</text>
+<text x="45" y="1120" class="small">GPIO1 supplies only the encoder reference at 3.3 V logic. Never connect encoder + or microphone VDD to 5 V.</text>
+<text x="45" y="1150" class="small">No added discrete resistors or LED level shifter shown. Power: shared regulated 5 V input and common ground.</text>
+<text x="45" y="1180" class="small">Code-compatible wiring proposal; compare CLK/DT direction with prototype. Module internals are not traced here.</text>
+<text x="45" y="1215" class="small">2026-09-30 • docs/wiring.md • KiCad PCB review schematic: hardware/pcb/rev-a/CoolLamp-RevA.kicad_sch</text>
+</svg>

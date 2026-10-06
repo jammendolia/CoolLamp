@@ -15,3 +15,7 @@ mobile/ios/App/build/
 *.mobileprovision
 *.pem
 mobile/build/
+.DS_Store
+*.kicad_prl
+*.lck
+examples/**/build/
