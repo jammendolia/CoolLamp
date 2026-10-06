@@ -6,9 +6,11 @@ permissions:
   contents: write
 concurrency:
   group: firmware-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   release:
+    # Hold OTA publication until the live reconnect regression is resolved.
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
