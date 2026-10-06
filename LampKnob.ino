@@ -22,7 +22,7 @@ static constexpr int knobPaletteSize = sizeof(knobPalette) / sizeof(knobPalette[
 
 void syncLampKnob() {
   if (lampCalibrationActive()) {
-    rotaryEncoder.setBoundaries(1, 1024, false);
+    rotaryEncoder.setBoundaries(1, lampCalibrationMaximum(), false);
     rotaryEncoder.setEncoderValue(lampCalibrationPosition());
   } else if (knobMode == KnobMode::Brightness) {
     rotaryEncoder.setBoundaries(1, 255, false);
@@ -72,6 +72,8 @@ void enterLampKnob(KnobMode next) {
 
 void applyLampGesture(LampGesture gesture) {
   if (gesture == LampGesture::None) return;
+  if(gesture==LampGesture::FactoryArm){finishLampKnob();cancelLampSetupPulse();armLampFactoryReset(true);return;}
+  if(gesture==LampGesture::FactoryReset){armLampFactoryReset(false);requestLampFactoryReset();return;}
   if(lampSyncFollowing() && gesture!=LampGesture::Wifi && gesture!=LampGesture::Pairing) pauseLampSync();
   knobActivity = millis();
   if (gesture == LampGesture::Wifi || gesture == LampGesture::Pairing) {
@@ -90,7 +92,7 @@ void applyLampGesture(LampGesture gesture) {
 bool serviceLampKnob() {
   const uint32_t now = millis();
   const bool down = digitalRead(DI_ENCODER_SW) == LOW;
-  if (lampIsUpdating()) {
+  if (lampIsUpdating() || lampFactoryResetPending()) {
     knobGestures.reset(now, down);
     knobActivity = now;
     syncLampKnob();
@@ -98,9 +100,16 @@ bool serviceLampKnob() {
   }
   if(lampCalibrationActive()) {
     const auto gesture=knobGestures.poll(now,down);
+    if(knobGestures.pressed())touchLampCalibration();
     if(rotaryEncoder.encoderChanged() && !knobGestures.pressed())moveLampCalibration(rotaryEncoder.getEncoderValue());
     if(gesture==LampGesture::Single)finishLampCalibration(true);
-    else if(gesture!=LampGesture::None)finishLampCalibration(false);
+    else if(gesture!=LampGesture::None){
+      const auto heldGesture=knobGestures;
+      finishLampCalibration(false);
+      if(gesture==LampGesture::Wifi||gesture==LampGesture::Pairing||gesture==LampGesture::FactoryArm){
+        knobGestures=heldGesture;applyLampGesture(gesture);
+      }
+    }
     return true;
   }
   // A phone/web effect or power change ends adjustment of the previous effect.

@@ -1,4 +1,6 @@
 #include "LampUpdate.h"
+#include "LampWifiSetup.h"
+#include "LampFactoryReset.h"
 #include "LampAudio.h"
 #include "UpdateManifest.h"
 #include <WiFi.h>
@@ -142,7 +144,7 @@ void updateTask(void*) {
   }
 }
 bool request(uint8_t operation) {
-  if (!worker || !healthy) return false;
+  if (!worker || !healthy || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
   portENTER_CRITICAL(&mux);
   if (manual || busy(status.phase) || job) { portEXIT_CRITICAL(&mux); return false; }
   if (operation == 2 && !status.available) { portEXIT_CRITICAL(&mux); return false; }
@@ -187,7 +189,7 @@ bool lampUpdateOwnsResources() {
   return result;
 }
 bool reserveLampManualUpdate() {
-  if (!healthy) return false;
+  if (!healthy || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
   portENTER_CRITICAL(&mux);
   const bool ok = !manual && !busy(status.phase) && !job;
   if (ok) manual = true;

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <new>
 #include "../LampPlayback.h"
+#include "../LampGeometry.h"
 #include <Preferences.h>
 uint32_t now=0;uint32_t millis(){return now;}void delay(int){}
 uint32_t esp_random(){return 0;}
@@ -10,8 +11,11 @@ uint8_t Mode=4,Brightness=100,role=0,scene=0;
 bool PowerOn=true,updating=false,mic=false,failCount=false;
 constexpr int NUM_LEDS=134,MAX_LED_COUNT=1024;
 uint16_t savedCount=134;
-struct CRGB{uint8_t r=0,g=0,b=0;CRGB()=default;CRGB(int r,int g,int b):r(r),g(g),b(b){}static const CRGB Black,Red;};
-const CRGB CRGB::Black{},CRGB::Red{255,0,0};
+struct CRGB{uint8_t r=0,g=0,b=0;CRGB()=default;CRGB(int r,int g,int b):r(r),g(g),b(b){}static const CRGB Black,Red,White;};
+const CRGB CRGB::Black{},CRGB::Red{255,0,0},CRGB::White{255,255,255};
+uint16_t lampMidpoint=0;
+bool lampFactoryResetPending(){return false;}
+bool saveLampGeometry(uint16_t midpoint,uint16_t count){if(failCount||midpoint>=count)return false;lampMidpoint=midpoint;return true;}
 CRGB leds[NUM_LEDS];
 void fill_solid(CRGB* p,int n,CRGB c){std::fill(p,p+n,c);}
 struct Controller{CRGB* p=leds;int n=NUM_LEDS;void setLeds(CRGB* data,int count){p=data;n=count;}};
@@ -56,5 +60,16 @@ int main(){
  assert(beginLampCalibration());updating=true;assert(!renderLampCalibration()&&!lampCalibrationActive());assert(!beginLampCalibration());updating=false;
  role=1;assert(!beginLampCalibration());role=2;assert(!beginLampCalibration());role=0;
  PowerOn=false;assert(beginLampCalibration());assert(finishLampCalibration(false)&&FastLED.brightness==0);
+ PowerOn=true;
+ assert(beginLampCenterCalibration()&&lampCalibrationCenter()&&lampCalibrationPosition()==67&&FastLED.c.n==134);
+ assert(!beginLampCalibration());moveLampCalibration(133);moveLampCalibration(134);assert(lampCalibrationPosition()==133);
+ now+=50;renderLampCalibration();assert(leds[0].r==7);
+ assert(finishLampCalibration(true)&&lampMidpoint==133&&savedCount==200&&FastLED.c.p==leds);
+ assert(beginLampCenterCalibration());moveLampCalibration(10);now+=9999;assert(renderLampCalibration());
+ now+=1;assert(!renderLampCalibration()&&!lampCalibrationActive()&&lampMidpoint==133);
+ assert(beginLampCenterCalibration());moveLampCalibration(20);failCount=true;assert(!finishLampCalibration(true)&&lampCalibrationCenter()&&lampMidpoint==133);failCount=false;
+ now+=10000;assert(!renderLampCalibration()&&lampMidpoint==133);
+ role=2;assert(beginLampCenterCalibration());assert(finishLampCalibration(false)&&role==2);role=0;
+ now=0xfffffff0;assert(beginLampCenterCalibration());touchLampCalibration();now+=10000;assert(!renderLampCalibration()&&lampMidpoint==133);
  std::cout<<"PASS: rotation timing, filters, persistence, pause, rollover; calibration bounds, buffer restoration, timeout, save failure\n";
 }

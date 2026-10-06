@@ -8,9 +8,14 @@ export const effects = ['Pacifica','Aurora','Rain','Fire','Split fire - rising',
   'Rainbow','Rainbow with glitter','Confetti','Comet collision','Sinelon','BPM','Juggle',
   'White','Red','Green','Blue','Purple','Pink','Yellow','Cyan','Custom solid',
   'Bouncing droplets - rising','Lightning storm','Color tide','Fireflies','Heartbeat','Shooting stars','Breathing glow','Lava blobs','Bouncing droplets - falling'];
-const operations = { power: 1, brightness: 2, effect: 3, saveDefaults: 4, refresh: 5, color: 6, resetColor: 7, checkFirmware: 8, installFirmware: 9, autoUpdate: 10, effectOptions: 11, enableEffects: 12, catalogEntry: 13 };
+const operations = { power: 1, brightness: 2, effect: 3, saveDefaults: 4, refresh: 5, color: 6, resetColor: 7, checkFirmware: 8, installFirmware: 9, autoUpdate: 10, effectOptions: 11, enableEffects: 12, catalogEntry: 13, factoryReset:19,centerControl:20,centerMove:21 };
 export function encodeCommand(id, operation, value = 0, effectCount = effects.length) {
+  if(operation.startsWith('wifi'))return encodeWifiSetup(id,operation,value);
   const op = operations[operation];
+  if(operation==='centerMove') {
+    if(!Number.isInteger(id)||id<1||id>255||!Number.isInteger(value)||value<1||value>1023)throw Error('Choose a valid center boundary.');
+    return new DataView(Uint8Array.of(1,id,op,value&255,value>>8).buffer);
+  }
   if (operation === 'effectOptions') {
     const v = value;
     if (!Number.isInteger(id) || id < 1 || id > 255 || !v ||
@@ -28,7 +33,7 @@ export function encodeCommand(id, operation, value = 0, effectCount = effects.le
   }
   if (!Number.isInteger(id) || id < 1 || id > 255 || !op || !Number.isInteger(value)) throw new Error('Invalid command.');
   const valid = op === 1 || op === 10 ? value >= 0 && value <= 1 : op === 2 ? value >= 1 && value <= 255 :
-    op === 3 || op === 7 || op === 13 ? value >= 1 && value <= effectCount : op === 12 ? (value >= 1 && value <= 3) : value === 0;
+    op === 3 || op === 7 || op === 13 ? value >= 1 && value <= effectCount : op === 12 ? (value >= 1 && value <= 3) : op===19?value===0xa5:op===20?value>=0&&value<=3:value === 0;
   if (!valid) throw new Error('Value is outside the lamp’s supported range.');
   return new DataView(Uint8Array.of(1, id, op, value).buffer);
 }
@@ -80,3 +85,4 @@ export function firmwareMessage(s) {
   if (s.available) return `Firmware ${s.latest} is available.`;
   return s.latest === '0.0.0' ? 'No published update detected yet. Use Check for updates to refresh.' : 'Firmware is up to date.';
 }
+import { encodeWifiSetup } from './wifi-setup.js';

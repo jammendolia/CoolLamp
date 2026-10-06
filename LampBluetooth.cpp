@@ -2,6 +2,9 @@
 #include "LampControl.h"
 #include "LampConfig.h"
 #include "LampUpdate.h"
+#include "LampWifiSetup.h"
+#include "LampFactoryReset.h"
+#include "LampPlayback.h"
 
 #if COOL_LAMP_BLE
 #include <BLEDevice.h>
@@ -22,13 +25,16 @@ constexpr char STATE[]   = "7b610003-6e2b-4f3d-9a71-28e45c001001";
 constexpr char FIRMWARE[] = "7b610004-6e2b-4f3d-9a71-28e45c001001";
 constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
 constexpr char IDENTITY[] = "7b610006-6e2b-4f3d-9a71-28e45c001001";
+constexpr char WIFI_SETUP[] = "7b610008-6e2b-4f3d-9a71-28e45c001001";
+BLECharacteristic* wifiCharacteristic = nullptr;
+BLECharacteristic* centerCharacteristic = nullptr;
 // Catalog negotiated per connection: 0 = baseline, 37 = legacy app, 38 = outward droplets.
 std::atomic<uint8_t> extendedControls{0};
 BLECharacteristic* catalogCharacteristic = nullptr;
 BLECharacteristic* effectCharacteristic = nullptr;
 uint8_t lastEffect[8] = {};
 constexpr uint16_t NO_CONNECTION = 0xffff;
-struct Command { uint32_t generation; uint8_t length; uint8_t bytes[10]; };
+struct Command { uint32_t generation; uint8_t length; uint8_t bytes[20]; };
 QueueHandle_t commands = nullptr;
 BLEServer* server = nullptr;
 BLECharacteristic* stateCharacteristic = nullptr;
@@ -116,8 +122,9 @@ class Writes final : public BLECharacteristicCallbacks {
     if (!secure || connection != event->conn_handle) return;
     const String value = characteristic->getValue();
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
-    const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : 4) : 4;
-    if (value.length() != expected) {
+    const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : uint8_t(value[2])==21?5:4) : 4;
+    const bool wifiFrame = value.length() >= 3 && uint8_t(value[2]) >= WifiSetupWire::CONTROL && uint8_t(value[2]) <= WifiSetupWire::COMMIT;
+    if (wifiFrame ? !WifiSetupWire::validFrame(reinterpret_cast<const uint8_t*>(value.c_str()), value.length()) : value.length() != expected) {
       server->disconnect(event->conn_handle);
       return;
     }
@@ -171,7 +178,7 @@ void publish(uint8_t id, uint8_t result, bool acknowledge)
   if (!changed && !acknowledge && lastState[0]) return;
   if (changed) ++revision;
   uint8_t value[16] = {LAMP_PROTOCOL_VERSION, id, result, visibleMode, state.brightness,
-    static_cast<uint8_t>(state.power), visibleCount, 63};
+    static_cast<uint8_t>(state.power), visibleCount, 255};
   value[12] = color.enabled; value[13] = color.r; value[14] = color.g; value[15] = color.b;
   for (int i = 0; i < 4; ++i) value[8 + i] = revision >> (8 * i);
   memcpy(lastState, value, sizeof(value));
@@ -185,6 +192,12 @@ void beginLampBluetooth(const String& name)
   commands = xQueueCreate(8, sizeof(Command));
   if (!commands) return;
   BLEDevice::init(name);
+  if(lampFactoryResetNeedsBondErase()) {
+    if(ble_store_clear()!=0 || !completeLampFactoryReset()) {
+      Serial.println("Factory reset could not clear phone bonds; retrying.");
+      delay(1000);ESP.restart();return;
+    }
+  }
   BLEDevice::setSecurityCallbacks(&securityCallbacks);
   BLESecurity::setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
   BLESecurity::setCapability(ESP_IO_CAP_NONE);
@@ -208,6 +221,11 @@ void beginLampBluetooth(const String& name)
   getLampEffectPacket(lastEffect); effectCharacteristic->setValue(lastEffect, sizeof(lastEffect));
   getLampUpdatePacket(lastFirmware);
   firmwareCharacteristic->setValue(lastFirmware, sizeof(lastFirmware));
+  // Append new characteristics to preserve existing GATT handles for saved phones.
+  wifiCharacteristic = service->createCharacteristic(WIFI_SETUP, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
+  wifiCharacteristic->setValue("{}");
+  centerCharacteristic=service->createCharacteristic("7b610009-6e2b-4f3d-9a71-28e45c001001",BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC);
+  centerCharacteristic->setValue("{}");
   // NimBLE creates the notification subscription descriptor automatically.
   publish(0, 0, false);
   service->start();
@@ -247,6 +265,11 @@ void forgetLampPhones()
 void serviceLampBluetooth()
 {
   if (!server) return;
+  static uint32_t transferGeneration = 0;
+  const uint32_t currentGeneration = generation;
+  if (transferGeneration != currentGeneration) {
+    resetLampWifiSetupTransfer(); transferGeneration = currentGeneration;
+  }
   ble_gap_conn_desc peer{};
   const bool paired = pairing && secure && connection != NO_CONNECTION &&
     ble_gap_conn_find(connection, &peer) == 0 && peer.sec_state.bonded;
@@ -275,6 +298,26 @@ void serviceLampBluetooth()
         case 11: if (!extendedControls || !setLampEffectOptions(value, {command.bytes[4],command.bytes[5],command.bytes[6],command.bytes[7],command.bytes[8],command.bytes[9]})) result=2; break;
         case 12: if (value == 1) extendedControls=37; else if (value == 2) extendedControls=38; else if (value == 3) extendedControls=lampAvailableEffectCount(); else result=2; break;
         case 13: if (value < 1 || value > lampAvailableEffectCount()) result=2; else catalogCharacteristic->setValue(lampEffectCatalogEntry(value).c_str()); break;
+        case 14: case 15: case 16: case 17: case 18: {
+          String response;
+          result = lampWifiSetupCommand(command.bytes, command.length, command.generation, response);
+          if (!result && !response.isEmpty()) wifiCharacteristic->setValue(response.c_str());
+          break;
+        }
+        case 19: if(value!=LAMP_FACTORY_RESET_CONFIRM)result=2;else if(!requestLampFactoryReset())result=4;break;
+        case 20: {
+          bool ok=value==3;
+          if(value==0)ok=beginLampCenterCalibration();
+          else if(value==1||value==2)ok=lampCalibrationCenter()&&finishLampCalibration(value==1);
+          if(!ok)result=2;else centerCharacteristic->setValue(lampCenterCalibrationJson().c_str());
+          break;
+        }
+        case 21: {
+          const uint16_t position=uint16_t(value)|uint16_t(command.bytes[4])<<8;
+          if(!lampCalibrationCenter()||!position||position>lampCalibrationMaximum())result=2;
+          else {moveLampCalibration(position);centerCharacteristic->setValue(lampCenterCalibrationJson().c_str());}
+          break;
+        }
         case 8: if (value) result = 2; else if (!requestLampUpdateCheck()) result = 3; break;
         case 9: if (value) result = 2; else if (!requestLampUpdateInstall()) result = 3; break;
         case 10: if (value > 1) result = 2; else if (!setLampAutoUpdate(value)) result = 4; break;
@@ -282,6 +325,7 @@ void serviceLampBluetooth()
       }
     }
     publish(id, result, true);
+    memset(command.bytes, 0, sizeof(command.bytes));
   } else {
     // Detect changes from the knob and HTTP without making those paths know BLE.
     publish(0, 0, false);

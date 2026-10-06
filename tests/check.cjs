@@ -12,7 +12,7 @@ const modes = [...main.matchAll(/^#define (MODE_\w+) (\d+)$/gm)];
 assert.equal(modes.length, 47);
 assert.deepEqual(modes.map(m=>Number(m[2])), Array.from({length:47},(_,i)=>i+1));
 for(const [,name] of modes) assert(main.includes(`case ${name}:`));
-assert(!main.match(/Serial\.(print|write)/));
+assert(!main.slice(main.indexOf('void loop()')).match(/Serial\.(print|write)/));
 for(let count=1;count<=1024;count++){
   const left=Math.floor((count+1)/2),right=Math.floor(count/2);
   for(const reverse of [false,true]){

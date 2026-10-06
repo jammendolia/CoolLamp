@@ -1,0 +1,112 @@
+# Lamp removal, factory reset, and center fine-tuning
+
+Firmware **1.9.1** and the corresponding phone app add these controls. Older
+lamps retain their current behavior and show an upgrade hint for unsupported
+features. C3 GPIO assignments are unchanged.
+
+## Remove a lamp from the phone
+
+The **Lamps** screen now has a **Remove** action beside each lamp. The same
+action is available under **Settings → Overview**. It removes the app's saved
+lamp, stored access password, reconnect target, and cached discovery record.
+Removing an offline lamp works without connecting to it. Removing one lamp
+does not disconnect another lamp that is currently selected.
+
+The lamp itself retains its settings and Bluetooth bonds. Phone-level
+Bluetooth pairing is managed by the operating system. For fresh pairing on
+iPhone, use **Settings → Bluetooth → the lamp → Forget This Device**.
+
+Late results from a scan already in progress cannot reinsert a removed lamp.
+An explicit **Find on Wi-Fi / Refresh Wi-Fi list** allows rediscovery. A lamp
+still on the network may appear as a new discovery in a later app session.
+
+## Factory reset
+
+Choose **Settings → Overview → Factory reset lamp**, review the confirmation,
+then select **Factory reset**. This works over Bluetooth or authenticated
+Wi-Fi. The phone removes its app record after the lamp confirms the reset.
+
+Alternatively, hold the knob for **ten seconds**. The existing orange setup
+cue appears at three seconds and blue pairing cue at six. At ten seconds the
+lamp flashes **red**. Release the knob to commit the reset. Continuing to
+hold keeps it armed; release is required. A shorter hold never resets it.
+Firmware updates suppress the reset gesture.
+The encoder button uses the ESP32's internal GPIO2 pull-up in this firmware;
+the existing GPIO assignments and A/B inputs are unchanged.
+
+The lamp restarts with these user settings cleared:
+
+- Home Wi-Fi and the lamp access password (restored to `coollamp`).
+- Bluetooth phone bonds and notification subscriptions.
+- Lamp name, palettes, effect tuning, audio tuning, and startup choices.
+- Group membership, group credentials, group scenes, effect rotation, and
+  automatic-update preference.
+
+It preserves the physical hardware configuration: **LED count, effect center,
+power limit, and microphone presence**. This keeps a 205-LED microphone lamp
+correctly configured after reset. Firmware and hardware identity are retained.
+The default light is Fire at brightness 100. After reset, forget the old
+phone-level Bluetooth pairing and hold six seconds to pair again.
+
+Reset is deferred briefly so Bluetooth/HTTP can acknowledge it. A versioned,
+checked hardware recovery record is saved in a separate NVS namespace before
+restarting. Startup clears the user-settings namespace, restores hardware,
+then erases Bluetooth bonds before advertising. Interrupted recovery can be
+retried; completing settings recovery is recorded before bond cleanup so a
+later restart does not clear newly saved settings again. No reset is executed
+merely by installing this firmware.
+
+Authenticated `POST /api/factory-reset` requires `confirm=RESET` and the
+existing mutation token. Encrypted BLE command 19 requires `0xa5` and firmware
+capability bit `0x80`. The app pins a reset confirmation to the selected lamp
+and connection epoch; changing/disconnecting that connection cancels it.
+
+## Fine-tune the effect center
+
+Under **Settings → Hardware → Fine-tune the center**, choose **Fine-tune
+center**. The lamp temporarily displays a blinking white LED at its saved
+center (or automatic midpoint). Turn the knob to move the marker. Click once
+to save, or use **Set this center** in the app. **Cancel adjustment** or
+**ten seconds without knob/app movement** restores the normal effect without
+saving. Merely reading the status does not extend this timeout.
+
+The tool works over both Bluetooth and Wi-Fi, including before Wi-Fi setup.
+It adjusts the existing one-based split boundary after the displayed LED;
+valid boundaries are 1 through LED count minus one. Both sides remain nonempty.
+The numeric Wi-Fi center field still offers zero for automatic positioning.
+Saving updates all center-aware effects immediately, without restarting or
+changing the LED count. A failed save leaves the probe active for retry;
+timeout still cancels without changing the saved center.
+
+This differs from **LED strip sizing**, which retains its teal last-pixel
+probe, 1–1024 range, five-minute timeout, and save/restart behavior. HTTP
+`/api/calibration` uses `kind=center` for the new tool and checks that save/move
+requests match the active tool. Encrypted BLE command 20 selects
+start/save/cancel/status (0–3); command 21 moves a little-endian 16-bit boundary.
+Characteristic `7b610009-6e2b-4f3d-9a71-28e45c001001` returns a bounded center
+status. Reads are serialized with their selecting commands. Both new recovery
+and center controls use capability bit `0x80`.
+
+The embedded setup webpage also includes center-tool and factory-reset
+buttons. USB diagnostic `c` starts the center probe; `j` reads its status.
+Neither diagnostic saves a center value automatically.
+
+## Verification
+
+Host tests exercise reset persistence and interrupted writes, retained
+hardware, release-only long holds, debounce/update suppression and clock
+rollover. Actual playback tests cover center bounds, restoration, failed
+saves, ten-second timeout, and independence from LED-count sizing. Mobile
+tests cover encrypted command framing, capability checks, authenticated HTTP,
+center preview/save/cancel, and discovery removal. The real app's simulated
+Bluetooth browser check covers removal, reset confirmation/cancellation,
+center knob/status behavior, idle cancellation, accessibility, and narrow
+layouts. Physical factory reset remains a deliberate owner action.
+
+On 2026-10-05, firmware 1.9.1 was USB-flashed and hash-verified on
+`CoolLamp-E2EA24`. The live center probe started at LED 103 on the 205-LED strip,
+then became inactive after ten seconds without input. The saved midpoint stayed
+zero (automatic), normal rendering resumed, and microphone presence remained
+enabled. Home Wi-Fi was still unset. No physical factory reset was executed.
+All 63 mobile tests and both browser checks passed; the updated iPhone interface
+still needs a TestFlight publication.

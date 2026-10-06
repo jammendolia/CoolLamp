@@ -27,3 +27,10 @@ test('session rejects malformed/nonlocal discoveries and does not retain credent
  assert.equal(session.items[0].password,undefined);
  assert.equal(session.items[0].token,undefined);
 });
+test('removal drops cached discovery, ignores late results and permits explicit rediscovery',()=>{
+ const session=new LampDiscoverySession(),lamp={id:'one',name:'Lamp',address:'192.168.1.2'};
+ session.remember([lamp]);session.forget('one');assert.deepEqual(session.items,[]);
+ session.remember([lamp]);assert.deepEqual(session.items,[]);
+ session.beginRefresh();session.remember([lamp]);assert.equal(session.items.length,1);
+ session.beginRefresh();session.forget('one');session.remember([lamp]);assert.deepEqual(session.items,[]);
+});

@@ -14,6 +14,7 @@
 #include "LampUpdate.h"
 #include "LampGestures.h"
 #include "LampAudio.h"
+#include "LampFactoryReset.h"
 #include "LampVu.h"
 #include "LampFountain.h"
 #include "AudioAnalysis.h"
@@ -109,6 +110,11 @@ void setup() {
   Serial.setTxTimeoutMs(0); // USB diagnostic replies must never stall rendering.
   delay(3000); // Allow time for boot recovery before driving the strip.
 
+  if(!recoverLampFactoryReset()) {
+    Serial.println("Factory reset recovery could not save settings; retrying.");
+    delay(2000);ESP.restart();return;
+  }
+
   beginLampAudio();
   loadLampSettings();
   loadLampGeometry();
@@ -135,7 +141,8 @@ void setup() {
   FastLED.setMaxPowerInVoltsAndMilliamps(5, lampSettings.milliAmps);
   FastLED.setBrightness(Brightness);
 
-  rotaryEncoder.setEncoderType(EncoderType::HAS_PULLUP);
+  // HW-040 biases A/B; bias the switch internally even when its R1 is unpopulated.
+  rotaryEncoder.setEncoderType(EncoderType::SW_FLOAT);
   rotaryEncoder.setBoundaries(1, lampAvailableEffectCount(), true);
   // Poll events in loop() instead of changing lamp state from a timer task.
   rotaryEncoder.begin(false);
@@ -148,10 +155,11 @@ void loop() {
   serviceLampNetwork();
   serviceLampBluetooth();
   serviceLampUpdater();
+  serviceLampFactoryReset();
   serviceLampRotation();
   const uint8_t groupScene=lampGroupScene();
   const bool needsAudio=groupScene?(groupScene==2||LampSyncWire::sceneNeedsAudio(groupScene)):Mode>LAMP_BASE_EFFECT_COUNT;
-  serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing());
+  serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing() || lampFactoryResetPending());
   bool renderNow = serviceLampKnob();
   if (renderLampCalibration()) return;
   if (lampIsUpdating()) { delay(1); return; }
@@ -166,16 +174,19 @@ void loop() {
   const bool setupNow = lampSetupPulse();
   const bool identifying = lampIdentifyActive();
   static bool lastPairing = false;
-  if (pairingNow || setupNow || identifying) {
+  static bool lastFactory = false;
+  const bool factoryNow=lampFactoryResetArmed()||lampFactoryResetPending();
+  if (pairingNow || setupNow || identifying || lampFactoryResetArmed() || lampFactoryResetPending()) {
     const bool flashOn = (now / 400) % 2 == 0;
-    if (!wasPairing || flashOn != pairingFlashOn || pairingNow != lastPairing) {
+    if (!wasPairing || flashOn != pairingFlashOn || pairingNow != lastPairing || factoryNow != lastFactory) {
       pairingFlashOn = flashOn;
       FastLED.setBrightness(100);
-      fill_solid(leds, NUM_LEDS, flashOn ? (pairingNow ? CRGB(0, 0, 255) : setupNow ? CRGB(255, 80, 0) : CRGB::White) : CRGB::Black);
+      fill_solid(leds, NUM_LEDS, flashOn ? (lampFactoryResetArmed() || lampFactoryResetPending() ? CRGB(255,0,0) : pairingNow ? CRGB(0, 0, 255) : setupNow ? CRGB(255, 80, 0) : CRGB::White) : CRGB::Black);
       FastLED.show();
     }
     wasPairing = true;
     lastPairing = pairingNow;
+    lastFactory = factoryNow;
     delay(1);
     return;
   }

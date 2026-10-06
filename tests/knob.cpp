@@ -17,6 +17,13 @@ uint16_t lampMidpoint=0;
 uint32_t clockMs=0;
 uint32_t millis(){return clockMs;}
 bool button=false,updating=false,pairing=false;
+bool factoryArmed=false,factoryPending=false;
+int factoryResets=0;
+void armLampFactoryReset(bool armed){factoryArmed=armed&&!updating;}
+bool lampFactoryResetPending(){return factoryPending;}
+bool requestLampFactoryReset(){if(updating)return false;++factoryResets;factoryPending=true;return true;}
+uint16_t lampCalibrationMaximum(){return 1024;}
+void touchLampCalibration(){}
 constexpr int LOW=0,DI_ENCODER_SW=2,NUM_LEDS=3;
 int digitalRead(int){return button?0:1;}
 int constrain(int x,int low,int high){return std::clamp(x,low,high);}
@@ -99,5 +106,13 @@ int main(){
   calibrating=true;resetLampCalibrationKnob();tick(500);assert(calibrating);turn(10000);assert(position==1024&&Mode==oldMode&&Brightness==oldBrightness);
   turn(-10000);assert(position==1);turn(199);clicks(1);assert(!calibrating&&calibrationSaved&&position==200);
   calibrating=true;syncLampKnob();clicks(2);assert(!calibrating&&!calibrationSaved);
+  // Factory reset arms at ten seconds, but only commits on release, once.
+  button=true;tick(10001);assert(factoryArmed&&factoryResets==0);
+  tick(5000);assert(factoryResets==0);button=false;tick(40);assert(factoryResets==1&&!factoryArmed);
+  tick(1000);assert(factoryResets==1);factoryPending=false;
+  button=true;tick(9900);button=false;tick(500);assert(factoryResets==1&&!factoryArmed);
+  // A press spanning an update never turns into a destructive long hold.
+  updating=true;button=true;tick(12000);updating=false;tick(12000);button=false;tick(1000);assert(factoryResets==1);
+  clockMs=0xfffffff0U;button=true;tick(10001);button=false;tick(40);assert(factoryResets==2);
   std::cout<<"PASS: single/double/triple clicks, click-and-turn, debounce, long holds, live preview, save-once, inactivity, bounds, remote changes, OTA suppression and clock wrap.\n";
 }

@@ -37,7 +37,13 @@ appears to fall. Name directional effects by this physical motion.
 5. Use **Find nearby networks** to select a 2.4 GHz network, or enter a hidden network manually. Scanning keeps the setup hotspot open.
 6. Preview effects/brightness, or save LED count, brightness, startup effect, LED current limit, home Wi-Fi, and a new access password. Saving restarts the lamp.
 
-The lamp supports 2.4 GHz Wi-Fi. Once connected to home Wi-Fi, open **http://coollamp-xxxxxx.local/** (or its IP from your router). Configuration and firmware upload require the same login on the home network. The hotspot is off during normal startup; it is only opened by a long hold. If home Wi-Fi credentials are wrong, the light still works and a long hold lets you correct them.
+The lamp supports 2.4 GHz Wi-Fi. Firmware **1.9.0** and the matching phone app
+also support [Wi-Fi setup directly over Bluetooth](docs/bluetooth-wifi-setup.md):
+scan, choose a network, and connect without joining the lamp's hotspot.
+Once connected to home Wi-Fi, open **http://coollamp-xxxxxx.local/** (or its IP
+from your router). Configuration and firmware upload require the same login
+on the home network. The hotspot is off during normal startup; it remains a
+recovery option opened by a long hold.
 
 There are no cloud services. The web interface uses HTTP on the local network; use it on a trusted network. Wi-Fi credentials are saved on the device and are never returned by the settings API. An empty password field keeps the saved password. Use the explicit open-network or forget-network controls when appropriate.
 
@@ -168,5 +174,7 @@ Firmware 1.2.0 adds version display, update detection, **Update now**, and optio
 Firmware 1.5.0 on `feature/audio-input` adds an optional INMP441 microphone, Sound glow and Sound meter. Microphone-free lamps retain their original 38 effects. See [audio setup, product provisioning, and diagnostics](docs/audio-firmware.md).
 
 See [mobile/README.md](mobile/README.md) for the Android/iOS projects and [Bluetooth app notes](docs/bluetooth-app.md) for gestures, pairing and prototype limits. USB installation and startup are verified; phone pairing and physical gesture tests remain pending.
+
+The [app design and complete feature map](docs/ui/app-design.md) includes the redesigned lighting workspace, Settings structure, screenshots and accessibility validation.
 
 Wi-Fi discovery and mirrored lamp groups are documented in [Lamp groups](docs/lamp-groups.md), including app setup and current timing limits.

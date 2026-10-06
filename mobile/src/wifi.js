@@ -41,7 +41,7 @@ export class WifiTransport {
     if(this.catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
     this.identity=identity; this.raw=raw;
     const c=raw.colors?.[raw.mode-1];
-    this.state={...raw,effectCount:raw.effects.length,capabilities:4|(c?2:0)|(raw.effectOptions?8:0),supportsColor:Boolean(c),color:c?{enabled:Boolean(c[0]),r:c[1],g:c[2],b:c[3]}:null};
+    this.state={...raw,effectCount:raw.effects.length,capabilities:4|(c?2:0)|(raw.effectOptions?8:0)|(raw.factoryReset?128:0),supportsColor:Boolean(c),color:c?{enabled:Boolean(c[0]),r:c[1],g:c[2],b:c[3]}:null};
     this.callbacks.onState?.(this.state); this.callbacks.onFirmware?.(raw.firmware);
     const o=raw.effectOptions?.[raw.mode-1];
     this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
@@ -55,6 +55,10 @@ export class WifiTransport {
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
+  factoryReset() {
+    if(!this.raw?.factoryReset)return Promise.reject(Error('Update this lamp to firmware 1.9.1 or newer for factory reset.'));
+    return this.enqueue(async()=>{const message=await this.request('/api/factory-reset',{confirm:'RESET'});clearTimeout(this.timer);return message;});
+  }
   async configureGroupScene(patch) {
     if(this.raw?.sync?.version!==2||this.raw.sync.role!==1)throw Error('Connect to the coordinator running firmware 1.8.0 or newer.');
     const v=groupSceneSettings(this.raw.sync,patch);
@@ -97,6 +101,13 @@ export class WifiTransport {
     const message=await this.request('/api/calibration',{action,...(action==='move'?{position}:{})});
     if(action!=='save')await this.refresh();
     return message;
+  }
+  async calibrateCenter(action,position) {
+    if(!this.raw?.calibration?.centerSupported)throw Error('Update this lamp to firmware 1.9.1 or newer to fine-tune its center.');
+    if(!['start','move','save','cancel'].includes(action))throw Error('Choose a valid center action.');
+    if(action==='move'&&(!Number.isInteger(position)||position<1||position>=this.raw.leds))throw Error('Choose a boundary inside this strip.');
+    const message=await this.request('/api/calibration',{action,kind:'center',...(action==='move'?{position}:{})});
+    await this.refresh();return message;
   }
   async configureRotation({enabled,random,category,seconds}) {
     if(!this.raw?.rotation)throw Error('Update lamp firmware to rotate effects.');

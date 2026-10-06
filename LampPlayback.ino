@@ -7,6 +7,11 @@ static CRGB* calibrationLeds=nullptr;
 static uint16_t calibrationPosition=1;
 static uint32_t calibrationTouched=0, calibrationFrame=0;
 static bool calibrationFailed=false;
+static bool calibrationCenter=false;
+static uint16_t calibrationLength=MAX_LED_COUNT;
+bool lampCalibrationCenter(){return lampCalibrationActive()&&calibrationCenter;}
+uint16_t lampCalibrationMaximum(){return calibrationCenter?NUM_LEDS-1:MAX_LED_COUNT;}
+void touchLampCalibration(){if(lampCalibrationActive())calibrationTouched=millis();}
 bool lampCalibrationActive(){return calibrationLeds!=nullptr;}
 uint16_t lampCalibrationPosition(){return calibrationPosition;}
 void loadLampRotation(){
@@ -33,33 +38,43 @@ void serviceLampRotation(){
   if(next && setLampControl(next,Brightness,PowerOn))rotationMode=Mode;
 }
 bool beginLampCalibration(){
-  if(lampCalibrationActive())return true;
+  if(lampCalibrationActive())return !lampCalibrationCenter();
   if(lampUpdateOwnsResources() || lampSyncRole()!=0)return false;
   auto* buffer=new(std::nothrow) CRGB[MAX_LED_COUNT]{};if(!buffer)return false;
   finishLampKnob();
   calibrationLeds=buffer;calibrationPosition=NUM_LEDS;calibrationTouched=millis();calibrationFailed=false;
+  calibrationCenter=false;calibrationLength=MAX_LED_COUNT;
   FastLED[0].setLeds(calibrationLeds,MAX_LED_COUNT);
   resetLampCalibrationKnob();return true;
 }
+bool beginLampCenterCalibration(){
+  if(lampCalibrationActive())return lampCalibrationCenter();
+  if(NUM_LEDS<2||lampUpdateOwnsResources()||lampFactoryResetPending())return false;
+  auto* buffer=new(std::nothrow) CRGB[NUM_LEDS]{};if(!buffer)return false;
+  finishLampKnob();calibrationCenter=true;calibrationLength=NUM_LEDS;
+  calibrationLeds=buffer;calibrationPosition=lampSplitCount(NUM_LEDS,lampMidpoint);
+  calibrationTouched=millis();calibrationFailed=false;
+  FastLED[0].setLeds(calibrationLeds,calibrationLength);resetLampCalibrationKnob();return true;
+}
 void moveLampCalibration(uint16_t position){
-  if(!lampCalibrationActive() || !position || position>MAX_LED_COUNT)return;
+  if(!lampCalibrationActive() || !position || position>lampCalibrationMaximum())return;
   calibrationPosition=position;calibrationTouched=millis();calibrationFailed=false;syncLampKnob();
 }
 bool finishLampCalibration(bool save){
   if(!lampCalibrationActive())return false;
-  if(save && !saveLampLedCount(calibrationPosition)){calibrationFailed=true;calibrationTouched=millis();return false;}
+  if(save && !(calibrationCenter?saveLampGeometry(calibrationPosition,NUM_LEDS):saveLampLedCount(calibrationPosition))){calibrationFailed=true;calibrationTouched=millis();return false;}
   // Clear the entire probe range, including pixels beyond the former length.
-  fill_solid(calibrationLeds,MAX_LED_COUNT,CRGB::Black);FastLED.show();
+  fill_solid(calibrationLeds,calibrationLength,CRGB::Black);FastLED.show();
   FastLED[0].setLeds(leds,NUM_LEDS);delete[] calibrationLeds;calibrationLeds=nullptr;
   FastLED.setBrightness(PowerOn?Brightness:0);resetLampCalibrationKnob();return true;
 }
 bool renderLampCalibration(){
   if(!lampCalibrationActive())return false;
   const uint32_t now=millis();
-  if(lampUpdateOwnsResources() || lampSyncRole()!=0 || uint32_t(now-calibrationTouched)>=300000){finishLampCalibration(false);return false;}
+  if(lampUpdateOwnsResources() || lampFactoryResetPending() || (!calibrationCenter&&lampSyncRole()!=0) || uint32_t(now-calibrationTouched)>=(calibrationCenter?10000U:300000U)){finishLampCalibration(false);return false;}
   if(uint32_t(now-calibrationFrame)>=50){
-    calibrationFrame=now;fill_solid(calibrationLeds,MAX_LED_COUNT,CRGB::Black);
-    calibrationLeds[calibrationPosition-1]=calibrationFailed?CRGB::Red:CRGB(0,220,180);
+    calibrationFrame=now;fill_solid(calibrationLeds,calibrationLength,CRGB::Black);
+    if(!calibrationCenter||(now/250)%2==0)calibrationLeds[calibrationPosition-1]=calibrationFailed?CRGB::Red:calibrationCenter?CRGB::White:CRGB(0,220,180);
     FastLED.setBrightness(80);FastLED.show();
   }
   delay(1);return true;

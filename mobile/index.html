@@ -535,7 +535,8 @@
 <h3>Wi-Fi & security</h3>
 </div>
 </div>
-<p class="hint" id="wifiSettingsHint">Connect over Wi-Fi to manage these settings. For first-time setup, hold the knob for three seconds, join its hotspot, then connect to 192.168.4.1 here.</p>
+<p class="hint" id="wifiSettingsHint">Connect over Bluetooth to set up home Wi-Fi, or use a Wi-Fi connection to manage network and security settings.</p>
+<p id="wifiSetupFeedback" class="hint" role="status" aria-live="polite"></p>
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
 <label for="networks">Nearby networks</label>
 <select id="networks">
@@ -547,12 +548,14 @@
 <input id="wifiPassword" type="password" maxlength="63" autocomplete="new-password">
 <label class="toggle">
 <input id="openNetwork" type="checkbox"> Password-free network</label>
+<div id="wifiSecurityControls">
 <label class="toggle">
 <input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
 <label for="adminPassword">New lamp access password</label>
 <input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password">
 <p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p>
-<button>Save & restart lamp</button>
+</div>
+<button id="saveWifi">Save & restart lamp</button>
 </form>
 <form id="hardwareForm" class="panel" data-settings-panel="hardware">
 <p class="eyebrow">BUILT FOR YOUR LAMP</p>
@@ -603,6 +606,17 @@
 <p class="hint">Count from the data-input end. The center lies between this LED and the next. Each side scales independently. Save LED-count changes first. If the strip gets shorter, the center is limited to its last boundary.</p>
 <button>Save center point</button>
 </form>
+<div id="centerHelper">
+<h3>Fine-tune the center</h3>
+<p class="hint">Show a blinking white marker, turn the knob to move it, then click once to save. Ten seconds without input restores normal lighting without saving.</p>
+<fieldset id="centerControls" disabled>
+<button id="startCenter" type="button" class="secondary">Fine-tune center</button>
+<p id="centerPosition" class="hint" hidden></p>
+<button id="saveCenter" type="button" hidden>Set this center</button>
+<button id="cancelCenter" type="button" class="text-button" hidden>Cancel adjustment</button>
+</fieldset>
+<p id="centerFeedback" class="hint" role="status" aria-live="polite"></p>
+</div>
 </section>
 <section id="audioSettings" hidden data-settings-panel="hardware" class=" panel">
 <form id="audioForm">
@@ -615,13 +629,17 @@
 <button>Save hardware setting & restart</button>
 </form>
 </section>
-<section class="panel" data-settings-panel="network">
+<section id="bluetoothManagement" class="panel" data-settings-panel="network">
 <h3>Bluetooth pairing</h3>
 <p class="hint">Hold the knob for six seconds to open pairing. Only forget paired phones when you want to remove their access.</p>
 <button id="pairingStatus" class="secondary">Check pairing status</button>
 <button id="forgetPhones" class="secondary">Forget paired phones</button>
 </section>
 </fieldset>
+<div id="wifiSetupActions" data-settings-panel="network" hidden>
+<button id="cancelWifiSetup" class="secondary" type="button" hidden>Cancel Wi-Fi setup</button>
+<button id="switchToWifi" class="secondary" type="button" hidden>Use Wi-Fi control</button>
+</div>
   <fieldset id="firmwareControls" disabled data-settings-panel="updates" class="panel firmware-panel">
 <legend>Lamp firmware</legend>
     <p>Installed: <strong id="firmwareVersion">Connect to view</strong>
@@ -637,6 +655,13 @@
 </progress>
 </fieldset>
 <button id="forgetLamp" disabled class="text-button" data-settings-panel="overview">Remove lamp from this phone</button>
+<section class="panel recovery-panel" data-settings-panel="overview">
+<p class="eyebrow">START FRESH</p>
+<h3>Factory reset</h3>
+<p class="hint">Clear this lamp’s Wi-Fi, phone pairings, access password, name, effects and group settings. Its LED count, effect center, power limit and microphone hardware stay intact.</p>
+<button id="factoryReset" class="danger-button" disabled>Factory reset lamp</button>
+<p id="factoryResetHint" class="hint">Connect to the lamp to reset it.</p>
+</section>
 <p class="hint" data-settings-panel="overview">The setup webpage remains available by holding the knob for three seconds and opening 192.168.4.1 on its hotspot.</p>
 <details class="panel knob-guide" data-settings-panel="overview">
 <summary>Using the knob</summary>
@@ -653,10 +678,21 @@
 <dd>Open Wi-Fi setup; connect to its hotspot and visit 192.168.4.1.</dd>
 <dt>Hold 6 seconds</dt>
 <dd>Open Bluetooth pairing.</dd>
+<dt>Hold 10 seconds, then release</dt>
+<dd>When the lamp flashes red, release to factory reset (firmware 1.9.1 or newer).</dd>
 </dl>
 </details>
 </section>
 </main>
+<dialog id="factoryResetDialog" aria-labelledby="factoryResetTitle" aria-describedby="factoryResetDescription">
+<form method="dialog">
+<p class="eyebrow">START FRESH</p>
+<h2 id="factoryResetTitle">Reset this lamp?</h2>
+<p id="factoryResetDescription">All Wi-Fi, phone pairings, access password, name, effects and group settings will be cleared. Hardware settings stay intact. The lamp will restart and be removed from this app.</p>
+<p class="hint">For fresh Bluetooth pairing on iPhone, also forget the lamp in Settings → Bluetooth before pairing again.</p>
+<div class="dialog-actions"><button value="cancel" class="secondary" autofocus>Cancel</button><button value="reset" class="danger-button">Factory reset</button></div>
+</form>
+</dialog>
 <script type="module" src="/src/main.js">
 </script>
 </body>

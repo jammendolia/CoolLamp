@@ -1,5 +1,6 @@
 import { CATALOG, validateCatalog, legacyCatalog } from './catalog.js';
 import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, encodeCommand, decodeState, decodeFirmware, decodeEffectOptions, resultError } from './protocol.js';
+import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wifiSetupMessage } from './wifi-setup.js';
 
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
@@ -11,7 +12,7 @@ export class LampTransport {
   }
   disconnected() {
     const hadConnection = this.id !== null;
-    this.epoch++; this.id = null; this.state = null; this.catalog = null;
+    this.epoch++; this.id = null; this.state = null; this.catalog = null; this.deviceIdentity=null;
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
     if (hadConnection) this.onDisconnect();
   }
@@ -79,6 +80,8 @@ export class LampTransport {
         if (epoch === this.epoch) this.onFirmware(decodeFirmware(latest));
       } else this.onFirmware(null);
       if (!this.catalog) this.catalog=legacyCatalog(effects.slice(0,this.state.effectCount));
+      this.deviceIdentity = device.lampId || null;
+      if(this.supportsWifiSetup&&!this.deviceIdentity)throw Error('Could not verify this lamp’s Bluetooth identity. Reconnect before setting up Wi-Fi.');
       await this.command('refresh'); // Closes the read/subscribe race.
       return device;
     } catch (error) { await this.disconnect(); throw error; }
@@ -88,10 +91,13 @@ export class LampTransport {
     this.disconnected();
     if (id) { try { await this.ble.disconnect(id); } catch {} }
   }
-  command(operation, value = 0) {
+  command(operation, value = 0, responseCharacteristic = null) {
     const epoch = this.epoch;
     const run = async () => {
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
+      if(operation.startsWith('wifi')&&!(this.state?.capabilities&WIFI_SETUP_CAPABILITY))throw Error('Update this lamp to firmware 1.9.0 or newer for Bluetooth Wi-Fi setup.');
+      if(operation==='factoryReset'&&!(this.state?.capabilities&128))throw Error('Update this lamp to firmware 1.9.1 or newer for factory reset.');
+      if(operation.startsWith('center')&&!(this.state?.capabilities&128))throw Error('Update this lamp to firmware 1.9.1 or newer to fine-tune its center.');
       if (['color','resetColor'].includes(operation) && !this.state?.supportsColor) throw new Error('Update the lamp firmware to use custom colors.');
       if (['effectOptions','enableEffects'].includes(operation) && !(this.state?.capabilities & 8)) throw new Error('Update the lamp firmware to use effect controls.');
       if (operation === 'effect' && value > this.state?.effectCount) throw new Error('Update the lamp firmware to use this effect.');
@@ -106,6 +112,11 @@ export class LampTransport {
       });
       try {
         const [, state] = await Promise.all([this.ble.write(this.id, SERVICE, COMMAND, frame), response]);
+        if(responseCharacteristic) {
+          const data=await this.ble.read(this.id,SERVICE,responseCharacteristic);
+          if(epoch!==this.epoch)throw Error('Connection changed.');
+          return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(data.buffer,data.byteOffset,data.byteLength)));
+        }
         return state;
       } catch (error) {
         // An uncertain command must not be replayed after reconnect or ID wraparound.
@@ -118,5 +129,73 @@ export class LampTransport {
     const result = this.tail.then(run);
     this.tail = result.catch(() => {});
     return result;
+  }
+  get supportsWifiSetup() { return Boolean(this.id&&this.state?.capabilities&WIFI_SETUP_CAPABILITY); }
+  factoryReset() { return this.command('factoryReset',0xa5); }
+  async calibrateCenter(action,position) {
+    const actions={start:0,save:1,cancel:2,status:3};
+    if(!(action in actions)&&action!=='move')throw Error('Choose a valid center action.');
+    const value=await this.command(action==='move'?'centerMove':'centerControl',action==='move'?position:actions[action],
+      '7b610009-6e2b-4f3d-9a71-28e45c001001');
+    if(value?.version!==1||typeof value.active!=='boolean'||!Number.isInteger(value.leds)||value.leds<1||value.leds>1024||
+      !Number.isInteger(value.midpoint)||value.midpoint<0||value.midpoint>=value.leds||
+      !Number.isInteger(value.position)||value.position<1||value.position>Math.max(1,value.leds-1))throw Error('Invalid center adjustment status.');
+    return value;
+  }
+  async wifiRequest(operation, value=0) {
+    return decodeWifiSetup(await this.command(operation,value,WIFI_SETUP),this.deviceIdentity);
+  }
+  readWifiSetup() { return this.wifiRequest('wifiControl',0); }
+  wifiJob(action) {
+    const epoch=this.epoch;
+    const result=(this.setupTail||Promise.resolve()).then(()=>{
+      if(!this.id||epoch!==this.epoch)throw Error('Connection changed.');
+      return action(epoch);
+    });
+    this.setupTail=result.catch(()=>{});return result;
+  }
+  async waitWifi(epoch,signal) {
+    if(signal?.aborted)throw Error('Wi-Fi setup cancelled.');
+    if(!this.id||epoch!==this.epoch)throw Error('Connection changed.');
+    await new Promise(resolve=>setTimeout(resolve,700));
+    if(signal?.aborted)throw Error('Wi-Fi setup cancelled.');
+    if(!this.id||epoch!==this.epoch)throw Error('Connection changed.');
+  }
+  scanWifi({onProgress=()=>{},signal}={}) {
+    return this.wifiJob(async epoch=>{
+      try {
+        let s=await this.wifiRequest('wifiControl',1);onProgress(s);
+        const started=Date.now();
+        while(s.phase===1&&Date.now()-started<30000){await this.waitWifi(epoch,signal);s=await this.readWifiSetup();onProgress(s);}
+        if(s.phase!==2)throw Error(wifiSetupMessage(s.phase===1?{phase:5,error:1}:s));
+        const networks=[];
+        for(let i=0;i<s.count;i++) {
+          if(signal?.aborted)throw Error('Wi-Fi setup cancelled.');
+          const network=await this.wifiRequest('wifiNetwork',i);
+          if(network.scanId!==s.scanId||network.index!==i)throw Error('Network scan changed. Find networks again.');
+          networks.push(network);
+        }
+        return networks;
+      } catch(e) { if(this.id&&epoch===this.epoch)await this.command('wifiControl',2).catch(()=>{});throw e; }
+    });
+  }
+  configureWifi(ssid,password,open=false,{onProgress=()=>{},signal}={}) {
+    const credentials=wifiCredentials(ssid,password,open);
+    return this.wifiJob(async epoch=>{
+      try {
+        if(signal?.aborted)throw Error('Wi-Fi setup cancelled.');
+        await this.command('wifiBegin',credentials);
+        for(let offset=0;offset<credentials.bytes.length;offset+=16) {
+          if(signal?.aborted)throw Error('Wi-Fi setup cancelled.');
+          await this.command('wifiChunk',{offset,bytes:credentials.bytes.slice(offset,offset+16)});
+        }
+        let s=await this.wifiRequest('wifiCommit');onProgress(s);
+        const started=Date.now();
+        while(s.phase===3&&Date.now()-started<40000){await this.waitWifi(epoch,signal);s=await this.readWifiSetup();onProgress(s);}
+        if(s.phase!==4||!s.connected||s.ssid!==ssid)throw Error(wifiSetupMessage(s.phase===3?{phase:5,error:2}:s));
+        return s;
+      } catch(e) { if(this.id&&epoch===this.epoch)await this.command('wifiControl',2).catch(()=>{});throw e; }
+      finally { credentials.bytes.fill(0); }
+    }).finally(()=>credentials.bytes.fill(0));
   }
 }

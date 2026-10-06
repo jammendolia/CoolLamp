@@ -32,3 +32,4 @@ void serviceLampNetwork();
 void cancelLampSetupPulse();
 bool lampIsUpdating();
 bool lampSetupPulse();
+String lampCenterCalibrationJson();

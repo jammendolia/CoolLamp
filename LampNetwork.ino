@@ -8,6 +8,7 @@
 #include <esp_app_desc.h>
 #include "LampFactory.h"
 #include "LampPage.h"
+#include "LampWifiSetup.h"
 
 LampSettings lampSettings;
 WebServer lampServer(80);
@@ -149,6 +150,7 @@ void serviceLampScan()
     for (int i = 0; i < used; ++i) {
       if (i) scanResults += ',';
       const int index = selected[i];
+      captureLampWifiSetupNetwork(i, WiFi.SSID(index), WiFi.RSSI(index), WiFi.encryptionType(index) == WIFI_AUTH_OPEN);
       scanResults += "{\"ssid\":" + jsonText(WiFi.SSID(index));
       scanResults += ",\"rssi\":" + String(WiFi.RSSI(index));
       scanResults += ",\"open\":" + String(WiFi.encryptionType(index) == WIFI_AUTH_OPEN ? "true" : "false") + "}";
@@ -156,6 +158,7 @@ void serviceLampScan()
     scanResults += "]}";
   }
   WiFi.scanDelete();
+  finishLampWifiSetupScan(count >= 0);
 }
 
 void beginLampScan()
@@ -172,7 +175,7 @@ void beginLampScan()
 void startLampScan()
 {
   if (!authorizedLampRequest(true)) return;
-  if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+  if (otaActive || lampRemoteUpdateBusy() || lampWifiSetupBusy() || lampFactoryResetPending()) { lampServer.send(409, "text/plain", "Wait for the firmware update, reset or Bluetooth Wi-Fi setup to finish."); return; }
   beginLampScan();
   lampServer.send(202, "application/json", scanResults);
 }
@@ -229,12 +232,13 @@ void sendLampState()
   state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
   state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE) + ",\"startupBrightness\":" + String(lampSettings.brightness);
   state += ",\"catalogVersion\":1";
+  state += ",\"factoryReset\":true";
   state += ",\"usingDefaultPassword\":" + String(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
   state += ",\"sync\":" + lampSyncJson();
-  state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+"}";
+  state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+",\"kind\":\""+(lampCalibrationCenter()?"center":"leds")+"\",\"centerSupported\":true}";
   state += ",\"rotation\":{\"enabled\":"+String(lampRotation.enabled?"true":"false")+",\"random\":"+String(lampRotation.random?"true":"false")+",\"category\":"+String(lampRotation.category)+",\"seconds\":"+String(lampRotation.seconds)+"}";
   state += ",\"fountainColors\":[";
   for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=fountainPaletteColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
@@ -271,7 +275,7 @@ void sendLampState()
 void saveLampConfiguration()
 {
   if (!authorizedLampRequest(true)) return;
-  if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+  if (otaActive || lampRemoteUpdateBusy() || lampWifiSetupBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware update or Bluetooth Wi-Fi setup to finish."); return; }
   uint32_t count, powerLimit, brightness, mode;
   if (!readNumber("leds", 1, MAX_LED_COUNT, count) || !readNumber("milliamps", 100, 20000, powerLimit) ||
       !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, lampAvailableEffectCount(), mode)) {
@@ -375,6 +379,12 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/factory-reset",HTTP_POST,[](){
+    if(!authorizedLampRequest(true))return;
+    if(lampServer.arg("confirm")!="RESET"){lampServer.send(400,"text/plain","Confirm factory reset first.");return;}
+    const bool ok=requestLampFactoryReset();
+    lampServer.send(ok?200:409,"text/plain",ok?"Factory reset scheduled. Lamp restarting; pair it again afterward.":"Factory reset could not start. Wait for firmware updates to finish and retry.");
+  });
   lampServer.on("/api/diagnostics", HTTP_GET, sendLampDiagnostics);
   lampServer.on("/api/sync", HTTP_POST, []() {
     if(!authorizedLampRequest(true))return;
@@ -410,10 +420,15 @@ void beginLampNetwork()
   lampServer.on("/api/calibration", HTTP_POST, []() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
-    const String action=lampServer.arg("action");bool ok=false;
-    if(action=="start")ok=beginLampCalibration();
-    else if(action=="move") {uint32_t position;if(lampCalibrationActive() && readNumber("position",1,MAX_LED_COUNT,position)){moveLampCalibration(position);ok=true;}}
-    else if(action=="save" || action=="cancel")ok=finishLampCalibration(action=="save");
+    const String action=lampServer.arg("action"),kind=lampServer.arg("kind");bool ok=false;
+    const bool center=kind=="center";
+    if(!kind.isEmpty()&&kind!="center"&&kind!="leds"){lampServer.send(400,"text/plain","Choose LED setup or center adjustment.");return;}
+    if(action=="start")ok=center?beginLampCenterCalibration():beginLampCalibration();
+    else if(lampCalibrationActive()&&center==lampCalibrationCenter()) {
+      if(action=="move") {uint32_t position;if(readNumber("position",1,lampCalibrationMaximum(),position)){moveLampCalibration(position);ok=true;}}
+      else if(action=="save" || action=="cancel")ok=finishLampCalibration(action=="save");
+    }
+    if(center){lampServer.send(ok?200:409,"text/plain",ok?(action=="save"?"Center saved. Normal lighting restored.":action=="cancel"?"Adjustment canceled. Previous center kept.":"Move the blinking white light with the knob. Click to save; ten seconds without input cancels."):"Could not adjust the center. Finish any other setup or retry saving.");return;}
     lampServer.send(ok?200:409,"text/plain",ok?(action=="save"?"LED count saved. Restarting lamp…":action=="cancel"?"Setup canceled. Previous LED count kept.":"Move the teal light to the last LED. Click the knob to save; double-click to cancel."):"Could not complete setup. Leave any lamp group before starting; retry if saving failed.");
   });
   lampServer.on("/api/rotation", HTTP_POST, []() {
@@ -658,12 +673,21 @@ void serviceLampUSB()
   static bool statusPending = false;
   static bool audioPending = false;
   static bool scanPending = false;
+  static bool wifiSetupPending = false;
+  static bool centerPending = false;
   static String audioReply;
   static size_t audioSent = 0;
   while (Serial.available()) {
     const char command = Serial.read();
     if (command == '?') statusPending = true;
     if (command == 'w') scanPending = true;
+    if (command == 'b') {
+      const uint8_t scan[4] = {1, 1, WifiSetupWire::CONTROL, 1}; String response;
+      lampWifiSetupCommand(scan, sizeof(scan), 0, response); wifiSetupPending = true;
+    }
+    if (command == 'p') wifiSetupPending = true;
+    if (command == 'c') { beginLampCenterCalibration(); centerPending = true; }
+    if (command == 'j') centerPending = true;
     if (command == 's' && setupAP && !otaActive && !lampRemoteUpdateBusy()) {
       beginLampScan(); scanPending = true;
     }
@@ -683,6 +707,8 @@ void serviceLampUSB()
       if (saveLampAudioConfiguration(command == 'm', 8, 8)) restartAt = millis() + 1000;
     }
   }
+  if (wifiSetupPending && audioReply.isEmpty()) { audioReply = lampWifiSetupJson() + "\n"; audioSent = 0; wifiSetupPending = false; }
+  if (centerPending && audioReply.isEmpty()) { audioReply = lampCenterCalibrationJson() + "\n"; audioSent = 0; centerPending = false; }
   if (audioPending && audioReply.isEmpty()) { audioReply = lampAudioJson() + "\n"; audioSent = 0; audioPending = false; }
   if (!audioReply.isEmpty()) {
     const size_t room = Serial.availableForWrite();
@@ -714,6 +740,7 @@ void serviceLampNetwork()
 {
   serviceLampUSB();
   serviceLampScan();
+  serviceLampWifiSetup();
   const uint32_t now = millis();
   if (restartAt && static_cast<int32_t>(now - restartAt) >= 0) ESP.restart();
   if (otaActive && now - otaLastActivity > 30000) failLampUpdate("Upload timed out.");
@@ -740,7 +767,7 @@ void serviceLampNetwork()
   }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
-  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen());
+  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending());
 }
 
 bool saveLampDefaults()
@@ -780,4 +807,10 @@ bool saveLampLedCount(uint16_t count) {
   Preferences prefs;if(!prefs.begin("coollamp",false))return false;
   const bool ok=prefs.putBytes("settings",&next,sizeof(next))==sizeof(next);prefs.end();
   if(ok){lampSettings=next;restartAt=millis()+1200;}return ok;
+}
+
+String lampCenterCalibrationJson(){
+  return String("{\"version\":1,\"active\":")+(lampCalibrationCenter()?"true":"false")+
+    ",\"position\":"+String(lampCalibrationCenter()?lampCalibrationPosition():lampSplitCount(NUM_LEDS,lampMidpoint))+
+    ",\"midpoint\":"+String(lampMidpoint)+",\"leds\":"+String(NUM_LEDS)+"}";
 }

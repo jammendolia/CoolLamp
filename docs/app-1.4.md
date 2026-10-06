@@ -24,9 +24,10 @@ after uncertain delivery. Separate lamps still require separate access passwords
   discovery, shared identity, persistent names, and white identification flash
   require the new firmware. A legacy BLE record is merged on reconnection once
   the shared identity becomes available.
-- Wi-Fi configuration, strip settings, access-password changes, pairing
-  management, and naming use Wi-Fi. Initial provisioning can use the lamp's
-  hotspot from within the app. Wi-Fi provisioning over BLE is a later addition.
+- Firmware 1.4 uses Wi-Fi for network configuration, strip settings,
+  access-password changes, pairing management, and naming. Firmware 1.9.0 adds
+  [Wi-Fi setup over Bluetooth](bluetooth-wifi-setup.md) with the matching app.
+  The hotspot remains available for older lamps and recovery.
 - HTTP remains local and password-authenticated, with the existing per-boot
   mutation token. It is not encrypted on the LAN. Native requests disable
   redirects. The app accepts only local IPv4 addresses and `.local` names.

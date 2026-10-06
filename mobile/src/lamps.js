@@ -1,11 +1,14 @@
 // Only display metadata lives here. Passwords belong in the native credential vault.
 // Discovery lasts for this app session only, including lamps not yet connected.
 export class LampDiscoverySession {
-  constructor() { this.lamps=new Map(); this.scanned=false; }
+  constructor() { this.lamps=new Map(); this.scanned=false; this.forgotten=new Set(); }
   get items() { return [...this.lamps.values()]; }
+  beginRefresh() { this.forgotten.clear(); }
+  forget(id) { this.lamps.delete(id);this.forgotten.add(id);return this.items; }
   remember(entries) {
     for(const entry of entries || []) {
       if(typeof entry?.id!=='string'||!entry.id||entry.id.length>128)continue;
+      if(this.forgotten.has(entry.id))continue;
       try {
         const address=lampAddress(entry.address);
         this.lamps.set(entry.id,{id:entry.id,address,name:entry.name,hostname:entry.hostname});
