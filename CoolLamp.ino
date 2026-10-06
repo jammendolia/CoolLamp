@@ -17,6 +17,7 @@
 #include "LampFactoryReset.h"
 #include "LampVu.h"
 #include "LampFountain.h"
+#include "LampWifiSetup.h"
 #include "AudioAnalysis.h"
 #include <new>
 SET_LOOP_TASK_STACK_SIZE(4096);

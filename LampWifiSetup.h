@@ -11,3 +11,5 @@ void finishLampWifiSetupScan(bool success);
 String lampWifiSetupJson();
 bool lampWifiSetupBusy();
 void beginLampWifiSetupDiagnostics();
+// Apply this lamp's saved radio profile after enabling station mode, before join.
+void applyLampWifiPowerProfile();

@@ -633,6 +633,7 @@ void beginLampNetwork()
   WiFi.setHostname(lampHost.c_str());
   if (lampSettings.ssid[0]) {
     WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
+    applyLampWifiPowerProfile();
     WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
   } else WiFi.mode(WIFI_OFF);
   beginLampBluetooth(lampAPName);

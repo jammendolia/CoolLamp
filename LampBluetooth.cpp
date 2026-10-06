@@ -44,6 +44,7 @@ uint8_t lastFirmware[20] = {};
 std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0};
 std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
+std::atomic<bool> disconnectRequested{false};
 uint32_t pairingStarted = 0;
 String bluetoothName;
 std::atomic<bool> advertisingDirty{false};
@@ -55,6 +56,10 @@ std::atomic<bool> lastEncrypted{false}, lastBonded{false};
 std::atomic<uint32_t> stateReads{0};
 std::atomic<uint16_t> lastReadLength{0};
 std::atomic<uint32_t> serviceRefreshes{0};
+ble_addr_t refreshedPeers[CONFIG_BT_NIMBLE_MAX_BONDS]{};
+uint8_t refreshedPeerCount=0;
+std::atomic<bool> lastAuthAccepted{false}, rejectedSecure{false}, rejectedSameConnection{false}, rejectedEncrypted{false};
+std::atomic<uint32_t> lastAuthAt{0},lastWriteAt{0},lastDisconnectAt{0};
 uint32_t revision = 0;
 uint8_t lastState[16] = {};
 
@@ -73,6 +78,17 @@ bool bonded(const ble_addr_t& address)
   return false;
 }
 
+bool authorizeEncryptedPeer(const ble_gap_conn_desc& peer)
+{
+  // Bonded reconnections can serve encrypted ATT requests without delivering
+  // the wrapper's authentication-complete callback. Use the live descriptor;
+  // encryption alone never admits a phone outside the owner/enrollment policy.
+  if(disconnectRequested || connection!=peer.conn_handle || !peer.sec_state.encrypted || !(knownPeer || pairing || secure))return false;
+  secure=true;
+  if(peer.sec_state.bonded)knownPeer=true;
+  return true;
+}
+
 class Connections final : public BLEServerCallbacks {
   void onConnect(BLEServer* s, ble_gap_conn_desc* event) override {
     uint16_t empty = NO_CONNECTION;
@@ -81,20 +97,24 @@ class Connections final : public BLEServerCallbacks {
       return;
     }
     secure = false;
+    disconnectRequested=false;
     ++connects;
     knownPeer = bonded(event->peer_id_addr);
     ++generation;
     extendedControls = false;
-    if (!knownPeer && !pairing) s->disconnect(event->conn_handle);
+    if (!knownPeer && !pairing) { disconnectRequested=true;s->disconnect(event->conn_handle); }
     // Reading the protected state characteristic starts OS-managed pairing.
   }
   void onDisconnect(BLEServer*, ble_gap_conn_desc* event) override {
     if (connection != event->conn_handle) return;
+    disconnectRequested=true;
+    lastDisconnectAt=millis();
     secure = false;
     knownPeer = false;
     ++generation;
     extendedControls = false;
     connection = NO_CONNECTION;
+    disconnectRequested=false;
     advertisingDirty = true;
   }
 };
@@ -109,14 +129,10 @@ class Security final : public BLESecurityCallbacks {
     ++authentications;
     lastEncrypted = result->sec_state.encrypted;
     lastBonded = result->sec_state.bonded;
-    secure = result->sec_state.encrypted && (knownPeer || pairing);
-    if (secure) {
-      // Existing phones cache ATT handles across firmware updates. The pinned
-      // wrapper registers characteristics by allocation address, so that cache
-      // can become stale even when UUIDs and creation order have not changed.
-      ble_svc_gatt_changed(0x0001, 0xffff); ++serviceRefreshes;
-    }
+    secure = authorizeEncryptedPeer(*result);
+    lastAuthAccepted=secure.load();lastAuthAt=millis();
     if (!secure && connection != NO_CONNECTION) {
+      disconnectRequested=true;
       if (!knownPeer) ble_store_util_delete_peer(&result->peer_id_addr);
       server->disconnect(connection);
     }
@@ -127,7 +143,8 @@ class StateReads final : public BLECharacteristicCallbacks {
   void onStatus(BLECharacteristic*, Status status, uint32_t code) override {
     lastNotifyStatus = static_cast<int>(status); lastNotifyCode = code;
   }
-  void onRead(BLECharacteristic* characteristic, ble_gap_conn_desc*) override {
+  void onRead(BLECharacteristic* characteristic, ble_gap_conn_desc* peer) override {
+    if(peer)authorizeEncryptedPeer(*peer);
     ++stateReads; lastReadLength = characteristic->getLength();
     // A newly connected older app may read before the loop has refreshed the
     // previous client's extended catalog. Always provide its initial baseline.
@@ -144,13 +161,18 @@ class StateReads final : public BLECharacteristicCallbacks {
 class Writes final : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic, ble_gap_conn_desc* event) override {
     ++writes;
-    if (!secure || connection != event->conn_handle) { ++rejectedWrites; return; }
+    lastWriteAt=millis();
+    if (!authorizeEncryptedPeer(*event)) {
+      rejectedSecure=secure.load();rejectedSameConnection=connection==event->conn_handle;rejectedEncrypted=event->sec_state.encrypted;
+      ++rejectedWrites; return;
+    }
     const String value = characteristic->getValue();
     if (value.length() >= 3) { lastCommandId = uint8_t(value[1]); lastOperation = uint8_t(value[2]); }
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
     const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : uint8_t(value[2])==21?5:4) : 4;
     const bool wifiFrame = value.length() >= 3 && uint8_t(value[2]) >= WifiSetupWire::CONTROL && uint8_t(value[2]) <= WifiSetupWire::COMMIT;
     if (wifiFrame ? !WifiSetupWire::validFrame(reinterpret_cast<const uint8_t*>(value.c_str()), value.length()) : value.length() != expected) {
+      disconnectRequested=true;
       server->disconnect(event->conn_handle);
       return;
     }
@@ -159,7 +181,7 @@ class Writes final : public BLECharacteristicCallbacks {
     command.length = value.length();
     memcpy(command.bytes, value.c_str(), command.length);
     // Never change FastLED, Preferences, or Wi-Fi state on the Bluetooth task.
-    if (xQueueSend(commands, &command, 0) != pdTRUE) server->disconnect(event->conn_handle);
+    if (xQueueSend(commands, &command, 0) != pdTRUE) { disconnectRequested=true;server->disconnect(event->conn_handle); }
   }
 };
 
@@ -265,6 +287,7 @@ void setLampPairingWindow(bool open)
   pairingStarted = millis();
   // Make room for a new phone if the owner opens pairing while one is connected.
   if (pairing && connection != NO_CONNECTION) {
+    disconnectRequested=true;
     secure = false;
     ++generation;
     extendedControls = false;
@@ -296,12 +319,15 @@ String lampBluetoothStatusJson() {
     ",\"notifyStatus\":" + lastNotifyStatus.load() + ",\"notifyCode\":" + lastNotifyCode.load() +
     ",\"stateReads\":" + stateReads.load() + ",\"lastReadLength\":" + lastReadLength.load() +
     ",\"stateBytes\":" + (stateCharacteristic?stateCharacteristic->getLength():0) +
-    ",\"serviceRefreshes\":" + serviceRefreshes.load() + "}";
+    ",\"serviceRefreshes\":" + serviceRefreshes.load() + ",\"lastAuthAccepted\":" + (lastAuthAccepted?"true":"false") +
+    ",\"lastRejected\":[" + unsigned(rejectedSecure.load()) + "," + unsigned(rejectedSameConnection.load()) + "," + unsigned(rejectedEncrypted.load()) +
+    "],\"lastAuthAt\":" + lastAuthAt.load() + ",\"lastWriteAt\":" + lastWriteAt.load() + ",\"lastDisconnectAt\":" + lastDisconnectAt.load() + "}";
 }
 
 void forgetLampPhones()
 {
   if (!pairing || !server) return;
+  disconnectRequested=true;
   secure = false;
   knownPeer = false;
   ++generation;
@@ -321,8 +347,20 @@ void serviceLampBluetooth()
     resetLampWifiSetupTransfer(); transferGeneration = currentGeneration;
   }
   ble_gap_conn_desc peer{};
-  const bool paired = pairing && secure && connection != NO_CONNECTION &&
-    ble_gap_conn_find(connection, &peer) == 0 && peer.sec_state.bonded;
+  const bool authenticated = connection != NO_CONNECTION && ble_gap_conn_find(connection, &peer) == 0 && authorizeEncryptedPeer(peer);
+  if(authenticated) {
+    // The wrapper registers characteristics by allocation address. Notify a
+    // trusted phone once per boot so old ATT handles can be discarded. Keep the
+    // peer list exclusively on the loop task, separate from security callbacks.
+    bool refreshed=false;
+    for(uint8_t i=0;i<refreshedPeerCount;++i)if(ble_addr_cmp(&refreshedPeers[i],&peer.peer_id_addr)==0)refreshed=true;
+    if(!refreshed) {
+      ble_svc_gatt_changed(0x0001,0xffff);++serviceRefreshes;
+      if(refreshedPeerCount<CONFIG_BT_NIMBLE_MAX_BONDS)refreshedPeers[refreshedPeerCount++]=peer.peer_id_addr;
+      else refreshedPeers[0]=peer.peer_id_addr;
+    }
+  }
+  const bool paired = pairing && authenticated && peer.sec_state.bonded;
   if (paired || (pairing && millis() - pairingStarted >= 120000)) {
     pairing = false;
     advertisingDirty = true;
@@ -330,7 +368,7 @@ void serviceLampBluetooth()
   if (advertisingDirty.exchange(false)) updateAdvertising();
   Command command{};
   // Bound work per frame; app waits for each application-level acknowledgment.
-  if (xQueueReceive(commands, &command, 0) == pdTRUE && secure && command.generation == generation) {
+  if (xQueueReceive(commands, &command, 0) == pdTRUE && authenticated && command.generation == generation) {
     const uint8_t version = command.bytes[0], id = command.bytes[1], op = command.bytes[2], value = command.bytes[3];
     auto state = getLampControlState();
     uint8_t result = 0;

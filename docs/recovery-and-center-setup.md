@@ -214,40 +214,76 @@ handoff. Native host tests cover provisional identifiers, final names, late
 inventory, cancellation and ambiguous accessories. Physical Wi-Fi join success
 and Apple radio behavior require a phone retry; host checks cannot establish them.
 
-## Stale Bluetooth services in 1.9.4
+## Bluetooth reconnection and Wi-Fi setup in 1.9.4
 
 The pinned ESP32 Arduino BLE wrapper registers characteristics by allocation
-address, not their creation order. Consequently, an unchanged UUID can acquire
-a different ATT handle across builds. A bonded iPhone can retain its old handle
-cache and read a different attribute, producing **Invalid response from lamp**
-even though encryption succeeds. Appending characteristics alone does not ensure
-stable handles in this wrapper.
+address, so an unchanged UUID can acquire a different ATT handle across builds.
+A bonded iPhone can retain its old handle cache and read a different attribute,
+producing **Invalid response from lamp** even though encryption succeeds.
+Appending characteristics alone does not ensure stable handles in this wrapper.
+After encryption and the existing owner/enrollment checks, firmware sends the
+standard Service Changed indication once per phone per boot.
 
-After successful encryption and the existing owner/enrollment checks, firmware
-sends the standard Service Changed indication for the complete attribute range.
-The app retries one connection automatically only when the initial protected
-state read has an invalid packet shape on an Apple-managed accessory. No control
-commands have been sent at this point. It keeps the authorized device, does not
-reopen the picker, does not replay commands, and does not retry an incompatible
+On a bonded reconnect, an encrypted ATT request can also arrive without, or
+before, the authentication-complete callback. Live USB traces showed a known
+phone's encrypted write rejected while the callback-derived flag remained false.
+Authorization now checks the live connection descriptor, matching connection
+handle, encryption, and either a known owner or an explicit enrollment window.
+Encryption alone never authorizes an unknown phone. A connection being closed
+cannot reauthorize itself or prematurely close a newly opened enrollment window.
+Queued commands still require the current authorized connection generation.
+The live corrected connection acknowledged 55 commands with zero rejected writes.
+
+App build **22.1** retries one connection automatically only when the initial
+protected state read has an invalid packet shape on an Apple-managed accessory.
+No control commands have been sent at this point. It keeps the authorized device,
+does not reopen the picker or replay commands, and does not retry an incompatible
 protocol. A second invalid initial packet ends the attempt with its byte count.
 
-USB **q** additionally reports state-read count, last read length, stored packet
-length and service-refresh count. The USB lamp physically reproduced the failure
-with encrypted connections and zero control writes. After the cache-refresh
-firmware was flashed, the existing pairing connected on the second attempt,
-read a 16-byte state packet, and acknowledged 51 commands without notification
-errors. The upcoming app makes that initial retry automatic.
+USB **q** additionally reports state-read count/length, service-refresh count,
+authorization milestones and rejection flags. It excludes phone addresses,
+command payloads and credentials.
 
-The first live Bluetooth Wi-Fi join then timed out with driver reason **2**
-(AUTH_EXPIRE), before association or DHCP. Setup now leaves the driver's existing
-transient-authentication retries enabled within the original 35-second deadline;
-it still preserves prior settings on failure/cancellation and saves candidates
-only after obtaining an address. The app identifies reason 2 as an initial
-exchange timeout, which does not establish that the password was incorrect.
-Enabling retries still requires a live join test; it is not proof that the router
-will accept the connection.
+### Authentication timeout and per-lamp radio profile
 
-The live retry and a further attempt with the iPhone's Bluetooth disabled both
-still ended with reason 2 before association. The two working lamps were found
-to use a different IoT SSID. Joining that known-working network is the next
-comparison; the main-network Wi-Fi failure is not claimed fixed by this release.
+The USB prototype repeatedly timed out with driver reason **2** (AUTH_EXPIRE),
+before association or DHCP, on both the main and IoT networks. Keeping driver
+retries enabled, disconnecting the iPhone's Bluetooth, turning the LEDs off, and
+pausing LED data/audio did not resolve it. A controlled **8.5 dBm** transmit-power
+trial then obtained an address on the IoT network; the owner confirmed that
+Wi-Fi effect and power controls worked. This is evidence for a radio/power-margin
+issue, not proof of a defective ESP32 or an incorrect Wi-Fi password.
+
+New lamps retain the driver's normal power profile. During Bluetooth Wi-Fi
+setup, an AUTH_EXPIRE failure without association can trigger one lower-power
+retry after eight seconds, within the same 35-second deadline. Other failure
+reasons do not select this retry. Failed or cancelled trials restore the prior
+profile without saving a speculative setting. A successful lower-power join
+saves a one-byte per-lamp `wifiPower` profile only after obtaining an IP address.
+It is applied before joining on subsequent boots and when restoring saved Wi-Fi.
+Normal lamps keep their normal profile; firmware does not lower every lamp's
+transmit power. Factory reset clears this profile with other user settings;
+a later setup can select it again. Animation and audio continue during setup.
+
+USB **p** adds `tx: [power in quarter-dBm units, saved reduced-profile flag]`.
+The existing `join` tuple retains setup error, driver reason, association and
+IP milestones. Host tests exercise the retry threshold, single-retry bound,
+setter failure, timeout/cancellation rollback, success-only persistence and
+restoring the profile after startup. On 2026-10-06, the USB lamp was flashed and hash-verified with this firmware.
+It automatically rejoined its saved network after restarting, with `tx: [34,1]`,
+205 LEDs, its existing phone bond, and its microphone configuration intact.
+Audio capture reported no errors or overruns after restart.
+
+### Keep the chosen name during Wi-Fi handoff
+
+A newly paired lamp reports its factory hardware name over Wi-Fi until named
+there. Earlier apps let that response overwrite the phone's chosen nickname.
+The next app build preserves the saved nickname, room, favorites and pairing
+identity when the Wi-Fi response is a factory name. If an older build already
+overwrote the nickname, the retained Apple picker name can restore it. An
+explicit custom name reported by the lamp still takes precedence. Nicknames
+are matched by lamp identity, never borrowed from another lamp.
+
+All 93 mobile tests pass. The browser check exercises the real Bluetooth-to-Wi-Fi
+handoff with a factory-named Wi-Fi response and verifies the chosen nickname
+both on screen and in persistent storage.

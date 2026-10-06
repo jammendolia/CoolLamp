@@ -38,6 +38,8 @@ inline size_t strlcpy(char* dst,const char* src,size_t n){size_t len=strlen(src)
 #include "Preferences.h"
 uint32_t clockMs=0;uint32_t millis(){return clockMs;}
 constexpr int WIFI_OFF=0,WIFI_STA=1,WIFI_AP_STA=3,WL_CONNECTED=3;
+using wifi_power_t=int;
+constexpr wifi_power_t WIFI_POWER_19_5dBm=78,WIFI_POWER_8_5dBm=34;
 using arduino_event_id_t=int;
 struct arduino_event_info_t {struct {uint16_t reason=0;}wifi_sta_disconnected;};
 constexpr int ARDUINO_EVENT_WIFI_STA_CONNECTED=1,ARDUINO_EVENT_WIFI_STA_GOT_IP=2,ARDUINO_EVENT_WIFI_STA_DISCONNECTED=3;
@@ -47,14 +49,16 @@ struct IPAddress {
  String toString()const{return std::to_string(octets[0])+"."+std::to_string(octets[1])+"."+std::to_string(octets[2])+"."+std::to_string(octets[3]);}
 };
 struct Wifi {
- int state=0,radioMode=0;String name,lastPassword;bool automatic=true;IPAddress address;
+ int state=0,radioMode=0,begins=0;String name,lastPassword;bool automatic=true,powerSetter=true;IPAddress address;
+ wifi_power_t txPower=WIFI_POWER_19_5dBm;
  std::function<void(arduino_event_id_t,arduino_event_info_t)> callback;
  void onEvent(std::function<void(arduino_event_id_t,arduino_event_info_t)> fn){callback=fn;}
  int status(){return state;}String SSID(){return name;}IPAddress localIP(){return address;}
  void mode(int n){radioMode=n;}void setAutoReconnect(bool b){automatic=b;}
  void disconnect(bool,bool){state=0;address={};}
  void softAPdisconnect(bool){radioMode=WIFI_STA;}
- void begin(const char* ssid,const char* pass){name=ssid;lastPassword=pass;}
+ void begin(const char* ssid,const char* pass){++begins;name=ssid;lastPassword=pass;}
+ wifi_power_t getTxPower(){return txPower;}bool setTxPower(wifi_power_t p){if(!powerSetter)return false;txPower=p;return true;}
  void scanDelete(){}
 } WiFi;
 LampSettings lampSettings;
@@ -131,6 +135,33 @@ int main(){
  uint8_t maxChunk[20]={1,1,17,0};memset(maxChunk+4,'x',16);
  for(unsigned offset=0;offset<95;offset+=16){maxChunk[3]=offset;assert(transfer.append(maxChunk,4+(95-offset<16?95-offset:16),2,10));}
  assert(transfer.complete(2,11));transfer.clear();for(auto b:transfer.bytes)assert(b==0);
+ // Only AUTH_EXPIRE can select the lower-power retry, within the same deadline.
+ credentials();assert(command(commit,sizeof(commit))==0);const uint32_t attemptAt=clockMs;int starts=WiFi.begins;
+ reason.wifi_sta_disconnected.reason=202;WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
+ clockMs=attemptAt+8000;serviceLampWifiSetup();assert(WiFi.txPower==78&&WiFi.begins==starts);
+ reason.wifi_sta_disconnected.reason=2;WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
+ clockMs=attemptAt+7999;serviceLampWifiSetup();assert(WiFi.txPower==78);
+ clockMs=attemptAt+8000;serviceLampWifiSetup();assert(WiFi.txPower==34&&WiFi.begins==starts+1);
+ serviceLampWifiSetup();assert(WiFi.begins==starts+1);assert(Preferences::storage["wifiPower"].empty());
+ clockMs=attemptAt+35000;serviceLampWifiSetup();assert(LampWifiSetup::error==2&&WiFi.txPower==78);
+ // A cancelled retry restores the prior profile without persisting a guess.
+ credentials();assert(command(commit,sizeof(commit))==0);WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
+ clockMs+=8000;serviceLampWifiSetup();assert(WiFi.txPower==34);
+ assert(command(cancel,sizeof(cancel))==0&&WiFi.txPower==78&&Preferences::storage["wifiPower"].empty());
+ // A failed power setter cannot save the profile or create retry loops.
+ credentials();assert(command(commit,sizeof(commit))==0);WiFi.powerSetter=false;
+ WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);clockMs+=8000;starts=WiFi.begins;
+ serviceLampWifiSetup();serviceLampWifiSetup();assert(WiFi.begins==starts&&WiFi.txPower==78);
+ WiFi.powerSetter=true;assert(command(cancel,sizeof(cancel))==0);
+ // Persist only after IP acquisition, then use the successful per-lamp profile on boot.
+ credentials();assert(command(commit,sizeof(commit))==0);WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
+ clockMs+=8000;serviceLampWifiSetup();WiFi.state=WL_CONNECTED;WiFi.address={192,168,1,123};
+ serviceLampWifiSetup();assert(LampWifiSetup::phase==LampWifiSetup::CONNECTED);
+ assert(Preferences::storage["wifiPower"]==std::vector<uint8_t>{34});assert(LampWifiSetup::preferredReducedPower);
+ WiFi.txPower=78;beginLampWifiSetupDiagnostics();applyLampWifiPowerProfile();assert(WiFi.txPower==34);
+ credentials();assert(command(commit,sizeof(commit))==0);WiFi.callback(ARDUINO_EVENT_WIFI_STA_DISCONNECTED,reason);
+ clockMs+=8000;starts=WiFi.begins;serviceLampWifiSetup();assert(WiFi.begins==starts);
+ assert(command(cancel,sizeof(cancel))==0&&WiFi.txPower==34);
  std::cout<<"PASS: successful/failed/cancelled joins, settings preservation, scan paging, ownership, timeout and 95-byte credentials\n";
 }
 '''

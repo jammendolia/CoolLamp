@@ -8,6 +8,54 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class BluetoothTests(unittest.TestCase):
+    def test_encrypted_write_without_authentication_callback(self):
+        source = (ROOT / 'LampBluetooth.cpp').read_text()
+        helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
+        callback = source[source.index('class Writes final'):source.index('Connections connectionCallbacks')]
+        stub = r'''
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <cassert>
+#include "WifiSetupWire.h"
+using String=std::string;
+struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
+struct BLECharacteristic {String value;String getValue(){return value;}};
+struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){}};
+std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+std::atomic<uint32_t> writes{0},rejectedWrites{0},generation{7},lastWriteAt{0};
+std::atomic<uint8_t> lastCommandId{0},lastOperation{0};
+std::atomic<bool> rejectedSecure{false},rejectedSameConnection{false},rejectedEncrypted{false};
+uint32_t millis(){return 100;}
+struct {int disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
+auto* server=&instance;
+struct Command {uint32_t generation;uint8_t length;uint8_t bytes[20];};
+void* commands=nullptr;constexpr int pdTRUE=1;int queued=0;Command received{};
+int xQueueSend(void*,const Command* c,int){++queued;received=*c;return pdTRUE;}
+'''
+        main = r'''
+int main(){
+ Writes writes;BLECharacteristicCallbacks& callback=writes;BLECharacteristic characteristic;
+ const uint8_t frame[]={1,1,12,3};characteristic.value.assign(reinterpret_cast<const char*>(frame),sizeof(frame));
+ ble_gap_conn_desc peer;callback.onWrite(&characteristic,&peer);
+ assert(secure&&queued==1&&rejectedWrites==0&&received.generation==7&&received.length==4);
+ assert(lastCommandId==1&&lastOperation==12);
+ secure=false;knownPeer=false;callback.onWrite(&characteristic,&peer);
+ assert(queued==1&&rejectedWrites==1&&rejectedEncrypted&&rejectedSameConnection);
+ knownPeer=true;peer.sec_state.encrypted=false;callback.onWrite(&characteristic,&peer);assert(queued==1&&rejectedWrites==2);
+ peer.sec_state.encrypted=true;peer.conn_handle=2;callback.onWrite(&characteristic,&peer);assert(queued==1&&rejectedWrites==3&&!rejectedSameConnection);
+ peer.conn_handle=1;knownPeer=false;pairing=true;callback.onWrite(&characteristic,&peer);assert(queued==2&&secure);
+ characteristic.value.pop_back();callback.onWrite(&characteristic,&peer);assert(queued==2&&instance.disconnects==1);
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='lamp-ble-write-') as directory:
+            cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
+            cpp.write_text(stub + helper + callback + main)
+            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I'+str(ROOT),
+                            '-fsanitize=address,undefined', str(cpp), '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_state_read_preserves_binary_packet_and_legacy_catalog(self):
         source = (ROOT / 'LampBluetooth.cpp').read_text()
         callback = source[source.index('class StateReads final'):source.index('class Writes final')]
@@ -19,6 +67,7 @@ class BluetoothTests(unittest.TestCase):
 #include <cassert>
 using String=std::string;
 struct ble_gap_conn_desc {};
+bool authorizeEncryptedPeer(const ble_gap_conn_desc&){return true;}
 struct BLECharacteristic {
  String value;size_t getLength(){return value.size();}String getValue(){return value;}
  void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}
@@ -54,6 +103,7 @@ int main(){
 
     def test_enrollment_and_saved_phone_policy(self):
         source = (ROOT / 'LampBluetooth.cpp').read_text()
+        helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
         callbacks = source[source.index('class Connections final'):source.index('class StateReads final')]
         cue = source[source.index('bool lampPairingCueActive()'):source.index('bool lampBluetoothReady()')]
         closing = source[source.index('  ble_gap_conn_desc peer{};'):source.index('  if (advertisingDirty.exchange(false))')]
@@ -61,7 +111,10 @@ int main(){
 #include <atomic>
 #include <cstdint>
 #include <cassert>
+constexpr int CONFIG_BT_NIMBLE_MAX_BONDS=3;
 struct ble_addr_t { int value=0; };
+int ble_addr_cmp(const ble_addr_t* a,const ble_addr_t* b){return a->value-b->value;}
+ble_addr_t refreshedPeers[CONFIG_BT_NIMBLE_MAX_BONDS]{};uint8_t refreshedPeerCount=0;
 struct ble_gap_conn_desc {uint16_t conn_handle=1;ble_addr_t peer_id_addr;struct {bool encrypted=false,bonded=false;}sec_state;};
 struct BLEServer {int disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
 struct BLEServerCallbacks {virtual void onConnect(BLEServer*,ble_gap_conn_desc*){};virtual void onDisconnect(BLEServer*,ble_gap_conn_desc*){};};
@@ -69,7 +122,8 @@ struct BLESecurityCallbacks {virtual bool onSecurityRequest(){return false;}virt
 constexpr uint16_t NO_CONNECTION=0xffff;
 std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0},connects{0},authentications{0},serviceRefreshes{0};
-std::atomic<bool> secure{false},knownPeer{false},pairing{false},advertisingDirty{false},lastEncrypted{false},lastBonded{false};
+std::atomic<bool> secure{false},knownPeer{false},pairing{false},advertisingDirty{false},lastEncrypted{false},lastBonded{false},lastAuthAccepted{false},disconnectRequested{false};
+std::atomic<uint32_t> lastDisconnectAt{0},lastAuthAt{0};
 std::atomic<uint8_t> extendedControls{0};
 BLEServer* server=&instance;int deleted=0;uint32_t clockMs=0,pairingStarted=0;
 uint32_t millis(){return clockMs;}
@@ -92,16 +146,21 @@ int main(){
  assert(instance.disconnects==1&&deleted==1);cb.onDisconnect(server,&actual);assert(lampPairingCueActive());
  pairing=false;actual.peer_id_addr.value=1;cb.onConnect(server,&actual);
  assert(knownPeer&&security.onSecurityRequest()&&instance.disconnects==1);
- actual.sec_state.encrypted=true;actual.sec_state.bonded=true;security.onAuthenticationComplete(&actual);assert(secure);
- cb.onDisconnect(server,&actual);actual.peer_id_addr.value=0;cb.onConnect(server,&actual);
- assert(instance.disconnects==2&&!security.onSecurityRequest());cb.onDisconnect(server,&actual);
+ actual.sec_state.encrypted=true;actual.sec_state.bonded=true;security.onAuthenticationComplete(&actual);assert(secure);closeEnrollment();
+ cb.onDisconnect(server,&actual);
+ // A bonded encrypted reconnect can omit the authentication callback entirely.
+ cb.onConnect(server,&actual);assert(!secure);closeEnrollment();assert(secure&&authentications==3&&serviceRefreshes==2);
+ ble_gap_conn_desc stale=actual;stale.conn_handle=99;assert(!authorizeEncryptedPeer(stale));
+ pairing=true;disconnectRequested=true;secure=false;closeEnrollment();assert(pairing&&!secure);
+ cb.onDisconnect(server,&actual);pairing=false;actual.peer_id_addr.value=0;cb.onConnect(server,&actual);
+ assert(instance.disconnects==2&&!security.onSecurityRequest()&&!authorizeEncryptedPeer(actual));cb.onDisconnect(server,&actual);
  pairing=true;clockMs=120000;closeEnrollment();assert(!pairing&&!lampPairingCueActive());
- assert(connects==4&&authentications==3&&lastEncrypted&&lastBonded&&serviceRefreshes==2);
+ assert(connects==5&&authentications==3&&lastEncrypted&&lastBonded&&serviceRefreshes==2);
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-bluetooth-') as directory:
             cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
-            cpp.write_text(stub + callbacks + cue + '\nvoid closeEnrollment(){\n' + closing + '}\n' + main)
+            cpp.write_text(stub + helper + callbacks + cue + '\nvoid closeEnrollment(){\n' + closing + '}\n' + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 

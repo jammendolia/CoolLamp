@@ -14,6 +14,10 @@ char candidateSsid[33]{}, candidatePassword[64]{};
 std::atomic<bool> observing{false}, associated{false}, gotIp{false};
 std::atomic<uint16_t> disconnectReason{0};
 uint8_t lastJoinError=0;
+constexpr uint8_t REDUCED_POWER=34; // 8.5 dBm, in the driver's quarter-dBm units.
+bool preferredReducedPower=false, attemptReducedPower=false, powerFallbackTried=false;
+bool normalPowerCaptured=false;
+wifi_power_t normalPower=WIFI_POWER_19_5dBm;
 
 void clearCandidate() {
   memset(candidateSsid, 0, sizeof(candidateSsid));
@@ -24,6 +28,7 @@ void restoreStation() {
   WiFi.disconnect(false, false);
   WiFi.setAutoReconnect(true);
   WiFi.mode(setupAP ? WIFI_AP_STA : lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
+  if (setupAP || lampSettings.ssid[0]) applyLampWifiPowerProfile();
   if (lampSettings.ssid[0]) WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
 }
 void fail(uint8_t reason) {
@@ -33,6 +38,12 @@ void fail(uint8_t reason) {
 }
 
 void beginLampWifiSetupDiagnostics() {
+  Preferences prefs; uint8_t profile=0;
+  if (prefs.begin("coollamp", true)) {
+    if (prefs.getBytesLength("wifiPower")==sizeof(profile)) prefs.getBytes("wifiPower", &profile, sizeof(profile));
+    prefs.end();
+  }
+  LampWifiSetup::preferredReducedPower=profile==LampWifiSetup::REDUCED_POWER;
   // Network events run on another task. Only atomics are touched here; no
   // credentials, NVS, Strings, or radio changes are accessed by the callback.
   WiFi.onEvent([](arduino_event_id_t event, arduino_event_info_t info) {
@@ -47,6 +58,12 @@ void beginLampWifiSetupDiagnostics() {
       if(info.wifi_sta_disconnected.reason!=8)disconnectReason=info.wifi_sta_disconnected.reason;
     }
   });
+}
+
+void applyLampWifiPowerProfile() {
+  using namespace LampWifiSetup;
+  if (!normalPowerCaptured) { normalPower=WiFi.getTxPower(); normalPowerCaptured=true; }
+  WiFi.setTxPower(preferredReducedPower ? WIFI_POWER_8_5dBm : normalPower);
 }
 
 bool lampWifiSetupBusy() { return LampWifiSetup::phase == LampWifiSetup::CONNECTING || LampWifiSetup::phase == LampWifiSetup::SCANNING; }
@@ -64,7 +81,8 @@ String lampWifiSetupJson() {
   // Compact diagnostics keep even escaped 32-byte SSIDs within the GATT
   // attribute size: [last join error, Wi-Fi reason, associated, got IPv4].
   reply += String(",\"join\":[") + lastJoinError + "," + disconnectReason.load() + "," +
-    unsigned(associated.load()) + "," + unsigned(gotIp.load()) + "]}";
+    unsigned(associated.load()) + "," + unsigned(gotIp.load()) + "]";
+  reply += String(",\"tx\":[") + int(WiFi.getTxPower()) + "," + unsigned(preferredReducedPower) + "]}";
   return reply;
 }
 void captureLampWifiSetupNetwork(uint8_t index, const String& ssid, int rssi, bool open) {
@@ -121,6 +139,8 @@ uint8_t lampWifiSetupCommand(const uint8_t* frame, size_t size, uint32_t owner, 
   // Candidate credentials remain provisional until DHCP succeeds.
   WiFi.setAutoReconnect(true); WiFi.disconnect(false, false);
   WiFi.mode(setupAP ? WIFI_AP_STA : WIFI_STA);
+  applyLampWifiPowerProfile();
+  attemptReducedPower=preferredReducedPower; powerFallbackTried=preferredReducedPower;
   observing=true;WiFi.begin(candidateSsid, candidatePassword);
   reply = lampWifiSetupJson(); return 0;
 }
@@ -131,12 +151,27 @@ void serviceLampWifiSetup() {
     esp_wifi_scan_stop(); WiFi.scanDelete(); scanActive = false; finishLampWifiSetupScan(false);
   }
   if (phase != CONNECTING) return;
+  // A marginal board/power path can receive beacons yet fail to authenticate
+  // at maximum TX power. Retry once at lower power, within the same deadline.
+  if (!powerFallbackTried && WiFi.status()!=WL_CONNECTED && !associated.load() && !gotIp.load() &&
+      disconnectReason.load()==2 && uint32_t(millis()-started)>=8000 && uint32_t(millis()-started)<35000) {
+    powerFallbackTried=true;
+    if (WiFi.setTxPower(WIFI_POWER_8_5dBm)) {
+      attemptReducedPower=true;
+      WiFi.disconnect(false, false); WiFi.begin(candidateSsid, candidatePassword);
+    }
+  }
   if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == candidateSsid && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
     LampSettings next = lampSettings;
     memset(next.ssid, 0, sizeof(next.ssid)); memset(next.wifiPassword, 0, sizeof(next.wifiPassword));
     strlcpy(next.ssid, candidateSsid, sizeof(next.ssid)); strlcpy(next.wifiPassword, candidatePassword, sizeof(next.wifiPassword));
     Preferences prefs;
     if (!prefs.begin("coollamp", false)) { fail(3); return; }
+    if (attemptReducedPower && !preferredReducedPower) {
+      const uint8_t profile=REDUCED_POWER;
+      if (prefs.putBytes("wifiPower", &profile, sizeof(profile))!=sizeof(profile)) { prefs.end(); fail(3); return; }
+      preferredReducedPower=true;
+    }
     const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next); prefs.end();
     if (!saved) { fail(3); return; }
     observing=false;lampSettings = next; phase = CONNECTED; error = 0; clearCandidate(); WiFi.setAutoReconnect(true);
