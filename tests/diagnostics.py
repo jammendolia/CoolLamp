@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class HandlerTests(unittest.TestCase):
     def test_authentication_and_json(self):
         source = (ROOT / 'LampNetwork.ino').read_text()
-        handler = source[source.index('void sendLampDiagnostics()'):source.index('void sendLampState()')]
+        handler = source[source.index('String lampDiagnosticsJson()'):source.index('void sendLampState()')]
         stub = r'''
 #include <string>
 #include <type_traits>
@@ -40,11 +40,13 @@ struct {
  unsigned getMinFreeHeap(){return 40000;}
  unsigned getMaxAllocHeap(){return 30000;}
 } ESP;
-struct IP {String toString(){return "192.168.1.222";}};
+struct IP {String value="192.168.1.222";String toString(){return value;}};
 constexpr int WL_CONNECTED=3;
 struct {
  int status(){return 3;} IP localIP(){return {};}
  int RSSI(){return -62;} int channel(){return 6;}
+ String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}
+ IP subnetMask(){return {"255.255.255.0"};}IP gatewayIP(){return {"192.168.1.1"};}
  int softAPgetStationNum(){return 0;}
 } WiFi;
 bool setupAP=false,scanActive=false,PowerOn=true;
@@ -58,7 +60,9 @@ String lampSyncJson(){return R"({"role":0})";}
         main = '''
 int main(){
  sendLampDiagnostics();assert(lampServer.calls==0);
+ auto usb=lampDiagnosticsJson();assert(lampServer.calls==0);
  allowed=true;sendLampDiagnostics();assert(lampServer.calls==1);
+ assert(usb==lampServer.body);
  std::cout<<lampServer.body;
 }
 '''
@@ -69,6 +73,8 @@ int main(){
             data = json.loads(subprocess.check_output([str(binary)], text=True))
         self.assertEqual(data['diagnosticsVersion'], 1)
         self.assertEqual(data['wifi']['rssi'], -62)
+        self.assertEqual(data['wifi']['subnet'], '255.255.255.0')
+        self.assertEqual(data['wifi']['gateway'], '192.168.1.1')
         self.assertEqual(data['scan']['count'], 8)
         self.assertEqual(data['render']['leds'], 134)
         self.assertEqual(data['audio']['errors'], 0)

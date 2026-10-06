@@ -287,3 +287,31 @@ are matched by lamp identity, never borrowed from another lamp.
 All 93 mobile tests pass. The browser check exercises the real Bluetooth-to-Wi-Fi
 handoff with a factory-named Wi-Fi response and verifies the chosen nickname
 both on screen and in persistent storage.
+
+### Retry Wi-Fi after Bluetooth fallback
+
+Firmware 1.8.1 supports lamp groups over Wi-Fi but does not advertise Bluetooth
+Wi-Fi provisioning. Its disabled network scan/join controls over Bluetooth do
+not establish that the lamp has lost its saved home-network connection.
+
+If a saved Wi-Fi connection fails, the app can still connect to its paired
+Bluetooth identity. The app now retains the Wi-Fi failure reason on that
+lamp's Network/Groups settings and explains how to retry. On the Lamps screen,
+a Bluetooth-connected card with a known Wi-Fi address shows **Tap to retry Wi-Fi**.
+Tapping it retries Wi-Fi instead of simply opening Light; an already connected
+Wi-Fi card still opens Light without interrupting effect drafts. **Refresh Wi-Fi
+list** continues to update addresses for discovered identities in this session.
+
+Missing or rejected lamp access passwords open the Wi-Fi password form, rather
+than hiding that prompt behind a Bluetooth fallback. No unconfirmed control
+command is replayed. A successful Wi-Fi connection clears only that lamp's
+failure message and re-enables its supported group controls.
+
+All 94 mobile tests pass. The real-app browser regression covers a 1.8.1 lamp's
+Wi-Fi loss, Bluetooth fallback, retained failure reason, same-card Wi-Fi retry,
+restored group controls and a rejected access password without silent fallback.
+
+After a group join is saved, the app also reports the actual follower status:
+**Waiting for coordinator** remains distinct from **Following**. A saved code
+alone does not establish active packet exchange or appearance in the
+coordinator's online membership list.

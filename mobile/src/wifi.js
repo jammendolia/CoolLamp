@@ -12,7 +12,7 @@ export class WifiTransport {
       ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
     catch { throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
     if (epoch!==this.epoch) throw new Error('Connection changed.');
-    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true});
+    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true});
     if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true});
     return response.data;
   }

@@ -13,6 +13,8 @@ struct Peer { Packet info{}; IPAddress ip; uint32_t seen=0,subscribed=0; bool jo
 WiFiUDP udp;
 IPAddress bound;
 bool started=false,paused=false;
+bool serviceBlocked=false;
+uint32_t receivedPackets=0,discoveries=0,authFailures=0,subscriptionsSent=0,framesReceived=0,clockDrops=0;
 char identity[13]{};
 uint64_t nonce=0;
 uint32_t sequence=0,lastBeacon=0,lastFrame=0,lastSubscribe=0,ping=0;
@@ -148,6 +150,7 @@ uint32_t lampSyncEffectClock(uint32_t local){
 }
 void serviceLampSync(const String& name,bool blocked){
   const uint32_t now=millis();
+  serviceBlocked=blocked;
   if(blocked||WiFi.status()!=WL_CONNECTED){if(started){udp.stop();started=false;}if(receiver.locked)clearFollower();return;}
   const auto ip=WiFi.localIP();
   if(started&&ip!=bound){udp.stop();started=false;clearFollower();}
@@ -158,18 +161,21 @@ void serviceLampSync(const String& name,bool blocked){
   for(unsigned n=0;n<4;++n){
     const int size=udp.parsePacket();if(!size)break;
     Packet p{};const auto source=udp.remoteIP();const int read=udp.read(reinterpret_cast<uint8_t*>(&p),sizeof(p));udp.clear();
+    ++receivedPackets;
     if(size!=sizeof(p)||read!=sizeof(p)||!valid(p,size)||!strcmp(p.sender,identity))continue;
-    if(p.kind==Discover){auto* item=peer(p.sender,now);if(item && (!item->joined || uint32_t(now-item->subscribed)>=Timeout)){item->info=p;item->ip=source;item->seen=now;}continue;}
-    if(!config.role||strcmp(p.leader,config.leader)||!authenticated(p))continue;
+    if(p.kind==Discover){++discoveries;auto* item=peer(p.sender,now);if(item && (!item->joined || uint32_t(now-item->subscribed)>=Timeout)){item->info=p;item->ip=source;item->seen=now;}continue;}
+    if(!config.role||strcmp(p.leader,config.leader))continue;
+    if(!authenticated(p)){++authFailures;continue;}
     if(config.role==1&&p.kind==Subscribe&&p.target==nonce&&p.role==2){
       auto* item=peer(p.sender,now,true);if(!item||!admitPosition(p.sender))continue;item->info=p;item->ip=source;item->seen=now;item->subscribed=now;item->joined=true;
       auto reply=packet(ClockReply,name);reply.target=p.session;reply.echo=p.time;captureLampSyncVisual(reply.visual);addScene(reply.visual,p.sender);send(reply,source);
     }else if(config.role==2&&!paused&&(p.kind==Frame||p.kind==ClockReply)&&p.role==1&&!strcmp(p.sender,config.leader)){
       if(!receiver.locked&&p.kind!=ClockReply)continue;
-      if(p.kind==ClockReply&&(p.echo!=ping||uint32_t(now-ping)>200))continue;
+      if(p.kind==ClockReply&&(p.echo!=ping||uint32_t(now-ping)>200)){++clockDrops;continue;}
       if(!receiver.accept(p,now,nonce))continue;
       if(p.kind==ClockReply)receiver.clock(p.time,p.echo,now);
       received=p.visual;frameTime=p.time;lampSyncVisual=&received;applyLampSyncControl(&received);
+      ++framesReceived;
     }
   }
   if(config.role==1){
@@ -187,7 +193,7 @@ void serviceLampSync(const String& name,bool blocked){
   if(now-lastBeacon>=2000){lastBeacon=now;auto p=packet(Discover,name);IPAddress broadcast=ip;const auto mask=WiFi.subnetMask();for(unsigned i=0;i<4;++i)broadcast[i]=ip[i]|uint8_t(~mask[i]);send(p,broadcast);}
   if(config.role==2&&!paused&&now-lastSubscribe>=1000){
     lastSubscribe=now;
-    for(auto& p:peers)if(!strcmp(p.info.sender,config.leader)&&p.info.role==1&&uint32_t(now-p.seen)<PeerTimeout){auto request=packet(Subscribe,name);request.target=p.info.session;ping=request.time;send(request,p.ip);break;}
+    for(auto& p:peers)if(!strcmp(p.info.sender,config.leader)&&p.info.role==1&&uint32_t(now-p.seen)<PeerTimeout){auto request=packet(Subscribe,name);request.target=p.info.session;ping=request.time;++subscriptionsSent;send(request,p.ip);break;}
   }
   if(config.role==1&&now-lastFrame>=40){
     lastFrame=now;auto p=packet(Frame,name);captureLampSyncVisual(p.visual);
@@ -199,6 +205,9 @@ String lampSyncJson(){
   String s="{\"version\":2,\"role\":"+String(config.role)+",\"leader\":"+quote(config.leader)+",\"paused\":"+(paused?"true":"false")+",\"active\":"+(lampSyncFollowing()?"true":"false")+",\"members\":"+String(members)+",\"peers\":[";
   bool comma=false;for(auto& p:peers)if(p.info.sender[0]&&uint32_t(now-p.seen)<PeerTimeout){if(comma)s+=',';comma=true;s+="{\"id\":"+quote(p.info.sender)+",\"name\":"+quote(p.info.name)+",\"address\":"+quote(p.ip.toString().c_str())+",\"role\":"+String(p.info.role)+",\"microphone\":"+(p.info.microphone?"true":"false")+"}";}
   s+="]";
+  s+=",\"network\":{\"listening\":"+String(started?"true":"false")+",\"blocked\":"+String(serviceBlocked?"true":"false");
+  s+=",\"received\":"+String(receivedPackets)+",\"discoveries\":"+String(discoveries)+",\"authenticationFailures\":"+String(authFailures);
+  s+=",\"subscriptions\":"+String(subscriptionsSent)+",\"frames\":"+String(framesReceived)+",\"clockDrops\":"+String(clockDrops)+"}";
   s+=",\"sceneCount\":"+String(SceneCount);
   const auto v=lampGroupVisual();
   s+=",\"scene\":"+String(v.scene)+",\"position\":"+String(v.position)+",\"count\":"+String(v.count)+",\"sceneSpeed\":"+String(v.sceneSpeed)+",\"sceneIntensity\":"+String(v.sceneIntensity);

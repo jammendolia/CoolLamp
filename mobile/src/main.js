@@ -26,6 +26,7 @@ let centerStatus=null,centerTimer=null,centerSerial=0,centerWasActive=false;
 const bluetoothWifiAvailable=()=>lamp===bleLamp&&bleLamp.supportsWifiSetup&&Boolean(state);
 const isNative = Capacitor.isNativePlatform();
 const sessionPasswords = new Map();
+const wifiFailures = new Map();
 async function credential(id, value) {
   if (isNative) return native.credential({id, ...(value === undefined ? {} : {value})});
   if (value !== undefined) sessionPasswords.set(id,value);
@@ -180,7 +181,8 @@ function renderSettings() {
       panel.id==='calibrationPane'?lamp!==wifiLamp||!state?.calibration:false;
     panel.hidden=panel.dataset.settingsPanel!==settingsView||unsupported;
   }
-  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Bluetooth Wi-Fi setup needs firmware 1.9.0 or newer. You can also hold the knob for three seconds and use the lamp’s hotspot.':lamp!==wifiLamp&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':lamp!==wifiLamp&&['groups','hardware'].includes(settingsView)?'These controls need a Wi-Fi connection to the lamp. Connect from Lamps using its Wi-Fi address.':'';
+  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Wi-Fi setup over Bluetooth needs firmware 1.9.0 or newer. For a lamp already on your network, refresh the Wi-Fi list in Lamps and tap its card again. For first-time setup, hold the knob for three seconds to use its hotspot.':lamp!==wifiLamp&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':lamp!==wifiLamp&&['groups','hardware'].includes(settingsView)?'These controls need Wi-Fi. Refresh the Wi-Fi list in Lamps, then tap this lamp again.':'';
+  if(state&&lamp===bleLamp&&['network','groups'].includes(settingsView)&&wifiFailures.has(selected?.id))$('settingsHint').textContent=wifiFailures.get(selected.id)+' '+$('settingsHint').textContent;
   $('settingsHint').hidden=!$('settingsHint').textContent;
   for(const button of document.querySelectorAll('[data-settings-section]'))button.setAttribute('aria-pressed',String(button.dataset.settingsSection===settingsView));
   $('summaryVersion').textContent=state?(firmware?.version||'Unavailable'):'—';
@@ -285,7 +287,10 @@ const bleLamp = new LampTransport(BleClient, {...callbacks,
       rememberAccessories(store,[device],removedAccessoryIds);renderLamps();
       status('Authorized '+device.name+'. Connecting to the lamp…');
     }}:{})});
-const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:e=>{status(e.message); if(selected?.deviceId && !connecting) connect(selected);}});
+const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:async e=>{
+  if(selected?.deviceId&&!connecting&&!e.needsPassword){await connect(selected);if(state&&lamp===bleLamp)reportWifiFallback(e);}
+  else {if(e.needsPassword)promptWifiPassword(selected);status(e.message);}
+}});
 lamp=bleLamp;
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
@@ -363,15 +368,25 @@ async function connectWifi(entry,password) {
   await lamp.disconnect(); lamp=wifiLamp;
   try {
     if(password===undefined && entry.id) password=(await credential(entry.id)).value;
-    if(!password){$('address').value=entry.address;$('addLamp').open=true;page('lamps');$('password').focus();throw new Error('Enter the lamp access password to connect.');}
+    if(!password)throw Object.assign(new Error('Enter the lamp access password to connect over Wi-Fi.'),{needsPassword:true});
     const raw=await wifiLamp.connect(entry.address,password,entry.id);
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
     const prior=store.items.find(x=>x.id===id || x.id===entry.id);
     selected=store.upsertWifi({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
+    wifiFailures.delete(entry.id);wifiFailures.delete(id);
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
-  } catch(e) { status(e.message); }
+    return {connected:true};
+  } catch(e) { if(e.needsPassword)promptWifiPassword(entry);status(e.message);return {connected:false,error:e}; }
   finally { connecting=false; renderLamps(); renderPower(); }
+}
+function promptWifiPassword(entry) {
+  $('address').value=entry.address;$('password').value='';$('addLamp').open=true;page('lamps');$('password').focus();
+}
+function reportWifiFallback(error) {
+  wifiFailures.set(selected.id,'Wi-Fi connection failed: '+error.message);
+  status('Connected over Bluetooth. Wi-Fi failed: '+error.message+' Groups require Wi-Fi.');
+  renderSettings();
 }
 $('connect').onclick=()=>connect();
 $('reconnect').onclick=()=>connect(savedDevice);
@@ -412,12 +427,12 @@ function renderLamps() {
     const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
     button.append(title,detail);button.disabled=connecting||busy;
     button.setAttribute('aria-current',String(Boolean(state&&entry.id===selected?.id)));
-    if(state&&entry.id===selected?.id)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':'Bluetooth');
+    if(state&&entry.id===selected?.id)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
     button.onclick=async()=>{
-      if(state&&entry.id===selected?.id){page('light');return;}
+      if(state&&entry.id===selected?.id&&(lamp===wifiLamp||!entry.address)){page('light');return;}
       if(entry.address) {
-        await connectWifi(entry);
-        if(!state&&entry.deviceId)await connect(entry);
+        const result=await connectWifi(entry);
+        if(!state&&entry.deviceId&&!result?.error?.needsPassword){await connect(entry);if(state&&lamp===bleLamp&&result?.error)reportWifiFallback(result.error);}
       } else await connect(entry);
     };
     const remove=document.createElement('button');remove.type='button';remove.className='lamp-remove';
@@ -956,7 +971,7 @@ $('copySyncCode').onclick=async()=>{
   try{await navigator.clipboard.writeText($('syncCode').value);$('syncFeedback').textContent='Group code copied.';}
   catch{$('syncCode').focus();$('syncCode').select();$('syncFeedback').textContent='Code selected. Choose Copy to share it.';}
 };
-$('syncJoinForm').onsubmit=e=>{e.preventDefault();const code=$('syncJoinCode').value;syncAction(async()=>{parseGroupCode(code);const result=await wifiLamp.configureSync(2,code);$('syncJoinCode').value='';return result;});};
+$('syncJoinForm').onsubmit=e=>{e.preventDefault();const code=$('syncJoinCode').value;syncAction(async()=>{parseGroupCode(code);const result=await wifiLamp.configureSync(2,code);$('syncJoinCode').value='';return result+' '+groupStatus(wifiLamp.raw.sync)+'.';});};
 $('pauseSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('pause'));
 $('resumeSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('resume'));
 $('leaveSync').onclick=()=>syncAction(async()=>{const result=await wifiLamp.configureSync(0);$('syncCode').value='';$('syncCodeArea').hidden=true;return result;});

@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   release:
-    # Hold OTA publication until the live reconnect regression is resolved.
+    # Hold OTA publication while Wi-Fi/group packet delivery is being diagnosed.
     if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40

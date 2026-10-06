@@ -203,9 +203,8 @@ String lampEffectCatalogEntry(uint8_t mode)
 
 // Read-only support snapshot. Deliberately excludes session tokens, SSIDs,
 // passwords, group invitation keys and raw microphone samples.
-void sendLampDiagnostics()
+String lampDiagnosticsJson()
 {
-  if (!authorizedLampRequest(false)) return;
   const bool connected = WiFi.status() == WL_CONNECTED;
   String out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
   out += ",\"hostname\":" + jsonText(lampHost + ".local");
@@ -215,6 +214,8 @@ void sendLampDiagnostics()
   out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
   out += ",\"address\":" + jsonText(WiFi.localIP().toString());
   out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());
+  out += ",\"accessPoint\":" + jsonText(connected ? WiFi.BSSIDstr() : String());
+  out += ",\"subnet\":" + jsonText(WiFi.subnetMask().toString()) + ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
   out += ",\"setupAP\":" + String(setupAP ? "true" : "false") + ",\"apClients\":" + String(WiFi.softAPgetStationNum()) + "}";
   out += ",\"scan\":{\"active\":" + String(scanActive ? "true" : "false") + ",\"count\":" + String(scanCount);
   out += ",\"durationMs\":" + String(scanActive ? millis() - scanStartedAt : scanDuration) + ",\"polls\":" + String(scanPolls) + "}";
@@ -222,7 +223,12 @@ void sendLampDiagnostics()
   out += ",\"power\":" + String(PowerOn ? "true" : "false") + ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   out += ",\"leds\":" + String(NUM_LEDS) + ",\"midpoint\":" + String(lampMidpoint) + "}";
   out += ",\"firmware\":" + lampUpdateJson() + ",\"audio\":" + lampAudioJson() + ",\"sync\":" + lampSyncJson() + "}";
-  lampServer.send(200, "application/json", out);
+  return out;
+}
+void sendLampDiagnostics()
+{
+  if (!authorizedLampRequest(false)) return;
+  lampServer.send(200, "application/json", lampDiagnosticsJson());
 }
 
 void sendLampState()
@@ -677,6 +683,7 @@ void serviceLampUSB()
   static bool wifiSetupPending = false;
   static bool centerPending = false;
   static bool bluetoothPending = false;
+  static bool diagnosticsPending = false;
   static String audioReply;
   static size_t audioSent = 0;
   while (Serial.available()) {
@@ -689,6 +696,7 @@ void serviceLampUSB()
     }
     if (command == 'p') wifiSetupPending = true;
     if (command == 'q') bluetoothPending = true;
+    if (command == 'd') diagnosticsPending = true;
     if (command == 'c') { beginLampCenterCalibration(); centerPending = true; }
     if (command == 'j') centerPending = true;
     if (command == 's' && setupAP && !otaActive && !lampRemoteUpdateBusy()) {
@@ -712,6 +720,7 @@ void serviceLampUSB()
   }
   if (wifiSetupPending && audioReply.isEmpty()) { audioReply = lampWifiSetupJson() + "\n"; audioSent = 0; wifiSetupPending = false; }
   if (bluetoothPending && audioReply.isEmpty()) { audioReply = lampBluetoothStatusJson() + "\n"; audioSent = 0; bluetoothPending = false; }
+  if (diagnosticsPending && audioReply.isEmpty()) { audioReply = lampDiagnosticsJson() + "\n"; audioSent = 0; diagnosticsPending = false; }
   if (centerPending && audioReply.isEmpty()) { audioReply = lampCenterCalibrationJson() + "\n"; audioSent = 0; centerPending = false; }
   if (audioPending && audioReply.isEmpty()) { audioReply = lampAudioJson() + "\n"; audioSent = 0; audioPending = false; }
   if (!audioReply.isEmpty()) {

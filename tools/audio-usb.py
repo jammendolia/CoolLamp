@@ -10,11 +10,11 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("port", help="Explicit serial device, e.g. /dev/cu.usbmodem80201")
-parser.add_argument("command", choices=["?", "a", "s", "w", "b", "p", "q", "c", "j", "u", "t", "m", "n", "g", "v", "f", "+", "-", "1", "2", "3", "4", "5", "6"],
-                    help="?: status, a: toggle setup hotspot, s: scan from active hotspot, w: scan diagnostics, u: audio status, t: 10s test, m/n: mic enable/disable + restart, g/v/f: glow/meter/fire, 1–5: spectrum/launch/embers/bloom/fountain, 6: VU meter, +/-: double/halve sensitivity and save")
+parser.add_argument("command", choices=["?", "a", "s", "w", "b", "p", "q", "d", "c", "j", "u", "t", "m", "n", "g", "v", "f", "+", "-", "1", "2", "3", "4", "5", "6"],
+                    help="?: status, d: read-only network/group/runtime diagnostics, a: toggle setup hotspot, s: scan from active hotspot, w: scan diagnostics, u: audio status, t: 10s test, m/n: mic enable/disable + restart, g/v/f: glow/meter/fire, 1–5: spectrum/launch/embers/bloom/fountain, 6: VU meter, +/-: double/halve sensitivity and save")
 parser.add_argument("--seconds", type=float, default=4)
 parser.add_argument("--poll", action="store_true", help="Poll audio status after the initial command")
-parser.add_argument("--poll-command", choices=["u","p","q"], default="u", help="Status to poll: u audio, p Wi-Fi setup, q Bluetooth")
+parser.add_argument("--poll-command", choices=["u","p","q","d"], default="u", help="Status to poll: u audio, p Wi-Fi setup, q Bluetooth, d network/group/runtime")
 parser.add_argument("--interval", type=float, default=1, help="Polling interval in seconds (0.05–10); use 0.05 to catch short sounds")
 args = parser.parse_args()
 if not 0.05 <= args.interval <= 10:

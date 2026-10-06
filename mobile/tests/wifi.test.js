@@ -22,6 +22,12 @@ test('Wi-Fi maps state and sends authenticated, token-bound form commands',async
     assert.equal(post.data,'mode=1&r=0&g=0&b=0');assert.equal(post.disableRedirects,true);
   }finally{await lamp.disconnect();}
 });
+test('a rejected Wi-Fi access password is identifiable without issuing control commands',async()=>{
+  const {lamp,http,calls}=setup();
+  http.request=async options=>{calls.push(options);return {status:401,data:'Unauthorized'};};
+  await assert.rejects(lamp.connect('192.168.1.42','incorrect','aabbccddeeff'),error=>error.needsPassword===true&&error.confirmed===true);
+  assert.equal(lamp.state,null);assert(calls.every(call=>call.method==='GET'));
+});
 test('microphone configuration validates, authenticates, and disconnects for restart',async()=>{
   const {lamp,calls,setRaw}=setup();
   setRaw({...fixture(),audio:{installed:true,gain:8,gate:8}});

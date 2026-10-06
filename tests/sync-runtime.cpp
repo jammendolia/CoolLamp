@@ -18,15 +18,18 @@ int main(){
  assert(configureLampSync(2,"112233445566",key));const auto saved=Preferences::storage["syncV1"];
  fakeNow=2000;serviceLampSync("Follower",false);
  auto beacon=leaderPacket(Discover,0,1);receive(beacon,false);serviceLampSync("Follower",false);
+ assert(started&&!serviceBlocked&&receivedPackets==1&&discoveries==1);
  fakeNow=3000;serviceLampSync("Follower",false);assert(ping==3000);
  auto response=leaderPacket(ClockReply,nonce,10);response.echo=ping;
  receive(response);fakeNow=3020;serviceLampSync("Follower",false);
  assert(lampSyncFollowing()&&applied==1);assert(receiver.clockReady);
+ assert(subscriptionsSent>0&&framesReceived==1&&authFailures==0);
  assert(Preferences::storage["syncV1"]==saved);
  auto update=leaderPacket(Frame,nonce,11);update.visual.level=210;receive(update);fakeNow=3040;serviceLampSync("Follower",false);
  assert(applied==2&&lampSyncVisual->level==210);
  receive(update);serviceLampSync("Follower",false);assert(applied==2); // duplicate
  update.sequence=12;digest(update,update.mac);update.visual.level=1;receive(update,false);serviceLampSync("Follower",false);assert(applied==2); // tampered
+ assert(authFailures==1&&framesReceived==2);
  update=leaderPacket(Frame,nonce+1,12);receive(update);serviceLampSync("Follower",false);assert(applied==2); // other follower
  Preferences::failWrites=true;assert(!configureLampSync(0,"",""));assert(lampSyncFollowing());Preferences::failWrites=false;
  fakeNow=3241;serviceLampSync("Follower",false);assert(!lampSyncVisual->audioValid&&lampSyncVisual->level==0); // silence before group loss
@@ -37,6 +40,7 @@ int main(){
  pauseLampSync();assert(!lampSyncFollowing()&&paused);resumeLampSync();assert(!paused);
  fakeNow=8041;serviceLampSync("Follower",false);response=leaderPacket(ClockReply,nonce,101);response.echo=ping;receive(response);fakeNow+=20;serviceLampSync("Follower",false);assert(lampSyncFollowing());
  serviceLampSync("Follower",true);assert(!lampSyncFollowing()&&!started); // OTA/setup release resources
+ assert(serviceBlocked);
  assert(configureLampSync(0,"",""));assert(config.role==0);assert(Preferences::storage["syncV1"]!=saved);
  // Leader admission and authenticated stream use the subscriber nonce.
  assert(configureLampSync(1,"aabbccddeeff",key));serviceLampSync("Leader",false);

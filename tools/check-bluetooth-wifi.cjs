@@ -122,10 +122,52 @@ function fakeBluetooth(capabilities){
   await page.locator('#factoryResetDialog button[value=reset]').click();await page.waitForFunction(()=>document.querySelectorAll('.lamp-card').length===0);
   assert.equal(await page.evaluate(()=>window.__ble.factoryResets),1);assert(await page.locator('#reconnect').isHidden());
   const legacy=await browser.newPage();await legacy.addInitScript(fakeBluetooth,1);await legacy.goto('http://127.0.0.1:'+server.address().port);
+  legacy.on('pageerror',e=>errors.push(e.message));
   await legacy.locator('#addLamp').evaluate(el=>el.open=true);await legacy.locator('#connect').click();await legacy.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Bluetooth');
   await legacy.locator('[data-page=settings]').click();await legacy.locator('[data-settings-section=network]').click();
   assert(await legacy.locator('#scanWifi').isDisabled());assert((await legacy.locator('#settingsHint').textContent()).includes('1.9.0'));
+  let legacyReachable=true,legacyAuthorized=true;
+  const legacyRaw={...raw,firmware:{version:'1.8.1',phase:0},sync:{version:2,role:1,peers:[],members:0}};
+  await legacy.route('http://192.168.1.42/**',async route=>{
+   const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Content-Type':'text/plain'};
+   if(route.request().method()==='OPTIONS')return route.fulfill({status:200,headers});
+   if(legacyReachable&&legacyAuthorized&&route.request().method()==='POST'&&route.request().url().endsWith('/api/sync')) {
+    const data=Object.fromEntries(new URLSearchParams(route.request().postData()));
+    Object.assign(legacyRaw.sync,{role:Number(data.role),leader:data.leader,active:false,paused:false});
+    return route.fulfill({status:200,headers,body:'Group settings saved.'});
+   }
+   return route.fulfill({status:!legacyReachable?503:!legacyAuthorized?401:200,headers,
+     body:!legacyReachable?'Lamp temporarily unavailable':!legacyAuthorized?'Unauthorized':JSON.stringify(legacyRaw)});
+  });
+  // An old firmware lamp is already configured for Wi-Fi; no BLE provisioning is needed.
+  await legacy.locator('[data-page=lamps]').click();await legacy.locator('#addLamp').evaluate(el=>el.open=true);
+  await legacy.locator('#address').fill('192.168.1.42');await legacy.locator('#password').fill('test-password');
+  await legacy.locator('#wifiConnect button').click();await legacy.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Wi-Fi');
+  legacyReachable=false;await legacy.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Bluetooth');
+  await legacy.locator('[data-page=settings]').click();await legacy.locator('[data-settings-section=groups]').click();
+  assert(await legacy.locator('#showSyncCode').isDisabled());
+  assert((await legacy.locator('#settingsHint').textContent()).includes('Lamp temporarily unavailable'));
+  assert((await legacy.locator('#settingsHint').textContent()).includes('tap this lamp again'));
+  await legacy.locator('[data-page=lamps]').click();assert((await legacy.locator('.lamp-card').textContent()).includes('Tap to retry Wi-Fi'));
+  legacyReachable=true;await legacy.locator('.lamp-card').click();
+  await legacy.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Wi-Fi');
+  await legacy.locator('[data-page=settings]').click();await legacy.locator('[data-settings-section=groups]').click();
+  assert(await legacy.locator('#showSyncCode').isEnabled());assert(await legacy.locator('#settingsHint').isHidden());
+  legacyRaw.sync.role=0;await legacy.waitForFunction(()=>!document.getElementById('syncJoin').hidden);
+  await legacy.locator('#syncJoinCode').fill('CL1-112233445566-0123456789abcdef0123456789abcdef');
+  await legacy.locator('#syncJoinForm button').click();
+  await legacy.waitForFunction(()=>document.getElementById('syncFeedback').textContent.includes('Waiting for coordinator'));
+  assert((await legacy.locator('#syncStatus').textContent()).includes('Waiting for coordinator'));
+  assert(!(await legacy.evaluate(()=>localStorage.getItem('coollamp-lamps'))).includes('0123456789abcdef0123456789abcdef'));
+  // A rejected access password must open the Wi-Fi password form, without a hidden BLE fallback.
+  legacyReachable=false;await legacy.waitForFunction(()=>document.getElementById('connectionBadge').textContent==='Bluetooth');
+  await legacy.locator('[data-page=lamps]').click();legacyReachable=true;legacyAuthorized=false;
+  const beforeAuthRetry=await legacy.evaluate(()=>window.__ble.writes.length);await legacy.locator('.lamp-card').click();
+  await legacy.waitForFunction(()=>document.getElementById('password')===document.activeElement);
+  assert.equal(await legacy.locator('#connectionBadge').textContent(),'Not connected');
+  assert.equal(await legacy.evaluate(()=>window.__ble.writes.length),beforeAuthRetry);
+  assert.equal(await legacy.locator('#password').inputValue(),'');assert(await legacy.locator('#addLamp').evaluate(el=>el.open));
   assert.deepEqual(errors,[]);
-  console.log('PASS: Bluetooth Wi-Fi, retries/handoff, removal, center preview/save/timeout, confirmed factory reset, legacy fallback, narrow layout and accessibility');
+  console.log('PASS: Bluetooth Wi-Fi, retries/handoff, removal, center preview/save/timeout, confirmed factory reset, legacy Wi-Fi/group recovery and password prompts, narrow layout and accessibility');
  } finally {await browser.close();server.close();}
 })().catch(e=>{console.error(e);server.close();process.exitCode=1;});
