@@ -105,6 +105,39 @@ export class WifiTransport {
     const message=await this.request('/api/sync',{role,...fields});
     await this.refresh();return message;
   }
+  joinCoordinator(code, expected) {
+    const fields=parseGroupCode(code);
+    if(fields.leader!==expected?.leader)throw Error('The coordinator invitation changed. Refresh the coordinator list.');
+    const guard=()=>{
+      if(this.epoch!==expected.epoch||this.identity!==expected.id||this.base!==expected.address)
+        throw Error('The selected lamp changed. Choose Join again for the current lamp.');
+    };
+    return this.enqueue(async()=>{
+      guard();
+      await this.refresh(expected.id);guard();
+      if(![1,2].includes(this.raw?.sync?.version))throw Error('Update this lamp’s firmware to join a group.');
+      if(this.raw.sync.version!==expected.wireVersion)throw Error('This lamp’s group protocol changed. Refresh coordinators before joining.');
+      if(this.raw.sync.role!==0)throw Error('Leave this lamp’s current group before joining another.');
+      if(this.raw.calibration?.active||[1,3,4].includes(this.raw.firmware?.phase))
+        throw Error('Finish this lamp’s setup or update before joining a group.');
+      let message;
+      try{guard();message=await this.configureSync(2,code);}
+      catch(error){
+        guard();
+        if(!error.uncertain)throw error;
+        // The join may have been accepted before the reply was lost. Read only;
+        // never replay a request that changes the lamp's saved group settings.
+        try{await this.refresh(expected.id);guard();}
+        catch{throw error;}
+        if(this.raw?.sync?.role!==2||this.raw.sync.leader!==fields.leader)throw error;
+        message='Group settings verified.';
+      }
+      guard();
+      if(this.raw?.sync?.role!==2||this.raw.sync.leader!==fields.leader)
+        throw Error('The lamp did not confirm these group settings. Refresh before trying again.');
+      return {message,leader:fields.leader,active:this.raw.sync.active===true};
+    });
+  }
   async syncAction(action) {
     if(!['pause','resume'].includes(action)||![1,2].includes(this.raw?.sync?.version))throw new Error('Group control is unavailable.');
     const message=await this.request('/api/sync',{action});await this.refresh();return message;

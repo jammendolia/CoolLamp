@@ -498,8 +498,24 @@
 </div>
   <p class="hint">One lamp leads. The others share its effect, colors and sound, each shaped to its own strip.</p>
   <p id="syncStatus" class="sync-status" role="status">Connect over Wi-Fi to firmware with lamp groups.</p>
+<button id="refreshGroupCoordinators" type="button" class="secondary compact">Refresh coordinators</button>
+<p id="groupJoinEligibility" class="hint"></p>
   <fieldset id="syncFields" disabled>
 <legend class="sr-only">Group configuration</legend>
+    <div id="syncJoin">
+<h4>Join a coordinator</h4>
+<div id="syncPeers" class="sync-peers"></div>
+<p class="hint" id="syncDiscoveryHint">Coordinators are checked in the background. Choose Join without switching lamps.</p>
+<p class="hint">Joining saves this lamp’s group settings. Shared light starts when the lamps can reach each other on your home network.</p>
+<details id="syncJoinAdvanced" class="group-join-advanced">
+<summary>Advanced · join with a group code</summary>
+<form id="syncJoinForm">
+<label for="syncJoinCode">Coordinator’s group code</label>
+<input id="syncJoinCode" placeholder="CL1-…" autocapitalize="none" autocomplete="off" spellcheck="false" required>
+<button>Join this group</button>
+</form>
+</details>
+</div>
     <div id="syncIndependent">
 <button id="createSync" type="button">Use this lamp as coordinator</button>
 <p class="hint">For audio effects, choose a lamp with a microphone. Up to eight lamps can follow.</p>
@@ -520,17 +536,6 @@
 <button id="pauseSync" type="button" class="secondary">Pause on this lamp</button>
 <button id="resumeSync" type="button">Resume following</button>
 </div>
-    <div id="syncJoin">
-<h4>Join a group</h4>
-<div id="syncPeers" class="sync-peers">
-</div>
-<p class="hint" id="syncDiscoveryHint">Lamps on the same home network appear automatically. Discovery does not join a group.</p>
-<form id="syncJoinForm">
-<label for="syncJoinCode">Coordinator’s group code</label>
-<input id="syncJoinCode" placeholder="CL1-…" autocapitalize="none" autocomplete="off" spellcheck="false" required>
-<button>Join this group</button>
-</form>
-</div>
     <section id="groupOrderPane" hidden>
 <h4>Lamp order</h4>
 <p class="hint">Arrange lamps from left to right. Offline positions stay reserved. Group scenes travel through this order.</p>
@@ -542,6 +547,19 @@
 <p id="syncFeedback" class="hint" role="status">
 </p>
 </section>
+<dialog id="groupCoordinatorPasswordDialog" aria-labelledby="groupCoordinatorPasswordTitle">
+<h2 id="groupCoordinatorPasswordTitle">Coordinator access</h2>
+<p class="hint">Enter this coordinator’s lamp access password. We verify it before joining and save it securely on this phone.</p>
+<form id="groupCoordinatorPasswordForm">
+<label for="groupCoordinatorPassword">Lamp access password</label>
+<input id="groupCoordinatorPassword" type="password" autocomplete="current-password" required>
+<p id="groupCoordinatorPasswordFeedback" class="hint" role="status"></p>
+<div class="dialog-actions">
+<button id="cancelGroupCoordinatorPassword" type="button" class="secondary">Cancel</button>
+<button type="submit">Save &amp; join</button>
+</div>
+</form>
+</dialog>
 <fieldset id="networkSettings" disabled class="settings-container">
 <form id="networkForm" class="panel" data-settings-panel="network">
 <div class="section-title">

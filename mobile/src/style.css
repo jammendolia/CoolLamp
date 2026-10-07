@@ -206,6 +206,14 @@ dialog p { line-height: 1.6; overflow-wrap: anywhere; }
 .sync-peers { display: grid; gap: 9px; }
 .sync-peer { display: grid; gap: 6px; width: 100%; text-align: left; }
 .sync-peer span { font-size: 0.75rem; color: var(--muted); overflow-wrap: anywhere; }
+.group-coordinator { display: flex; align-items: center; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: #22313c; }
+.group-coordinator > div { flex: 1; min-width: 0; }
+.group-coordinator strong,.group-coordinator span { display: block; overflow-wrap: anywhere; }
+.group-coordinator strong { font-size: 0.875rem; }
+.group-coordinator span { margin-top: 6px; font-size: 0.75rem; line-height: 1.6; color: var(--muted); }
+.group-coordinator button { flex-shrink: 0; min-width: 76px; max-width: 42%; }
+.group-join-advanced { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 15px; }
+.group-join-advanced summary { font-size: 0.8125rem; }
 #syncCode { resize: vertical; font: .8125rem/1.7 ui-monospace,monospace; overflow-wrap: anywhere; margin-bottom: 10px; }
 #syncFeedback,#groupSceneFeedback { overflow-wrap: anywhere; }
 .group-scene-pane { border-color: #8c7faa; background: linear-gradient(140deg,#303247,#1b2535); }

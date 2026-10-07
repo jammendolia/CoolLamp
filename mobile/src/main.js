@@ -10,6 +10,7 @@ import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, LampDiscoverySession, lampAddress, lampFirmwareLabel, validFirmwareVersion } from './lamps.js';
 import { WifiTransport } from './wifi.js';
 import { FirmwareFleet } from './firmware-fleet.js';
+import { GroupDiscovery } from './group-discovery.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
@@ -31,6 +32,9 @@ const wifiFailures = new Map();
 const fleetStatuses = new Map();
 let fleet=null, fleetRefreshRun=null, fleetRefreshQueued=false, fleetUpdating=false;
 let fleetSummary='Versions refresh in the background. Updates start only when you choose Update all lamps.';
+const groupCoordinatorStatuses=new Map();
+let groupDiscovery=null,groupScanRun=null,groupScanQueued=false,groupNativePending=false,nativeDiscoveryRun=null;
+let groupTaskSerial=0,groupJoinPending=null,groupJoinResult=null,groupPasswordTarget=null,groupScanMessage='';
 async function credential(id, value) {
   if (isNative) return native.credential({id, ...(value === undefined ? {} : {value})});
   if (value !== undefined) sessionPasswords.set(id,value);
@@ -41,7 +45,7 @@ function page(name) {
   if(name==='lamps'){renderLamps();refreshLampFirmware();}
   for (const item of ['lamps','light','settings']) $('page-'+item).hidden=item!==name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
-  if(name==='settings')renderSettings();
+  if(name==='settings'){renderSettings();if(settingsView==='groups')refreshGroupCoordinators();}
   window.scrollTo(0,0);
   $('page-'+name).querySelector('h2')?.focus({preventScroll:true});
 }
@@ -217,7 +221,7 @@ function renderSettings() {
   $('room').disabled=!selected||busy||connecting;
   renderCenterTool();
 }
-function settingsSection(name) { if(name!=='network')hideWifiPassword();settingsView=name;renderSettings(); }
+function settingsSection(name) { if(name!=='network')hideWifiPassword();settingsView=name;renderSettings();if(name==='groups')refreshGroupCoordinators(); }
 for(const button of document.querySelectorAll('[data-settings-section]'))button.onclick=()=>settingsSection(button.dataset.settingsSection);
 for(const button of document.querySelectorAll('[data-goto]'))button.onclick=()=>page(button.dataset.goto);
 let savedDevice = null;
@@ -265,6 +269,7 @@ const callbacks = {
     renderOptions();
   },
   onDisconnect() {
+    invalidateGroupTasks();
     wifiScanning=false;++wifiScanSerial;hideWifiPassword();
     if($('wifiNetworksDialog').open){$('wifiNetworksDialog').returnValue='cancel';$('wifiNetworksDialog').close();}
     clearTimeout(centerTimer);centerTimer=null;centerStatus=null;centerWasActive=false;++centerSerial;$('centerFeedback').textContent='';
@@ -320,6 +325,8 @@ fleet=new FirmwareFleet({http:CapacitorHttp,credential,getLamps:mergedLampEntrie
   // Only the lamp actually installing needs its controls refreshed/disabled.
   if(id===selected?.id){renderPower();renderFirmware();renderOptions();renderSettings();}
 }});
+groupDiscovery=new GroupDiscovery({http:CapacitorHttp,credential,getLamps:mergedLampEntries,getTarget:getGroupTarget,
+  onStatus:(id,value)=>{groupCoordinatorStatuses.set(id,value);renderGroupCoordinators();}});
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
 async function change(operation, value, activatePalette = false) {
@@ -568,7 +575,7 @@ async function discover(includeForgotten=false) {
   $('discover').disabled=true;status('Looking for lamps on your Wi-Fi…');
   if(includeForgotten)discovery.beginRefresh();
   try {
-    const result=await native.discover();discovered=discovery.remember(result.lamps);
+    const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);
     renderLamps();status(discovered.length?'Choose a lamp to connect.':'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
     refreshLampFirmware({newDiscovery:true});
     const remembered=store.items.find(x=>x.id===localStorage.getItem('coollamp-selected'));
@@ -967,7 +974,139 @@ async function saveFountain(reset=false){
 $('applyFountain').onclick=()=>saveFountain();$('resetFountain').onclick=()=>saveFountain(true);
 
 
-let syncIdentity=null, peerListKey='';
+let syncIdentity=null;
+function readNativeLampDiscovery() {
+  if(nativeDiscoveryRun)return nativeDiscoveryRun;
+  const run=native.discover();nativeDiscoveryRun=run;
+  run.finally(()=>{if(nativeDiscoveryRun===run)nativeDiscoveryRun=null;}).catch(()=>{});
+  return run;
+}
+function getGroupTarget() {
+  if(lamp!==wifiLamp||!verifiedSelectedLamp())return null;
+  return {id:wifiLamp.identity,address:wifiLamp.base,epoch:wifiLamp.epoch,sync:wifiLamp.raw?.sync,wireVersion:wifiLamp.raw?.sync?.version};
+}
+function sameGroupTarget(expected) {
+  const target=getGroupTarget();
+  return Boolean(target&&expected&&target.id===expected.id&&target.address===expected.address&&target.epoch===expected.epoch);
+}
+function groupJoinForCurrent() { return Boolean(groupJoinPending&&sameGroupTarget(groupJoinPending.target)); }
+function invalidateGroupTasks() {
+  ++groupTaskSerial;groupDiscovery?.cancel();groupScanRun=null;groupScanQueued=false;groupNativePending=false;
+  groupJoinPending=null;groupJoinResult=null;groupPasswordTarget=null;groupCoordinatorStatuses.clear();groupScanMessage='';
+  $('groupCoordinatorPassword').value='';
+  if($('groupCoordinatorPasswordDialog').open)$('groupCoordinatorPasswordDialog').close();
+}
+function groupJoinReason() {
+  const target=getGroupTarget();
+  if(!target)return 'Connect to this lamp over Wi-Fi to join a coordinator.';
+  if(![1,2].includes(target.sync?.version))return 'Update this lamp’s firmware to use lamp groups.';
+  if(target.sync.role!==0)return 'Leave this lamp’s current group before joining a different coordinator.';
+  if(groupJoinForCurrent())return 'Joining this lamp. You can keep using other pages and lamps.';
+  if(busy||connecting||updatingLamp()||state?.calibration?.active)return 'Finish this lamp’s setup or update before joining a group.';
+  return '';
+}
+function renderGroupCoordinators() {
+  const active=document.activeElement?.closest('.group-coordinator');
+  const focused=active?.dataset.coordinatorId;
+  $('syncPeers').replaceChildren();
+  const reason=groupJoinReason();$('groupJoinEligibility').textContent=reason;$('groupJoinEligibility').hidden=!reason;
+  let verified=0,attention=0;
+  for(const [id,value] of groupCoordinatorStatuses){
+    if(id===selected?.id||value.state==='not-coordinator')continue;
+    if(!['checking','coordinator','needs-password','offline','failed'].includes(value.state))continue;
+    if(value.state==='coordinator'&&(!value.verified||value.role!==1))continue;
+    const known=mergedLampEntries().find(entry=>entry.id===id);
+    const row=document.createElement('div');row.className='group-coordinator';row.dataset.coordinatorId=id;
+    const text=document.createElement('div'),name=document.createElement('strong'),detail=document.createElement('span');
+    name.textContent=known?.name||value.name||'CoolLamp';
+    if(value.state==='coordinator'){
+      ++verified;detail.textContent=[known?.room,value.message||('Coordinator · '+(value.members??0)+' following')].filter(Boolean).join(' · ');
+    }else if(value.state==='needs-password'){++attention;detail.textContent='Enter its access password to verify the coordinator.';}
+    else {if(['offline','failed'].includes(value.state))++attention;detail.textContent=value.message||'Checking this lamp…';}
+    text.append(name,detail);row.append(text);
+    const button=document.createElement('button');button.type='button';button.className='secondary compact';
+    const retry=['offline','failed'].includes(value.state);
+    button.textContent=value.state==='needs-password'?'Enter password':value.state==='coordinator'?'Join':retry?'Retry':'Checking';
+    button.disabled=retry?Boolean(groupScanRun)||groupNativePending:Boolean(reason)||!['coordinator','needs-password'].includes(value.state)||
+      (value.state==='coordinator'&&value.joinable===false);
+    button.onclick=()=>retry?refreshGroupCoordinators():value.state==='needs-password'?askGroupCoordinatorPassword(id):joinGroupCoordinator(id);
+    row.append(button);$('syncPeers').append(row);
+    if(focused===id&&!button.disabled)button.focus({preventScroll:true});
+  }
+  $('refreshGroupCoordinators').disabled=Boolean(groupScanRun)||groupNativePending;
+  $('refreshGroupCoordinators').textContent=groupScanRun||groupNativePending?'Looking for coordinators…':'Refresh coordinators';
+  $('syncDiscoveryHint').textContent=groupScanRun||groupNativePending?'Finding coordinators in the background. You can keep using the app.':
+    groupScanMessage||(verified?'Choose Join beside a coordinator. Your selected lamp stays selected.'+(attention?' Some lamps need attention.':''):
+      attention?'No coordinator verified yet. Check the lamps needing attention, or refresh.':'No coordinators found yet. Make another lamp a coordinator, then refresh.');
+}
+function refreshGroupCoordinators({useNative=true}={}) {
+  if(!groupDiscovery)return;
+  const serial=groupTaskSerial;
+  if(useNative&&isNative&&!groupNativePending){
+    groupNativePending=true;renderGroupCoordinators();
+    readNativeLampDiscovery().then(result=>{
+      if(serial!==groupTaskSerial)return;
+      discovered=discovery.remember(result.lamps);renderLamps();
+      if(groupScanRun)groupScanQueued=true;else refreshGroupCoordinators({useNative:false});
+    }).catch(error=>{if(serial===groupTaskSerial)groupScanMessage=error.message||'Wi-Fi discovery could not finish. Saved lamps are still checked.';})
+      .finally(()=>{if(serial===groupTaskSerial){groupNativePending=false;renderGroupCoordinators();}});
+  }
+  if(groupScanRun)return;
+  groupScanMessage='';const run=groupDiscovery.scan();groupScanRun=run;renderGroupCoordinators();
+  run.then(result=>{if(serial===groupTaskSerial&&!result.cancelled&&result.coordinators.length===0&&
+    !result.results.some(value=>['needs-password','offline','failed'].includes(value.state)))
+      groupScanMessage='No coordinators found yet. Make another lamp a coordinator, then refresh.';
+  }).catch(error=>{if(serial===groupTaskSerial)groupScanMessage=error.message||'Could not check coordinators.';})
+    .finally(()=>{
+      if(groupScanRun===run)groupScanRun=null;
+      if(serial!==groupTaskSerial)return;
+      renderGroupCoordinators();
+      if(groupScanQueued){groupScanQueued=false;refreshGroupCoordinators({useNative:false});}
+    });
+}
+function askGroupCoordinatorPassword(id) {
+  const reason=groupJoinReason();if(reason){$('syncFeedback').textContent=reason;return;}
+  const value=groupCoordinatorStatuses.get(id);if(!value)return;
+  groupPasswordTarget={id,target:getGroupTarget()};
+  $('groupCoordinatorPasswordTitle').textContent='Join '+(mergedLampEntries().find(entry=>entry.id===id)?.name||value.name||'coordinator');
+  $('groupCoordinatorPasswordFeedback').textContent='';$('groupCoordinatorPassword').value='';
+  $('groupCoordinatorPasswordDialog').showModal();$('groupCoordinatorPassword').focus();
+}
+async function joinGroupCoordinator(id,password,expected=getGroupTarget()) {
+  const reason=groupJoinReason();if(reason){$('syncFeedback').textContent=reason;return;}
+  if(!sameGroupTarget(expected)){$('syncFeedback').textContent='The selected lamp changed. Choose Join again.';return;}
+  const serial=groupTaskSerial;groupJoinPending={id,target:expected};
+  $('syncFeedback').textContent='Getting the coordinator’s invitation…';renderSync();
+  try{
+    const invitation=await groupDiscovery.invite(id,password);
+    if(serial!==groupTaskSerial||!sameGroupTarget(expected))throw Error('The selected lamp changed. Choose Join again.');
+    const fields=parseGroupCode(invitation.code);
+    if(invitation.id!==id||invitation.targetId!==expected.id||fields.leader!==id)throw Error('The coordinator invitation changed. Refresh and try again.');
+    let passwordWarning='';
+    if(password!==undefined){try{await credential(id,password);}catch{passwordWarning=' The coordinator password could not be saved on this phone.';}}
+    if(serial!==groupTaskSerial||!sameGroupTarget(expected))throw Error('The selected lamp changed. Choose Join again.');
+    const result=await wifiLamp.joinCoordinator(invitation.code,{...expected,leader:id});
+    if(serial!==groupTaskSerial||!sameGroupTarget(expected))return;
+    groupJoinResult={target:expected,leader:id,passwordWarning};
+    $('syncFeedback').textContent=(result.active?'Following coordinator · shared light and sound.':
+      'Group settings saved. Waiting for coordinator; using local settings.')+passwordWarning;
+    renderOptions();
+  }catch(error){
+    if(serial!==groupTaskSerial||!sameGroupTarget(expected))return;
+    if(error.needsPassword){groupJoinPending=null;askGroupCoordinatorPassword(id);}
+    else $('syncFeedback').textContent=error.uncertain?'Join was not confirmed. Check this lamp before trying again.':error.message;
+  }finally{
+    if(serial===groupTaskSerial){groupJoinPending=null;renderSync();}
+  }
+}
+$('refreshGroupCoordinators').onclick=()=>refreshGroupCoordinators();
+$('groupCoordinatorPasswordForm').onsubmit=event=>{
+  event.preventDefault();const pending=groupPasswordTarget,password=$('groupCoordinatorPassword').value;
+  $('groupCoordinatorPassword').value='';$('groupCoordinatorPasswordDialog').close();groupPasswordTarget=null;
+  if(pending)joinGroupCoordinator(pending.id,password,pending.target);
+};
+$('cancelGroupCoordinatorPassword').onclick=()=>{$('groupCoordinatorPasswordDialog').close();};
+$('groupCoordinatorPasswordDialog').addEventListener('close',()=>{$('groupCoordinatorPassword').value='';groupPasswordTarget=null;});
 function renderGroupScenes() {
   const sync=lamp===wifiLamp?state?.sync:null;
   const ready=sync?.version===2 && sync.role>0,controller=ready&&sync.role===1;
@@ -1047,11 +1186,11 @@ function renderSync() {
   const sync=lamp===wifiLamp?state?.sync:null;
   const identity=lamp===wifiLamp?wifiLamp.identity:null;
   if(syncIdentity!==identity){
-    syncIdentity=identity;peerListKey='';groupSceneDirty=false;groupAudioDirty=false;sceneChoicesKey='';groupOrderKey='';$('groupSceneFeedback').textContent='';$('syncCode').value='';$('syncCodeArea').hidden=true;
+    syncIdentity=identity;groupSceneDirty=false;groupAudioDirty=false;sceneChoicesKey='';groupOrderKey='';$('groupSceneFeedback').textContent='';$('syncCode').value='';$('syncCodeArea').hidden=true;
     $('syncJoinCode').value='';$('syncFeedback').textContent='';
   }
   const syncMessage=groupStatus(sync);if($('syncStatus').textContent!==syncMessage)$('syncStatus').textContent=syncMessage;
-  $('syncFields').disabled=!sync||busy||updatingLamp();
+  $('syncFields').disabled=!sync||busy||updatingLamp()||groupJoinForCurrent();
   $('syncIndependent').hidden=Boolean(sync?.role);
   $('syncCoordinator').hidden=sync?.role!==1;
   $('syncFollower').hidden=sync?.role!==2;
@@ -1062,23 +1201,18 @@ function renderSync() {
   $('syncLeaderName').textContent='Coordinator: '+(sync?.peers?.find(p=>p.id===sync.leader)?.name||sync?.leader||'');
   $('syncBanner').hidden=!sync?.role;
   $('syncBannerText').textContent=groupStatus(sync)+(sync?.active?'. Change effects on the coordinator, or pause to control this lamp.':'');
-  const peers=(sync?.peers||[]).filter(p=>p.role===1);
-  const key=JSON.stringify(peers.map(p=>[p.id,p.name]));
-  if(peerListKey!==key){
-    peerListKey=key;$('syncPeers').replaceChildren();
-    for(const peer of peers){
-      const button=document.createElement('button');button.type='button';button.className='secondary sync-peer';
-      const title=document.createElement('strong');title.textContent=peer.name||peer.id;
-      const detail=document.createElement('span');detail.textContent=(peer.microphone?'Audio coordinator · ':'Coordinator · ')+peer.id;
-      button.append(title,detail);button.onclick=()=>{$('syncFeedback').textContent='Open '+(peer.name||peer.id)+' in Lamps → Settings → Groups, show its code, then paste it here.';$('syncJoinCode').focus();};
-      $('syncPeers').append(button);
-    }
-  }
+  renderGroupCoordinators();
   renderGroupScenes();
-  $('syncDiscoveryHint').textContent=peers.length?'Available coordinators on this network. Paste a coordinator’s code to join.':'No coordinators discovered yet. Create one on another lamp, or paste its code. All lamps must share a home network without client isolation.';
+  if(groupJoinResult&&sameGroupTarget(groupJoinResult.target)){
+    if(sync?.role!==2||sync.leader!==groupJoinResult.leader)groupJoinResult=null;
+    else $('syncFeedback').textContent=(sync.paused?'Group settings saved. Following is paused; using local settings.':
+      sync.active===true?'Following coordinator · shared light and sound.':'Group settings saved. Waiting for coordinator; using local settings.')+
+        groupJoinResult.passwordWarning;
+  }
 }
 async function syncAction(action) {
-  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  if(busy||connecting||lamp!==wifiLamp||!state||groupJoinForCurrent())return;
+  groupJoinResult=null;$('syncFeedback').textContent='';
   busy=true;renderSync();
   try {const result=await wifiLamp.enqueue(action);$('syncFeedback').textContent=result||'Group updated.';$('groupSceneFeedback').textContent=result||'Group updated.';}
   catch(e){if(e.uncertain)await wifiLamp.disconnect();$('syncFeedback').textContent=e.message;$('groupSceneFeedback').textContent=e.message;}
@@ -1087,7 +1221,8 @@ async function syncAction(action) {
 $('manageSync').onclick=()=>{settingsSection('groups');page('settings');$('syncTitle').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};
 $('createSync').onclick=()=>syncAction(async()=>{
   const code=createGroupCode(wifiLamp.identity);
-  const result=await wifiLamp.configureSync(1,code);$('syncCode').value=code;$('syncCodeArea').hidden=false;return result+' Copy the code, connect to another lamp, and choose Join a group.';
+  await wifiLamp.configureSync(1,code);$('syncCode').value='';$('syncCodeArea').hidden=true;
+  return 'Coordinator ready. Select another lamp, open Groups and choose this coordinator.';
 });
 $('showSyncCode').onclick=()=>syncAction(async()=>{$('syncCode').value=await wifiLamp.syncInvite();$('syncCodeArea').hidden=false;return 'Copy this code to join other lamps.';});
 $('copySyncCode').onclick=async()=>{

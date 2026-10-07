@@ -57,3 +57,95 @@ test('older firmware rejects group operations locally',async()=>{
  const {lamp,raw,requests}=fixture();delete raw.sync;await lamp.connect('192.168.1.5','password');
  try{const before=requests.length;await assert.rejects(lamp.configureSync(2,code),/Update lamp firmware/);assert.equal(requests.length,before);}finally{await lamp.disconnect();}
 });
+
+function guardedFixture({active=false,loseReply=false,accept=true,leader=id}={}){
+ const model=fixture(),request=model.lamp.http.request;
+ model.lamp.http.request=async options=>{
+  if(options.method==='POST'&&new URL(options.url).pathname==='/api/sync'){
+   model.requests.push(options);
+   if(accept)model.raw.sync={version:2,role:2,leader,active,paused:false};
+   if(loseReply)throw Error('Simulated lost reply');
+   return {status:200,data:'Saved'};
+  }
+  return request(options);
+ };
+ return model;
+}
+const targetSnapshot=lamp=>({id:lamp.identity,address:lamp.base,epoch:lamp.epoch,wireVersion:lamp.raw.sync?.version,leader:id});
+
+test('direct join refreshes the target token, verifies saved membership, and distinguishes waiting from following',async()=>{
+ for(const active of [false,true]){
+  const {lamp,raw,requests}=guardedFixture({active});await lamp.connect('192.168.1.5','password');
+  try{
+   const expected=targetSnapshot(lamp);raw.token='fresh-target-token';
+   const result=await lamp.joinCoordinator(code,expected);
+   const posts=requests.filter(request=>request.method==='POST');
+   assert.equal(posts.length,1);assert.equal(posts[0].headers['X-Lamp-Token'],'fresh-target-token');
+   assert.equal(result.active,active);assert.equal(result.leader,id);
+   assert.equal(lamp.raw.sync.role,2);assert.equal(lamp.identity,other);
+  }finally{await lamp.disconnect();}
+ }
+});
+
+test('uncertain direct join reads back accepted settings once without replay, and never claims unaccepted joins',async()=>{
+ for(const accept of [false,true]){
+  const {lamp,requests}=guardedFixture({loseReply:true,accept});await lamp.connect('192.168.1.5','password');
+  try{
+   const operation=lamp.joinCoordinator(code,targetSnapshot(lamp));
+   if(accept)assert.equal((await operation).active,false);
+   else await assert.rejects(operation,/did not respond/);
+   assert.equal(requests.filter(request=>request.method==='POST').length,1);
+  }finally{await lamp.disconnect();}
+ }
+});
+
+test('direct joins reject a changed selection before and after a deferred target refresh',async()=>{
+ const {lamp,raw,requests}=guardedFixture();await lamp.connect('192.168.1.5','password');
+ const expected=targetSnapshot(lamp);await lamp.disconnect();
+ await assert.rejects(lamp.joinCoordinator(code,expected),/Connect|changed/);
+ await lamp.connect('192.168.1.5','password');
+ const snapshot=targetSnapshot(lamp),original=lamp.http.request;
+ let release,ready;const started=new Promise(resolve=>ready=resolve);
+ let held=false;
+ lamp.http.request=options=>{
+  if(!held&&options.method==='GET'&&new URL(options.url).pathname==='/api/state'){
+   held=true;
+   return new Promise(resolve=>{release=()=>resolve({status:200,data:{...raw,effects:Array.from({length:38},(_,i)=>'Effect '+(i+1))}});ready();});
+  }
+  return original(options);
+ };
+ const join=lamp.joinCoordinator(code,snapshot),rejected=assert.rejects(join,/changed/);
+ await started;await lamp.disconnect();release();await rejected;
+ assert.equal(requests.filter(request=>request.method==='POST').length,0);
+});
+
+test('fresh target membership, setup, updater state and invitation leader are guarded before any join POST',async()=>{
+ for(const change of [raw=>raw.sync={...raw.sync,role:1},raw=>raw.sync={...raw.sync,role:2},
+  raw=>raw.calibration={active:true},raw=>raw.firmware={phase:3},raw=>delete raw.sync]){
+  const {lamp,raw,requests}=guardedFixture();await lamp.connect('192.168.1.5','password');
+  try{const expected=targetSnapshot(lamp);change(raw);await assert.rejects(lamp.joinCoordinator(code,expected),/group|setup|firmware/);
+   assert.equal(requests.filter(request=>request.method==='POST').length,0);
+  }finally{await lamp.disconnect();}
+ }
+ const {lamp,requests}=guardedFixture();await lamp.connect('192.168.1.5','password');
+ try{assert.throws(()=>lamp.joinCoordinator(code,{...targetSnapshot(lamp),leader:other}),/invitation/);
+  assert.equal(requests.filter(request=>request.method==='POST').length,0);
+ }finally{await lamp.disconnect();}
+});
+
+test('a target protocol change after invitation discovery rejects the join without a POST',async()=>{
+ const {lamp,raw,requests}=guardedFixture();raw.sync.version=2;await lamp.connect('192.168.1.5','password');
+ try{
+  const expected=targetSnapshot(lamp);raw.sync={version:1,role:0};
+  await assert.rejects(lamp.joinCoordinator(code,expected),/protocol changed/);
+  assert.equal(requests.filter(request=>request.method==='POST').length,0);
+ }finally{await lamp.disconnect();}
+});
+
+test('a successful HTTP join reply cannot acknowledge different saved group membership',async()=>{
+ const {lamp,requests}=guardedFixture({leader:other});await lamp.connect('192.168.1.5','password');
+ try{
+  await assert.rejects(lamp.joinCoordinator(code,targetSnapshot(lamp)),/did not confirm/);
+  assert.equal(requests.filter(request=>request.method==='POST').length,1);
+ }finally{await lamp.disconnect();}
+});
