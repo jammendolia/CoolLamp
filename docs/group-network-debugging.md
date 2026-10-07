@@ -1,10 +1,26 @@
 # Group coordination diagnosis — Windows, 2026-10-06
 
-Work resumes with Big Ass CoolLamp (`24eae26e9e9c`, `192.168.1.220`) running the
+Latest follow-up (2026-10-07): CoolLamp 2's COM5 and CoolLamp 1's COM3 USB
+bootstraps to the exact published 1.9.5 image are complete. Their new boots and
+secure manifest checks passed, and saved settings, raw logical NVS, GPIO
+assignments, partition table and OTA metadata were preserved. CoolLamp 2's
+preceding 1.9.4 automatic HTTPS download reached
+47% but timed out, so full OTA installation is still unvalidated. App **1.0 (29.1)**
+is now the latest accepted upload: asynchronous fleet source
+`d8620a428406bdd4a9a8cb3fcd0188135b43bc70` passed local and macOS CI validation,
+run `37692263376`, and Apple accepted its upload. App 28.1's firmware-card
+upload is history. Tester availability/phone installation remain unverified.
+All three lamps now report 1.9.5;
+BACL retains its same-source Windows build. The final dated section
+below records the new evidence and supersedes earlier pending-bootstrap states.
+
+Initial Windows checkpoint (2026-10-06): Big Ass CoolLamp (`24eae26e9e9c`, `192.168.1.220`) ran the
 unpublished production 1.9.5 candidate, and CoolLamp 2 (`f0b950b2f180`,
-`192.168.1.222`) running public 1.9.4 as coordinator. Preserve all GPIOs, saved
+`192.168.1.222`) ran public 1.9.4 as coordinator. Preserve all GPIOs, saved
 settings, group keys and memberships. The user requested working lamp
 coordination; no factory reset is authorized.
+This log preserves chronological checkpoints; see the final publication update
+for the current release and installed-image state.
 
 The user reported three successful manual update checks from the iPhone, with
 no available update and no errors. Fresh later telemetry nevertheless records
@@ -881,3 +897,213 @@ and may have missed one. Treat this as incomplete visual observation, not proof
 that physical output stayed lit. They then explicitly authorized publishing the
 current temperature-enabled firmware for OTA and app changes to TestFlight;
 longer logging preparation is deferred while release validation/publication runs.
+
+## 2026-10-07 initial publication checkpoint; installed-image and OTA gaps
+
+The latest public release is [firmware 1.9.5](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.5),
+commit `7a4b5c294e717a6b04bca5d32d64dc4bf2b6962f`. Firmware CI run
+`37682079916` succeeded, and the published application is 1,828,656 bytes,
+SHA-256 `aabfb5bfcd314242c381b3494cbe7aca09b43f58d0de4b4d101e0e7e487d0082`.
+The existing macOS app workflow also succeeded in run `37682084000`;
+Apple accepted app **1.0 (27.1)**. Tester availability and user installation
+are not independently verified. Every GitHub action used a verified
+process-local jammendolia account; HiFin was untouched.
+
+BACL remains on the USB-installed temperature-enabled Windows 1.9.5 candidate,
+SHA-256 `13940566fe29d92c668820ebd6319f67aac7424d99ef78c7ef9f2203306709ab`.
+It has the same source as the release but differs from the CI binary. Normal
+same-version OTA does not offer the published 1.9.5 image to this lamp.
+
+At this earlier publication checkpoint, CoolLamp 2 was observed running 1.9.4.
+Its manual and quiet HTTPS
+checks reported error 3, TLS 12288, transport 32794, HTTP 302, host 2.
+Authenticated local uploads using Python and curl returned empty replies;
+upload success and next-boot image were unconfirmed. USB identity/OTA-selection
+verification and bootstrap were pending then; their later outcome is recorded
+in the following section.
+CoolLamp 1's quiet check also completed on 1.9.4, phase 5/error 3, HTTP
+stage 2/code 302/host 2, TLS 12288/transport 32794, automatic updates true.
+Its evidence is `.build/ota-1.9.5-quiet-192.168.1.154.json`.
+
+BACL's fresh secure published-manifest check completed phase 0/error 0,
+latest 1.9.5, HTTP stage 7/code 200/host 2, TLS error/flags 0 and transport 0
+while group following was active. Latest separate reads show all three lamps
+on, mode 46, brightness 55, scene 0; BACL is unpaused/actively following and
+reports 61.1 C. These latest controls supersede the earlier Fire/paused thermal
+checkpoint and must be preserved during USB bootstrap. Evidence:
+`.build/bacl-published-1.9.5-check.jsonl` and
+`.build/ota-1.9.5-current-lamp-status.jsonl`. The check succeeded, but no claim
+is made that controls remained unchanged throughout its entire window.
+
+Publication and CI success do not establish a completed full OTA installation,
+physical room/audio acceptance, a blackout/thermal fix, or a resolution of the
+IoT-to-IoT forwarding issue. Preserve existing GPIOs, saved settings, group
+keys and memberships during the remaining device checks.
+
+## 2026-10-07 coordinator USB bootstrap verified; app 28.1 uploaded
+
+The user connected CoolLamp 2; COM5 and MAC `80:F1:B2:50:B9:F0` were verified.
+The fresh 1.9.4 boot successfully negotiated secure HTTPS and started automatic
+download of the published 1.9.5 image. It reached 47%, then failed at the
+existing 180-second download limit, phase 5/error 6. The observed download
+had HTTP stage 7/code 200/host 2, TLS error/flags 0 and transport 0. This
+supersedes the earlier quiet-check failures for this boot, but does not establish
+a completed OTA installation. Evidence:
+`.build/coordinator-published-1.9.5-auto-ota-attempt.json` and
+`.build/coordinator-published-1.9.5-usb-ota.jsonl`.
+
+A fresh private 4 MiB ROM backup has SHA-256
+`703b82e9fffa7e5fde52bd3db6ae6075e359776a5142198898247a04473fb2ea`.
+The CRC-valid OTA selector chose app0 at `0x10000`, sequence 5/state 2. The
+extracted old 1.9.4 image matched SHA-256
+`f9c1e3bb0f9f0e926e4c8ec0ba2994e570e31162cce44a413c367ab3a6afe223`.
+Thus the earlier empty local-upload replies had not changed the selected boot
+image at this verified checkpoint. Recovery files remain ignored/private:
+`.build/coordinator-pre-published-1.9.5-private-backup.bin` and
+`.build/coordinator-pre-published-1.9.5-active-app-private.bin`; do not attach
+them to releases. Metadata is in
+`.build/coordinator-pre-published-1.9.5-backup-metadata.json`.
+
+Only app0 was written with the exact immutable published CI application:
+1,828,656 bytes, SHA-256
+`aabfb5bfcd314242c381b3494cbe7aca09b43f58d0de4b4d101e0e7e487d0082`,
+from firmware source commit `7a4b5c294e717a6b04bca5d32d64dc4bf2b6962f`.
+ROM write-hash verification passed. Compared with the fresh pre-write backup,
+raw configuration readback had `nvsChanges: []`, with partition table and
+OTA-selection metadata unchanged. All logical NVS records, including PHY
+calibration, were identical for this coordinator update. Saved API settings
+and runtime controls independently matched (`changedFields: []`). GPIO
+assignments and lamp configuration were preserved. Evidence:
+`.build/coordinator-1.9.5-usb-nvs-comparison.json` and
+`.build/coordinator-1.9.5-usb-settings-comparison.json`.
+
+The new 1.9.5 boot was healthy: at 41.8 seconds it reported valid 53.7 C,
+sceneCount 26, power on, mode 46, brightness 55, 134 LEDs/midpoint 0. A further
+95-second USB capture showed at least 93.6 seconds of stable observed operation.
+The fresh secure published-manifest check passed with latest 1.9.5, phase 0,
+error 0, available false, HTTP stage 7/code 200/host 2, TLS error/flags 0 and
+transport 0. Later HTTP diagnostics at uptime 174306 ms reported valid 55.7 C
+and sceneCount 26. Evidence:
+`.build/coordinator-published-1.9.5-usb-boot.jsonl` and
+`.build/coordinator-published-1.9.5-https-check.jsonl`.
+CoolLamp 2 can return to normal power. This was USB bootstrap plus a successful
+secure check, not a successful secure OTA download/install or proof about
+physical LED blackouts.
+
+The app's per-device installed-firmware cards now distinguish a connected
+version, disconnected **Last seen** version and unknown **Connect to view**.
+No extra hardware polling was added. Four mobile files changed; 104/104 tests,
+the production web build and mock browser check passed. Commit
+`a3499e89a69fcb7bbb56b6a9f3fdae4f21761821` completed macOS TestFlight run
+`37688466205`, and Apple reported `UPLOAD SUCCEEDED with no errors` for app
+**1.0 (28.1)** on 2026-10-07 at 16:23:19 CDT. Evidence:
+`.build/ios-testflight-28.1-ci.log`. Tester availability/user installation remain
+unverified. The earlier app 27.1 accepted upload and published 1.9.5 firmware
+assets remain established history; firmware 1.9.5 was not rebuilt or replaced
+for this app-only change. Every GitHub action used personal jammendolia; HiFin
+was untouched.
+
+At this coordinator/app checkpoint, CoolLamp 1 was connected on COM3 but its
+backup/install was still pending; the following section records its completion.
+Full secure OTA installation, physical
+new-scene/audio acceptance, IoT-to-IoT forwarding and longer blackout/thermal
+follow-up remain open. The user noticed no blackout during short tests, but
+was multitasking, so that observation remains incomplete.
+
+## 2026-10-07 CoolLamp 1 bootstrap verified; all lamps now 1.9.5
+
+CoolLamp 1's COM3 identity/MAC `80:F1:B2:50:B9:AC` was verified. The fresh
+private 4 MiB ROM backup has SHA-256
+`14a2e6fb973b02f79830c67f70b7e37fa808e4c4261a738d1c781ffc9686bfe6`.
+CRC-valid OTA sequence 22/state 2 selected **app1 at `0x200000`**, unlike the
+coordinator's app0. The recovered old application matched published 1.9.4
+SHA-256 `f9c1e3bb0f9f0e926e4c8ec0ba2994e570e31162cce44a413c367ab3a6afe223`.
+Only the verified selected app1 received the exact published 1.9.5 CI image,
+1,828,656 bytes, SHA-256
+`aabfb5bfcd314242c381b3494cbe7aca09b43f58d0de4b4d101e0e7e487d0082`.
+ROM write-hash verification passed. Recovery blobs remain ignored/private,
+including `.build/lamp1-pre-published-1.9.5-private-backup.bin`; metadata is
+`.build/lamp1-pre-published-1.9.5-backup-metadata.json`.
+
+Post-write raw comparison found **all logical NVS records unchanged**
+(`nvsChanges: []`), with unchanged partition table and OTA selector.
+Saved API settings and runtime controls matched (`changedFields: []`). This
+preserves CoolLamp 1's freshly read settings rather than copying another lamp
+or restoring an older snapshot: startup mode 43/brightness 215, microphone
+installed and automatic gain enabled, gain 8/gate 10/scale 115, 134 LEDs/
+midpoint 0, automatic updates enabled, role 2 with CoolLamp 2 as leader.
+Its current runtime remained power on, mode 46, brightness 55 and group scene 0.
+Evidence: `.build/lamp1-1.9.5-usb-nvs-comparison.json` and
+`.build/lamp1-1.9.5-usb-settings-comparison.json`.
+
+The healthy 95-second USB capture produced 45 valid records spanning 95363 ms,
+with valid temperature telemetry. The scheduled secure manifest check passed:
+current/latest 1.9.5, phase 0/error 0, HTTP stage 7/code 200/host 2, TLS
+error/flags 0 and transport 0. Final diagnostics at uptime 150004 ms reported
+valid 57.7 C and historical peak 58.7 C. Evidence:
+`.build/lamp1-published-1.9.5-usb-boot.jsonl` and
+`.build/lamp1-published-1.9.5-https-check.jsonl`.
+
+Final separate reads confirmed CoolLamp 2 and BACL on 1.9.5, and all three lamps
+power on, mode 46, brightness 55, group scene 0. CoolLamp 1 and CoolLamp 2 now
+run the exact published CI application; BACL retains the same-source Windows
+1.9.5 candidate. CoolLamp 1 can disconnect USB and return to usual power.
+Evidence: `.build/other-lamps-after-lamp1-bootstrap.jsonl`.
+The earlier 1.9.4/pending-bootstrap states are historical. Firmware version
+prerequisites for scenes 19–26 are now satisfied, but physical room/audio
+acceptance is still pending. This does not establish a successful full secure
+OTA installation: CoolLamp 2's old 1.9.4 download timed out at 47%, whereas the
+new 1.9.5 secure checks passed after USB installation. Historical blackout/
+thermal and IoT-to-IoT forwarding issues remain unresolved.
+
+At this bootstrap checkpoint, app 1.0 (28.1) was the latest accepted upload, from commit
+`a3499e89a69fcb7bbb56b6a9f3fdae4f21761821`. The newly requested asynchronous
+per-card pings and explicit **Update all** feature were still under implementation
+at this bootstrap checkpoint; the following section records local validation
+and the subsequent accepted app 29.1 upload.
+Published firmware 1.9.5/source `7a4b5c294e717a6b04bca5d32d64dc4bf2b6962f`
+remains immutable. Only personal jammendolia is used; HiFin remains untouched.
+
+## 2026-10-07 asynchronous fleet app 29.1 accepted by Apple
+
+Source `d8620a428406bdd4a9a8cb3fcd0188135b43bc70` was pushed to the existing
+codex branch, and existing macOS CI run `37692263376` completed successfully for
+app **1.0 (29.1)**, verified from run number 29/attempt 1. CI's 134/134 tests,
+native Swift accessory/address checks, web build, signing and archive/export
+passed. Apple reported `UPLOAD SUCCEEDED with no errors` on 2026-10-07 at
+16:56:54 CDT. Evidence: `.build/ios-testflight-29.1-ci.log`.
+App 29.1 is the latest accepted upload; tester availability/phone installation
+have not been independently queried. App 1.0 (28.1), source
+`a3499e89a69fcb7bbb56b6a9f3fdae4f21761821`, is retained as the earlier
+firmware-card checkpoint. Firmware 1.9.5/source
+`7a4b5c294e717a6b04bca5d32d64dc4bf2b6962f`
+and its published assets are unchanged.
+
+Local validation passed 134/134 mobile tests, the production web build and
+mocked UI checks. These cover asynchronous per-card reads, including a blocked
+or deferred ping while other cards return results and Light/Settings navigation
+and another lamp's controls remain usable. Explicit **Update all** handles lamps
+sequentially with per-lamp progress/errors; an offline lamp or missing password
+does not hide the other lamps' results. Selection, disconnection and saved
+automatic-update preferences are not mutated. Installed-versus-latest version
+and timestamp ordering guards prevent stale replies from replacing newer card
+results. Page-open/background status refresh only reads; updates started by the
+app require the explicit button. Existing automatic-update preferences remain unchanged.
+
+A separate live test used the background refresh module against all three
+lamps with **GET only**. Each identity was verified, and each returned installed
+1.9.5, advertised latest 1.9.5, ready/no available update. Evidence:
+`.build/firmware-fleet-live-refresh.json`. Update/install progress, error paths
+and fleet sequencing were validated with mocks; no live full secure OTA
+download/install was performed by this test. Do not combine these evidence
+levels into an end-to-end OTA claim.
+
+CoolLamp 1/CoolLamp 2 remain on exact published CI 1.9.5 after their verified
+USB bootstraps, with logical NVS and saved/runtime settings unchanged; BACL
+retains its same-source Windows 1.9.5 candidate. Firmware publication remains
+immutable. Only personal jammendolia is used; HiFin remains untouched.
+Accepted app 29.1 includes the page/background read-only refresh and explicit
+sequential Update all behavior described above. Bulk installations remain
+mock-tested; the live fleet test only read statuses. Full secure OTA installation,
+physical new-scene/music acceptance, historical blackout/thermal diagnosis and
+IoT-to-IoT forwarding remain separate open work.
