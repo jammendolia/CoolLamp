@@ -149,6 +149,10 @@ summary .summary-detail + * { margin-left: 0; }
 .empty-state { border: 1px dashed #63748b; border-radius: 23px; padding: 28px 24px; margin: 22px 0; color: var(--muted); font-size: 0.875rem; line-height: 1.7; background: #1b2533; }
 .empty-state h3 { color: #f4f3ed; }
 .lamp-list { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit,minmax(min(100%,245px),1fr)); }
+.lamp-fleet-tools { margin: 0 0 22px; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.lamp-fleet-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.lamp-fleet-actions button { flex: 1; min-width: 130px; }
+.lamp-fleet-tools .hint { margin: 12px 0 0; }
 .lamp-card { position: relative; width: 100%; min-width: 0; text-align: left; padding: 22px; border: 1px solid #566780; color: #f4f3ed; background: linear-gradient(130deg,#283748,#1c283b); min-height: 145px; }
 .lamp-card[aria-current=true] { border-color: var(--accent); }
 .lamp-card::before { content: ''; display: block; width: 24px; height: 30px; border: 2px solid #a9f0d8; border-radius: 12px 12px 7px 7px; margin-bottom: 16px; box-shadow: 0 0 18px #a9f0d81c; }
@@ -156,6 +160,8 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-card strong { display: block; font-size: 1.375rem; letter-spacing: -.5px; font-weight: 600; overflow-wrap: anywhere; }
 .lamp-card span { display: block; padding-right: 46px; font-size: 0.75rem; color: #bac8d8; line-height: 1.6; margin-top: 9px; overflow-wrap: anywhere; }
 .lamp-card .lamp-firmware { display: block; padding-right: 46px; font-size: 0.75rem; color: #bac8d8; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; }
+.lamp-card .lamp-update-status { display: block; padding-right: 46px; font-size: 0.75rem; color: var(--muted); line-height: 1.6; margin-top: 7px; overflow-wrap: anywhere; }
+.lamp-card .lamp-update-progress { width: calc(100% - 46px); height: 6px; margin: 12px 0 0; accent-color: var(--accent); }
 .lamp-entry { display: grid; position: relative; }
 .lamp-remove { position: absolute; right: 12px; bottom: 12px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 12px; color: var(--muted); background: transparent; }
 .lamp-remove svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

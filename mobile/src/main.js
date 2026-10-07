@@ -9,6 +9,7 @@ import { createGroupCode, parseGroupCode, groupStatus } from './sync.js';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, LampDiscoverySession, lampAddress, lampFirmwareLabel, validFirmwareVersion } from './lamps.js';
 import { WifiTransport } from './wifi.js';
+import { FirmwareFleet } from './firmware-fleet.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
@@ -27,6 +28,9 @@ const bluetoothWifiAvailable=()=>lamp===bleLamp&&bleLamp.supportsWifiSetup&&Bool
 const isNative = Capacitor.isNativePlatform();
 const sessionPasswords = new Map();
 const wifiFailures = new Map();
+const fleetStatuses = new Map();
+let fleet=null, fleetRefreshRun=null, fleetRefreshQueued=false, fleetUpdating=false;
+let fleetSummary='Versions refresh in the background. Updates start only when you choose Update all lamps.';
 async function credential(id, value) {
   if (isNative) return native.credential({id, ...(value === undefined ? {} : {value})});
   if (value !== undefined) sessionPasswords.set(id,value);
@@ -34,7 +38,7 @@ async function credential(id, value) {
 }
 function page(name) {
   if(name!=='settings')hideWifiPassword();
-  if(name==='lamps')renderLamps();
+  if(name==='lamps'){renderLamps();refreshLampFirmware();}
   for (const item of ['lamps','light','settings']) $('page-'+item).hidden=item!==name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(name==='settings')renderSettings();
@@ -48,6 +52,7 @@ let toastTimer;
 const status = message => { $('status').textContent = message; $('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,5000); };
 let state = null, editingBrightness = false, busy = false;
 let firmware = null;
+let firmwareReceivedAt = 0;
 let effectOptions = null, editingOptions = false;
 let vuDirty = false, fountainDirty = false;
 let groupSceneDirty=false,groupAudioDirty=false,sceneChoicesKey='',groupOrderKey='';
@@ -119,7 +124,7 @@ function renderEffectPane() {
   paintRanges();
 }
 
-function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase)); }
+function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||fleetLampInstalling(selected?.id); }
 function renderPower() {
   const sync=lamp===wifiLamp?state?.sync:null;
   const scope=sync?.role===1?'group':sync?.role===2?'this lamp':'lamp';
@@ -159,7 +164,7 @@ function renderOptions() {
   paintRanges();
 }
 function renderFirmware() {
-  const updating = firmware && [1,3,4].includes(firmware.phase);
+  const updating = updatingLamp();
   $('firmwareVersion').textContent = state ? firmware?.version || 'Older firmware' : 'Connect to view';
   const updateMessage=state?firmwareMessage(firmware):'Connect to view update status.';
   if($('firmwareStatus').textContent!==updateMessage)$('firmwareStatus').textContent=updateMessage;
@@ -194,7 +199,7 @@ function renderSettings() {
   $('wifiSettingsHint').textContent=bleNetwork?'Start with Find Wi-Fi networks, then choose your 2.4 GHz home network. Your phone stays connected over Bluetooth. Settings are saved only after the lamp connects.':'To choose a different network, start with Find Wi-Fi networks. The lamp’s hotspot remains available for recovery.';
   $('scanWifi').textContent=wifiScanning?'Scanning…':'Find Wi-Fi networks';
   $('scanWifi').setAttribute('aria-busy',String(wifiScanning));
-  $('scanWifi').disabled=wifiScanning||busy||connecting||!state||(!bleNetwork&&lamp!==wifiLamp);
+  $('scanWifi').disabled=wifiScanning||busy||connecting||updatingLamp()||!state||(!bleNetwork&&lamp!==wifiLamp);
   $('saveWifi').textContent=bleNetwork?'Connect lamp to Wi-Fi':'Save & restart lamp';
   $('wifiPassword').disabled=$('openNetwork').checked;
   $('toggleWifiPassword').disabled=$('wifiPassword').disabled||busy||connecting||!state;
@@ -202,7 +207,7 @@ function renderSettings() {
   $('cancelWifiSetup').hidden=!wifiSetupAbort;
   $('switchToWifi').hidden=!bleNetwork||!bleWifiStatus?.connected||!bleWifiStatus?.ssid||busy;
   $('saveIdentity').disabled=!selected||busy||connecting||updatingLamp();
-  $('forgetLamp').disabled=!selected||busy||connecting;
+  $('forgetLamp').disabled=!selected||busy||connecting||fleetLampInstalling(selected?.id);
   $('bluetoothIdentity').hidden=settingsView!=='overview'||!selected?.deviceId;
   $('bluetoothIdentity').textContent=selected?.deviceId?'Phone pairing: '+pairingLabel(selected)+
     (selected.bluetoothName&&selected.bluetoothName!==pairingLabel(selected)?' · Device: '+selected.bluetoothName:''):'';
@@ -222,13 +227,16 @@ if (savedDevice) status('Reconnect to your saved lamp. There is no need to enter
 const callbacks = {
   onOptions(next) { effectOptions = next; renderOptions(); },
   onFirmware(next) {
-    const previousVersion=validFirmwareVersion(firmware?.version);
+    const previousLabel=selected?lampFirmwareLabel(selected,{connected:verifiedSelectedLamp(),firmware,firmwareReceivedAt,
+      observation:fleetStatuses.get(selected.id)}):null;
     firmware = next;
+    firmwareReceivedAt = Date.now();
     // Connect callbacks precede assignment of the newly verified selected lamp.
     // Save initial metadata after connect completes, never against the old card.
     if(verifiedSelectedLamp()) {
       store.rememberFirmware(selected.id,next);
-      if(previousVersion!==validFirmwareVersion(next?.version))renderLamps();
+      const nextLabel=lampFirmwareLabel(selected,{connected:true,firmware,firmwareReceivedAt,observation:fleetStatuses.get(selected.id)});
+      if(previousLabel!==nextLabel)renderLamps();
     }
     renderFirmware();
   },
@@ -264,7 +272,7 @@ const callbacks = {
     if($('factoryResetDialog').open){$('factoryResetDialog').returnValue='cancel';$('factoryResetDialog').close();}
     wifiSetupAbort?.abort();wifiSetupAbort=null;bleWifiStatus=null;++wifiSetupSerial;busy=false;
     $('wifiSetupFeedback').textContent='';$('networks').replaceChildren(new Option('Choose a network or enter its name below',''));
-    firmware = null; effectOptions = null; vuDirty=false;fountainDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';$('fountainFeedback').textContent='';
+    firmware = null; firmwareReceivedAt = 0; effectOptions = null; vuDirty=false;fountainDirty=false;audioDirty=false;paneMode=null;$('audioFeedback').textContent='';$('vuFeedback').textContent='';$('fountainFeedback').textContent='';
     $('defaultPasswordNotice').hidden=true;
     for(const id of ['ssid','wifiPassword','adminPassword','leds','milliamps','startupBrightness'])$(id).value='';
     $('startupMode').replaceChildren();$('microphoneInstalled').checked=false;$('midpoint').value=0;
@@ -303,10 +311,19 @@ const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:async e=
   else {if(e.needsPassword)promptWifiPassword(selected);status(e.message);}
 }});
 lamp=bleLamp;
+fleet=new FirmwareFleet({http:CapacitorHttp,credential,getLamps:mergedLampEntries,onStatus:(id,value)=>{
+  if(!mergedLampEntries().some(entry=>entry.id===id))return;
+  fleetStatuses.set(id,value);
+  if(value.verified&&value.fresh)store.rememberFirmware(id,{version:value.installedVersion,checkedAt:value.checkedAt});
+  renderLamps();
+  // Fleet tasks never select a lamp or set the app's global busy state.
+  // Only the lamp actually installing needs its controls refreshed/disabled.
+  if(id===selected?.id){renderPower();renderFirmware();renderOptions();renderSettings();}
+}});
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
 async function change(operation, value, activatePalette = false) {
-  if (busy) return;
+  if (busy||fleetLampInstalling(selected?.id)) return;
   busy = true; $('controls').disabled = true; renderPower(); renderFirmware();
   try {
     if(activatePalette && !state.color?.enabled){
@@ -318,7 +335,8 @@ async function change(operation, value, activatePalette = false) {
   finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
 }
 async function connect(saved = null) {
-  if(connecting||busy)return;
+  const id=saved?.id||saved?.lampId||store.items.find(entry=>entry.deviceId===saved?.deviceId)?.id;
+  if(connecting||busy||fleetLampInstalling(id))return;
   connecting=true; $('connect').disabled=true; status('Connecting over Bluetooth…');
   await lamp.disconnect(); lamp=bleLamp;
   try {
@@ -375,7 +393,7 @@ function connected(kind) {
   }
 }
 async function connectWifi(entry,password) {
-  if(connecting||busy)return;
+  if(connecting||busy||fleetLampInstalling(entry.id))return;
   connecting=true;status('Connecting over Wi-Fi…');
   await lamp.disconnect(); lamp=wifiLamp;
   try {
@@ -433,21 +451,100 @@ function verifiedSelectedLamp() {
   return lamp===bleLamp&&bleLamp.id===selected.deviceId&&
     (!bleLamp.deviceIdentity||bleLamp.deviceIdentity===selected.id);
 }
+function mergedLampEntries() {
+  const merged=new Map(store.items.map(entry=>[entry.id,entry]));
+  for(const entry of discovered)merged.set(entry.id,{...entry,...merged.get(entry.id),address:entry.address});
+  return [...merged.values()];
+}
+function fleetLampInstalling(id) { return ['updating','restarting'].includes(fleetStatuses.get(id)?.state); }
+function fleetSeenTime(value) {
+  return Number.isFinite(value)&&value>0?new Date(value).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';
+}
+function fleetCardStatus(value,entry) {
+  if(!value)return '';
+  if(value.state==='checking')return value.message||'Reading installed firmware…';
+  if(value.state==='updating')return (value.message||'Installing firmware…')+(Number.isInteger(value.progress)?' '+value.progress+'%':'');
+  if(value.state==='restarting')return value.message||'Waiting for restart…';
+  if(value.state==='needs-password')return 'Access password needed · tap to enter';
+  if(['offline','failed','unsupported'].includes(value.state)) {
+    const seen=fleetSeenTime(value.checkedAt||entry.firmwareSeenAt);
+    return (value.message||value.error||'Unable to read this lamp.')+(seen?' Last seen '+seen+'.':'');
+  }
+  const checked=fleetSeenTime(value.checkedAt);
+  const message=value.message||(value.available&&value.latestVersion?'Update '+value.latestVersion+' available':'Reachable');
+  return message+(checked?' · Checked '+checked:'');
+}
+function renderFleetControls() {
+  const entries=mergedLampEntries(),reachable=entries.some(entry=>entry.address);
+  $('refreshLampFirmware').disabled=Boolean(fleetRefreshRun)||fleetUpdating||!entries.length;
+  $('refreshLampFirmware').textContent=fleetRefreshRun&&!fleetUpdating?'Refreshing versions…':'Refresh versions';
+  $('updateAllLamps').disabled=fleetUpdating||!reachable;
+  $('updateAllLamps').textContent=fleetUpdating?'Updating lamps…':'Update all lamps';
+  $('fleetFirmwareStatus').textContent=fleetSummary;
+}
+function refreshLampFirmware({newDiscovery=false}={}) {
+  if(!fleet||fleetUpdating)return;
+  if(fleetRefreshRun){fleetRefreshQueued ||= newDiscovery;return;}
+  fleetSummary='Reading each lamp’s installed version in the background…';
+  const run=fleet.refresh();fleetRefreshRun=run;renderFleetControls();
+  run.then(result=>{
+    if(result.cancelled||result.busy||fleetUpdating)return;
+    const live=result.results.filter(value=>value.verified&&value.fresh).length;
+    const attention=result.results.filter(value=>['offline','failed','needs-password','unsupported'].includes(value.state)).length;
+    fleetSummary='Versions refreshed · '+live+' reachable'+(attention?' · '+attention+' need attention':'')+'.';
+  }).catch(error=>{if(!fleetUpdating)fleetSummary=error.message||'Could not refresh lamp versions.';})
+    .finally(()=>{
+      if(fleetRefreshRun===run)fleetRefreshRun=null;
+      renderFleetControls();
+      if(fleetRefreshQueued&&!fleetUpdating){fleetRefreshQueued=false;refreshLampFirmware();}
+    });
+}
+async function updateAllLamps() {
+  if(fleetUpdating)return;
+  fleetUpdating=true;fleetRefreshQueued=false;
+  fleetSummary='Checking and updating lamps one at a time. You can keep using the app.';
+  renderFleetControls();
+  try {
+    const result=await fleet.updateAll();
+    const updated=result.results.filter(value=>value.state==='updated').length;
+    const current=result.results.filter(value=>value.state==='ready').length;
+    const attention=result.results.filter(value=>['offline','failed','needs-password','unsupported'].includes(value.state)).length;
+    fleetSummary=(result.cancelled?'Stopped':'Finished')+' · '+updated+' updated · '+current+' already up to date'+
+      (attention?' · '+attention+' need attention':'')+'.';
+  }catch(error){fleetSummary=error.message||'Updates could not finish. Review each lamp before trying again.';}
+  finally{fleetUpdating=false;renderLamps();renderPower();renderFirmware();renderOptions();renderSettings();}
+}
+$('refreshLampFirmware').onclick=()=>refreshLampFirmware();
+$('updateAllLamps').onclick=()=>updateAllLamps();
 function renderLamps() {
+  const focused=document.activeElement?.closest('.lamp-entry');
+  const focusedId=focused?.dataset.lampId,focusedRemove=document.activeElement?.classList.contains('lamp-remove');
   $('discover').textContent=discovery.scanned?'Refresh Wi-Fi list':'Find on Wi-Fi';
   $('lampList').replaceChildren();
-  const merged=new Map(store.items.map(x=>[x.id,x]));
-  for(const entry of discovered)merged.set(entry.id,{...entry,...merged.get(entry.id),address:entry.address});
-  $('emptyLamps').hidden=merged.size>0;
-  for(const entry of merged.values()) {
-    const wrapper=document.createElement('div');wrapper.className='lamp-entry';
+  const entries=mergedLampEntries();
+  $('emptyLamps').hidden=entries.length>0;
+  for(const entry of entries) {
+    const wrapper=document.createElement('div');wrapper.className='lamp-entry';wrapper.dataset.lampId=entry.id;
     const button=document.createElement('button');button.className='lamp-card';
     const title=document.createElement('strong');title.textContent=entry.name||'CoolLamp';
     const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
     const connected=verifiedSelectedLamp()&&entry.id===selected.id;
     const version=document.createElement('small');version.className='lamp-firmware';
-    version.textContent=lampFirmwareLabel(entry,{connected,firmware});
-    button.append(title,detail,version);button.disabled=connecting||busy;
+    const observation=fleetStatuses.get(entry.id);
+    version.textContent=lampFirmwareLabel(entry,{connected,firmware,firmwareReceivedAt,observation});
+    const activeAt=connected&&validFirmwareVersion(firmware?.version)?firmwareReceivedAt:0;
+    const pingAt=observation?.verified&&observation.fresh&&validFirmwareVersion(observation.installedVersion)&&
+      Number.isFinite(observation.checkedAt)?observation.checkedAt:0;
+    const seen=Math.max(activeAt,pingAt)||observation?.checkedAt||entry.firmwareSeenAt;
+    if(seen)version.title='Last verified '+new Date(seen).toLocaleString();
+    button.append(title,detail,version);button.disabled=connecting||busy||fleetLampInstalling(entry.id);
+    const updateStatus=fleetCardStatus(observation,entry);
+    if(updateStatus){const note=document.createElement('small');note.className='lamp-update-status';note.textContent=updateStatus;button.append(note);}
+    if(fleetLampInstalling(entry.id)){
+      const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;
+      if(observation.state==='updating'&&Number.isInteger(observation.progress))progress.value=observation.progress;
+      progress.setAttribute('aria-label',(entry.name||'Lamp')+' firmware update progress');button.append(progress);
+    }
     button.setAttribute('aria-current',String(connected));
     if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
     button.onclick=async()=>{
@@ -459,10 +556,12 @@ function renderLamps() {
     };
     const remove=document.createElement('button');remove.type='button';remove.className='lamp-remove';
     remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
-    remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting;
+    remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting||fleetLampInstalling(entry.id);
     remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
     wrapper.append(button,remove);$('lampList').append(wrapper);
+    if(focusedId===entry.id){const control=focusedRemove?remove:button;if(!control.disabled)control.focus({preventScroll:true});}
   }
+  renderFleetControls();
 }
 async function discover(includeForgotten=false) {
   if(!isNative){status('Automatic discovery is available in the iPhone and Android app. You can enter a lamp address here.');return;}
@@ -471,6 +570,7 @@ async function discover(includeForgotten=false) {
   try {
     const result=await native.discover();discovered=discovery.remember(result.lamps);
     renderLamps();status(discovered.length?'Choose a lamp to connect.':'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
+    refreshLampFirmware({newDiscovery:true});
     const remembered=store.items.find(x=>x.id===localStorage.getItem('coollamp-selected'));
     const available=remembered&&discovered.find(x=>x.id===remembered.id);
     if(available&&!state&&!connecting)await connectWifi({...remembered,address:available.address});
@@ -760,7 +860,7 @@ $('audioForm').onsubmit=e=>{
   });
 };
 async function removeLampFromPhone(entry,confirmed=false) {
-  if(!entry||busy||connecting)return;
+  if(!entry||busy||connecting||fleetLampInstalling(entry.id))return;
   if(!confirmed&&!confirm('Remove '+(entry.name||'this lamp')+' from this phone? '+
     (phonePlatform==='ios'?'Its iPhone pairing will also be removed where supported.':'You may also need to forget its pairing in Bluetooth settings.')+
     ' The lamp’s settings stay unchanged.'))return;
@@ -775,7 +875,7 @@ async function removeLampFromPhone(entry,confirmed=false) {
     }
     if(entry.deviceId)removedAccessoryIds.add(entry.deviceId.toLowerCase());
     await credential(entry.id,'');
-    store.remove(entry.id);discovered=discovery.forget(entry.id);
+    store.remove(entry.id);discovered=discovery.forget(entry.id);fleetStatuses.delete(entry.id);
     if(localStorage.getItem('coollamp-selected')===entry.id)localStorage.removeItem('coollamp-selected');
     if(savedDevice&&(savedDevice.lampId===entry.id||savedDevice.deviceId===entry.deviceId)){savedDevice=null;localStorage.removeItem('coollamp-device');$('reconnect').hidden=true;}
     if(selected?.id===entry.id)selected=null;
@@ -838,7 +938,7 @@ $('factoryResetDialog').addEventListener('close',async()=>{
   }
   finally{busy=false;renderSettings();}
 });
-paintRanges();renderLamps();
+paintRanges();renderLamps();refreshLampFirmware();
 if(phonePlatform==='ios')rememberAuthorizedAccessories().catch(()=>{});
 if(isNative)discover();
 

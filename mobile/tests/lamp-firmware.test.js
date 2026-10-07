@@ -55,3 +55,27 @@ test('Wi-Fi/Bluetooth identity migration preserves the installed-version observa
  model.store.rememberFirmware('24eae26e9e9c',{version:'1.9.5'});
  assert.equal(model.store.items[0].firmwareVersion,'1.9.5');
 });
+
+test('connected cards use the latest verified observation without replacing active transport data',()=>{
+ const cached={id:'a',firmwareVersion:'1.9.4'};
+ const firmware=Object.freeze({version:'1.9.4',latest:'9.9.9'});
+ const observation=Object.freeze({verified:true,fresh:true,installedVersion:'1.9.5',checkedAt:20});
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware,firmwareReceivedAt:10,observation}),'Firmware 1.9.5');
+ assert.equal(firmware.version,'1.9.4');
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware:{version:'1.9.5'},firmwareReceivedAt:30,
+  observation:{verified:true,fresh:true,installedVersion:'1.9.4',checkedAt:20}}),'Firmware 1.9.5');
+ // A later active read also wins if the lamp actually returns to older firmware.
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware,firmwareReceivedAt:30,observation}),'Firmware 1.9.4');
+});
+
+test('unverified, stale, untimed or malformed fleet values cannot supersede an active firmware observation',()=>{
+ const options={connected:true,firmware:{version:'1.9.4'},firmwareReceivedAt:10};
+ for(const observation of [
+  {verified:false,fresh:true,installedVersion:'1.9.5',checkedAt:20},
+  {verified:true,fresh:false,installedVersion:'1.9.5',checkedAt:20},
+  {verified:true,fresh:true,installedVersion:'bad',checkedAt:20},
+  {verified:true,fresh:true,installedVersion:'1.9.5'},
+  {verified:true,fresh:true,installedVersion:'1.9.5',checkedAt:NaN},
+  {verified:true,fresh:true,installedVersion:'1.9.5',checkedAt:10},
+ ])assert.equal(lampFirmwareLabel({}, {...options,observation}),'Firmware 1.9.4');
+});

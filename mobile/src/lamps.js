@@ -53,6 +53,7 @@ export class LampStore {
     const version = validFirmwareVersion(status?.version);
     if (!entry || !version || entry.firmwareVersion === version) return entry;
     entry.firmwareVersion = version;
+    entry.firmwareSeenAt = Number.isFinite(status?.checkedAt)&&status.checkedAt>0 ? status.checkedAt : Date.now();
     this.save();
     return entry;
   }
@@ -66,9 +67,16 @@ export function validFirmwareVersion(value) {
   return parts.every(part => part <= 65535) && parts.some(Boolean) ? value : null;
 }
 
-export function lampFirmwareLabel(entry, {connected=false, firmware=null}={}) {
-  const version = validFirmwareVersion(connected ? firmware?.version : entry?.firmwareVersion);
-  if (connected) return version ? 'Firmware ' + version : 'Firmware unavailable';
+export function lampFirmwareLabel(entry, {connected=false, firmware=null, firmwareReceivedAt=0, observation=null}={}) {
+  const current=validFirmwareVersion(firmware?.version);
+  const fresh=observation?.verified===true&&observation?.fresh===true?validFirmwareVersion(observation.installedVersion):null;
+  if(connected){
+    const newerPing=Number.isFinite(observation?.checkedAt)&&observation.checkedAt>firmwareReceivedAt;
+    const version=fresh&&(!current||newerPing)?fresh:current;
+    return version?'Firmware '+version:'Firmware unavailable';
+  }
+  if(fresh)return 'Firmware '+fresh;
+  const version=validFirmwareVersion(entry?.firmwareVersion);
   return version ? 'Firmware ' + version + ' · Last seen' : 'Firmware · Connect to view';
 }
 
