@@ -18,11 +18,20 @@ export const groupScenes = [
  {id:16,name:'Rhythm section',description:'Bass surges, midrange ribbons and treble sparkles take different lamps. With two lamps, the second combines mids and treble.',audio:true,speedLabel:'Ribbon & sparkle speed'},
  {id:17,name:'Beat chase',description:'Each beat passes an accent to the next lamp. Direction alternates every eight beats; strong beats add an opposite accent.',audio:true,speedLabel:'Accent speed'},
  {id:18,name:'Shared heartbeat',description:'Double pulses spread through the group, converge into one heartbeat, then drift apart.',audio:false,speedLabel:'Heartbeat pace'},
+ {id:19,name:'Bass cathedral',description:'Bass lifts glowing columns around the room. Each lamp stays lit beneath the rising accents.',audio:true,speedLabel:'Column flow speed'},
+ {id:20,name:'Spectrum loom',description:'Bass, midrange and treble weave colored ribbons through every lamp over a gently moving glow.',audio:true,speedLabel:'Weave speed'},
+ {id:21,name:'Resonant rings',description:'Shared beats expand into luminous rings. Each lamp adds a different phase over a continuous glow.',audio:true,speedLabel:'Ring expansion speed'},
+ {id:22,name:'Velvet thunder',description:'Smooth bass swells fill every lamp while treble adds shimmering highlights. A soft glow remains between sounds.',audio:true,speedLabel:'Shimmer speed'},
+ {id:23,name:'Prism chorus',description:'Beats shift palette harmonies around the room. Every lamp sings in a different color over a flowing background.',audio:true,speedLabel:'Harmony flow speed'},
+ {id:24,name:'Twin vortex',description:'Two colored helices spiral in opposite directions on every lamp. Music strengthens the twists above a steady glow.',audio:true,speedLabel:'Vortex rotation speed'},
+ {id:25,name:'Electric bloom',description:'Music opens luminous blooms across all lamps together. Glowing stems keep the room alive between bursts.',audio:true,speedLabel:'Bloom motion speed'},
+ {id:26,name:'Room groove',description:'Repeating musical motifs give each lamp a rhythmic role. Everyone keeps glowing while bass, ribbons and sparkles play together.',audio:true,speedLabel:'Groove motion speed'},
 ];
+const maximumGroupSceneId=Math.max(...groupScenes.map(scene=>scene.id));
 export function groupSceneSettings(sync,patch={}) {
  const value={scene:sync?.scene??0,speed:sync?.sceneSpeed||50,intensity:sync?.sceneIntensity??85,
   primary:sync?.scenePrimary||[70,220,255],secondary:sync?.sceneSecondary||[255,65,170],...patch};
- if(!Number.isInteger(value.scene)||value.scene<0||value.scene>18||
+ if(!Number.isInteger(value.scene)||value.scene<0||value.scene>maximumGroupSceneId||
     !Number.isInteger(value.speed)||value.speed<1||value.speed>100||
     !Number.isInteger(value.intensity)||value.intensity<0||value.intensity>100||
     [value.primary,value.secondary].some(c=>!Array.isArray(c)||c.length!==3||c.some(v=>!Number.isInteger(v)||v<0||v>255)))throw Error('Check the group scene settings.');
@@ -36,6 +45,6 @@ export function moveGroupLamp(order,id,direction) {
 }
 
 export function availableGroupScenes(sync) {
- const count=Number.isInteger(sync?.sceneCount)?Math.max(0,Math.min(18,sync.sceneCount)):8;
+ const count=Number.isInteger(sync?.sceneCount)?Math.max(0,Math.min(maximumGroupSceneId,sync.sceneCount)):8;
  return groupScenes.filter(scene=>scene.id<=count);
 }

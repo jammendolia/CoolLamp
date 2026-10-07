@@ -8,8 +8,8 @@
 namespace LampSyncWire {
 constexpr uint16_t Port = 49732;
 constexpr unsigned MaxPeers = 8;
-constexpr uint8_t SceneCount = 18;
-inline bool sceneNeedsAudio(uint8_t scene){return scene==3||scene==4||scene==7||scene==16||scene==17;}
+constexpr uint8_t SceneCount = 26;
+inline bool sceneNeedsAudio(uint8_t scene){return scene==3||scene==4||scene==7||scene==16||scene==17||(scene>=19&&scene<=26);}
 constexpr uint32_t Timeout = 3000, AudioTimeout = 200, PeerTimeout = 7000;
 enum Kind : uint8_t { Discover = 1, Subscribe = 2, Frame = 3, ClockReply = 4 };
 #pragma pack(push,1)

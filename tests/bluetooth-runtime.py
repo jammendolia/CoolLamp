@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from host_compiler import SANITIZERS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -53,7 +54,7 @@ int main(){
             cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
             cpp.write_text(stub + helper + callback + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I'+str(ROOT),
-                            '-fsanitize=address,undefined', str(cpp), '-o', str(binary)], check=True)
+                            *SANITIZERS, str(cpp), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
     def test_state_read_preserves_binary_packet_and_legacy_catalog(self):
@@ -98,7 +99,7 @@ int main(){
             cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
             cpp.write_text(stub + callback + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                            '-fsanitize=address,undefined', str(cpp), '-o', str(binary)], check=True)
+                            *SANITIZERS, str(cpp), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
     def test_enrollment_and_saved_phone_policy(self):

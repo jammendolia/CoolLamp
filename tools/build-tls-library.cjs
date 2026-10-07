@@ -45,9 +45,20 @@ function layout(text) {
   }
   return result;
 }
+function validateExports(before,after) {
+  if(!before.size||!after.size||before.size!==after.size||[...before].some(name=>!after.has(name)))throw Error('Optimized TLS exports differ from the SDK or could not be read.');
+}
+function validateLayouts(sdkLayout,newLayout) {
+  for(const name of ['probe_context','probe_config','probe_session']) {
+    if(!Number.isSafeInteger(sdkLayout[name])||sdkLayout[name]<=0||sdkLayout[name]!==newLayout[name])throw Error('TLS public ABI changed or probe missing: '+name);
+  }
+  if(sdkLayout.probe_input!==INPUT||sdkLayout.probe_output!==INPUT)throw Error('Unexpected SDK TLS buffer configuration.');
+  if(newLayout.probe_input!==INPUT||newLayout.probe_output!==OUTPUT)throw Error('TLS buffer configuration did not apply.');
+}
 async function ensureTlsLibrary({cli,board,sketch,root}) {
   const props=properties(run(cli,['compile','--fqbn',board,'--build-path',path.join(root,'.build/tls-properties'),'--show-properties=expanded',sketch]));
   if(props['build.mcu']!=='esp32c3')throw Error('The optimized TLS build currently targets ESP32-C3.');
+  if(props.version!=='3.3.11')throw Error('Install the pinned ESP32 Arduino core 3.3.11 before building optimized TLS.');
   const sdk=props['compiler.sdk.path'],bin=props['compiler.path'];
   if(!sdk||!bin||!props['compiler.c.cmd'])throw Error('Arduino did not return the SDK/toolchain paths.');
   const sdkHeaders=path.join(sdk,'include/mbedtls/mbedtls/include');
@@ -61,7 +72,8 @@ async function ensureTlsLibrary({cli,board,sketch,root}) {
   const ar=tool(bin,stem+'ar'),nm=tool(bin,stem+'nm');
   const settings=['c_flags','defines','includes'].map(name=>fs.readFileSync(path.join(flags,name)));
   const fingerprint=digest(Buffer.concat([Buffer.from(SOURCE+INPUT+':'+OUTPUT+run(compiler,['--version'])),
-    ...settings,fs.readFileSync(path.join(config,'sdkconfig.h')),fs.readFileSync(original),fs.readFileSync(__filename)]));
+    ...settings,...headers.map(name=>fs.readFileSync(path.join(sdkHeaders,name))),
+    fs.readFileSync(path.join(config,'sdkconfig.h')),fs.readFileSync(original),fs.readFileSync(__filename)]));
   const cache=path.join(root,'.build/tls-library',fingerprint);fs.mkdirSync(cache,{recursive:true});
   const library=path.join(cache,'libmbedtls-ota.a'),recordPath=path.join(cache,'build.json');
   if(fs.existsSync(library)&&fs.existsSync(recordPath)) {
@@ -97,7 +109,7 @@ async function ensureTlsLibrary({cli,board,sketch,root}) {
   run(ar,['rcs',library,...objects]);
   const before=exported(run(nm,['-g','--defined-only',original]),new Set(members));
   const after=exported(run(nm,['-g','--defined-only',library]));
-  if(before.size!==after.size||[...before].some(name=>!after.has(name)))throw Error('Optimized TLS exports differ from the SDK.');
+  validateExports(before,after);
   const probe=path.join(cache,'abi.c');
   fs.writeFileSync(probe,'#include <mbedtls/ssl.h>\nchar probe_context[sizeof(mbedtls_ssl_context)];\nchar probe_config[sizeof(mbedtls_ssl_config)];\nchar probe_session[sizeof(mbedtls_ssl_session)];\nchar probe_input[MBEDTLS_SSL_IN_CONTENT_LEN];\nchar probe_output[MBEDTLS_SSL_OUT_CONTENT_LEN];\n');
   const layouts=[];
@@ -106,10 +118,9 @@ async function ensureTlsLibrary({cli,board,sketch,root}) {
     layouts.push(layout(run(nm,['-S','--defined-only',output])));
   }
   const [sdkLayout,newLayout]=layouts;
-  for(const name of ['probe_context','probe_config','probe_session'])if(sdkLayout[name]!==newLayout[name])throw Error('TLS public ABI changed: '+name);
-  if(newLayout.probe_input!==INPUT||newLayout.probe_output!==OUTPUT)throw Error('TLS buffer configuration did not apply.');
+  validateLayouts(sdkLayout,newLayout);
   fs.writeFileSync(recordPath,JSON.stringify({fingerprint,source:SOURCE,sourceSha256:ARCHIVE_SHA,sha256:digest(fs.readFileSync(library)),layouts,members},null,2)+'\n');
   console.log('Built verified C3 TLS library: 16 KB receive / 4 KB transmit.');
   return library;
 }
-module.exports={ensureTlsLibrary,properties,exported,layout,INPUT,OUTPUT,SOURCE,ARCHIVE_SHA};
+module.exports={ensureTlsLibrary,properties,exported,layout,validateExports,validateLayouts,INPUT,OUTPUT,SOURCE,ARCHIVE_SHA};

@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from host_compiler import SANITIZERS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -174,7 +175,7 @@ int main(){
             source, binary = directory / 'test.cpp', directory / 'test'
             source.write_text(stubs + engine + '\nvoid expireHotspot(){const uint32_t now=millis();\n' + expiry + '}\n' + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                            '-fsanitize=address,undefined', '-I'+str(directory), '-I'+str(ROOT),
+                            *SANITIZERS, '-I'+str(directory), '-I'+str(ROOT),
                             '-I'+str(ROOT/'tests/stubs'), str(source), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 

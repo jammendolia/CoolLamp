@@ -148,11 +148,13 @@ void setup() {
   // Poll events in loop() instead of changing lamp state from a timer task.
   rotaryEncoder.begin(false);
   rotaryEncoder.setEncoderValue(Mode);
+  beginLampTemperature();
   beginLampUpdater();
   beginLampNetwork();
 }
 
 void loop() {
+  if (!lampUpdateOwnsResources() && !lampFactoryResetPending()) serviceLampTemperature();
   serviceLampNetwork();
   serviceLampBluetooth();
   serviceLampUpdater();

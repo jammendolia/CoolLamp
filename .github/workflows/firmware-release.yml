@@ -28,12 +28,14 @@ jobs:
       - name: Validate version and test release packaging
         run: |
           node -e "require('./tools/package-firmware.cjs').parseVersion(process.env.RELEASE_VERSION)"
-          node --test tests/firmware-release.test.cjs tests/factory-password.test.cjs
+          node --test tests/firmware-release.test.cjs tests/factory-password.test.cjs tests/tls-library.test.cjs
           node --test mobile/tests/*.test.js
           node tests/check.cjs
           node tests/wifi-page.cjs
           python3 tests/debug-wifi.py
+          python3 tests/audio-usb.py
           python3 tests/diagnostics.py
+          python3 tests/temperature-runtime.py
           python3 tests/wifi-setup-runtime.py
           python3 tests/bluetooth-runtime.py
           python3 tests/factory-reset-runtime.py
@@ -44,6 +46,8 @@ jobs:
           /tmp/playback-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/group-scenes.cpp -o /tmp/group-scenes-test
           /tmp/group-scenes-test
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined tests/room-audio-scenes.cpp -o /tmp/room-audio-scenes-test
+          /tmp/room-audio-scenes-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/sync.cpp -o /tmp/sync-test
           /tmp/sync-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/sync-stubs -Itests/stubs tests/sync-runtime.cpp -o /tmp/sync-runtime-test

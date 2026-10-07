@@ -119,14 +119,15 @@ test('a stale readback cannot claim success for an unprocessed command', async (
   await assert.rejects(lamp.command('power',0),/confirm/);
   assert.equal(lamp.id,null);assert.equal(radio.writes.length,2);
 });
-test('readback finishing after disconnect cannot acknowledge a new connection', async () => {
-  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:50});await lamp.connect();
-  radio.reply=false;let release;
-  radio.read=()=>new Promise(resolve=>{release=resolve;});
+test('readback finishing after disconnect cannot acknowledge a new connection', {timeout:2000}, async () => {
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:500});await lamp.connect();
+  radio.reply=false;let release,markReadStarted;
+  const readStarted=new Promise(resolve=>{markReadStarted=resolve;});
+  radio.read=()=>new Promise(resolve=>{release=resolve;markReadStarted();});
   const command=lamp.command('power',0),rejected=assert.rejects(command,/disconnected/);
-  await new Promise(resolve=>setTimeout(resolve,30));assert.equal(typeof release,'function');
+  await readStarted;assert.equal(typeof release,'function');
   await lamp.disconnect();await rejected;
-  release(packet(2));await new Promise(resolve=>setTimeout(resolve,5));assert.equal(lamp.state,null);
+  release(packet(2));await new Promise(resolve=>setImmediate(resolve));assert.equal(lamp.state,null);
 });
 test('disconnect rejects pending command and ignores an old connection callback', async () => {
   const radio = new Radio(); const lamp = new LampTransport(radio);

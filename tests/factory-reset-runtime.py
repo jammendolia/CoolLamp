@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from host_compiler import SANITIZERS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -89,7 +90,7 @@ int main(){
             (directory/'Preferences.h').write_text(preferences)
             cpp, binary = directory/'test.cpp', directory/'test'
             cpp.write_text(source+implementation+main)
-            subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
+            subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
 

@@ -13,6 +13,19 @@ python3 tools/debug-wifi.py 192.168.1.25 192.168.1.26 --factory-password --sampl
 
 Output is one JSON object per lamp per sample; redirect it to an ignored `.build/` file to retain a diagnostic session. A failed lamp produces an error record without preventing the other lamp from being queried. Sampling is bounded to 300 rounds, with at least one second between rounds. Requests have an eight-second timeout and redirects/proxies are disabled.
 
+The current unpublished 1.9.5 candidate adds `chipTemperature` to the same
+read-only USB/HTTP diagnostics. It contains `supported`, `valid`, `celsius`,
+`peakCelsius` (highest successful sample since boot), `sampleAgeMs`, and `error`.
+Invalid/unavailable readings are `null`; an SDK failure sets a numeric error
+and retains any earlier peak. A valid zero-degree reading remains zero.
+The driver initializes and takes its first reading before networking, then
+samples on the main loop at most once per second when updater/reset resources
+are free. Requests only format cached values; sample age identifies stale
+readings while sampling is suspended. No GPIO, lamp-power, or persistent-setting
+change is made by this observer. The C3 sensor reports silicon temperature
+trends, not a precise ambient temperature or an automatic overheating verdict.
+See [Espressif's pinned driver guidance](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32c3/api-reference/peripherals/temp_sensor.html).
+
 Firmware 1.7.3 adds authenticated `GET /api/diagnostics` with:
 
 - Device identity, firmware version and update status.
@@ -29,6 +42,11 @@ Older firmware falls back to selected fields from `/api/state`, marked `diagnost
 The assistant needs network access from the computer running this repository. Remote control of this session keeps execution on that computer. This feature does not expose the lamps to the internet or provide a firmware-level debugger, arbitrary memory access, or a remote shell.
 
 ## USB fallback for network/group diagnosis
+
+On Windows, install `tools/requirements-usb.txt` into a local virtual environment
+and rediscover the COM port. `tools/audio-usb.py` now uses pyserial on all hosts.
+See [Windows development](windows-development.md) for tested commands. Close
+serial readers before flashing; diagnostic reads assert DTR and keep RTS low.
 
 Development firmware 1.9.4 also exposes the same read-only diagnostic snapshot
 with USB command `d`. It streams replies in bounded chunks so a missing USB host

@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""macOS/Linux USB audio provisioning and diagnostics; requires no Python packages."""
+"""USB audio provisioning and diagnostics (requires pyserial 3.5)."""
 import argparse
-import array
-import fcntl
-import os
-import select
-import termios
+import serial
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("port", help="Explicit serial device, e.g. /dev/cu.usbmodem80201")
+parser.add_argument("port", help="Explicit serial device, e.g. COM4 or /dev/cu.usbmodem80201")
 parser.add_argument("command", choices=["?", "a", "s", "w", "b", "p", "q", "d", "c", "j", "u", "t", "m", "n", "g", "v", "f", "+", "-", "1", "2", "3", "4", "5", "6"],
                     help="?: status, d: read-only network/group/runtime diagnostics, a: toggle setup hotspot, s: scan from active hotspot, w: scan diagnostics, u: audio status, t: 10s test, m/n: mic enable/disable + restart, g/v/f: glow/meter/fire, 1–5: spectrum/launch/embers/bloom/fountain, 6: VU meter, +/-: double/halve sensitivity and save")
 parser.add_argument("--seconds", type=float, default=4)
@@ -19,27 +15,23 @@ parser.add_argument("--interval", type=float, default=1, help="Polling interval 
 args = parser.parse_args()
 if not 0.05 <= args.interval <= 10:
     parser.error("--interval must be between 0.05 and 10 seconds")
-fd = os.open(args.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+# Set line states before opening: native USB CDC needs DTR; RTS must stay
+# deasserted to avoid the ESP32 boot/reset handshake. Do not pulse either line.
+port = serial.Serial(port=None, baudrate=115200, timeout=min(0.2, args.interval))
+port.dtr = True
+port.rts = False
+port.port = args.port
 try:
-    settings = termios.tcgetattr(fd)
-    settings[0] = settings[1] = settings[3] = 0
-    settings[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
-    settings[4] = settings[5] = termios.B115200
-    settings[6][termios.VMIN] = 0
-    settings[6][termios.VTIME] = 0
-    termios.tcsetattr(fd, termios.TCSANOW, settings)
-    # Assert DTR for native USB CDC diagnostics; leave RTS unchanged.
-    fcntl.ioctl(fd, termios.TIOCMBIS, array.array("i", [termios.TIOCM_DTR]))
-    os.write(fd, args.command.encode("ascii"))
+    port.open()
+    port.write(args.command.encode("ascii"))
     deadline = time.monotonic() + args.seconds
     next_poll = time.monotonic() + args.interval
     while time.monotonic() < deadline:
         if args.poll and time.monotonic() >= next_poll:
-            os.write(fd, args.poll_command.encode("ascii"))
+            port.write(args.poll_command.encode("ascii"))
             next_poll = time.monotonic() + args.interval
-        if select.select([fd], [], [], min(0.2, args.interval))[0]:
-            data = os.read(fd, 4096)
-            if data:
-                print(data.decode("utf-8", errors="replace"), end="", flush=True)
+        data = port.read(min(4096, max(1, port.in_waiting)))
+        if data:
+            print(data.decode("utf-8", errors="replace"), end="", flush=True)
 finally:
-    os.close(fd)
+    port.close()

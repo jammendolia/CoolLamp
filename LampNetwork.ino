@@ -213,6 +213,7 @@ String lampDiagnosticsJson()
   out += ",\"uptimeMs\":" + String(millis()) + ",\"resetReason\":" + String(static_cast<int>(esp_reset_reason()));
   out += ",\"freeHeap\":" + String(ESP.getFreeHeap()) + ",\"minFreeHeap\":" + String(ESP.getMinFreeHeap());
   out += ",\"largestFreeBlock\":" + String(ESP.getMaxAllocHeap());
+  out += ",\"chipTemperature\":" + lampTemperatureJson();
   out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
   out += ",\"address\":" + jsonText(WiFi.localIP().toString());
   out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());

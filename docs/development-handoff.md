@@ -1,5 +1,51 @@
 # CoolLamp development handoff — 2026-10-06
 
+Latest resume (2026-10-07): the user returned with BACL on USB and the base open.
+At their temperature-sensor inquiry, chip-temperature telemetry was added and
+the updated 1.9.5 candidate installed on verified BACL/COM4. Only app0 was
+written; all non-PHY logical NVS records, partition table and OTA metadata
+remained unchanged. The full pre-update recovery backup is private under
+`.build`. A two-minute capture recorded 208 valid readings at 55.1–56.1 C, no
+uptime resets, power changes or rendering stalls; this is USB/open-base evidence,
+not proof about the original blackouts. Current controls: Fire/brightness 100,
+power on, group paused. Wi-Fi temperature telemetry works. All captures ended.
+Normal-supply/open-base Wi-Fi baseline is now complete: 526 successful replies
+over five minutes, 54.1–57.1 C, no observed resets/power changes, 18 read timeouts
+retained as gaps. Controls matched the USB baseline; coordinator remained off.
+Closed-base comparison is now complete: five minutes, 590 successful replies,
+56.1–59.1 C, no observed resets/power changes, three read timeouts. Both windows
+used Fire/brightness 100/group paused. A restored two-minute Orbit group test
+on normal power/closed base returned 233 replies, 59.1–60.1 C, no resets or
+power changes; following stayed active after joining. All controls were restored:
+BACL on, Fire 100, group paused; coordinator off with Orbit settings retained.
+Base remains closed on usual supply. No capture is active. Physical blackout
+confirmation is inconclusive: the user noticed no blackout but was multitasking
+and may have missed one. Short captures and rising temperature do not prove or
+exclude heat as the historical cause. No firmware/settings change between these
+thermal phases. Longer warm-up, local-off device acceptance and full OTA remain
+pending; 1.9.5 is still unpublished.
+The user subsequently authorized publishing this temperature-enabled firmware
+for OTA and the pending mobile changes to TestFlight. Publication work is active;
+use only jammendolia and the existing macOS CI, preserving this working tree.
+See [group-network-debugging.md](group-network-debugging.md) for evidence.
+Firmware 1.9.5 is still unpublished; preserve the working tree.
+
+Source-work update while hardware diagnosis is paused: the user requested more
+room-filling audio group effects. Eight scenes (IDs 19–26) are implemented and
+host/build validated, with a real-renderer room preview. See
+[room-audio-effects.md](room-audio-effects.md) for designs, compatibility and
+current candidate hash. BACL now has the candidate including those scenes and
+the local off fix, but physical multi-lamp/audio acceptance has not run; the
+coordinator remains on 1.9.4. No app was uploaded and no GitHub operation was
+performed. Hardware/thermal/OTA acceptance is still pending.
+
+Windows continuation: see [windows-development.md](windows-development.md) for
+the verified migration state, local tooling, private backup and remaining
+release-validation gaps. The Mac checkpoint below is historical. Its ignored
+diagnostics remain on the Mac; the source checkpoint did transfer successfully.
+For CoolLamp GitHub operations, explicitly verify and use **jammendolia only**;
+the Windows CLI's global default is HiFin and must not be used for this project.
+
 ## Checkpoint and user intent
 
 The user requested a safe breakpoint to reboot the Mac, then continue in a fresh chat. Stop active engineering at this checkpoint. No flash is in progress. The final production build completed successfully, exit 0; do not confuse a successful build with a published or device-tested release.

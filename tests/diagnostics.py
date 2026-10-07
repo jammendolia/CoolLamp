@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+from host_compiler import SANITIZERS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -59,6 +60,7 @@ int scanCount=8;
 String lampUpdateJson(){return R"({"version":"1.7.3"})";}
 String lampAudioJson(){return R"({"errors":0})";}
 String lampSyncJson(){return R"({"role":0})";}
+String lampTemperatureJson(){return R"({"supported":true,"valid":true,"celsius":42.5,"peakCelsius":43.0,"sampleAgeMs":250,"error":null})";}
 '''
         main = '''
 int main(){
@@ -72,7 +74,7 @@ int main(){
         with tempfile.TemporaryDirectory(prefix='lamp-diagnostics-') as directory:
             cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
             cpp.write_text(stub + handler + main)
-            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, str(cpp), '-o', str(binary)], check=True)
             data = json.loads(subprocess.check_output([str(binary)], text=True))
         self.assertEqual(data['diagnosticsVersion'], 1)
         self.assertEqual(data['wifi']['rssi'], -62)
@@ -82,6 +84,9 @@ int main(){
         self.assertEqual(data['scan']['count'], 8)
         self.assertEqual(data['render']['leds'], 134)
         self.assertEqual(data['audio']['errors'], 0)
+        self.assertEqual(data['chipTemperature'], {
+            'supported': True, 'valid': True, 'celsius': 42.5,
+            'peakCelsius': 43.0, 'sampleAgeMs': 250, 'error': None})
         for key in ('token', 'ssid', 'adminPassword', 'wifiPassword', 'key'):
             self.assertNotIn('"'+key+'"', json.dumps(data))
 

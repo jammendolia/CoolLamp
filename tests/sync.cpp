@@ -27,10 +27,12 @@ int main(){
   bad=p;bad.visual.power=2;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.target=0;assert(!valid(bad,sizeof(bad)));
   assert(rate(50)==256&&rate(100)==1024&&rate(1)==36);
-  bad=p;bad.visual.scene=19;assert(!valid(bad,sizeof(bad)));
+  bad=p;bad.visual.scene=27;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.count=10;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.count=2;bad.visual.position=2;assert(!valid(bad,sizeof(bad)));
   bad=p;bad.visual.scene=1;bad.visual.count=2;bad.visual.sceneSpeed=50;assert(valid(bad,sizeof(bad)));
+  for(unsigned scene=19;scene<=26;++scene){bad.visual.scene=scene;assert(valid(bad,sizeof(bad)));}
+  bad.visual.scene=27;assert(!valid(bad,sizeof(bad)));bad.visual.scene=1;
   bad.visual.sceneIntensity=101;assert(!valid(bad,sizeof(bad)));
   Receiver r;assert(r.stale(0));
   assert(!r.accept(p,10,999));assert(r.accept(p,10,456));

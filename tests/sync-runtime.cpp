@@ -37,7 +37,13 @@ int main(){
  // A previous session's valid signed packets cannot reactivate this lamp.
  update=leaderPacket(ClockReply,response.target,99);update.echo=ping;receive(update);serviceLampSync("Follower",false);assert(!lampSyncFollowing());
  fakeNow=7041;serviceLampSync("Follower",false);response=leaderPacket(ClockReply,nonce,100);response.echo=ping;receive(response);fakeNow+=20;serviceLampSync("Follower",false);assert(lampSyncFollowing());
- pauseLampSync();assert(!lampSyncFollowing()&&paused);resumeLampSync();assert(!paused);
+ pauseLampSync();assert(!lampSyncFollowing()&&paused);
+ // Even a correctly signed fresh handshake cannot override a local pause.
+ const auto pausedApplied=applied;
+ response=leaderPacket(ClockReply,nonce,101);response.echo=ping;
+ receive(response);serviceLampSync("Follower",false);
+ assert(paused&&!lampSyncFollowing()&&applied==pausedApplied);
+ resumeLampSync();assert(!paused);
  fakeNow=8041;serviceLampSync("Follower",false);response=leaderPacket(ClockReply,nonce,101);response.echo=ping;receive(response);fakeNow+=20;serviceLampSync("Follower",false);assert(lampSyncFollowing());
  serviceLampSync("Follower",true);assert(!lampSyncFollowing()&&!started); // OTA/setup release resources
  assert(serviceBlocked);
@@ -63,9 +69,11 @@ int main(){
  fakeNow+=40;WiFiUDP::outgoing.clear();serviceLampSync("Leader",false);
  for(const auto& b:WiFiUDP::outgoing){Packet p{};memcpy(&p,b.data(),sizeof(p));if(p.kind==Frame){assert(p.visual.position==0&&p.visual.count==2&&p.visual.scene==5);assert(authenticated(p));}}
  // All new IDs survive persistence and use the existing authenticated packet layout.
- for(unsigned id=9;id<=18;++id){assert(configureLampScene(id,50,80,primary,secondary));beginLampSync();assert(lampGroupScene()==id);}
- assert(!configureLampScene(19,50,80,primary,secondary));
- microphone=false;assert(!configureLampScene(16,50,80,primary,secondary));assert(!configureLampScene(17,50,80,primary,secondary));microphone=true;
+ for(unsigned id=9;id<=26;++id){assert(configureLampScene(id,50,80,primary,secondary));beginLampSync();assert(lampGroupScene()==id);}
+ assert(!configureLampScene(27,50,80,primary,secondary));
+ microphone=false;assert(!configureLampScene(16,50,80,primary,secondary));assert(!configureLampScene(17,50,80,primary,secondary));
+ for(unsigned id=19;id<=26;++id)assert(!configureLampScene(id,50,80,primary,secondary));
+ microphone=true;
  assert(std::string(lampSyncJson().c_str()).find("sceneCount")!=std::string::npos);
  const auto orderSaved=Preferences::storage["groupSceneV1"];beginLampSync();assert(sceneConfig.count==2&&positionOf("aabbccddeeff")==1);assert(Preferences::storage["groupSceneV1"]==orderSaved);
  assert(lampSyncInvite()==String("CL1-aabbccddeeff-")+key);

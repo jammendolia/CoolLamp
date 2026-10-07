@@ -19,9 +19,105 @@ inline uint16_t height(uint16_t led,uint16_t count,uint16_t midpoint){
  const uint16_t size=led<left?left:count-left, h=led<left?led:count-1-led;
  return size>1?uint32_t(h)*65535/(size-1):0;
 }
+inline uint8_t triangle(uint32_t phase){
+ const uint32_t p=phase&65535;
+ return uint8_t((p<32768?p:65535-p)>>7);
+}
+inline uint32_t circleDistance(uint32_t a,uint32_t b){
+ const uint32_t d=distance(a&65535,b&65535);
+ return d<65536-d?d:65536-d;
+}
+// Every new room scene has its own visible ambient field. Audio adds accents;
+// stale input cannot create beats or extinguish the rest of the room.
+inline RGB roomAudioPixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t elapsed,uint32_t now){
+ const uint32_t leg=2200-uint32_t(v.sceneSpeed)*16;
+ const uint32_t phase=uint64_t(elapsed)*65536/(2*leg);
+ const uint32_t slot=uint32_t(v.position)*65536/v.count;
+ const uint32_t local=phase+slot;
+ const bool audible=v.audioValid&&v.level;
+ const uint32_t level=audible?v.level:0;
+ const uint32_t largest=v.bass>v.mid?(v.bass>v.treble?v.bass:v.treble):(v.mid>v.treble?v.mid:v.treble);
+ const uint32_t bass=audible&&largest?uint32_t(v.bass)*level/largest:0;
+ const uint32_t mid=audible&&largest?uint32_t(v.mid)*level/largest:0;
+ const uint32_t treble=audible&&largest?uint32_t(v.treble)*level/largest:0;
+ const uint32_t beatAge=now-v.groupBeatAt;
+ const bool beatReady=audible&&v.groupBeatLevel&&int32_t(beatAge)>=0;
+ const uint32_t hit=beatReady?uint32_t(glow(beatAge,2*leg))*v.groupBeatLevel/255:0;
+ const uint32_t beat=audible?v.groupBeat:0;
+ uint32_t light=40+triangle(uint32_t(h)+local/2)/16;
+ uint8_t tint=uint8_t((h>>9)+(local>>8));
+ switch(v.scene){
+ case 19: { // Bass cathedral: tall columns surge together, with staggered ridges.
+   const uint32_t edge=bass*257;
+   const uint32_t column=h<edge?90+bass/3:0;
+   const uint32_t ridge=glow(circleDistance(h,local),16000);
+   light+=column+bass*ridge/510+mid/5+hit/6;
+   tint=uint8_t(triangle(uint32_t(h)+local/2)+bass/4);
+   break;
+ }
+ case 20: { // Spectrum loom: three broad ribbons interleave on every lamp.
+   const uint32_t a=glow(circleDistance(h,local),23000);
+   const uint32_t b=glow(circleDistance(h,65535-local*2),20000);
+   const uint32_t c=glow(circleDistance(h,local*3+21845),17000);
+   light+=(bass*a+mid*b+treble*c)/510+level/5+hit/5;
+   tint=uint8_t((h>>8)/3+triangle(local)/2+mid/3);
+   break;
+ }
+ case 21: { // Resonant rings: shared onsets expand in different local phases.
+   const uint32_t radius=(uint64_t(beatAge)*65536/leg+slot/4)&65535;
+   const uint32_t ring=glow(distance(h,radius),22000);
+   light+=level/6+hit*(80+ring*140/255)/255;
+   tint=uint8_t((h>>9)+(local>>9)+beat*37);
+   break;
+ }
+ case 22: { // Velvet thunder: broad bass pressure with fine treble shimmer.
+   const uint32_t swell=triangle(phase/4+slot/8);
+   const uint32_t shimmer=triangle(uint32_t(h)*4+local*3);
+   light+=bass*(100+swell/2)/255+treble*shimmer/510+hit/5;
+   tint=uint8_t(triangle(uint32_t(h)/2+local/3)+treble/4);
+   break;
+ }
+ case 23: { // Prism chorus: all lamps sustain different palette harmonies.
+   const uint32_t harmony=(beat%6)*42;
+   light+=level*(120+triangle(uint32_t(h)+local)/3)/255+hit/6;
+   tint=uint8_t((local>>8)+(h>>10)+harmony+bass/5+treble/3);
+   break;
+ }
+ case 24: { // Twin vortex: counter-rotating helices, above a constant field.
+   const uint32_t a=glow(circleDistance(h,local),20000);
+   const uint32_t b=glow(circleDistance(h,65535-local+32768),20000);
+   light+=((bass+mid)*a+(mid+treble)*b)/510+level/6+hit/5;
+   tint=uint8_t(a>b?triangle(uint32_t(h)+local)/3:170+triangle(uint32_t(h)-local)/3);
+   break;
+ }
+ case 25: { // Electric bloom: every lamp opens its own bloom on shared beats.
+   const uint32_t center=14000+hash(uint32_t(v.position)*421+beat*37)%37535;
+   const uint32_t radius=(255-hit)*150;
+   const uint32_t petal=glow(distance(distance(h,center),radius),12000);
+   light+=level/6+hit*petal/255+treble*triangle(uint32_t(h)*3+local)/765;
+   tint=uint8_t((local>>8)+(h>>9)+beat*29);
+   break;
+ }
+ case 26: { // Room groove: complementary roles with a shared rhythmic bed.
+   const unsigned role=v.position%3;
+   const uint32_t band=role==0?bass:role==1?mid:treble;
+   const uint32_t motif=triangle(uint32_t(h)*(role+1)+local*(role+1)+beat*8192);
+   light+=band*(80+motif/2)/255+level/4+hit*(48+role*24)/255;
+   tint=uint8_t((local>>8)+(h>>10)+role*70+beat*23);
+   break;
+ }
+ default:return {};
+ }
+ if(light>255)light=255;
+ RGB c=mix(v.scenePrimary,v.sceneSecondary,tint);
+ const uint32_t amount=light*v.sceneIntensity;
+ c.r=uint32_t(c.r)*amount/25500;c.g=uint32_t(c.g)*amount/25500;c.b=uint32_t(c.b)*amount/25500;
+ return c;
+}
 inline RGB pixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t now){
  if(!v.scene||v.count<2||v.count>9||v.position>=v.count||int32_t(now-v.groupStart)<0)return {};
  const uint32_t elapsed=now-v.groupStart;
+ if(v.scene>=19&&v.scene<=26)return roomAudioPixel(v,h,elapsed,now);
  const uint32_t leg=2200-uint32_t(v.sceneSpeed)*16; // 2184..600ms per lamp
  const uint32_t span=uint32_t(v.count)*65536;
  const uint32_t x=uint32_t(v.position)*65536+((v.position&1)?65535-h:h);

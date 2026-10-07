@@ -82,7 +82,7 @@ export class WifiTransport {
   async configureGroupScene(patch) {
     if(this.raw?.sync?.version!==2||this.raw.sync.role!==1)throw Error('Connect to the coordinator running firmware 1.8.0 or newer.');
     const v=groupSceneSettings(this.raw.sync,patch);
-    if(!availableGroupScenes(this.raw.sync).some(scene=>scene.id===v.scene))throw Error('Update every lamp to firmware 1.8.1 or newer to use the new group scenes.');
+    if(!availableGroupScenes(this.raw.sync).some(scene=>scene.id===v.scene))throw Error('Update every lamp to firmware '+(v.scene>18?'1.9.5':'1.8.1')+' or newer to use this group scene.');
     const message=await this.request('/api/sync/scene',{scene:v.scene,speed:v.speed,intensity:v.intensity,
       r:v.primary[0],g:v.primary[1],b:v.primary[2],r2:v.secondary[0],g2:v.secondary[1],b2:v.secondary[2]});
     await this.refresh();return message;

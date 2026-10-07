@@ -12,7 +12,8 @@ LampControlState getLampControlState()
 bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
 {
   if (lampCalibrationActive()) return false;
-  if (lampSyncFollowing()) {
+  const bool wasFollowing = lampSyncFollowing();
+  if (wasFollowing) {
     pauseLampSync();
     if (mode > lampAvailableEffectCount()) mode = Mode;
   }
@@ -22,6 +23,8 @@ bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
     Mode = mode;
     fill_solid(leds, NUM_LEDS, CRGB::Black);
   }
+  // A disconnected follower can rejoin later. Local off must pause it too.
+  if (!power && !wasFollowing) pauseLampSync();
   Brightness = brightness;
   PowerOn = power;
   syncLampKnob();

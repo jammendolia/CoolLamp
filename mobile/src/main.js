@@ -854,12 +854,13 @@ function renderGroupScenes() {
   if(!ready)return;
   $('groupSceneLibrary').hidden=!controller;
   const scene=groupScenes.find(x=>x.id===sync.scene)||groupScenes[0];
+  const sceneFirmware=scene.id>18?'1.9.5':scene.id>8?'1.8.1':'1.8.0';
   $('groupSceneTitle').textContent=scene.id?scene.name:'Group scenes';
   $('groupSceneSpeedLabel').textContent=scene.speedLabel||({3:'Flow speed',4:'Bloom speed',6:'Storm pace',8:'Wave speed'})[scene.id]||'Travel speed';
-  $('groupSceneDescription').textContent=scene.description+(scene.id>8?' Requires firmware 1.8.1 or newer on every lamp.':'')+(controller?'':' Choose and tune scenes on the coordinator.');
+  $('groupSceneDescription').textContent=scene.description+(scene.id>8?' Requires firmware '+sceneFirmware+' or newer on every lamp.':'')+(controller?'':' Choose and tune scenes on the coordinator.');
   $('groupScenePosition').textContent=sync.count?'Lamp '+(sync.position+1)+' of '+sync.count:'';
   $('groupSceneWaiting').hidden=!controller||sync.members>=1;
-  $('groupSceneWaiting').textContent='Join a second lamp to see the scene. Each lamp needs firmware '+(scene.id>8?'1.8.1':'1.8.0')+' or newer.';
+  $('groupSceneWaiting').textContent='Join a second lamp to see the scene. Each lamp needs firmware '+sceneFirmware+' or newer.';
   $('groupSceneFields').hidden=!controller||!scene.id;
   $('groupSceneFields').disabled=busy||updatingLamp();
   document.querySelector('.group-scene-colors').hidden=Boolean(scene.fixedColors);

@@ -9,9 +9,11 @@ bool finishLampCalibration(bool){return true;}
 bool installed=false;
 bool lampHasMicrophone(){return installed;}
 bool following=false;
+uint8_t syncRole=0;
+bool syncPaused=false;
 bool lampSyncFollowing(){return following;}
 bool leaveLampSceneForEffect(){return true;}
-void pauseLampSync(){following=false;}
+void pauseLampSync(){if(syncRole==2){following=false;syncPaused=true;}}
 constexpr uint8_t MODE_MAX=47;
 uint8_t Mode=4,Brightness=100;
 bool PowerOn=true;
@@ -32,9 +34,21 @@ int main(){
   installed=false;
   assert(!setLampControl(47,100,true));
   assert(setLampControl(4,100,true));
-  following=true;
+  syncRole=2;following=true;
   assert(lampAvailableEffectCount()==47);
   assert(setLampControl(4,100,true));
   assert(!following && lampAvailableEffectCount()==38);
+  // Local off must prevent a configured follower rejoining after a dropout.
+  syncPaused=false;
+  assert(!setLampControl(0,100,false) && !syncPaused);
+  assert(!setLampControl(4,0,false) && !syncPaused);
+  assert(setLampControl(4,100,false));
+  assert(!PowerOn && syncPaused && !following);
+  assert(setLampControl(4,100,true) && PowerOn && syncPaused);
+  // Coordinator off must continue propagating to its group; solo is unaffected.
+  syncRole=1;syncPaused=false;
+  assert(setLampControl(4,100,false) && !PowerOn && !syncPaused);
+  syncRole=0;
+  assert(setLampControl(4,100,false) && !syncPaused);
   std::cout<<"PASS: real control path accepts audio only on configured microphone variants\n";
 }
