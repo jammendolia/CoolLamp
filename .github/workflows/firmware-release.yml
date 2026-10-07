@@ -48,6 +48,8 @@ jobs:
           /tmp/group-scenes-test
           g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined tests/room-audio-scenes.cpp -o /tmp/room-audio-scenes-test
           /tmp/room-audio-scenes-test
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined tests/corkscrew-scenes.cpp -o /tmp/corkscrew-scenes-test
+          /tmp/corkscrew-scenes-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/sync.cpp -o /tmp/sync-test
           /tmp/sync-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/sync-stubs -Itests/stubs tests/sync-runtime.cpp -o /tmp/sync-runtime-test

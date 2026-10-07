@@ -1,5 +1,33 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Latest development follow-up — 2026-10-07: corkscrew effects candidate
+
+Six new group scenes 27–32 are implemented for corkscrew, helix and mixed rooms:
+Chromatic screw, Mercury ribbon, Bass turbine, Prism torque, Echo coils and
+Aurora braid. The first two are ambient; the last four require the coordinator
+microphone. Every scene retains a colored field during silence/dropout. Existing
+0–26 rendering, GPIOs, strip geometry/defaults, settings/NVS and wire v2 remain
+unchanged. Existing midpoint calibration supports unequal spine/spiral lengths;
+the new lamp's exact wiring/count/top-turn boundary is still unconfirmed.
+
+Firmware **1.9.6 is a local unpublished candidate**, built and packaged at
+1,830,784 bytes, SHA-256
+`a1db07d1de968d94a1e007938119b79ca8d085bc26f2540347079403c8a81cdd`.
+Public OTA remains 1.9.5, and TestFlight 30.1 remains the accepted app; the new
+six-entry app catalog and 1.9.6 compatibility labels have not been uploaded.
+No physical lamp operations or GitHub publication were performed for this set.
+Prior Windows firmware artifacts were preserved before rebuilding.
+
+Validation passed: 68,673,600 new-scene LED samples all lit at normal settings,
+exact legacy-render signature, protocol/runtime microphone/persistence checks,
+166 mobile tests, production web build and four packaging checks. Six mocked
+built-app scenarios passed with 46 intercepted lamp requests. The actual-renderer
+preview now animates Helix/Corkscrew/Mixed rooms, 2/3/5/9 lamps, audio/silence;
+336 browser control combinations and timing/layout checks passed. Hardware
+acceptance and sanitizer CI remain pending. See
+[the effects and evidence](corkscrew-effects.md). Existing OTA, networking,
+thermal and missing Mac raw-evidence gaps remain separate.
+
 ## Latest follow-up — 2026-10-07: direct group joining; app 30.1 uploaded
 
 The user requested that Settings → Groups discover network coordinators and

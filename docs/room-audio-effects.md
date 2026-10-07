@@ -1,5 +1,16 @@
 # Room audio group effects — 2026-10-07
 
+## New development follow-up — corkscrew and helix scenes
+
+Six additional group scenes 27–32 are implemented in an unpublished firmware
+1.9.6 candidate: two ambient and four audio driven. The actual-renderer preview
+now compares corkscrew, helix and mixed rooms across 2/3/5/9 lamps, retaining
+the earlier 19–26 scenes. All 166 mobile tests, the ESP32 build, new renderer
+sweep and mocked UI checks pass. No lamp was changed or release published.
+Public firmware remains 1.9.5; TestFlight 30.1 is the latest accepted upload,
+containing direct group discovery/join. Its earlier 29.1 checkpoint below is
+history. See [the new scenes and validation](corkscrew-effects.md).
+
 ## Latest device and app follow-up — 2026-10-07
 
 App **1.0 (29.1)** is now the latest accepted upload, source

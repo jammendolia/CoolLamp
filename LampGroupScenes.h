@@ -114,10 +114,93 @@ inline RGB roomAudioPixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t elap
  c.r=uint32_t(c.r)*amount/25500;c.g=uint32_t(c.g)*amount/25500;c.b=uint32_t(c.b)*amount/25500;
  return c;
 }
+// Broad fields reveal curves along a corkscrew or helix without assuming its
+// number of turns or azimuth. Every member keeps an illuminated palette field.
+// Geometry, global brightness and power limiting remain the lamp's normal path.
+inline RGB corkscrewPixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t elapsed,uint32_t now){
+ if(!v.power||!v.brightness)return {};
+ const uint32_t leg=2200-uint32_t(v.sceneSpeed)*16;
+ const uint32_t phase=uint64_t(elapsed)*65536/(4*leg);
+ const uint32_t slot=uint32_t(v.position)*65536/v.count;
+ const uint32_t local=phase+slot;
+ const bool audible=v.scene>=29&&v.audioValid&&v.level;
+ const uint32_t level=audible?v.level:0;
+ const uint32_t largest=v.bass>v.mid?(v.bass>v.treble?v.bass:v.treble):(v.mid>v.treble?v.mid:v.treble);
+ const uint32_t bass=audible&&largest?uint32_t(v.bass)*level/largest:0;
+ const uint32_t mid=audible&&largest?uint32_t(v.mid)*level/largest:0;
+ const uint32_t treble=audible&&largest?uint32_t(v.treble)*level/largest:0;
+ const uint32_t beatAge=now-v.groupBeatAt;
+ const bool beatReady=audible&&v.groupBeatLevel&&int32_t(beatAge)>=0&&beatAge<2*leg;
+ const uint32_t hit=beatReady?uint32_t(glow(beatAge,2*leg))*v.groupBeatLevel/255:0;
+ uint32_t light=0,tint=0;
+ switch(v.scene){
+ case 27: { // Chromatic screw: layered color bands climb every curved strip.
+   const uint32_t band=triangle(uint32_t(h)*2-local);
+   const uint32_t fold=triangle(uint32_t(h)*3-phase+slot/2+21845);
+   light=58+band/5+fold/6;
+   tint=32+triangle(uint32_t(h)*2-local)*191/255;
+   break;
+ }
+ case 28: { // Mercury ribbon: liquid highlights flow in opposing directions.
+   const uint32_t a=glow(circleDistance(h,local),18000);
+   const uint32_t b=glow(circleDistance(h,65535-phase*2+slot+32768),22000);
+   light=50+a*96/255+b*60/255;
+   tint=64+triangle(uint32_t(h)+local/3)/4+b*96/255-a*32/255;
+   break;
+ }
+ case 29: { // Bass turbine: bass compresses and widens broad pressure bands.
+   const uint32_t pressure=uint32_t(h)*3+uint32_t(h)*bass/128+local*2;
+   const uint32_t ridge=glow(circleDistance(pressure,32768),7500+bass*50);
+   const uint32_t fine=triangle(uint32_t(h)*9-local*4);
+   light=52+triangle(uint32_t(h)+local/2)/10+ridge*(55+bass/2)/255+treble*fine/1275+hit/7;
+   tint=32+triangle(uint32_t(h)*2+local+mid*96)*191/255;
+   break;
+ }
+ case 30: { // Prism torque: shared beat parity reverses a fading twist accent.
+   // The slower complementary wash always flows, even after a beat expires.
+   const uint32_t turn=beatReady&&(v.groupBeat&1)?local*2:65535-local*2;
+   const uint32_t ridge=glow(circleDistance(uint32_t(h)*2,turn+slot),16000);
+   const uint32_t fine=triangle(uint32_t(h)*5+local*3);
+   light=55+triangle(uint32_t(h)*2+local)/8+mid*triangle(uint32_t(h)-local)/765+hit*ridge/425+treble*fine/1530;
+   tint=32+triangle(uint32_t(h)*2-phase+slot+bass*80)*159/255+((v.position&1)?31:0);
+   break;
+ }
+ case 31: { // Echo coils: a beat releases a ripple train on every lit lamp.
+   const uint32_t travel=beatReady?uint64_t(beatAge)*65536/leg:0;
+   const uint32_t first=glow(circleDistance(uint32_t(h)*3+slot/3,travel),10000+bass*20);
+   const uint32_t second=glow(circleDistance(uint32_t(h)*3+slot/3,travel+21845),9000);
+   const uint32_t echo=hit*(first*140+second*70)/65025;
+   const uint32_t fine=triangle(uint32_t(h)*6-local*2);
+   light=50+triangle(uint32_t(h)+local)/9+echo+treble*fine/1530;
+   tint=48+triangle(uint32_t(h)+local/2+mid*64)/3+echo*64/255;
+   break;
+ }
+ case 32: { // Aurora braid: three smooth curtains breathe with spectral bands.
+   const uint32_t a=triangle(uint32_t(h)+local/3);
+   const uint32_t b=triangle(uint32_t(h)*2-local/2+21845);
+   const uint32_t c=triangle(uint32_t(h)*3+local/4+43690);
+   light=60+triangle(uint32_t(h)/2+phase/5+slot/3)/5+
+     (a*(32+bass/3)+b*(20+mid/4)+c*(16+treble/5))/510+level/10+hit/12;
+   const uint32_t blend=(a*(64+bass)+b*(32+mid)+c*(24+treble))/(120+bass+mid+treble);
+   tint=32+blend*191/255;
+   break;
+ }
+ default:return {};
+ }
+ // Keep saturated, colored light below a full-brightness pulse. Avoid palette
+ // endpoints so a single black endpoint cannot blank the ambient field.
+ if(light>230)light=230;
+ if(tint<16)tint=16;else if(tint>239)tint=239;
+ RGB c=mix(v.scenePrimary,v.sceneSecondary,uint8_t(tint));
+ const uint32_t amount=light*v.sceneIntensity;
+ c.r=uint32_t(c.r)*amount/25500;c.g=uint32_t(c.g)*amount/25500;c.b=uint32_t(c.b)*amount/25500;
+ return c;
+}
 inline RGB pixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t now){
  if(!v.scene||v.count<2||v.count>9||v.position>=v.count||int32_t(now-v.groupStart)<0)return {};
  const uint32_t elapsed=now-v.groupStart;
  if(v.scene>=19&&v.scene<=26)return roomAudioPixel(v,h,elapsed,now);
+ if(v.scene>=27&&v.scene<=32)return corkscrewPixel(v,h,elapsed,now);
  const uint32_t leg=2200-uint32_t(v.sceneSpeed)*16; // 2184..600ms per lamp
  const uint32_t span=uint32_t(v.count)*65536;
  const uint32_t x=uint32_t(v.position)*65536+((v.position&1)?65535-h:h);

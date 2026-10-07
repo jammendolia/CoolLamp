@@ -26,6 +26,12 @@ export const groupScenes = [
  {id:24,name:'Twin vortex',description:'Two colored helices spiral in opposite directions on every lamp. Music strengthens the twists above a steady glow.',audio:true,speedLabel:'Vortex rotation speed'},
  {id:25,name:'Electric bloom',description:'Music opens luminous blooms across all lamps together. Glowing stems keep the room alive between bursts.',audio:true,speedLabel:'Bloom motion speed'},
  {id:26,name:'Room groove',description:'Repeating musical motifs give each lamp a rhythmic role. Everyone keeps glowing while bass, ribbons and sparkles play together.',audio:true,speedLabel:'Groove motion speed'},
+ {id:27,name:'Chromatic screw',description:'Layered color bands climb every lamp, tracing curves and coils with a different phase around the room.',audio:false,speedLabel:'Color climb speed'},
+ {id:28,name:'Mercury ribbon',description:'Two liquid highlights flow past each other over a continuous colored glow, bringing out each lamp’s curves.',audio:false,speedLabel:'Ribbon flow speed'},
+ {id:29,name:'Bass turbine',description:'Bass presses and opens flowing bands across every lamp while treble adds fine highlights. A moving glow remains in silence.',audio:true,speedLabel:'Turbine flow speed'},
+ {id:30,name:'Prism torque',description:'Beats reverse the direction of layered color twists. Complementary phases wrap the whole room in a continuous glow.',audio:true,speedLabel:'Twist flow speed'},
+ {id:31,name:'Echo coils',description:'Each shared beat releases repeating ripples along every lamp, with staggered echoes above a softly moving glow.',audio:true,speedLabel:'Echo travel speed'},
+ {id:32,name:'Aurora braid',description:'Bass, mids and treble breathe through broad curtains of color and braided highlights on every lamp, even between sounds.',audio:true,speedLabel:'Curtain drift speed'},
 ];
 const maximumGroupSceneId=Math.max(...groupScenes.map(scene=>scene.id));
 export function groupSceneSettings(sync,patch={}) {

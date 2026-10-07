@@ -69,11 +69,33 @@ int main(){
  fakeNow+=40;WiFiUDP::outgoing.clear();serviceLampSync("Leader",false);
  for(const auto& b:WiFiUDP::outgoing){Packet p{};memcpy(&p,b.data(),sizeof(p));if(p.kind==Frame){assert(p.visual.position==0&&p.visual.count==2&&p.visual.scene==5);assert(authenticated(p));}}
  // All new IDs survive persistence and use the existing authenticated packet layout.
- for(unsigned id=9;id<=26;++id){assert(configureLampScene(id,50,80,primary,secondary));beginLampSync();assert(lampGroupScene()==id);}
- assert(!configureLampScene(27,50,80,primary,secondary));
+ for(unsigned id=9;id<=32;++id){
+  assert(configureLampScene(id,50,80,primary,secondary));
+  const auto beforeRestart=Preferences::storage["groupSceneV1"];
+  beginLampSync();assert(lampGroupScene()==id);
+  assert(Preferences::storage["groupSceneV1"]==beforeRestart);
+  assert(sceneConfig.count==2&&positionOf("aabbccddeeff")==1);
+ }
+ const auto lastSceneSaved=Preferences::storage["groupSceneV1"];
+ assert(!configureLampScene(SceneCount+1,50,80,primary,secondary));
+ assert(lampGroupScene()==32&&Preferences::storage["groupSceneV1"]==lastSceneSaved);
  microphone=false;assert(!configureLampScene(16,50,80,primary,secondary));assert(!configureLampScene(17,50,80,primary,secondary));
  for(unsigned id=19;id<=26;++id)assert(!configureLampScene(id,50,80,primary,secondary));
+ for(unsigned id=29;id<=32;++id){
+  assert(!configureLampScene(id,50,80,primary,secondary));
+  assert(lampGroupScene()==32&&Preferences::storage["groupSceneV1"]==lastSceneSaved);
+ }
+ for(unsigned id:{27U,28U}){
+  assert(configureLampScene(id,60,85,primary,secondary));
+  beginLampSync();assert(lampGroupScene()==id);
+ }
  microphone=true;
+ const auto ambientSceneSaved=Preferences::storage["groupSceneV1"];
+ Preferences::failWrites=true;
+ assert(!configureLampScene(30,60,85,primary,secondary));
+ assert(lampGroupScene()==28&&Preferences::storage["groupSceneV1"]==ambientSceneSaved);
+ Preferences::failWrites=false;
+ beginLampSync();assert(lampGroupScene()==28);
  assert(std::string(lampSyncJson().c_str()).find("sceneCount")!=std::string::npos);
  const auto orderSaved=Preferences::storage["groupSceneV1"];beginLampSync();assert(sceneConfig.count==2&&positionOf("aabbccddeeff")==1);assert(Preferences::storage["groupSceneV1"]==orderSaved);
  assert(lampSyncInvite()==String("CL1-aabbccddeeff-")+key);

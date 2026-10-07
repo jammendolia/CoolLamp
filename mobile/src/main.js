@@ -1115,7 +1115,7 @@ function renderGroupScenes() {
   if(!ready)return;
   $('groupSceneLibrary').hidden=!controller;
   const scene=groupScenes.find(x=>x.id===sync.scene)||groupScenes[0];
-  const sceneFirmware=scene.id>18?'1.9.5':scene.id>8?'1.8.1':'1.8.0';
+  const sceneFirmware=scene.id>26?'1.9.6':scene.id>18?'1.9.5':scene.id>8?'1.8.1':'1.8.0';
   $('groupSceneTitle').textContent=scene.id?scene.name:'Group scenes';
   $('groupSceneSpeedLabel').textContent=scene.speedLabel||({3:'Flow speed',4:'Bloom speed',6:'Storm pace',8:'Wave speed'})[scene.id]||'Travel speed';
   $('groupSceneDescription').textContent=scene.description+(scene.id>8?' Requires firmware '+sceneFirmware+' or newer on every lamp.':'')+(controller?'':' Choose and tune scenes on the coordinator.');
