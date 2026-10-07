@@ -1,12 +1,25 @@
 # Group coordination diagnosis — Windows, 2026-10-06
 
-Latest follow-up (2026-10-07): CoolLamp 2's COM5 and CoolLamp 1's COM3 USB
+Latest follow-up (2026-10-07): direct coordinator discovery/join is implemented
+in app-only source `c6674ba38cc76214d2d311c003fff1f1513095f0`, pushed to
+`codex/firmware-1-9-5-temperature-room-audio`. Existing macOS CI run
+`37698202209` succeeded for app **1.0 (30.1)**; Apple accepted its upload at
+17:50:22 CDT on 2026-10-07. App 30.1 is the latest accepted upload; 29.1 is
+history. CI's 165/165 tests, existing native Swift checks, web build and signed
+archive/export/upload passed (`.build/ios-testflight-30.1-ci.log`). Tester
+availability and phone installation remain unverified. Local mocked browser
+validation passed; a live GET-only scan verified coordinator
+identity/role without invitations or membership changes. The final dated section
+records the direct-join behavior and its validation limits. Same-IoT UDP
+forwarding remains unresolved; a saved join is not proof of actual following.
+
+Earlier verified follow-up (2026-10-07): CoolLamp 2's COM5 and CoolLamp 1's COM3 USB
 bootstraps to the exact published 1.9.5 image are complete. Their new boots and
 secure manifest checks passed, and saved settings, raw logical NVS, GPIO
 assignments, partition table and OTA metadata were preserved. CoolLamp 2's
 preceding 1.9.4 automatic HTTPS download reached
 47% but timed out, so full OTA installation is still unvalidated. App **1.0 (29.1)**
-is now the latest accepted upload: asynchronous fleet source
+was the latest accepted upload at this earlier checkpoint: asynchronous fleet source
 `d8620a428406bdd4a9a8cb3fcd0188135b43bc70` passed local and macOS CI validation,
 run `37692263376`, and Apple accepted its upload. App 28.1's firmware-card
 upload is history. Tester availability/phone installation remain unverified.
@@ -1072,7 +1085,7 @@ app **1.0 (29.1)**, verified from run number 29/attempt 1. CI's 134/134 tests,
 native Swift accessory/address checks, web build, signing and archive/export
 passed. Apple reported `UPLOAD SUCCEEDED with no errors` on 2026-10-07 at
 16:56:54 CDT. Evidence: `.build/ios-testflight-29.1-ci.log`.
-App 29.1 is the latest accepted upload; tester availability/phone installation
+App 29.1 was the latest accepted upload at this checkpoint; tester availability/phone installation
 have not been independently queried. App 1.0 (28.1), source
 `a3499e89a69fcb7bbb56b6a9f3fdae4f21761821`, is retained as the earlier
 firmware-card checkpoint. Firmware 1.9.5/source
@@ -1107,3 +1120,52 @@ sequential Update all behavior described above. Bulk installations remain
 mock-tested; the live fleet test only read statuses. Full secure OTA installation,
 physical new-scene/music acceptance, historical blackout/thermal diagnosis and
 IoT-to-IoT forwarding remain separate open work.
+
+## 2026-10-07 direct group joining; app 30.1 accepted by Apple
+
+The user's requested Groups workflow is implemented in app-only source
+`c6674ba38cc76214d2d311c003fff1f1513095f0`, pushed to the existing
+`codex/firmware-1-9-5-temperature-room-audio` branch. Existing macOS CI run
+`37698202209` completed successfully for app **1.0 (30.1)**: 165/165 CI tests,
+existing native Swift accessory/address checks, web build and signed
+archive/export/upload passed. Apple reported `UPLOAD SUCCEEDED with no errors`
+at `2026-10-07T22:50:22.803933Z` (17:50:22 CDT). Evidence:
+`.build/ios-testflight-30.1-ci.log`. App 30.1 is the latest accepted upload;
+29.1 is retained as the preceding fleet-app checkpoint. Tester availability
+and phone installation have not been independently queried. Firmware 1.9.5
+is unchanged. Only personal jammendolia is used; HiFin remains untouched.
+
+Opening Groups automatically starts bounded asynchronous discovery from saved
+lamp addresses, native mDNS and the selected lamp's UDP peer hints. These are
+candidate hints: authenticated reads verify identity, current coordinator role,
+wire compatibility and group capacity before allowing direct Join. One offline
+or credential-blocked lamp produces its own result rather than blocking others.
+The explicit Join action obtains the coordinator's current invitation privately
+and writes only the selected target's group configuration, guarded by a fresh
+target token, identity, address, connection epoch and wire version. It does not
+select the coordinator, disconnect the target or replace its effect catalog.
+Invitations are not rendered, copied or persisted by this direct workflow.
+
+A custom-password modal verifies the coordinator before saving its access
+password to the native credential vault. Advanced manual-code joining remains
+an optional fallback. The app does not silently leave an existing group.
+Saved/waiting and following states remain distinct and update dynamically;
+uncertain POST results use read-only state readback without a repeated join.
+Firmware/native APIs, GPIOs and unrelated saved preferences are unchanged.
+
+Validation passed **165 mobile tests**, the production web build and seven
+mocked browser scenarios covering 271 intercepted requests. These validate the
+join/authentication/cancellation/error workflow with mocked lamps. The separate
+live scan used **GET only**: CoolLamp 2 was verified as coordinator on firmware
+1.9.5 with zero members, CoolLamp 1 was identified as not a coordinator, and
+BACL's unreachable result was reported separately. Evidence:
+`.build/group-discovery-live-validation.json`. No actual invitation or group
+membership change was requested; existing devices remain unchanged.
+
+This app workflow removes the copy/switch/paste steps but does not repair
+same-IoT forwarding. The current firmware still requires coordinator UDP
+discovery and an authenticated subscription/clock reply before following.
+HTTP acceptance only means group settings were saved; actual following needs
+the selected target's expected leader and `sync.active: true`. Physical direct
+joining remains unvalidated. Full secure OTA, room/audio and blackout/thermal
+acceptance remain separate open work.

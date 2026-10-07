@@ -1,16 +1,65 @@
 # CoolLamp development handoff — 2026-10-06
 
-## Latest follow-up — 2026-10-07: all lamps updated; app 29.1 uploaded
+## Latest follow-up — 2026-10-07: direct group joining; app 30.1 uploaded
 
-App **1.0 (29.1)** is now the latest accepted upload, from source
+The user requested that Settings → Groups discover network coordinators and
+join directly without switching lamps or copying a group code. App-only source
+`c6674ba38cc76214d2d311c003fff1f1513095f0` is pushed to
+`codex/firmware-1-9-5-temperature-room-audio`. Existing macOS CI run
+`37698202209` completed successfully for app **1.0 (30.1)**, including
+165/165 CI tests, native Swift accessory/address checks, web build and signed
+archive/export/upload. Apple reported `UPLOAD SUCCEEDED with no errors` at
+`2026-10-07T22:50:22.803933Z` (17:50:22 CDT). Evidence:
+`.build/ios-testflight-30.1-ci.log`. App 30.1 is the latest accepted upload;
+29.1 is the preceding checkpoint. Tester availability and phone installation
+have not been independently queried. Every GitHub action uses personal
+**jammendolia** only. Published firmware 1.9.5 remains unchanged.
+
+Groups now scans asynchronously from saved lamps, native mDNS discovery and
+the selected lamp's UDP peer hints. Authenticated reads verify device identity,
+current coordinator role, wire compatibility and available group capacity.
+An explicit **Join** obtains a private invitation in the background, then uses
+the selected target's fresh token with identity/address/connection-epoch/wire
+guards. The app keeps the selected lamp and its catalog; it does not expose the
+invitation through the DOM, storage or clipboard. A custom-password modal saves
+the password in the native vault only after verification. An optional Advanced
+manual-code fallback remains available; joining does not silently leave an
+existing group. Status distinguishes saved/waiting settings from actual
+following, and an uncertain join POST triggers read-only readback without replay.
+
+Seven mobile paths changed; firmware, native code and GPIO assignments are
+unchanged. Local validation passed **165 tests**, the production web build and
+seven mocked browser scenarios with 271 intercepted requests. A separate live
+**GET-only** scan verified CoolLamp 2 as coordinator on 1.9.5 with zero members,
+identified CoolLamp 1 as not a coordinator, and reported BACL's unreachable
+status separately. Evidence: `.build/group-discovery-live-validation.json`.
+No live invitation request or membership mutation was performed; joining and
+credential/error scenarios are mock-validated, and actual devices are unchanged.
+The existing IoT-to-IoT UDP limitation remains separate: saving group settings
+does not guarantee the follower receives discovery, subscribes or follows.
+
+New lamp first install (2026-10-07): COM6, MAC `24:EC:4A:AF:94:58`, device
+`5894af4aec24`, hostname `coollamp-af9458.local`. The user confirmed it was
+brand new and requested no backup. Verified ESP32-C3 revision 0.4/4 MB received
+the pinned bootloader, dual-OTA partition table, initial app0 selector and exact
+published 1.9.5 application. All four written hashes verified. Twenty USB
+diagnostic samples showed advancing frames/uptime, valid 36–39 C chip readings,
+and no observed reset, through uptime 65828 ms. Defaults are 134 LEDs/midpoint
+0, Fire/brightness 100, microphone disabled, automatic updates disabled and
+Wi-Fi unconfigured. No pairing/group enrollment was performed. Evidence:
+`.build/new-lamp-24ec4aaf9458-1.9.5-validation.json`. USB capture is closed.
+
+## Earlier verified follow-up — 2026-10-07: all lamps updated; app 29.1 uploaded
+
+App **1.0 (29.1)** was accepted at this earlier checkpoint, from source
 `d8620a428406bdd4a9a8cb3fcd0188135b43bc70`. Existing macOS CI run `37692263376`
 succeeded, including 134/134 tests, native Swift accessory/address checks,
 web build, signing, archive/export and upload. Apple reported
 `UPLOAD SUCCEEDED with no errors` on 2026-10-07 at 16:56:54 CDT.
 Evidence: `.build/ios-testflight-29.1-ci.log`. Tester availability and phone
 installation have not been independently queried. App 28.1 is the earlier
-firmware-card upload; the current accepted app includes asynchronous per-card
-status reads and explicitly triggered, sequential **Update all**.
+firmware-card upload; app 29.1 adds asynchronous per-card status reads and
+explicitly triggered, sequential **Update all**.
 
 CoolLamp 2 now runs the exact **published firmware 1.9.5** image after USB
 bootstrap. COM5 and MAC `80:F1:B2:50:B9:F0` were verified. Its fresh 1.9.4 boot
