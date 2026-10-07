@@ -48,8 +48,28 @@ export class LampStore {
     }
     return this.upsert(value, previousId);
   }
+  rememberFirmware(id, status) {
+    const entry = this.items.find(item => item.id === id);
+    const version = validFirmwareVersion(status?.version);
+    if (!entry || !version || entry.firmwareVersion === version) return entry;
+    entry.firmwareVersion = version;
+    this.save();
+    return entry;
+  }
   remove(id) { this.items = this.items.filter(x=>x.id!==id); this.save(); }
   save() { this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }
+}
+
+export function validFirmwareVersion(value) {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})\.(0|[1-9]\d{0,4})$/.test(value)) return null;
+  const parts = value.split('.').map(Number);
+  return parts.every(part => part <= 65535) && parts.some(Boolean) ? value : null;
+}
+
+export function lampFirmwareLabel(entry, {connected=false, firmware=null}={}) {
+  const version = validFirmwareVersion(connected ? firmware?.version : entry?.firmwareVersion);
+  if (connected) return version ? 'Firmware ' + version : 'Firmware unavailable';
+  return version ? 'Firmware ' + version + ' · Last seen' : 'Firmware · Connect to view';
 }
 
 export function lampAddress(value) {

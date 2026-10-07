@@ -1,0 +1,57 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {LampStore,lampFirmwareLabel,validFirmwareVersion} from '../src/lamps.js';
+
+function setup(items=[]){
+ const data=new Map([['coollamp-lamps',JSON.stringify(items)]]);let saves=0;
+ const storage={getItem:key=>data.get(key),setItem:(key,value)=>{++saves;data.set(key,value);}};
+ return {store:new LampStore(storage),data,get saves(){return saves;},storage};
+}
+
+test('installed firmware accepts bounded triplets and rejects unavailable or malformed values',()=>{
+ for(const version of ['1.9.5','1.4.0','0.0.1','65535.65535.65535'])assert.equal(validFirmwareVersion(version),version);
+ for(const version of [null,undefined,0,'','0.0.0','v1.9.5','1.9','1.9.5-beta','1.9.5\n','01.9.5','65536.1.0','<script>'])assert.equal(validFirmwareVersion(version),null);
+});
+
+test('firmware observations remain per lamp, preserve preferences/order, and save only version changes',()=>{
+ const model=setup([{id:'a',name:'BACL',room:'Studio',favorites:[4,47],deviceId:'phone-a'},
+  {id:'b',name:'CoolLamp 2',room:'Hall',firmwareVersion:'1.9.4'}]);
+ assert.equal(model.store.rememberFirmware('a',{version:'1.9.5',latest:'9.0.0',token:'secret'}).firmwareVersion,'1.9.5');
+ assert.equal(model.saves,1);
+ model.store.rememberFirmware('a',{version:'1.9.5',latest:'10.0.0'});assert.equal(model.saves,1);
+ assert.equal(model.store.items[1].firmwareVersion,'1.9.4');
+ assert.deepEqual(model.store.items.map(item=>item.id),['a','b']);
+ assert.deepEqual(model.store.items[0].favorites,[4,47]);assert.equal(model.store.items[0].room,'Studio');
+ assert.equal(model.store.items[0].token,undefined);assert.equal(model.store.items[0].latest,undefined);
+ assert.equal(new LampStore(model.storage).items[0].firmwareVersion,'1.9.5');
+ model.store.rememberFirmware('a',{version:'1.9.6'});assert.equal(model.saves,2);
+});
+
+test('unknown, removed, unsupported, and latest-only observations cannot create or overwrite records',()=>{
+ const model=setup([{id:'a',firmwareVersion:'1.9.4'}]);
+ for(const status of [null,{}, {latest:'1.9.5'}, {version:'0.0.0'}, {version:'bad'}])model.store.rememberFirmware('a',status);
+ model.store.rememberFirmware('unknown',{version:'1.9.5'});
+ assert.equal(model.saves,0);assert.equal(model.store.items[0].firmwareVersion,'1.9.4');
+ model.store.remove('a');const saves=model.saves;
+ model.store.rememberFirmware('a',{version:'1.9.5'});assert.equal(model.saves,saves);assert.deepEqual(model.store.items,[]);
+});
+
+test('card versions distinguish live installed firmware, last seen, unknown, and unsupported',()=>{
+ const cached={id:'a',firmwareVersion:'1.9.4'};
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware:{version:'1.9.5',latest:'9.0.0'}}),'Firmware 1.9.5');
+ assert.equal(lampFirmwareLabel(cached),'Firmware 1.9.4 · Last seen');
+ assert.equal(lampFirmwareLabel({id:'b'}),'Firmware · Connect to view');
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware:null}),'Firmware unavailable');
+ assert.equal(lampFirmwareLabel(cached,{connected:true,firmware:{latest:'1.9.5'}}),'Firmware unavailable');
+ assert.equal(lampFirmwareLabel({firmwareVersion:'bad'}),'Firmware · Connect to view');
+});
+
+test('Wi-Fi/Bluetooth identity migration preserves the installed-version observation',()=>{
+ const model=setup([{id:'ble:phone-a',deviceId:'phone-a',name:'BACL',room:'Studio'}]);
+ model.store.rememberFirmware('ble:phone-a',{version:'1.9.4'});
+ model.store.upsertWifi({id:'24eae26e9e9c',address:'http://192.168.1.220'},'ble:phone-a');
+ assert.equal(model.store.items.length,1);assert.equal(model.store.items[0].firmwareVersion,'1.9.4');
+ assert.equal(model.store.items[0].deviceId,'phone-a');assert.equal(model.store.items[0].room,'Studio');
+ model.store.rememberFirmware('24eae26e9e9c',{version:'1.9.5'});
+ assert.equal(model.store.items[0].firmwareVersion,'1.9.5');
+});

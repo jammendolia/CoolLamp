@@ -7,7 +7,7 @@ import { effectSettings } from './effect-settings.js';
 import { availableGroupScenes, groupScenes, groupSceneSettings, moveGroupLamp } from './group-scenes.js';
 import { createGroupCode, parseGroupCode, groupStatus } from './sync.js';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
-import { LampStore, LampDiscoverySession, lampAddress } from './lamps.js';
+import { LampStore, LampDiscoverySession, lampAddress, lampFirmwareLabel, validFirmwareVersion } from './lamps.js';
 import { WifiTransport } from './wifi.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
@@ -221,7 +221,17 @@ $('reconnect').hidden = !savedDevice;
 if (savedDevice) status('Reconnect to your saved lamp. There is no need to enter pairing mode again.');
 const callbacks = {
   onOptions(next) { effectOptions = next; renderOptions(); },
-  onFirmware(next) { firmware = next; renderFirmware(); },
+  onFirmware(next) {
+    const previousVersion=validFirmwareVersion(firmware?.version);
+    firmware = next;
+    // Connect callbacks precede assignment of the newly verified selected lamp.
+    // Save initial metadata after connect completes, never against the old card.
+    if(verifiedSelectedLamp()) {
+      store.rememberFirmware(selected.id,next);
+      if(previousVersion!==validFirmwareVersion(next?.version))renderLamps();
+    }
+    renderFirmware();
+  },
   onState(next) {
     if(lamp===bleLamp&&centerStatus?.active)next.calibration={active:true,kind:'center',position:centerStatus.position};
     if(state?.mode!==next.mode){editingOptions=false;editingBrightness=false;}
@@ -267,6 +277,7 @@ const callbacks = {
     $('networkSettings').disabled=true;
     $('identify').disabled=true;
     renderSettings();
+    renderLamps();
     if (!connecting) status('Disconnected. Choose a lamp to reconnect.');
   }
 };
@@ -316,6 +327,7 @@ async function connect(saved = null) {
     const prior=store.items.find(x=>x.id===device.lampId || x.deviceId===device.deviceId);
     selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp',
       bluetoothName:device.bluetoothName,accessoryName:device.accessoryName,accessoryManaged:Boolean(device.accessoryManaged)});
+    store.rememberFirmware(selected.id,firmware);
     $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
     savedDevice=device; connected('Bluetooth');
   } catch(e) {
@@ -373,6 +385,7 @@ async function connectWifi(entry,password) {
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
     const prior=store.items.find(x=>x.id===id || x.id===entry.id);
     selected=store.upsertWifi({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
+    store.rememberFirmware(selected.id,raw.firmware);
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     wifiFailures.delete(entry.id);wifiFailures.delete(id);
     $('password').value='';connected('Wi-Fi');if(warning)status('Connected. '+warning);
@@ -414,6 +427,12 @@ for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange =
   renderOptions();
 };
 
+function verifiedSelectedLamp() {
+  if(connecting||!state||!selected)return false;
+  if(lamp===wifiLamp)return wifiLamp.identity===selected.id;
+  return lamp===bleLamp&&bleLamp.id===selected.deviceId&&
+    (!bleLamp.deviceIdentity||bleLamp.deviceIdentity===selected.id);
+}
 function renderLamps() {
   $('discover').textContent=discovery.scanned?'Refresh Wi-Fi list':'Find on Wi-Fi';
   $('lampList').replaceChildren();
@@ -425,9 +444,12 @@ function renderLamps() {
     const button=document.createElement('button');button.className='lamp-card';
     const title=document.createElement('strong');title.textContent=entry.name||'CoolLamp';
     const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
-    button.append(title,detail);button.disabled=connecting||busy;
-    button.setAttribute('aria-current',String(Boolean(state&&entry.id===selected?.id)));
-    if(state&&entry.id===selected?.id)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
+    const connected=verifiedSelectedLamp()&&entry.id===selected.id;
+    const version=document.createElement('small');version.className='lamp-firmware';
+    version.textContent=lampFirmwareLabel(entry,{connected,firmware});
+    button.append(title,detail,version);button.disabled=connecting||busy;
+    button.setAttribute('aria-current',String(connected));
+    if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
     button.onclick=async()=>{
       if(state&&entry.id===selected?.id&&(lamp===wifiLamp||!entry.address)){page('light');return;}
       if(entry.address) {
