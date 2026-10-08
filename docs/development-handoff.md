@@ -1,6 +1,60 @@
 # CoolLamp development handoff — 2026-10-06
 
-## Current OTA, radio and app checkpoint — 2026-10-08
+## Latest publication — 2026-10-08: firmware 1.10.2 public; app 35.1 accepted
+
+The user explicitly requested publication despite the known physical-acceptance
+gap, overriding the earlier hold. [Firmware 1.10.2](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.10.2)
+is now **Public Latest**, published at `2026-10-08T21:21:55Z`
+(2026-10-08 16:21:55 CDT). Its tag/source is
+`b66099080078bc47cbc253cfa23da2a1429df9f5`; Latest/tag references and public
+flags (`draft=false`, `prerelease=false`) are verified. Publication used only
+verified personal **jammendolia**; HiFin remains untouched.
+
+The release uses the verified CI application: **1,863,744 bytes**, SHA-256
+`2a1634f9404d40d0aece4632aa60ec94db0d1d1a853192157e1dd0d460028eda`.
+Firmware CI `37843327031` succeeded, including runtime/sanitizer and packaging
+checks. Program usage is 1,863,594 bytes, globals 61,612 and remaining OTA
+image space 167,872 bytes. The prior Windows candidate has different bytes;
+retain it as historical evidence. Anonymous downloads without Authorization
+verified the public latest manifest (120 bytes) and pinned 1.10.2 application
+at `2026-10-08T21:22:59.972Z`. The application size/hash and complete bytes match
+the verified CI image; public marker and ESP32-C3 layout checks passed. Evidence:
+`.build/firmware-1.10.2-public-verification.json`.
+
+The last verified fleet snapshot immediately **before publication** made eight
+GETs: `.build/ota-1.10.1-fleet-baseline-1791494436377.json`. CoolLamp 1/2 were
+on 1.10.1 with their original automatic-update preferences enabled; BACL/new
+lamp were on 1.9.6 with their original preferences disabled. Publication did
+not introduce automatic-update holds or change those preferences. No check or
+installation was forced for publication. Automatic checks/installations can now
+occur on the enabled lamps; **no 1.10.2 lamp
+installation has yet been verified**. Do not present this pre-publication
+snapshot as proof of a lamp's running version after a subsequent automatic
+update.
+
+App **1.0 (35.1)** is already the latest accepted TestFlight upload; no additional
+app build is required for this firmware. Existing macOS CI `37843221334`, source
+`6a468d46e2c7ddea0cbb2df533118186de08b15a`, succeeded. Apple accepted the upload
+at `2026-10-08T21:01:24.3685690Z` (16:01:24 CDT), with evidence in
+`.build/ios-testflight-35.1-ci.log`. Tester availability and phone installation
+remain unverified.
+
+Publication does not establish physical 1.10.2 acceptance, a completed device
+installation or repaired intermittent HTTPS checks. The earlier partial manual
+C2 transfer and possible queued boot-slot uncertainty remain recorded below;
+no controlled next-boot test or 1.10.2 TLS check has been performed. The bounded
+1.10.1 encrypted-frame test and phone-Wi-Fi-off Bluetooth test remain valid,
+while lamps outside AP coverage, same-IoT forwarding, new-scene/music acceptance,
+blackout/thermal diagnosis and raw Mac diagnostic migration remain open.
+GPIO assignments and existing lamp settings are retained.
+
+## Earlier pre-publication checkpoint — 2026-10-08: live OTA, radio and CI draft
+
+The status below records the checkpoint before the user's explicit publication
+request. Its Latest 1.9.6 and unpublished 1.10.2 draft statements are historical
+and superseded by the publication section above. Preserve the observed device,
+settings, failure and validation evidence; publication alone does not close
+the physical-acceptance or next-boot/TLS gaps.
 
 **Public Latest is firmware-v1.9.6.** Firmware 1.10.1 is a public prerelease
 with its original pinned tag/assets. CoolLamp 1 (`acb950b2f180`, `.154`) and
