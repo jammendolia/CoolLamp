@@ -1,3 +1,5 @@
+import {availableGroupScenes} from './group-scenes.js';
+
 // Session-only telemetry. Discovery, a saved address and an unanswered request
 // do not prove AP association. No credentials or raw snapshots are retained.
 export const validWifiRssi = value => Number.isInteger(value) && value >= -127 && value < 0 ? value : null;
@@ -19,13 +21,38 @@ export function groupObservation(raw) {
   if(!canonical.test(id)||!canonical.test(group.leader)||group.role===1&&group.leader!==id||group.role===2&&group.leader===id)return null;
   return {role:group.role,leader:group.leader};
 }
+const effectName=value=>typeof value==='string'&&value.trim()&&!/[\x00-\x1f\x7f]/.test(value)&&new TextEncoder().encode(value).length<=96?value.trim():null;
+export function lightingObservation(raw,catalog=null) {
+  const render=raw?.render??raw,mode=render?.mode,power=render?.power;
+  if(!Number.isInteger(mode)||mode<1||mode>255||typeof power!=='boolean')return null;
+  const group=groupObservation(raw),sync=raw?.sync;
+  if(sync&&!group)return null;
+  const runningGroup=group?.role===1&&sync.paused!==true||group?.role===2&&sync.active===true&&sync.paused!==true;
+  const entry=Array.isArray(catalog)?catalog.find(entry=>entry.id===mode):null;
+  const inline=Array.isArray(raw?.effects)&&raw.effects.length<=255?raw.effects[mode-1]:null;
+  const name=effectName(render?.effectName??entry?.name??inline);
+  const scene=Number.isInteger(sync?.scene)?sync.scene:sync?.version===1?0:null;
+  if(runningGroup&&scene===0)return {kind:'group',name,mode,power,scene:0};
+  if(runningGroup&&scene>0){
+    const declared=Number.isInteger(sync.sceneCount)?sync.sceneCount:8;
+    const name=scene<=declared?availableGroupScenes(sync).find(entry=>entry.id===scene)?.name:null;
+    return {kind:'group',name:effectName(name),mode,power,scene};
+  }
+  return {kind:'effect',name,mode,power,scene:null};
+}
+function cleanLighting(value){
+  if(!value||!['effect','group'].includes(value.kind)||typeof value.power!=='boolean'||!Number.isInteger(value.mode)||value.mode<1||value.mode>255)return null;
+  if(value.kind==='group'&&(!Number.isInteger(value.scene)||value.scene<0||value.scene>255))return null;
+  return {kind:value.kind,power:value.power,mode:value.mode,scene:value.kind==='group'?value.scene:null,name:effectName(value.name)};
+}
+const unknownLighting=()=>({state:'unknown',fresh:false,name:null,checkedAt:null,label:'Effect unavailable'});
 const locator = entry => JSON.stringify([entry?.address ?? null,entry?.deviceId ?? null]);
 const unknown = () => ({wifi:{state:'unknown',rssi:null,arcs:0,strengthKnown:false,checkedAt:null,fresh:false,label:'Wi-Fi status unknown'}});
 
 export class LampConnectivity {
   constructor({getLamps=()=>[],onStatus,now=Date.now,ttl=30000}={}) {
     Object.assign(this,{getLamps,onStatus,now});
-    this.ttl=Math.max(1,ttl);this.samples=new Map();this.groups=new Map();
+    this.ttl=Math.max(1,ttl);this.samples=new Map();this.groups=new Map();this.lighting=new Map();
   }
   entry(id){return this.getLamps().find(entry=>entry?.id===id);}
   emit(id){const value=this.get(id);this.onStatus?.(id,value);return value;}
@@ -66,14 +93,32 @@ export class LampConnectivity {
       return {state:'unknown',leader:null,checkedAt:null,fresh:false};
     return {state:sample.role===1?'leader':sample.role===2?'follower':'independent',leader:sample.leader,checkedAt:sample.checkedAt,fresh:true};
   }
-  forget(id){this.samples.delete(id);this.groups.delete(id);}
+  observeLighting(id,{deviceId,lighting,checkedAt=this.now()}={}){
+    const entry=this.entry(id),value=cleanLighting(lighting),now=this.now();
+    if(!entry||deviceId!==id||!value||!Number.isFinite(checkedAt)||checkedAt<0||checkedAt>now+1000)return false;
+    const previous=this.lighting.get(id),location=locator(entry);
+    if(previous?.location===location&&checkedAt<previous.checkedAt)return false;
+    this.lighting.set(id,{...value,checkedAt,location});this.emit(id);return true;
+  }
+  invalidateLighting(id,{attemptedAt=this.now()}={}){
+    if(this.lighting.get(id)?.checkedAt>attemptedAt)return false;
+    this.lighting.delete(id);this.emit(id);return true;
+  }
+  lightingValue(id){
+    const entry=this.entry(id),sample=this.lighting.get(id),now=this.now();
+    if(!entry||!sample||sample.location!==locator(entry)||now<sample.checkedAt)return unknownLighting();
+    const fresh=now-sample.checkedAt<=this.ttl;
+    const label=(sample.power?'':'Off · ')+(sample.name?(sample.kind==='group'?(sample.scene===0?'Group mirror · ':'Group · '):'')+sample.name:sample.kind==='group'?(sample.scene===0?'Group · Mirror effects':'Group effect unavailable'):'Effect unavailable');
+    return {...sample,location:undefined,state:fresh?'live':'stale',fresh,label:fresh?label:'Last seen: '+label};
+  }
+  forget(id){this.samples.delete(id);this.groups.delete(id);this.lighting.delete(id);}
   get(id) {
     const entry=this.entry(id),sample=this.samples.get(id),now=this.now();
-    if(!entry||!sample||sample.location!==locator(entry)||now<sample.checkedAt||now-sample.checkedAt>this.ttl)return {...unknown(),group:this.groupValue(id)};
+    if(!entry||!sample||sample.location!==locator(entry)||now<sample.checkedAt||now-sample.checkedAt>this.ttl)return {...unknown(),group:this.groupValue(id),lighting:this.lightingValue(id)};
     const state=sample.connected?'connected':'disconnected';
     const strengthKnown=sample.connected&&sample.rssi!==null&&sample.rssiAt!==null&&now>=sample.rssiAt&&now-sample.rssiAt<=this.ttl;
     const rssi=strengthKnown?sample.rssi:null;
     return {wifi:{state,rssi,arcs:wifiSignalArcs(rssi),strengthKnown,checkedAt:sample.checkedAt,fresh:true,
-      label:!sample.connected?'Wi-Fi disconnected':strengthKnown?'Wi-Fi signal '+rssi+' dBm':'Wi-Fi connected; signal strength unknown'},group:this.groupValue(id)};
+      label:!sample.connected?'Wi-Fi disconnected':strengthKnown?'Wi-Fi signal '+rssi+' dBm':'Wi-Fi connected; signal strength unknown'},group:this.groupValue(id),lighting:this.lightingValue(id)};
   }
 }

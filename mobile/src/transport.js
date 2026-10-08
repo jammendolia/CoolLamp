@@ -213,9 +213,12 @@ export class LampTransport {
     this.disconnected();
     if (id) { try { await this.ble.disconnect(id);this.connectionAttempts.delete(id); } catch {} }
   }
-  command(operation, value = 0, responseCharacteristic = null) {
-    if(operation==='effect'&&this.supportsOfflineControl&&this.raw?.sync?.role===1&&this.raw.sync.scene)
-      return this.configureGroupScene({scene:0}).then(()=>this.command(operation,value,responseCharacteristic));
+  command(operation, value = 0, responseCharacteristic = null, beforeWrite = null) {
+    const fence=()=>{try{beforeWrite?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Connection changed.'),{confirmed:true,cancelled:true});}};
+    if(operation==='effect'&&this.supportsOfflineControl&&this.raw?.sync?.role===1&&this.raw.sync.scene){
+      try{fence();}catch(error){return Promise.reject(error);}
+      return this.configureGroupScene({scene:0}).then(()=>this.command(operation,value,responseCharacteristic,beforeWrite));
+    }
     const epoch = this.epoch;
     const run = async () => {
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
@@ -230,6 +233,7 @@ export class LampTransport {
       if (['checkFirmware','installFirmware','autoUpdate'].includes(operation) && !(this.state?.capabilities & 4)) throw new Error('Install the updater firmware using the lamp’s Wi-Fi page first.');
       const id = this.sequence = this.sequence % 255 + 1;
       const frame = encodeCommand(id, operation, value, this.state.effectCount);
+      fence();
       // Install the listener BEFORE writing: notifications may precede the write response.
       let settle;
       const response = new Promise((resolve, reject) => {
@@ -384,7 +388,7 @@ export class LampTransport {
     this.state={...snapshot,id:binary.id,result:binary.result,revision:binary.revision,capabilities:binary.capabilities,
       mode:raw.mode,brightness:raw.brightness,power:raw.power,
       effectCount:this.catalog.length,supportsColor:binary.supportsColor,color:color?{enabled:Boolean(color[0]),r:color[1],g:color[2],b:color[3]}:binary.color};
-    this.onState(this.state);if(raw.firmware)this.receiveFirmware(raw.firmware);
+    this.onState(this.state,{freshControl:true});if(raw.firmware)this.receiveFirmware(raw.firmware);
     const options=raw.effectOptions?.[raw.mode-1];
     if(options)this.onOptions({mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});
     return snapshot;

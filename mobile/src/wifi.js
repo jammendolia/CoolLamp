@@ -183,6 +183,7 @@ export class WifiTransport {
     const id=this.identity,epoch=this.epoch,address=this.base;
     const guard=()=>{if(!id||this.identity!==id||this.epoch!==epoch||this.base!==address)throw Error('Connection changed.');};
     guard();await this.refresh(id);guard();
+    if(this.id&&this.raw?.firmware?.version==='1.10.1')throw Error('Connect over Wi-Fi or update to firmware 1.10.2 to save its design on the lamp.');
     if(!reportedLampStyle(this.raw?.lampStyle))throw Error('Update this lamp to firmware 1.10.1 to save its design on the lamp.');
     let message;
     try{guard();message=await this.request('/api/style',{style:definition.code});}
@@ -241,15 +242,17 @@ export class WifiTransport {
     await this.disconnect();
     return message;
   }
-  command(op,value=0) { return this.enqueue(async()=>{
+  command(op,value=0,responseCharacteristic=null,beforeWrite=null) { return this.enqueue(async()=>{
     const epoch=this.epoch;
+    const fence=()=>{try{beforeWrite?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Connection changed.'),{confirmed:true,cancelled:true});}};
+    fence();
     if(this.raw?.sync?.active && ['brightness','effect','saveDefaults','color','resetColor','effectOptions'].includes(op))throw new Error('Edit the coordinator or pause this lamp’s group first.');
     if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
     const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value,keepPower:1}],effect:['/api/preview',{mode:value,brightness:this.state.brightness,keepPower:1}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
     const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;
     if(mode!==null && !this.catalog?.some(x=>x.id===mode))throw new Error('This effect is not available on the selected lamp.');
     if(!paths[op])throw new Error('Unsupported command.');
-    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene)await this.configureGroupScene({scene:0}); await this.request(...paths[op]);
+    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene){fence();await this.configureGroupScene({scene:0});}fence(); await this.request(...paths[op]);
       if(['checkFirmware','installFirmware','autoUpdate'].includes(op))await this.refreshFirmware();else await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }

@@ -33,25 +33,7 @@
 </svg>
 <span>Lamps</span>
 </button>
-<button data-page="light">
-<svg viewBox="0 0 24 24" aria-hidden="true">
-<path d="M9 18h6m-5 3h4M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2Z">
-</path>
-</svg>
-<span>Light</span>
-</button>
 <button data-page="groups"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"></circle><circle cx="5" cy="18" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="m10 9-3 6m7-6 3 6M8 18h8"></path></svg><span>Groups</span></button>
-<button data-page="settings">
-<svg viewBox="0 0 24 24" aria-hidden="true">
-<path d="M4 7h16M4 17h16">
-</path>
-<circle cx="9" cy="7" r="3">
-</circle>
-<circle cx="15" cy="17" r="3">
-</circle>
-</svg>
-<span>Settings</span>
-</button>
 </nav>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
   <aside id="defaultPasswordNotice" class="sync-banner" hidden>
@@ -114,8 +96,8 @@
   <section class="panel"><p class="eyebrow">YOUR OWN LIGHT</p><h3>Ungrouped lamps</h3><div id="ungroupedLamps" class="group-lamp-list"></div><p id="ungroupedEmpty" class="hint">No independent lamps found yet.</p></section>
   <details id="groupsUnavailable" class="panel"><summary>Other lamps <span id="groupsUnavailableCount" class="small-badge">0</span></summary><div id="groupsUnavailableList" class="group-lamp-list"></div></details>
   <p id="groupsFeedback" class="hint" role="status" aria-live="polite"></p>
-  <section id="globalGroupEditor" hidden aria-labelledby="globalGroupEditorTitle"><div class="section-title"><div><p class="eyebrow">SHARED LIGHT & SOUND</p><h3 id="globalGroupEditorTitle">Group effects</h3></div><button id="closeGroupEditor" type="button" class="text-button">Close</button></div><p id="globalGroupEditorStatus" class="hint" role="status"></p></section>
-  <details id="groupRecovery" class="panel group-recovery"><summary>Advanced · selected lamp recovery</summary><p class="hint">Use a group code only when normal group discovery cannot help. These controls apply to the lamp currently selected in Light.</p><div id="groupRecoveryContent"></div></details>
+  <section id="globalGroupEditor" hidden aria-labelledby="globalGroupEditorTitle"><div class="section-title"><div><p class="eyebrow">SHARED LIGHT & SOUND</p><h3 id="globalGroupEditorTitle">Group effects</h3></div><button id="closeGroupEditor" type="button" class="text-button">Close</button></div><p id="globalGroupEditorStatus" class="hint" role="status"></p><div id="groupLightingControls"></div></section>
+  <details id="groupRecovery" class="panel group-recovery"><summary>Advanced · selected lamp recovery</summary><p class="hint">Use a group code only when normal group discovery cannot help. These controls apply to the lamp selected through its card.</p><div id="groupRecoveryContent"></div></details>
 </section>
 <section id="page-light" hidden>
 <div class="section-title">
@@ -470,17 +452,20 @@
   </details>
 </section>
 <section id="page-settings" hidden>
-<h2 tabindex="-1">Lamp settings</h2>
-<p class="page-intro">The details that make this lamp yours.</p>
+<div class="section-title"><div id="settingsLampHeading"><p class="eyebrow">YOUR LAMP</p><h2 tabindex="-1">Lamp settings</h2></div><button type="button" data-goto="lamps" class="text-button compact">All lamps</button></div>
+<p class="page-intro">Lighting and settings for this lamp.</p>
 <p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
 <div class="settings-navigation" role="group" aria-label="Settings sections">
-<button type="button" data-settings-section="overview" aria-pressed="true">Overview</button>
-<button type="button" data-settings-section="groups" aria-pressed="false">Groups</button>
+<button type="button" data-settings-section="lighting" aria-pressed="true">Lighting</button>
+<button type="button" data-settings-section="overview" aria-pressed="false">General</button>
+<button type="button" data-settings-section="design" aria-pressed="false">Design</button>
 <button type="button" data-settings-section="hardware" aria-pressed="false">Hardware</button>
-<button type="button" data-settings-section="network" aria-pressed="false">Network</button>
+<button type="button" data-settings-section="network" aria-pressed="false">Wi-Fi</button>
 <button type="button" data-settings-section="updates" aria-pressed="false">Updates</button>
 </div>
 <p id="settingsHint" class="hint" hidden></p>
+<div id="settingsLighting"></div>
+<section id="lampGroupLighting" class="panel" data-settings-panel="lighting" hidden><p class="eyebrow">CONNECTED LIGHT</p><h3 id="lampGroupLightingTitle">Lighting belongs to its group</h3><p id="lampGroupLightingHint" class="hint"></p><button id="openLampGroupLighting" type="button">Open group controls</button><button id="connectLampLightingWifi" type="button" class="secondary" hidden>Connect over Wi-Fi</button></section>
 <section id="lampSummary" class="device-summary" data-settings-panel="overview">
 <div>
 <span>Firmware</span>
@@ -496,7 +481,7 @@
 </div>
 </section>
 <form id="identityForm" class="panel identity-panel" data-settings-panel="overview">
-<h3>Make it yours</h3>
+<h3>Name & location</h3>
 <label for="lampName">Lamp name</label>
 <input id="lampName" maxlength="48" required>
 <label for="room">Room</label>
@@ -505,7 +490,7 @@
 <button id="identify" disabled type="button" class="secondary">Identify lamp</button>
 <p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p>
 </form>
-<form id="lampStyleForm" class="panel lamp-style-panel" data-settings-panel="overview">
+<form id="lampStyleForm" class="panel lamp-style-panel" data-settings-panel="design">
 <h3>Lamp design</h3>
 <p class="hint">Choose the physical shape for its card illustration and optional effect recommendations.</p>
 <fieldset id="lampStyleFields" disabled>

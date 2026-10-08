@@ -386,3 +386,25 @@ test('same verified diagnostic read carries sanitized physical style and its req
  setNow(2000);devices[0].request=()=>response({deviceId:ids[0],firmware:status(),lampStyle:'corkscrew'});
  const next=(await fleet.refresh()).results[0];assert.equal(next.lampStyle,null);assert.equal(next.styleObservedAt,null);
 });
+
+test('group current effect comes from verified scene metadata with no extra catalogue request',async()=>{
+ const {fleet,devices,calls}=setup();
+ devices[0].request=()=>response({deviceId:ids[0],firmware:status(),render:{mode:46,power:true},sync:{version:2,role:2,leader:ids[1],scene:27,sceneCount:32,active:true,paused:false}});
+ const row=(await fleet.refresh()).results[0];assert.equal(row.lighting.name,'Chromatic screw');assert.equal(row.lighting.kind,'group');assert.equal(row.lightingObservedAt,1000);assert.equal(calls.length,1);
+});
+test('standalone catalogues are per lamp and firmware profile, fetched once without delaying first verified status',async()=>{
+ const {fleet,devices,calls,changes,setNow}=setup(2);
+ for(let i=0;i<2;i++)devices[i].request=(_,path)=>path==='/api/effects'?response([{id:1,name:'Effect on lamp '+i,category:'calm',speed:true}]):response({deviceId:ids[i],firmware:status(),render:{mode:1,power:true},audio:{installed:true},sync:{version:2,role:0}});
+ const rows=(await fleet.refresh()).results;assert.deepEqual(rows.map(row=>row.lighting.name).sort(),['Effect on lamp 0','Effect on lamp 1']);
+ assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,2);assert(changes.some(row=>row.verified&&row.lighting.name===null));
+ setNow(2000);await fleet.refresh();assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,2);
+ fleet.forget(ids[0]);await fleet.refresh();assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,3);
+ assert.equal(writes(calls).length,0);
+});
+test('failed catalogue enrichment preserves known firmware and busy updater never starts enrichment',async()=>{
+ const {fleet,devices,calls}=setup();
+ devices[0].request=(_,path)=>path==='/api/effects'?response('No catalogue',404):response({deviceId:ids[0],firmware:status(),render:{mode:1,power:true}});
+ const row=(await fleet.refresh()).results[0];assert.equal(row.verified,true);assert.equal(row.installedVersion,'1.9.4');assert.equal(row.lighting.name,null);
+ devices[0].request=()=>response({deviceId:ids[0],firmware:status('1.9.4',1),render:{mode:1,power:true}});
+ await fleet.refresh();assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,1);
+});

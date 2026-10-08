@@ -1,6 +1,7 @@
 import { lampAddress, validFirmwareVersion } from './lamps.js';
-import { wifiObservation,groupObservation } from './lamp-connectivity.js';
+import { wifiObservation,groupObservation,lightingObservation } from './lamp-connectivity.js';
 import {normalizeLampStyle} from './lamp-style.js';
+import {validateCatalog} from './catalog.js';
 
 const busyPhases = [1, 3, 4];
 const updateErrors = ['','Lamp is offline.','Lamp could not set its clock.','Lamp cannot reach the update server.',
@@ -55,7 +56,7 @@ export class FirmwareFleet {
     requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000} = {}) {
     this.http = http; this.credential = credential; this.getLamps = getLamps; this.onStatus = onStatus;
     Object.assign(this, {now, sleep, requestTimeout, pollInterval, checkTimeout, updateTimeout, healthyUptime});
-    this.statuses = new Map(); this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;
+    this.statuses = new Map(); this.catalogues=new Map();this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;
   }
   run() {
     let stop;
@@ -63,7 +64,7 @@ export class FirmwareFleet {
     return {cancelled: false, cancellation, stop() {this.cancelled = true; stop();}};
   }
   cancelRefresh() { this.refreshRun?.stop(); this.refreshRun = null; }
-  forget(id) { this.cancelRefresh();this.statuses.delete(id); }
+  forget(id) { this.cancelRefresh();this.statuses.delete(id);this.catalogues.delete(id); }
   cancel() { this.cancelRefresh(); this.bulkRun?.stop(); }
   assertCurrent(lamp, run) {
     if (run.cancelled) throw failure('Firmware task cancelled.', {cancelled: true});
@@ -127,7 +128,10 @@ export class FirmwareFleet {
     const firmware = firmwareStatus(raw.firmware);
     if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.');
     const lampStyle=raw.lampStyle&&typeof raw.lampStyle==='object'?normalizeLampStyle(raw.lampStyle):null;
-    return {firmware, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle, wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
+    const catalogueKey=JSON.stringify([lamp.base,firmware.version,raw.audio?.installed??null]);
+    const cached=this.catalogues.get(lamp.id);
+    const lighting=lightingObservation(raw,cached?.key===catalogueKey?cached.entries:null);
+    return {firmware, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle,lighting,catalogueKey, wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
   }
   live(lamp, run, identity, state = 'ready', message = '') {
     const fw = identity.firmware;
@@ -136,7 +140,23 @@ export class FirmwareFleet {
       checkedAt: this.now(), verified: true, fresh: true, wifi:identity.wifi ?? null,
       wifiObservedAt:identity.wifi?identity.wifiObservedAt:null,group:identity.group ?? null,
       groupObservedAt:identity.group?identity.wifiObservedAt:null,lampStyle:identity.lampStyle ?? null,
-      styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null, message, error: ''});
+      styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null,lighting:identity.lighting??null,
+      lightingObservedAt:identity.lighting?identity.wifiObservedAt:null, message, error: ''});
+  }
+  async enrichLighting(lamp,run,identity,row){
+    if(!identity.lighting||identity.lighting.kind==='group'&&identity.lighting.scene!==0||identity.lighting.name||busyPhases.includes(identity.firmware.phase))return row;
+    if(this.catalogues.get(lamp.id)?.key===identity.catalogueKey)return row;
+    try{
+      const value=parse(await this.request(lamp,run,'/api/effects'));
+      const entries=validateCatalog(value,value?.length);this.assertCurrent(lamp,run);
+      this.catalogues.set(lamp.id,{key:identity.catalogueKey,entries});
+      const name=entries.find(entry=>entry.id===identity.lighting.mode)?.name??null;
+      return this.emit(lamp,run,{...row,lighting:{...identity.lighting,name},lightingObservedAt:identity.wifiObservedAt});
+    }catch(error){
+      if(error.cancelled||error.stale)throw error;
+      // Failed/malformed catalogue never hides a valid firmware/signal result.
+      return row;
+    }
   }
   async prepare(entry, run) {
     const lamp = target(entry);
@@ -186,7 +206,8 @@ export class FirmwareFleet {
           const identity = await this.identify(lamp, run);
           const state = identity.firmware.supported ? busyPhases.includes(identity.firmware.phase) ?
             identity.firmware.phase === 4 ? 'restarting' : identity.firmware.phase === 3 ? 'updating' : 'checking' : 'ready' : 'unsupported';
-          results.push(this.live(lamp, run, identity, state, identity.firmware.supported ? '' : 'This lamp does not support Wi-Fi updates.'));
+          const row=this.live(lamp, run, identity, state, identity.firmware.supported ? '' : 'This lamp does not support Wi-Fi updates.');
+          results.push(await this.enrichLighting(lamp,run,identity,row));
         } catch (error) { const result = this.errorStatus(entry, run, error); if (result) results.push(result); }
       }
     };

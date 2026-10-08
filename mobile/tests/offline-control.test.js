@@ -75,6 +75,11 @@ test('snapshot publishes newly read settings and excludes secrets nested in peer
   await lamp.refresh();assert.equal(lamp.state.sync.role,2);assert.equal(lamp.state.sync.active,true);assert.equal(lamp.raw.sync.peers[0].name,'Coordinator');
   assert(!JSON.stringify(lamp.state).includes('nested-'));assert(!JSON.stringify(lamp.raw).includes('radio-secret'));
 });
+test('fresh control metadata distinguishes a protected snapshot from a bare state acknowledgment',async t=>{
+  const {lamp,radio}=await connected(t),observed=[];lamp.onState=(state,metadata)=>observed.push(metadata);
+  await lamp.refresh();assert.deepEqual(observed.at(-1),{freshControl:true});assert.equal(observed.filter(metadata=>metadata?.freshControl).length,1);
+  lamp.receive(radio.packet(17));assert.equal(observed.at(-1),undefined);assert.equal(observed.filter(metadata=>metadata?.freshControl).length,1);
+});
 test('serialized RPC jobs chunk UTF-8 forms and read multiple coherent pages',async t=>{
   const {lamp,radio}=await connected(t);radio.largeResponse='🌈'.repeat(400);
   const result=await Promise.all([lamp.request('/api/name',{name:'Café 🌈',extra:'x'.repeat(40)}),lamp.request('/api/identify',{})]);
@@ -94,6 +99,18 @@ test('encrypted style helper targets endpoint25 and publishes only validated des
   const changes=radio.requests.filter(request=>request.endpoint===25);assert.equal(changes.length,1);assert.equal(changes[0].method,2);assert.equal(changes[0].body,'style=2');
   assert.equal(lamp.state.lampStyle.id,'large-helix');assert.deepEqual({mode:lamp.state.mode,brightness:lamp.state.brightness,power:lamp.state.power},before);
   radio.model.lampStyle={version:1,code:1,id:'corkscrew',family:'helix'};await lamp.refresh();assert.equal(lamp.raw.lampStyle,undefined);
+});
+test('Bluetooth1.10.1 design defect is guarded before any Style25 transaction',async t=>{
+  const {lamp,radio}=await connected(t);radio.model.lampStyle={version:1,code:0,id:'unspecified',family:'unspecified'};radio.model.firmware={version:'1.10.1'};
+  await lamp.refresh();await assert.rejects(lamp.configureLampStyle('helix'),/1.10.2/);assert.equal(radio.requests.filter(request=>request.endpoint===25).length,0);
+});
+test('queued Bluetooth command rechecks its owner before writing and retains connection on cancellation',async t=>{
+  const {lamp,radio}=await connected(t);lamp.raw.sync={version:2,role:1,leader:identity,scene:0};
+  let release;const blocker=new Promise(resolve=>release=resolve);lamp.tail=blocker;
+  const before=radio.writes.length,pending=lamp.command('brightness',150,null,()=>{if(lamp.raw.sync.role!==1)throw Error('Coordinator changed');});
+  lamp.raw.sync={version:2,role:0,leader:'',scene:0};release();
+  await assert.rejects(pending,error=>error.confirmed===true&&error.cancelled===true&&/Coordinator/.test(error.message));
+  assert.equal(radio.writes.length,before);assert.equal(lamp.id,'target');
 });
 test('lost commit notification reads its exact acknowledgment without replaying COMMIT',async t=>{
   const {lamp,radio}=await connected(t);radio.omitCommitAck=true;const start=radio.writes.length;await lamp.request('/api/name',{name:'Lamp'});
