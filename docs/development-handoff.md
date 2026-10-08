@@ -6,9 +6,21 @@ The user requested Bluetooth control/configuration plus ESP-NOW group
 coordination when Wi-Fi is unavailable, and a separate Groups page showing
 leaders, followers and independent lamps without selecting a coordinator.
 The local firmware candidate is **1.10.0**, not published. Public OTA remains
-1.9.6 and the accepted TestFlight upload remains 1.0 (31.1). Read
+1.9.6. App **1.0 (32.1)** was accepted by Apple through existing macOS workflow
+run `37814009967` on source `28b81f142f6128638cb90feea388f522f9205336`, branch
+`codex/offline-groups-1.10.0`. It passed 220 tests and native checks; Apple
+reported `UPLOAD SUCCEEDED with no errors` at `2026-10-08T17:10:32.0898510Z`
+(12:10:32 CDT). Evidence: `.build/ios-testflight-32.1-ci.log`. Tester
+availability/phone installation are not independently confirmed. Read
 [the new implementation and test checkpoint](offline-groups.md) before
 resuming this work.
+
+Firmware CI run `37814005688` also succeeded on source `28b81f142f6128638cb90feea388f522f9205336`,
+including Linux sanitizer and real pinned Mbed TLS checks. Its release is an
+unpublished draft. The verified CI image is 1,859,792 bytes, SHA-256
+`30eb2a3a603e4590576086c31793ab3415d9221773da308b4b461ff041a62813`,
+saved in `.build/firmware-1.10.0-ci-assets/`. Prefer this image for the pending
+USB acceptance test; public Latest was freshly verified as `firmware-v1.9.6`.
 
 The chosen test pair, CoolLamp 1 (`acb950b2f180`, `.154`) and CoolLamp 2
 (`f0b950b2f180`, `.222`), were freshly verified on 1.9.6 with stable Wi-Fi.

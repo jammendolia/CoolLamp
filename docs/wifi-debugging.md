@@ -24,6 +24,20 @@ continued uptime, unchanged compared saved settings and active following.
 CoolLamp 2 was not uploaded. USB access to CoolLamp 1 is pending; the hybrid
 firmware is not physically validated or published.
 
+App 1.0 (32.1) was accepted by Apple at `2026-10-08T17:10:32.0898510Z` through
+existing macOS CI run `37814009967`, source `28b81f142f6128638cb90feea388f522f9205336`.
+It adds the top-level Groups page and passes 220 mobile tests plus native
+accessory/address checks. Its Wi-Fi group workflow works with the test pair's
+1.9.6 firmware; offline Bluetooth settings/groups require the 1.10.0 candidate.
+Evidence: `.build/ios-testflight-32.1-ci.log`. Tester availability/phone
+installation remain unverified. Public OTA is still 1.9.6.
+
+Firmware 1.10.0 CI run `37814005688` passed and created an unpublished draft.
+The verified CI asset under `.build/firmware-1.10.0-ci-assets/` is 1,859,792
+bytes, SHA-256 `30eb2a3a603e4590576086c31793ab3415d9221773da308b4b461ff041a62813`.
+Use that asset for the pending USB test. Host/CI success does not demonstrate
+the physical radio path, BLE coexistence or closed-enclosure reliability.
+
 ## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
 
 [Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)

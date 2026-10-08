@@ -2,9 +2,15 @@
 
 ## Development checkpoint — 2026-10-08
 
-Firmware **1.10.0 is a development candidate**. Public OTA remains 1.9.6;
-TestFlight 1.0 (31.1) is the earlier accepted upload. The current development
-changes have not been published. The user chose CoolLamp 1 and CoolLamp 2 for
+Firmware **1.10.0 is a development candidate**. Public OTA remains 1.9.6.
+App **1.0 (32.1)** was accepted by Apple through existing macOS CI run
+`37814009967`, source `28b81f142f6128638cb90feea388f522f9205336` on
+`codex/offline-groups-1.10.0`. The run passed 220 tests, native accessory/address
+checks and the signed archive/export; Apple reported `UPLOAD SUCCEEDED with no
+errors` at `2026-10-08T17:10:32.0898510Z` (12:10:32 CDT). Evidence:
+`.build/ios-testflight-32.1-ci.log`. Phone installation and tester availability
+have not been independently queried. App 31.1 is the earlier accepted upload.
+The firmware candidate has not been published. The user chose CoolLamp 1 and CoolLamp 2 for
 bounded testing over their working Wi-Fi connections.
 
 The initial authenticated, read-only inventory confirmed both lamps on 1.9.6:
@@ -135,3 +141,27 @@ test evidence and a fresh test-lamp state snapshot. Use the existing macOS CI
 workflow for iOS. All GitHub actions must use personal `jammendolia`; never the
 HiFin account. Preserve the original working tree and commit scoped changes
 from the existing isolated release checkout.
+
+## Successful CI draft — 2026-10-08
+
+Firmware CI run **37814005688** succeeded on the same source as app 32.1,
+`28b81f142f6128638cb90feea388f522f9205336`. Linux validation retained
+ASan/UBSan, including the real pinned Mbed TLS radio suites after the production
+build. The resulting **1.10.0 release remains a draft**, not public Latest;
+the verified public Latest is still `firmware-v1.9.6`.
+
+The downloaded CI application is **1,859,792 bytes**, SHA-256
+`30eb2a3a603e4590576086c31793ab3415d9221773da308b4b461ff041a62813`.
+Program usage is 1,859,640 bytes and globals are 61,604 bytes. Remaining OTA
+image space is 171,824 bytes. Manifest regeneration, C3/OTA layout, public
+marker, local-credential exclusion and GitHub asset-digest checks passed.
+Evidence: `.build/firmware-1.10.0-ci.log`,
+`.build/firmware-1.10.0-ci-assets/verification.json` and
+`.build/hybrid-1.10.0-development-record.json`.
+
+Use the verified **CI asset** for the next physical candidate installation,
+after identifying/backing up CoolLamp 1 and capturing fresh settings. The
+different earlier Windows image is retained privately for provenance; its one
+OTA upload failed. Neither test lamp has been confirmed running 1.10.0.
+Phone/physical Bluetooth authorization, ESP-NOW coordination with and without
+AP association, recovery and enclosure behavior remain acceptance checks.
