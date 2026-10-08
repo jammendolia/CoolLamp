@@ -29,11 +29,7 @@ void trackedFree(void* pointer){
  if(pointer){const auto* bytes=static_cast<const uint8_t*>(pointer);for(size_t i=0;i<responseBytes;++i)assert(bytes[i]==0);
   ++responseFrees;responseBytes=0;std::free(pointer);}
 }
-#define malloc trackedMalloc
-#define free trackedFree
 #include "LampBleControlWire.h"
-#undef malloc
-#undef free
 LampBleControlWire::Transfer rpc;
 LampUpdateStatus status{};
 LampUpdateHandoff handoff;
@@ -166,6 +162,15 @@ class UpdateHandoffTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='lamp-update-handoff-') as directory:
             directory = Path(directory)
             (directory/'Arduino.h').write_text(ARDUINO)
+            # Intercept only the production Transfer's two allocator calls in
+            # a test-local copy. malloc/free preprocessor macros also rewrite
+            # libstdc++'s C compatibility wrappers on Linux, even if cstdlib
+            # was included earlier; no system declarations should be changed.
+            wire = (ROOT/'LampBleControlWire.h').read_text()
+            self.assertEqual(wire.count('malloc(size)'),1)
+            self.assertEqual(wire.count('free(response)'),1)
+            (directory/'LampBleControlWire.h').write_text(
+                wire.replace('malloc(size)','trackedMalloc(size)').replace('free(response)','trackedFree(response)'))
             cpp, binary = directory/'test.cpp', directory/'test'
             cpp.write_text(FIXTURE+request+public+ownership+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
