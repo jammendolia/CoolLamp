@@ -27,6 +27,36 @@ Its log is `.build/ios-testflight-33.1-ci.log`. It does not include the later
 group shortcut or physical-design UI. All GitHub actions used verified personal
 `jammendolia`; HiFin remains untouched.
 
+The combined update **1.0 (34.1)** was accepted by Apple through existing macOS
+CI run `37829525364`, source `4a21fd1b47f0f74f21a6f1e066fe8563d644bf7f`, on branch
+`codex/lamp-design-1.10.1`, at `2026-10-08T19:11:39.1871170Z` (14:11:39 CDT).
+The log reports `UPLOAD SUCCEEDED with no errors`; 263 tests, production build,
+native checks and signed archive/export passed. It includes group shortcuts,
+style illustrations/selection and the optional filter. Tester availability
+and installation are not independently confirmed. Evidence:
+`.build/ios-testflight-34.1-ci.log`.
+
+Firmware CI run `37830367881` succeeded on source
+`43816d59353f8af5b467acf18b6f5698454998c7`, including Linux sanitizer and actual
+pinned Mbed TLS checks. Its **1.10.1 release remains an unpublished draft**.
+The downloaded CI image is **1,863,648 bytes**, SHA-256
+`e0901f763ca9cf2547b750c88e4ae9abb054f7592128fcfce586d0830c08b0e1`.
+Manifest/version/C3 layout, public marker, local-credential exclusion and both
+GitHub asset digests match. Program usage is 1,863,508 bytes, globals 61,612,
+and remaining OTA image space is 167,968 bytes. Evidence:
+`.build/firmware-1.10.1-ci.log`, `.build/firmware-1.10.1-ci-assets/verification.json`
+and `.build/lamp-design-1.10.1-development-record.json`.
+
+The separate Windows image also passed build/packaging: 1,864,032 bytes, SHA-256
+`95fb51b6afb4d2f0366455ddb13a29821e05b27a3f8ec4e4272daec2536a84bb`.
+It is preserved under `.build/lamp-style-1.10.1-windows-assets/`; the earlier
+1.10.0 images/source/draft are retained. Prefer the verified 1.10.1 **CI asset**
+for the next USB test, after confirming CoolLamp 1 identity and backing up its
+installed image/settings. No candidate was installed, no hardware reset was
+performed, and no GPIO or lamp settings were changed. Public Latest was freshly
+confirmed as `firmware-v1.9.6` after this draft completed. Do not publish 1.10.1
+before the outstanding offline coordination and Bluetooth checks on the pair.
+
 ## Lamp-card connection indicators — 2026-10-08
 
 The user requested clickable Wi-Fi strength and Bluetooth icons on every lamp
