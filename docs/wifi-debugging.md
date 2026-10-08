@@ -1,6 +1,139 @@
 # Debugging lamps over Wi-Fi
 
-## Current development — 2026-10-08: hybrid transport test pair
+## Current OTA, radio and app checkpoint — 2026-10-08
+
+**Public Latest is firmware-v1.9.6.** Firmware 1.10.1 is a public prerelease
+with its original pinned tag/assets. CoolLamp 1 (`acb950b2f180`, `.154`) and
+CoolLamp 2 (`f0b950b2f180`, `.222`) are installed on `COOLLAMP-PUBLIC-1.10.1`;
+BACL and the new lamp remain on 1.9.6. The test pair's original automatic-update
+preferences were enabled and have been restored. BACL/new lamp's original
+preferences were disabled and remain disabled. Reverting Latest does not
+downgrade installed firmware or erase a cached newer offer. Before restoring a
+held old lamp's enabled preference after any failed rollout, check restored
+Latest and verify that no newer cached offer remains.
+
+After the user moved BACL into the room, authenticated reads reached and
+identity-verified all four lamps on 1.9.6. The staged test published the verified
+1.10.1 image at `2026-10-08T19:46:33Z` and started the built-in GitHub OTA exactly
+once on each test lamp. Both rebooted into 1.10.1, resumed Wi-Fi and passed the
+compared configuration checks. Saved ordered group IDs were preserved;
+transient online/name annotations and follower effect options settled after
+subscription resumed. The effect-options getter overlays the coordinator's
+live options, explaining the temporary post-boot difference. Neither install
+was replayed, and no factory reset or GPIO change occurred. USB is an optional
+recovery/diagnostic path, not a prerequisite for this Wi-Fi-connected test pair.
+Evidence: `.build/ota-1.10.1-live-rollout.json`, the lamp1/lamp2 verified logs,
+and `.build/ota-1.10.1-fleet-baseline-1791489654068.json`.
+A later GET-only fleet baseline made eight reads across four lamps and reconfirmed the same
+installed versions, original automatic-update preferences and group scene 19:
+`.build/ota-1.10.1-fleet-baseline-1791493231724.json`. No mutations occurred.
+
+Five samples over about 13 seconds proved accepted encrypted ESP-NOW frames:
+CoolLamp 1 stayed active on `esp-now` with 296 additional accepted group frames;
+CoolLamp 2 reported hybrid coordination and three members. Queue-drop,
+authentication-failure and clock-drop deltas were zero; the coordinator had one
+failed radio send. The user confirmed CoolLamp 2's Bluetooth Groups/Settings
+panels work with the phone's Wi-Fi off. **Lamps outside AP coverage have not been
+tested.** A held display or a phone without Wi-Fi is not proof of the lamps'
+AP-off radio path. Evidence: `.build/ota-1.10.1-radio-proof.json`.
+
+CoolLamp 2's post-boot update check failed, then repeated with compact polling
+and with Bluetooth disconnected: phase 5/error 3, asset-host TLS after HTTP 302
+(host 2), TLS error 12288 (`0x3000` generic X.509 fatal error), transport error
+32794 (`0x801A` handshake failure), flags 0. Minimum free heap was 848 bytes
+at that failure checkpoint. A subsequent automatic check completed: the later
+fresh read reported phase 0/error 0, latest 1.9.6 and available false. HTTPS
+failures are therefore intermittent, not a permanently failed path. The later
+cumulative minimum free heap was 492 bytes, superseding 848 as the current
+minimum without altering the earlier logs. This since-boot minimum does not
+measure available headroom at the start of a particular TLS handshake.
+Memory pressure is a suspect, **not a proven allocation failure**. Source review
+found an ordering gap that could start HTTPS before the next network/Bluetooth
+resource-cleanup pass. The local **1.10.2 candidate** defers worker notification
+until that boundary and fixes the Bluetooth mutation allowlist's omission of
+Style endpoint 25, with an actual Begin/Commit regression. Twelve runtime
+scenarios and independent review passed. TLS verification, buffer configuration
+and saved settings remain intact. Device validation must establish whether this
+fix resolves repeat update checks.
+
+The earlier Windows 1.10.2 build and packaging passed: **1,864,128 bytes**,
+SHA-256 `ddfdad8787aa95f8ac0214ee8533d4c01e0e312eb5e688a63069cf3bc5bf2f93`.
+Initial firmware CI `37842646052` failed on a Linux host-harness macro compilation
+problem. The harness-only fix passed all 12 Windows scenarios, and rerun
+`37843327031` **succeeded** on source
+`b66099080078bc47cbc253cfa23da2a1429df9f5`.
+
+The verified **1.10.2 CI image is 1,863,744 bytes**, SHA-256
+`2a1634f9404d40d0aece4632aa60ec94db0d1d1a853192157e1dd0d460028eda`.
+Program usage is 1,863,594 bytes, globals 61,612 and remaining OTA image space
+167,872 bytes. Public-marker/C3 manifest/layout, local-credential exclusion and
+both GitHub asset-digest checks passed. Evidence:
+`.build/firmware-1.10.2-ci.log` and
+`.build/firmware-1.10.2-ci-assets/verification.json`.
+**Firmware 1.10.2 remains an unpublished draft; public Latest remains 1.9.6.**
+CI/build success does not establish a device installation or TLS fix.
+
+One guarded manual local HTTP upload to CoolLamp 2 used that exact verified CI
+image. Bluetooth was disconnected and the coordinator was idle. Before upload,
+free heap was 27,752 bytes, largest block 18,420 and cumulative minimum 492.
+Its original enabled automatic-update preference was temporarily held disabled,
+then restored enabled and confirmed. Curl ended with error 52/HTTP 000 and an
+empty reply after 7.239553 seconds, reporting `size_upload: 392924` to verified
+remote `192.168.1.222`. This is a **partial upload**, below the 1,863,744-byte
+image size. No upload was replayed, no restart was requested and no other lamp
+was changed. Evidence: `.build/ota-1.10.2-manual-C2.json`.
+
+Fresh readback still showed CoolLamp 2 running 1.10.1 with continuous uptime.
+The journal conservatively retains a possible queued boot slot; next-boot
+selection has not been verified. At `2026-10-08T21:15:38Z`, the post-failure
+read-only comparison reported uptime 4865638 ms, automatic updates enabled,
+Wi-Fi connected, coordinator role 1 and scene 19. **All compared saved-settings
+and runtime-control differences were empty.** Evidence is
+`.build/ota-1.10.2-manual-C2.json` → `postFailureReadOnlyVerification`.
+A fresh eight-GET fleet baseline also confirmed unchanged installed versions,
+original automatic preferences, group roles and scene 19:
+`.build/ota-1.10.1-fleet-baseline-1791493971087.json`.
+Three additional read-only counter samples confirmed group recovery after the
+partial upload: the follower remained active on ESP-NOW in scene 19, accepted
+146 more frames, and the coordinator retained three members. Evidence:
+`.build/ota-1.10.2-post-upload-radio-proof.json`.
+
+**Physical 1.10.2 acceptance and repeat TLS checks remain pending; no 1.10.2
+TLS check has run on a lamp.** USB remains an optional recovery/diagnostic
+fallback. A controlled next-boot test has not been performed. Preserve the
+possible boot-slot uncertainty; do not assume the partial transfer installed
+new firmware or repaired TLS, and do not repeat the manual upload.
+
+New app navigation uses lamp-card gears and organized per-lamp settings, with
+only Lamps and Groups in bottom navigation. Independent lighting stays in lamp
+settings; grouped controls live in Groups. Current-effect cards use each
+standalone lamp's own catalog or its verified group scene, reject stale results
+and retain the existing Mirrored controls. Local validation passed **291 mobile
+tests**, 16 mocked UI scenarios and independent race/layout review. A separate
+GET-only check observed the user's Bass cathedral group selection on all four
+lamps with four diagnostics reads and no mutations (`.build/current-effect-live.json`).
+
+App **1.0 (35.1)** is the latest accepted TestFlight upload. Existing macOS
+CI run `37843221334` succeeded on source
+`6a468d46e2c7ddea0cbb2df533118186de08b15a`. The log confirms build 35.1
+and reports `UPLOAD SUCCEEDED with no errors` at
+`2026-10-08T21:01:24.3685690Z` (2026-10-08 16:01:24 CDT). Evidence:
+`.build/ios-testflight-35.1-ci.log`. Tester availability and phone installation
+are not independently queried. App 34.1 is the earlier accepted design/filter
+checkpoint. Firmware 1.10.2 CI succeeded; its physical/TLS acceptance remains
+pending independently of this successful app upload.
+
+The earlier 1.10.0/1.10.1 draft and USB-pending checkpoints below are historical
+and superseded by this live GitHub OTA evidence. Same-IoT forwarding, lamps'
+AP-off/Bluetooth coexistence, 1.10.2 next-boot/device/TLS acceptance, physical
+new-scene/music acceptance and longer blackout/thermal diagnosis remain separate
+open work.
+Raw Mac diagnostics/prototype binaries remain an unfilled migration gap. Keep
+all GitHub actions scoped to verified personal `jammendolia`, preserve the
+original working tree and use the isolated release checkout for scoped commits.
+No router changes were made.
+
+## Earlier hybrid-test checkpoint — 2026-10-08: 1.10.0 draft and USB pending
 
 CoolLamp 1 at `.154` (`acb950b2f180`) and CoolLamp 2 at `.222`
 (`f0b950b2f180`) are the user's chosen ESP-NOW/Bluetooth test pair. Fresh
@@ -9,9 +142,9 @@ midpoint 0, with CoolLamp 1 following CoolLamp 2 in scene 27. Sanitized evidence
 `.build/hybrid-test-lamps-baseline.json`. This supersedes the earlier statement
 that no 1.9.6 lamp installation had been confirmed.
 
-Firmware 1.10.0 is a local development candidate. Its new radio diagnostics
-distinguish UDP, ESP-NOW and hybrid links, channel/search state, AEAD security
-and bounded queue counters. Wi-Fi scans and periodic AP retry windows share the
+At this earlier checkpoint, firmware 1.10.0 was a local candidate. Its radio
+diagnostics distinguish UDP, ESP-NOW and hybrid links, channel/search state,
+AEAD security and bounded queue counters. Wi-Fi scans and periodic AP retry windows share the
 radio; preserved display holdover is not proof that radio frames arrived.
 Use counter changes and exact follower state in bounded tests. Do not change
 router settings or saved Wi-Fi credentials to manufacture an offline result.
@@ -21,8 +154,10 @@ the separate global Groups page.
 The first candidate local OTA upload to CoolLamp 1 failed with an empty reply
 (curl 52); no replay occurred. Fresh readback confirmed installed 1.9.6,
 continued uptime, unchanged compared saved settings and active following.
-CoolLamp 2 was not uploaded. USB access to CoolLamp 1 is pending; the hybrid
-firmware is not physically validated or published.
+CoolLamp 2 was not uploaded then. USB access to CoolLamp 1 was pending; the
+hybrid firmware was not physically validated or published at that checkpoint.
+This status is superseded by the current 1.10.1 GitHub OTA and radio evidence.
+USB remains an optional recovery/diagnostic path.
 
 App 1.0 (32.1) was accepted by Apple at `2026-10-08T17:10:32.0898510Z` through
 existing macOS CI run `37814009967`, source `28b81f142f6128638cb90feea388f522f9205336`.
@@ -35,10 +170,11 @@ installation remain unverified. Public OTA is still 1.9.6.
 Firmware 1.10.0 CI run `37814005688` passed and created an unpublished draft.
 The verified CI asset under `.build/firmware-1.10.0-ci-assets/` is 1,859,792
 bytes, SHA-256 `30eb2a3a603e4590576086c31793ab3415d9221773da308b4b461ff041a62813`.
-Use that asset for the pending USB test. Host/CI success does not demonstrate
-the physical radio path, BLE coexistence or closed-enclosure reliability.
+That asset was proposed for the then-pending USB test. Host/CI success alone
+does not demonstrate the physical radio path, BLE coexistence or closed-enclosure
+reliability; later bounded encrypted-frame evidence is recorded above.
 
-## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
+## Earlier public-release checkpoint — 2026-10-07: 1.9.6 and app 31.1
 
 [Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)
 is the latest public OTA release, published at `2026-10-08T02:50:54Z`
@@ -61,7 +197,7 @@ from the earlier Windows candidate retained below. Evidence:
 `.build/firmware-1.9.6-ci-assets/published-release.json`, and
 `.build/firmware-1.9.6-public-verification/verification.json`.
 
-App **1.0 (31.1)** is the latest accepted TestFlight upload. The existing macOS
+App **1.0 (31.1)** was latest at this earlier checkpoint. The existing macOS
 workflow run `37719065609` succeeded on the same source, including 166 tests,
 native Swift accessory/address checks, web build and signed archive/export.
 Apple reported `UPLOAD SUCCEEDED with no errors` at
@@ -78,10 +214,10 @@ filters its catalog. The first two new scenes are ambient and the last four
 require the coordinator microphone. GPIOs, geometry/defaults, settings/NVS,
 group keys/order and wire layout are preserved.
 
-No hardware requests or flashing were performed during publication, and no
-lamp installation of 1.9.6 is confirmed. Publishing and successful builds do
-not establish physical corkscrew/music acceptance or a full secure OTA
-installation. Those checks, same-IoT forwarding and the earlier blackout/thermal
+At this publication checkpoint no hardware requests/flashing were performed,
+and no 1.9.6 installation had been confirmed. The subsequent four-lamp baseline
+and test-pair 1.10.1 GitHub OTA supersede those installation gaps. Physical
+corkscrew/music acceptance, same-IoT forwarding and longer blackout/thermal
 investigation remain separate unresolved work. The raw Mac diagnostics and
 prototype binaries remain an unfilled migration gap.
 
