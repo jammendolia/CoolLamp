@@ -2,6 +2,7 @@
 #include "LampWifiSetup.h"
 #include "LampFactoryReset.h"
 #include "LampAudio.h"
+#include "LampUpdateHandoff.h"
 #include "UpdateManifest.h"
 #include <WiFi.h>
 #include <Preferences.h>
@@ -26,6 +27,7 @@ FirmwareManifest candidate{};
 TaskHandle_t worker = nullptr;
 bool manual = false;
 uint8_t job = 0;
+LampUpdateHandoff handoff;
 std::atomic<bool> healthy{false};
 uint32_t nextCheck = 0, restartAt = 0;
 char attemptedVersion[24] = {};
@@ -153,9 +155,13 @@ bool request(uint8_t operation) {
   // request() runs on the loop task. Do not wake HTTPS until DMA is released.
   if (!stopLampAudio()) {
     portENTER_CRITICAL(&mux); job = 0; portEXIT_CRITICAL(&mux);
+    handoff.cancel();
     fail(UPDATE_MEMORY); return false;
   }
-  xTaskNotifyGive(worker); return true;
+  // Do not notify inside a consumed RPC/HTTP handler. The request's caller
+  // still owns response/form temporaries, and group-radio cleanup may be next
+  // loop. serviceLampUpdater() dispatches after the resource owners have run.
+  handoff.queue();return true;
 }
 } // namespace
 
@@ -207,6 +213,12 @@ void serviceLampUpdater() {
       if (esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) return;
     }
     healthy = true;
+  }
+  // CoolLamp's loop services Network and Bluetooth before this point. Crossing
+  // a full subsequent pass covers HTTP, BLE, USB and automatic request origins,
+  // including a BLE request made after the current loop's group service pass.
+  if(handoff.service()){
+    xTaskNotifyGive(worker);return;
   }
   const auto current = getLampUpdateStatus();
   static uint8_t previousPhase = UPDATE_IDLE;

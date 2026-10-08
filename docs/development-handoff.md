@@ -1,5 +1,67 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Live OTA acceptance and current work — 2026-10-08
+
+USB is an optional recovery/diagnostic path, not a prerequisite for the chosen
+Wi-Fi-connected test pair. After the user moved BACL into the room, all four
+known lamps were reached and identity-verified on 1.9.6. Original automatic
+preferences: CoolLamp 1/2 enabled; BACL/new lamp disabled. A staged test held
+both enabled preferences, published the verified 1.10.1 image at
+`2026-10-08T19:46:33Z`, and sent exactly one GitHub install to each test lamp.
+Both rebooted into `COOLLAMP-PUBLIC-1.10.1`, resumed Wi-Fi and passed the compared
+configuration checks. Original automatic preferences were restored.
+
+The API's effect options temporarily differed immediately after follower boot
+because the getter overlays the coordinator's live options. They matched after
+subscription resumed. Group-order online/name annotations were also transient;
+the saved ordered IDs were preserved. Neither install was replayed.
+Evidence: `.build/ota-1.10.1-live-rollout.json`, the lamp1/lamp2 verified logs,
+and `.build/ota-1.10.1-fleet-baseline-1791489654068.json`.
+
+Five samples over about 13 seconds proved accepted encrypted ESP-NOW
+coordination: CoolLamp 1 remained active on `esp-now`, receiving 296 additional
+group frames; CoolLamp 2 reported hybrid coordination with three members.
+Queue drops, authentication failures and clock-drop deltas were zero. The
+controller had one failed radio send during this interval. The user also
+confirmed Bluetooth Groups/Settings panels work with the phone's Wi-Fi off.
+This does not prove operation with the lamps themselves outside AP coverage.
+Evidence: `.build/ota-1.10.1-radio-proof.json`.
+
+CoolLamp 2's post-boot update check failed, then repeated with compact polling
+and with Bluetooth disconnected: phase 5/error 3, asset-host TLS after HTTP 302,
+TLS error 12288, transport error 32794, flags 0. Minimum free heap was 848 bytes.
+Memory pressure is a strong suspect; generic X.509 fatal error 0x3000 does not
+identify an allocation failure. Source review did find an updater ordering gap:
+HTTPS could start before the next network/Bluetooth cleanup pass. The local
+**1.10.2 candidate** defers worker notification until that boundary; 12 actual
+runtime scenarios and independent review passed. It also fixes Bluetooth's
+mutation allowlist omitting Style endpoint 25 and adds an actual Begin/Commit
+regression. TLS verification/buffer configuration and saved settings are intact.
+Windows build/packaging passed: 1,864,128 bytes, SHA-256
+`ddfdad8787aa95f8ac0214ee8533d4c01e0e312eb5e688a63069cf3bc5bf2f93`.
+Device validation must establish whether this resolves the check failure.
+
+**Public Latest is restored to firmware-v1.9.6.** Version 1.10.1 remains a public
+prerelease with its original pinned tag/assets. The test lamps remain on 1.10.1;
+BACL/new lamp remain on 1.9.6 with automatic installation disabled. Reverting
+Latest does not downgrade installed firmware or erase a cached newer offer.
+Never restore a held old lamp's automatic setting after a failed rollout until
+a check against restored Latest confirms no newer cached offer. Here the old
+lamps' original settings were already disabled and have stayed disabled.
+
+New app work replaces bottom Light/Settings tabs with card gears and organized
+per-lamp settings; bottom navigation retains Lamps and Groups. Independent
+lighting stays in lamp settings, while grouped controls live in Groups.
+Cards add current-effect labels from fresh per-lamp metadata; standalone names
+use each lamp's own catalog. A live GET-only check observed a subsequent user
+group change to Bass cathedral on all four lamps using four diagnostics reads
+and no mutations (`.build/current-effect-live.json`). The latest accepted app
+is still 1.0 (34.1); the new navigation is undergoing final race/layout QA.
+
+Keep all GitHub actions scoped to verified personal `jammendolia`. Preserve the
+original worktree and use the isolated release checkout for scoped source
+commits. No GPIO changes, factory resets or router changes were made.
+
 ## Physical design and recommendations — 2026-10-08
 
 The latest user request adds explicit Helix, Large helix and Corkscrew design

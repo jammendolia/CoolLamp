@@ -33,7 +33,7 @@ int main(){
   for(uint8_t endpoint=1;endpoint<=26;++endpoint){
     const bool read=endpoint==1||endpoint==2||endpoint==18||endpoint==24||endpoint==26;
     auto f=start(1,endpoint,Read);assert(validFrame(f.data(),f.size())==read);
-    const bool mutate=(endpoint>=3&&endpoint<=17)||(endpoint>=19&&endpoint<=24);
+    const bool mutate=(endpoint>=3&&endpoint<=17)||(endpoint>=19&&endpoint<=25);
     f=start(1,endpoint,Mutation);assert(validFrame(f.data(),f.size())==mutate);
   }
   auto f=start(1,1,Read,1);assert(!validFrame(f.data(),f.size()));

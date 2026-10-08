@@ -80,6 +80,14 @@ int main(){
  assert(send(begin(4,18,Read),8)==0&&send(commit(4),8)==0&&lastEndpoint==18&&!lastMutation&&payload().find("1.10.0")!=std::string::npos);
  assert(outSize<MaxPage);updating=false;
  assert(serviceLampBleControlTransfer(8,false,false));assert(send(page(4),8)==2);
+ // Exercise Style through real Begin/Chunk/Commit, rather than bypassing wire validation.
+ const auto styleCalls=calls;
+ assert(send(begin(5,25,Mutation,7),8)==0);
+ assert(send({1,2,Chunk,5,0,0,0,'s','t','y','l','e','=','3'},8)==0&&calls==styleCalls);
+ assert(send(commit(5),8)==0&&calls==styleCalls+1&&lastEndpoint==25&&lastMutation&&lastForm=="style=3");
+ assert(send(commit(5),8)==2&&calls==styleCalls+1);
+ assert(send(begin(6,25,Read),8)==2);
+ updating=true;assert(send(begin(6,25,Mutation,7),8)==3&&calls==styleCalls+1);updating=false;
  std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, acknowledged paging, no commit replay, disconnect/expiry/update cleanup\n";
 }
 '''

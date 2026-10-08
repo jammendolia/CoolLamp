@@ -17,7 +17,7 @@ inline void put16(uint8_t* p,uint16_t value){p[0]=value;p[1]=value>>8;}
 inline void zero(void* data,size_t size){volatile uint8_t* p=static_cast<volatile uint8_t*>(data);while(size--)*p++=0;}
 inline bool endpoint(uint8_t id,uint8_t method){
   if(method==Read)return id==1||id==2||id==18||id==24||id==26;
-  return method==Mutation&&((id>=3&&id<=17)||(id>=19&&id<=24));
+  return method==Mutation&&((id>=3&&id<=17)||(id>=19&&id<=25));
 }
 inline bool validFrame(const uint8_t* frame,size_t size){
   if(!frame||size<5||size>MaxFrame||frame[0]!=Version||!frame[1])return false;
