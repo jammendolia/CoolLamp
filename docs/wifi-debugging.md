@@ -1,8 +1,63 @@
 # Debugging lamps over Wi-Fi
 
-## Latest device and app follow-up — 2026-10-07
+## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
 
-App **1.0 (29.1)** is the latest accepted upload. Source
+[Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)
+is the latest public OTA release, published at `2026-10-08T02:50:54Z`
+(2026-10-07 21:50:54 CDT). Source and immutable tag both resolve to
+`bfa04d6e0055b90561c749325cb300992b1ca39f` on
+`codex/corkscrew-effects-1.9.6`. Firmware CI run `37719063401` succeeded,
+including the 166 mobile tests, release packaging and new renderer suite with
+ASan/UBSan. All GitHub actions used verified personal **jammendolia** only;
+HiFin remains untouched.
+
+The published CI application is **1,830,400 bytes**, SHA-256
+`091bb636be3317328b0e4346f5a139d50e7af07a992c0b1a6832a53484263417`.
+Program usage is 1,830,258 bytes; globals are 52,748 bytes. The 2,031,616-byte
+OTA slot has 201,216 bytes of remaining image space. Anonymous downloads of the
+latest manifest and pinned 1.9.6 binary matched the verified CI bytes and hash;
+local-credential exclusion checks passed. This published image is different
+from the earlier Windows candidate retained below. Evidence:
+`.build/firmware-1.9.6-ci.log`,
+`.build/firmware-1.9.6-ci-assets/verification.json`,
+`.build/firmware-1.9.6-ci-assets/published-release.json`, and
+`.build/firmware-1.9.6-public-verification/verification.json`.
+
+App **1.0 (31.1)** is the latest accepted TestFlight upload. The existing macOS
+workflow run `37719065609` succeeded on the same source, including 166 tests,
+native Swift accessory/address checks, web build and signed archive/export.
+Apple reported `UPLOAD SUCCEEDED with no errors` at
+`2026-10-08T02:46:34.0273470Z` (2026-10-07 21:46:34 CDT). Evidence:
+`.build/ios-testflight-31.1-ci.log`. Tester availability and phone installation
+have not been independently queried. App 30.1 remains the earlier direct-join
+checkpoint; app 29.1 is the preceding firmware-fleet checkpoint.
+
+The app update adds scenes 27–32 and their 1.9.6 compatibility labels, retaining
+asynchronous firmware-card checks, explicit sequential Update all and direct
+network coordinator joining. Every group member needs firmware 1.9.6 or newer
+for the six new scenes; the selected coordinator's advertised scene count still
+filters its catalog. The first two new scenes are ambient and the last four
+require the coordinator microphone. GPIOs, geometry/defaults, settings/NVS,
+group keys/order and wire layout are preserved.
+
+No hardware requests or flashing were performed during publication, and no
+lamp installation of 1.9.6 is confirmed. Publishing and successful builds do
+not establish physical corkscrew/music acceptance or a full secure OTA
+installation. Those checks, same-IoT forwarding and the earlier blackout/thermal
+investigation remain separate unresolved work. The raw Mac diagnostics and
+prototype binaries remain an unfilled migration gap.
+
+The earlier accepted app 1.0 (30.1), source
+`c6674ba38cc76214d2d311c003fff1f1513095f0`, passed existing macOS CI run
+`37698202209` and was accepted by Apple at `2026-10-07T22:50:22.803933Z`
+(17:50:22 CDT). It added asynchronous coordinator discovery and direct Join
+without switching lamps or exposing invitations. Its live scan was GET-only;
+joining was mock validated. This HTTP workflow does not resolve group UDP
+forwarding. See [the development handoff](development-handoff.md).
+
+## Earlier device and app checkpoint — 2026-10-07: app 29.1 and USB 1.9.5
+
+App **1.0 (29.1)** was the latest accepted upload at this checkpoint. Source
 `d8620a428406bdd4a9a8cb3fcd0188135b43bc70` passed existing macOS CI run
 `37692263376`, including 134/134 tests, native Swift accessory/address checks,
 web build, signed archive/export and upload. Apple reported
@@ -64,8 +119,8 @@ IDs and returned installed/latest 1.9.5 with no update available:
 `.build/firmware-fleet-live-refresh.json`. Actual installation was tested with
 mocks, not live OTA; these GET results do not prove full secure OTA installation.
 Existing macOS CI run `37692263376` and Apple's upload both succeeded for app
-**1.0 (29.1)**, including 134/134 CI tests and native Swift checks. The current
-accepted app uses asynchronous page/background status reads and explicit
+**1.0 (29.1)**, including 134/134 CI tests and native Swift checks. This earlier
+accepted app introduced asynchronous page/background status reads and explicit
 sequential Update all. Installation paths were mocked; the live module check
 was read-only. Full secure OTA installation, physical new-scene/music,
 blackout/thermal and IoT-to-IoT diagnosis remain separate open work.

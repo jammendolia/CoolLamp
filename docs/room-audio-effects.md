@@ -1,25 +1,72 @@
 # Room audio group effects — 2026-10-07
 
-## New development follow-up — corkscrew and helix scenes
+## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
+
+[Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)
+is the latest public OTA release, published at `2026-10-08T02:50:54Z`
+(2026-10-07 21:50:54 CDT). Source and immutable tag both resolve to
+`bfa04d6e0055b90561c749325cb300992b1ca39f` on
+`codex/corkscrew-effects-1.9.6`. Firmware CI run `37719063401` succeeded,
+including the 166 mobile tests, release packaging and new renderer suite with
+ASan/UBSan. All GitHub actions used verified personal **jammendolia** only;
+HiFin remains untouched.
+
+The published CI application is **1,830,400 bytes**, SHA-256
+`091bb636be3317328b0e4346f5a139d50e7af07a992c0b1a6832a53484263417`.
+Program usage is 1,830,258 bytes; globals are 52,748 bytes. The 2,031,616-byte
+OTA slot has 201,216 bytes of remaining image space. Anonymous downloads of the
+latest manifest and pinned 1.9.6 binary matched the verified CI bytes and hash;
+local-credential exclusion checks passed. This published image is different
+from the earlier Windows candidate retained below. Evidence:
+`.build/firmware-1.9.6-ci.log`,
+`.build/firmware-1.9.6-ci-assets/verification.json`,
+`.build/firmware-1.9.6-ci-assets/published-release.json`, and
+`.build/firmware-1.9.6-public-verification/verification.json`.
+
+App **1.0 (31.1)** is the latest accepted TestFlight upload. The existing macOS
+workflow run `37719065609` succeeded on the same source, including 166 tests,
+native Swift accessory/address checks, web build and signed archive/export.
+Apple reported `UPLOAD SUCCEEDED with no errors` at
+`2026-10-08T02:46:34.0273470Z` (2026-10-07 21:46:34 CDT). Evidence:
+`.build/ios-testflight-31.1-ci.log`. Tester availability and phone installation
+have not been independently queried. App 30.1 remains the earlier direct-join
+checkpoint; app 29.1 is the preceding firmware-fleet checkpoint.
+
+The app update adds scenes 27–32 and their 1.9.6 compatibility labels, retaining
+asynchronous firmware-card checks, explicit sequential Update all and direct
+network coordinator joining. Every group member needs firmware 1.9.6 or newer
+for the six new scenes; the selected coordinator's advertised scene count still
+filters its catalog. The first two new scenes are ambient and the last four
+require the coordinator microphone. GPIOs, geometry/defaults, settings/NVS,
+group keys/order and wire layout are preserved.
+
+No hardware requests or flashing were performed during publication, and no
+lamp installation of 1.9.6 is confirmed. Publishing and successful builds do
+not establish physical corkscrew/music acceptance or a full secure OTA
+installation. Those checks, same-IoT forwarding and the earlier blackout/thermal
+investigation remain separate unresolved work. The raw Mac diagnostics and
+prototype binaries remain an unfilled migration gap.
+
+## Earlier local checkpoint — corkscrew and helix scenes
 
 Six additional group scenes 27–32 are implemented in an unpublished firmware
 1.9.6 candidate: two ambient and four audio driven. The actual-renderer preview
 now compares corkscrew, helix and mixed rooms across 2/3/5/9 lamps, retaining
 the earlier 19–26 scenes. All 166 mobile tests, the ESP32 build, new renderer
 sweep and mocked UI checks pass. No lamp was changed or release published.
-Public firmware remains 1.9.5; TestFlight 30.1 is the latest accepted upload,
+At this checkpoint public firmware remained 1.9.5; TestFlight 30.1 was latest,
 containing direct group discovery/join. Its earlier 29.1 checkpoint below is
 history. See [the new scenes and validation](corkscrew-effects.md).
 
-## Latest device and app follow-up — 2026-10-07
+## Earlier device and app checkpoint — 2026-10-07: app 29.1
 
-App **1.0 (29.1)** is now the latest accepted upload, source
+App **1.0 (29.1)** was the latest accepted upload at this checkpoint, source
 `d8620a428406bdd4a9a8cb3fcd0188135b43bc70`. Existing macOS CI run `37692263376`
 passed 134/134 tests, native Swift accessory/address checks, web build and signed
 archive/export/upload. Apple reported `UPLOAD SUCCEEDED with no errors` on
 2026-10-07 at 16:56:54 CDT (`.build/ios-testflight-29.1-ci.log`). Tester
 availability/phone installation remain unverified. App 28.1's firmware-card
-upload is retained as history; the current app includes asynchronous per-card
+upload is retained as history; this app introduced asynchronous per-card
 status reads and explicitly triggered sequential **Update all**.
 
 CoolLamp 2 now runs the exact published 1.9.5 CI image after verified COM5 USB
@@ -61,13 +108,16 @@ Page-open/background status requests are read-only. A live GET-only module test
 verified all three IDs and installed/latest 1.9.5; installation behavior used
 mocks (`.build/firmware-fleet-live-refresh.json`). This is not full OTA proof.
 Existing macOS CI run `37692263376` and Apple's upload succeeded for **1.0 (29.1)**;
-134/134 CI tests and native Swift checks passed. The current accepted app contains
+134/134 CI tests and native Swift checks passed. This earlier accepted app contains
 the background/page read-only refresh and explicit sequential Update all.
 Bulk installation remains mock-validated and live fleet checks were GET-only.
 Full secure OTA installation, physical new-scene/music acceptance and the separate
 blackout/thermal and IoT-to-IoT investigations remain open.
 
-Eight new scenes extend the group catalog from 18 to 26. The design is a room
+## Original room audio scenes 19–26
+
+At the earlier 1.9.5 checkpoint, eight scenes extended the group catalog from
+18 to 26. The design is a room
 full of active lamps: audio accents move and change roles over a persistent
 colored field, rather than handing one bright object between otherwise dark
 lamps. Existing IDs 0–18 and their rendering remain unchanged.
@@ -104,7 +154,7 @@ transport, per-pixel stream, raw audio, allocation or persistent settings schema
 was introduced. GPIOs, LED geometry, microphone configuration, group keys/order,
 Wi-Fi settings and current limits are unchanged.
 
-Update **every lamp** to the new firmware before using IDs 19–26; older followers
+Update **every lamp** to firmware **1.9.5 or newer** before using IDs 19–26; older followers
 reject unsupported IDs. The app filters choices by the selected coordinator's
 advertised sceneCount and disables required-audio choices without its microphone.
 The updated catalog is included in app **1.0 (27.1)**. The existing macOS CI
@@ -113,7 +163,7 @@ tester availability and user installation have not been independently verified.
 Build 1.0 (26.1) is the previous upload. Future iOS builds continue through this
 macOS workflow.
 
-## Validation and preview
+## Earlier validation and preview for scenes 19–26
 
 - New renderer sweep: 49,335,552 physical LED samples across 2/3/5/9 lamp groups,
   every position, eight geometries including 205/102 and 134/0, speeds 1/60/100,
@@ -159,9 +209,9 @@ it does not expose the working tree or connect to any lamp. Refresh after
 regenerating the HTML, and stop the server with Ctrl+C when finished. If a file
 preview stays on one frame, use this browser URL.
 
-## Published release and installed Windows candidate
+## Earlier 1.9.5 publication and installed Windows candidate
 
-The latest public [firmware 1.9.5 release](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.5)
+The earlier public [firmware 1.9.5 release](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.5)
 includes the earlier local power-off fix, these eight scenes, cached
 chip-temperature diagnostics and the smaller TLS transmit buffer. Firmware CI
 run `37682079916` passed on commit `7a4b5c294e717a6b04bca5d32d64dc4bf2b6962f`.

@@ -1,6 +1,53 @@
 # CoolLamp development handoff — 2026-10-06
 
-## Latest development follow-up — 2026-10-07: corkscrew effects candidate
+## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
+
+[Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)
+is the latest public OTA release, published at `2026-10-08T02:50:54Z`
+(2026-10-07 21:50:54 CDT). Source and immutable tag both resolve to
+`bfa04d6e0055b90561c749325cb300992b1ca39f` on
+`codex/corkscrew-effects-1.9.6`. Firmware CI run `37719063401` succeeded,
+including the 166 mobile tests, release packaging and new renderer suite with
+ASan/UBSan. All GitHub actions used verified personal **jammendolia** only;
+HiFin remains untouched.
+
+The published CI application is **1,830,400 bytes**, SHA-256
+`091bb636be3317328b0e4346f5a139d50e7af07a992c0b1a6832a53484263417`.
+Program usage is 1,830,258 bytes; globals are 52,748 bytes. The 2,031,616-byte
+OTA slot has 201,216 bytes of remaining image space. Anonymous downloads of the
+latest manifest and pinned 1.9.6 binary matched the verified CI bytes and hash;
+local-credential exclusion checks passed. This published image is different
+from the earlier Windows candidate retained below. Evidence:
+`.build/firmware-1.9.6-ci.log`,
+`.build/firmware-1.9.6-ci-assets/verification.json`,
+`.build/firmware-1.9.6-ci-assets/published-release.json`, and
+`.build/firmware-1.9.6-public-verification/verification.json`.
+
+App **1.0 (31.1)** is the latest accepted TestFlight upload. The existing macOS
+workflow run `37719065609` succeeded on the same source, including 166 tests,
+native Swift accessory/address checks, web build and signed archive/export.
+Apple reported `UPLOAD SUCCEEDED with no errors` at
+`2026-10-08T02:46:34.0273470Z` (2026-10-07 21:46:34 CDT). Evidence:
+`.build/ios-testflight-31.1-ci.log`. Tester availability and phone installation
+have not been independently queried. App 30.1 remains the earlier direct-join
+checkpoint; app 29.1 is the preceding firmware-fleet checkpoint.
+
+The app update adds scenes 27–32 and their 1.9.6 compatibility labels, retaining
+asynchronous firmware-card checks, explicit sequential Update all and direct
+network coordinator joining. Every group member needs firmware 1.9.6 or newer
+for the six new scenes; the selected coordinator's advertised scene count still
+filters its catalog. The first two new scenes are ambient and the last four
+require the coordinator microphone. GPIOs, geometry/defaults, settings/NVS,
+group keys/order and wire layout are preserved.
+
+No hardware requests or flashing were performed during publication, and no
+lamp installation of 1.9.6 is confirmed. Publishing and successful builds do
+not establish physical corkscrew/music acceptance or a full secure OTA
+installation. Those checks, same-IoT forwarding and the earlier blackout/thermal
+investigation remain separate unresolved work. The raw Mac diagnostics and
+prototype binaries remain an unfilled migration gap.
+
+## Earlier local development checkpoint — 2026-10-07: corkscrew effects candidate
 
 Six new group scenes 27–32 are implemented for corkscrew, helix and mixed rooms:
 Chromatic screw, Mercury ribbon, Bass turbine, Prism torque, Echo coils and
@@ -10,12 +57,13 @@ microphone. Every scene retains a colored field during silence/dropout. Existing
 unchanged. Existing midpoint calibration supports unequal spine/spiral lengths;
 the new lamp's exact wiring/count/top-turn boundary is still unconfirmed.
 
-Firmware **1.9.6 is a local unpublished candidate**, built and packaged at
+At this earlier checkpoint, firmware **1.9.6 was a local unpublished candidate**,
+built and packaged at
 1,830,784 bytes, SHA-256
 `a1db07d1de968d94a1e007938119b79ca8d085bc26f2540347079403c8a81cdd`.
-Public OTA remains 1.9.5, and TestFlight 30.1 remains the accepted app; the new
-six-entry app catalog and 1.9.6 compatibility labels have not been uploaded.
-No physical lamp operations or GitHub publication were performed for this set.
+Public OTA then remained 1.9.5, and TestFlight 30.1 was the accepted app; the new
+six-entry app catalog and 1.9.6 compatibility labels had not been uploaded.
+No physical lamp operations or GitHub publication had been performed for this set.
 Prior Windows firmware artifacts were preserved before rebuilding.
 
 Validation passed: 68,673,600 new-scene LED samples all lit at normal settings,
@@ -24,11 +72,11 @@ exact legacy-render signature, protocol/runtime microphone/persistence checks,
 built-app scenarios passed with 46 intercepted lamp requests. The actual-renderer
 preview now animates Helix/Corkscrew/Mixed rooms, 2/3/5/9 lamps, audio/silence;
 336 browser control combinations and timing/layout checks passed. Hardware
-acceptance and sanitizer CI remain pending. See
+acceptance and sanitizer CI were pending at this checkpoint. See
 [the effects and evidence](corkscrew-effects.md). Existing OTA, networking,
 thermal and missing Mac raw-evidence gaps remain separate.
 
-## Latest follow-up — 2026-10-07: direct group joining; app 30.1 uploaded
+## Earlier accepted upload — 2026-10-07: direct group joining; app 30.1
 
 The user requested that Settings → Groups discover network coordinators and
 join directly without switching lamps or copying a group code. App-only source
@@ -38,7 +86,7 @@ join directly without switching lamps or copying a group code. App-only source
 165/165 CI tests, native Swift accessory/address checks, web build and signed
 archive/export/upload. Apple reported `UPLOAD SUCCEEDED with no errors` at
 `2026-10-07T22:50:22.803933Z` (17:50:22 CDT). Evidence:
-`.build/ios-testflight-30.1-ci.log`. App 30.1 is the latest accepted upload;
+`.build/ios-testflight-30.1-ci.log`. App 30.1 was latest at this checkpoint;
 29.1 is the preceding checkpoint. Tester availability and phone installation
 have not been independently queried. Every GitHub action uses personal
 **jammendolia** only. Published firmware 1.9.5 remains unchanged.
@@ -272,7 +320,7 @@ Update: Beefinator has Intel Core Ultra 7 255H, 64 GB DDR5-5600, RTX 3050 Laptop
 
 Repository: `/Users/jammendolia/Dev/Gasper/CoolLamp`. Read this file and `docs/wifi-debugging.md` before continuing. Preserve the existing working tree: it contains months of accumulated changes, while local Git HEAD is old. Do not reset, clean, or broadly stage it.
 
-## Immediate objective on resumption
+## Historical Mac objective on resumption
 
 Finish and validate the firmware OTA memory fix, then prepare firmware 1.9.5. Firmware 1.9.5 has NOT been published. The user previously authorized firmware publishing, USB flashing to the connected lamp, and TestFlight publishing; the latest instruction pauses work until after reboot. Continue only when the user resumes.
 
@@ -299,7 +347,7 @@ On the USB lamp, a boot check and two manually triggered checks succeeded with H
 
 An earlier experiment restricting curves/ciphers did not reliably solve the memory problem. Do NOT adopt the temporary lean-cipher experiment into production `UpdateHttp.cpp`.
 
-## Local changes not yet published
+## Local changes at the historical Mac checkpoint
 
 * New `tools/build-tls-library.cjs`: pinned-source rebuild and cache of the smaller SSL archive, with source SHA validation, exact public-header comparison, ABI probes, and exported symbol comparison. It does not modify installed SDK archives.
 * Modified `tools/build-firmware.cjs`: calls the helper and links the replacement archive with whole-archive flags, preserving the existing Wi-Fi/Bluetooth init wrappers.
@@ -325,7 +373,7 @@ ARDUINO_CLI="$PWD/.build/tooling/arduino-cli-local" .build/tooling/node-v22.16.0
 
 FQBN: `esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs`. Arduino properties queries must use a repo `.build` build path to avoid writing to the forbidden home cache.
 
-## Current lamps
+## Lamps at the historical Mac checkpoint
 
 | Lamp | ID | Last known address | Status |
 | --- | --- | --- | --- |
@@ -349,7 +397,7 @@ Turning off Wi-Fi sleep made the new lamp's Safari page load promptly. App earli
 
 However, coordinator and follower diagnostics still show **zero UDP packets received**, zero live peers and members, even after coordinator updated to 1.9.4. Saved `order` entries are not live membership. USB direct TCP probe to coordinator timed out during an earlier test. Mac (`192.168.1.190`, en3 Ethernet) cannot reach lamp IPs and has incomplete ARP, although gateway access works. Tailscale has no exit node/overlapping route; do not disable it because remote session access may depend on it. Exact LAN restriction has not been proven. Investigate independently after OTA is stable, without claiming router isolation is enabled or hardware is defective.
 
-## Resume sequence
+## Historical Mac resume sequence
 
 1. Inspect handoff, build helper and final log; preserve working files. Check actual connected device and current status.
 2. Review helper correctness and add focused tests for pins/cache/source/ABI failure handling. Run relevant existing firmware checks. Avoid re-running unrelated UI work unnecessarily.
@@ -359,7 +407,7 @@ However, coordinator and follower diagnostics still show **zero UDP packets rece
 
 Local `.git` is read-only in this environment. Previous releases were made using GitHub connector `create_tree`, `create_commit`, `update_ref` with expected SHA, overlaying only intended files onto the current remote tree. Use that approach if direct Git remains unavailable. Do not push casually to `release/firmware-1.9.4`: its publish workflow may attempt the existing tag again. App build 26.1 is already uploaded; don't publish another app build merely for firmware tooling/docs changes.
 
-## Suggested new-chat prompt
+## Historical Mac new-chat prompt
 
 Continue CoolLamp development in /Users/jammendolia/Dev/Gasper/CoolLamp. First read docs/development-handoff.md and docs/wifi-debugging.md. Resume the OTA heap/TLS fix from the checkpoint, preserving existing GPIO assignments and lamp settings. Review the successfully built 16 KB receive / 4 KB transmit TLS implementation, complete production/device validation, then prepare firmware 1.9.5 for OTA. App 1.0 (26.1) is already uploaded to TestFlight. Firmware 1.9.5 is not published. Keep the separate group UDP connectivity issue on the follow-up list. Do not reset the working tree or repeat completed app work; report current status before continuing.
 
