@@ -57,7 +57,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'String lampControlSnapshotJson()', 'void saveLampConfiguration()'])
         sync_json = function(sync_source, 'String lampSyncJson()')
         quote_json = function(sync_source, 'String quote(')
-        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name'])
+        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style'])
         routes += '\n' + registration(source, '/api/effects', 'GET')
         setup = r'''
 #include <cassert>
@@ -68,6 +68,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
 #include "LampConfig.h"
 #include "LampFactory.h"
 #include "LampGeometry.h"
+#include "LampStyle.h"
 #include "LampSyncProtocol.h"
 #include "Preferences.h"
 LampControlHttpAdapter lampServer(80);
@@ -77,6 +78,7 @@ uint32_t apLastActivity=0,restartAt=0;uint32_t millis(){return 1000;}
 bool following=false,ownsUpdate=false,remoteBusy=false,wifiSetupBusy=false,otaActive=false,mdnsStarted=false,colorsSaved=true;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return ownsUpdate;}
 bool lampRemoteUpdateBusy(){return remoteBusy;}bool lampWifiSetupBusy(){return wifiSetupBusy;}
+bool resetPending=false;bool lampFactoryResetPending(){return resetPending;}
 bool lampIsUpdating(){return ownsUpdate;}bool saveLampColors(){return colorsSaved;}
 uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
 constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38;
@@ -128,6 +130,23 @@ int main(int argc,char** argv){
  lampServer.on("/api/state",HTTP_GET,sendLampState);
  lampServer.on("/api/config",HTTP_POST,saveLampConfiguration);
  registerRoutes();
+ beginLampStyle();assert(lampStyleCode()==0);
+ // Classification is authenticated metadata, even for a current follower.
+ const auto hardwareBefore=Preferences::storage.at("settings");
+ lampServer.arguments={{"style","3"}};lampServer.headers={{"X-Lamp-Token",lampToken}};lampServer.httpAuthorized=false;
+ lampServer.invokeHttp("/api/style",HTTP_POST);assert(lampServer.responseStatus==401&&lampStyleCode()==0);
+ lampServer.httpAuthorized=true;lampServer.headers["X-Lamp-Token"]="bad";
+ lampServer.invokeHttp("/api/style",HTTP_POST);assert(lampServer.responseStatus==403&&lampStyleCode()==0);
+ following=true;auto styleResult=lampControlRequest(LampControlEndpoint::Style,true,"style=3");
+ assert(styleResult.status==200&&lampStyleCode()==3&&!restartAt&&Preferences::storage.at("settings")==hardwareBefore&&Mode==4&&Brightness==55&&PowerOn);
+ following=false;
+ for(const char* body:{"","style=-1","style=4","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
+ Preferences::failWrites=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==500&&lampStyleCode()==3);Preferences::failWrites=false;
+ resetPending=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);resetPending=false;
+ wifiSetupBusy=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);wifiSetupBusy=false;
+ otaActive=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);otaActive=false;
+ ownsUpdate=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);ownsUpdate=false;
+ beginLampStyle();assert(lampStyleCode()==3);
  const String hardware="leds=205&milliamps=700&brightness=88&mode=4";
  // Real HTTP authentication/token checks still run after a private BLE context.
  lampServer.arguments={{"leds","205"},{"milliamps","700"},{"brightness","88"},{"mode","4"},{"ssid","Saved network"},{"control","true"}};
@@ -219,11 +238,12 @@ int main(int argc,char** argv){
             cpp.write_text(fixture)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-misleading-indentation',
                             '-I'+str(ROOT/'tests/control-stubs'), '-I'+str(ROOT), *SANITIZERS,
-                            str(cpp), '-o', str(binary)], check=True)
+                            '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'), '-o', str(binary)], check=True)
             subprocess.run([str(binary), str(snapshot), str(catalog)], check=True)
             value = json.loads(snapshot.read_text())
             self.assertEqual(value['deviceId'], 'aabbccddeeff')
             self.assertEqual(value['controlVersion'], 1)
+            self.assertEqual(value['lampStyle'], {'version': 1, 'code': 3, 'id': 'corkscrew', 'family': 'corkscrew'})
             self.assertEqual(value['startupMode'], 4)
             self.assertEqual(value['startupBrightness'], 88)
             self.assertEqual(len(value['effects']), 47)

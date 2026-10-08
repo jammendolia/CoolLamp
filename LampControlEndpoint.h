@@ -10,7 +10,7 @@ enum Id : uint8_t {
   Calibration=12, Name=13, Identify=14, VuColors=15,
   FountainColors=16, AudioTest=17, Firmware=18, FirmwareCheck=19,
   FirmwareInstall=20, FirmwareAutomatic=21, FactoryReset=22,
-  OfflineJoin=23, Bluetooth=24, Effects=26
+  OfflineJoin=23, Bluetooth=24, Style=25, Effects=26
 };
 }
 struct LampControlReply {

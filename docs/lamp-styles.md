@@ -23,6 +23,9 @@ control endpoint 25 saves it on the Arduino loop. Update, setup and reset guards
 apply. A follower may change its physical design without leaving its group.
 The save acknowledges only successful persistence, requires no reboot and
 does not change the existing LampSettings record or group wire format.
+Physical design survives factory reset alongside the existing hardware
+settings. A separate checksummed recovery snapshot protects it across reset
+interruption while retaining compatibility with the original pending record.
 
 On older firmware, design selection is saved on this phone only, associated
 with the identity-verified canonical lamp ID. The interface states that scope.
@@ -36,3 +39,12 @@ The metadata and local firmware getter prepare future effects to use physical
 design. Current standalone and coordinated renderers retain their existing
 behavior. Public OTA remains 1.9.6; 1.10.x candidates need the pending physical
 ESP-NOW/Bluetooth acceptance test on CoolLamp 1 and CoolLamp 2 before publication.
+
+Validation: 263 mobile tests, the production app build, 11 mocked style UI
+scenarios and 10 group-shortcut scenarios pass. Firmware host tests exercise
+typed storage and restart, invalid/corrupt metadata, failed persistence,
+authenticated HTTP and shared Bluetooth handlers, follower/update/setup/reset
+guards, and all 43 simulated durable reset interruption boundaries. The
+worst-case protected control snapshot is 5,998 bytes, within the existing
+8,192-byte reply limit. These checks do not replace phone or physical lamp
+acceptance testing.

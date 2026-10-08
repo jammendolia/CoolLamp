@@ -15,7 +15,10 @@ diagnostics. Neither test lamp has this candidate installed yet. The earlier
 1.10.0 CI image/draft is preserved; public OTA remains 1.9.6. USB access to
 CoolLamp 1 is still pending after the failed local OTA upload. No second upload
 or settings changes were attempted. New candidate and app CI evidence will be
-recorded below after completion.
+recorded below after completion. Local validation passed 263 mobile tests,
+the production app build, 11 style UI mocks, 10 group-shortcut mocks, typed
+NVS/restart/failure tests, actual protected HTTP/Bluetooth endpoint tests and
+43 factory-reset power-loss boundaries. No hardware reset was performed.
 
 App **1.0 (33.1)**, the Wi-Fi/Bluetooth card indicator checkpoint, was accepted
 by Apple on source `437727f34030262a8f7f1ed6525c1e6162fff1ab`, workflow run
@@ -57,7 +60,7 @@ The selected control lamp remains unchanged; no membership mutation occurs.
 Navigation/click generation guards prevent a late result stealing focus.
 
 Fresh read-only integration made two GETs: both test lamps most recently
-reported -60 dBm (two arcs), with CoolLamp 1 a follower of CoolLamp 2 and
+reported -60 / -59 dBm (two arcs), with CoolLamp 1 a follower of CoolLamp 2 and
 CoolLamp 2 the leader. Evidence:
 `.build/lamp-card-connectivity-live.json`. The 44 focused telemetry/fleet tests
 passed. Final app validation passed **233/233 tests**, the Vite production

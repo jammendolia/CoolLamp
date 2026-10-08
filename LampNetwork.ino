@@ -11,6 +11,7 @@
 #include "LampWifiSetup.h"
 #include "LampControlHttpAdapter.h"
 #include "LampWifiRecoveryPolicy.h"
+#include "LampStyle.h"
 
 LampSettings lampSettings;
 LampControlHttpAdapter lampServer(80);
@@ -228,7 +229,8 @@ String lampDiagnosticsJson()
   out += ",\"render\":{\"frames\":" + String(lampRenderedFrames) + ",\"maxRenderUs\":" + String(lampMaxRenderUs);
   out += ",\"power\":" + String(PowerOn ? "true" : "false") + ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   out += ",\"leds\":" + String(NUM_LEDS) + ",\"midpoint\":" + String(lampMidpoint) + "}";
-  out += ",\"firmware\":" + lampUpdateJson() + ",\"audio\":" + lampAudioJson() + ",\"sync\":" + lampSyncJson() + "}";
+  out += ",\"firmware\":" + lampUpdateJson() + ",\"audio\":" + lampAudioJson() + ",\"sync\":" + lampSyncJson();
+  out += ",\"lampStyle\":" + lampStyleJson() + "}";
   return out;
 }
 void sendLampDiagnostics()
@@ -252,6 +254,7 @@ void sendLampState()
   state += ",\"firmware\":" + lampUpdateJson();
   state += ",\"audio\":" + lampAudioJson();
   state += ",\"sync\":" + lampSyncJson();
+  state += ",\"lampStyle\":" + lampStyleJson();
   state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+",\"kind\":\""+(lampCalibrationCenter()?"center":"leds")+"\",\"centerSupported\":true}";
   state += ",\"rotation\":{\"enabled\":"+String(lampRotation.enabled?"true":"false")+",\"random\":"+String(lampRotation.random?"true":"false")+",\"category\":"+String(lampRotation.category)+",\"seconds\":"+String(lampRotation.seconds)+"}";
   state += ",\"fountainColors\":[";
@@ -537,6 +540,20 @@ void beginLampNetwork()
       lampServer.send(409,"text/plain","Enable the installed microphone and finish updating first."); return;
     }
     diagnoseLampAudio(); lampServer.send(200,"text/plain","Listening for 10 seconds.");
+  });
+  lampServer.on("/api/style", HTTP_POST, []() {
+    if (!authorizedLampRequest(true)) return;
+    if (lampUpdateOwnsResources() || otaActive || lampCalibrationActive() || lampWifiSetupBusy() || lampFactoryResetPending()) {
+      lampServer.send(409,"text/plain","Finish setup or updating before changing lamp design."); return;
+    }
+    uint32_t style;
+    if (!readNumber("style",0,3,style)) {
+      lampServer.send(400,"text/plain","Choose a supported lamp design."); return;
+    }
+    if (!configureLampStyle(static_cast<uint8_t>(style))) {
+      lampServer.send(500,"text/plain","Could not save lamp design."); return;
+    }
+    lampServer.send(200,"application/json",lampStyleJson());
   });
   lampServer.on("/api/name", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;

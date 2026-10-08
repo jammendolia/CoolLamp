@@ -71,6 +71,7 @@ class LampControlHttpAdapter : public WebServer {
     if(!strcmp(path,"/api/firmware/automatic"))return FirmwareAutomatic;
     if(!strcmp(path,"/api/factory-reset"))return FactoryReset;
     if(!strcmp(path,"/api/bluetooth/forget"))return Bluetooth;
+    if(!strcmp(path,"/api/style"))return Style;
     return 0;
   }
   static const char* route(uint8_t id,bool mutation){
@@ -83,6 +84,7 @@ class LampControlHttpAdapter : public WebServer {
     if(id==FirmwareAutomatic)return "/api/firmware/automatic";
     if(id==FactoryReset)return "/api/factory-reset";
     if(id==Bluetooth)return "/api/bluetooth/forget";
+    if(id==Style)return "/api/style";
     return "";
   }
 public:

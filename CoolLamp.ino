@@ -6,6 +6,7 @@
 #include <FastLED.h>
 #include "LampConfig.h"
 #include "LampGeometry.h"
+#include "LampStyle.h"
 #include "LampControl.h"
 #include "LampControlEndpoint.h"
 #include "LampPlayback.h"
@@ -120,6 +121,7 @@ void setup() {
   beginLampAudio();
   loadLampSettings();
   loadLampGeometry();
+  beginLampStyle();
   loadLampRotation();
   loadLampColors();
   loadLampVuColors();

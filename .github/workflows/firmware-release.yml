@@ -43,6 +43,7 @@ jobs:
           python3 tests/control-http-adapter.py
           python3 tests/espnow-runtime.py
           python3 tests/factory-reset-runtime.py
+          python3 tests/lamp-style-runtime.py
           node tests/update-page.cjs
           node tests/effects-page.cjs
           node tests/audio-page.cjs

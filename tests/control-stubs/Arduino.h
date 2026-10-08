@@ -23,5 +23,5 @@ struct String:std::string {
 inline size_t strlcpy(char* target,const char* source,size_t capacity){
   const size_t size=strlen(source);if(capacity){const size_t copy=size<capacity-1?size:capacity-1;memcpy(target,source,copy);target[copy]=0;}return size;
 }
-inline struct {uint64_t getEfuseMac(){return 0xaabbccddeeffULL;}} ESP;
+[[maybe_unused]] inline struct {uint64_t getEfuseMac(){return 0xaabbccddeeffULL;}} ESP;
 uint32_t millis();

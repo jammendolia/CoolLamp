@@ -60,6 +60,7 @@ int scanCount=8;
 String lampUpdateJson(){return R"({"version":"1.7.3"})";}
 String lampAudioJson(){return R"({"errors":0})";}
 String lampSyncJson(){return R"({"role":0})";}
+String lampStyleJson(){return R"({"version":1,"code":3,"id":"corkscrew","family":"corkscrew"})";}
 String lampTemperatureJson(){return R"({"supported":true,"valid":true,"celsius":42.5,"peakCelsius":43.0,"sampleAgeMs":250,"error":null})";}
 '''
         main = '''
@@ -84,6 +85,7 @@ int main(){
         self.assertEqual(data['scan']['count'], 8)
         self.assertEqual(data['render']['leds'], 134)
         self.assertEqual(data['audio']['errors'], 0)
+        self.assertEqual(data['lampStyle'], {'version': 1, 'code': 3, 'id': 'corkscrew', 'family': 'corkscrew'})
         self.assertEqual(data['chipTemperature'], {
             'supported': True, 'valid': True, 'celsius': 42.5,
             'peakCelsius': 43.0, 'sampleAgeMs': 250, 'error': None})
