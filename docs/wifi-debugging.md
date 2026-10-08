@@ -1,5 +1,29 @@
 # Debugging lamps over Wi-Fi
 
+## Current development — 2026-10-08: hybrid transport test pair
+
+CoolLamp 1 at `.154` (`acb950b2f180`) and CoolLamp 2 at `.222`
+(`f0b950b2f180`) are the user's chosen ESP-NOW/Bluetooth test pair. Fresh
+authenticated GETs confirmed both on firmware 1.9.6, Wi-Fi connected, 134 LEDs,
+midpoint 0, with CoolLamp 1 following CoolLamp 2 in scene 27. Sanitized evidence:
+`.build/hybrid-test-lamps-baseline.json`. This supersedes the earlier statement
+that no 1.9.6 lamp installation had been confirmed.
+
+Firmware 1.10.0 is a local development candidate. Its new radio diagnostics
+distinguish UDP, ESP-NOW and hybrid links, channel/search state, AEAD security
+and bounded queue counters. Wi-Fi scans and periodic AP retry windows share the
+radio; preserved display holdover is not proof that radio frames arrived.
+Use counter changes and exact follower state in bounded tests. Do not change
+router settings or saved Wi-Fi credentials to manufacture an offline result.
+See [offline groups](offline-groups.md) for authorization, test limits and
+the separate global Groups page.
+
+The first candidate local OTA upload to CoolLamp 1 failed with an empty reply
+(curl 52); no replay occurred. Fresh readback confirmed installed 1.9.6,
+continued uptime, unchanged compared saved settings and active following.
+CoolLamp 2 was not uploaded. USB access to CoolLamp 1 is pending; the hybrid
+firmware is not physically validated or published.
+
 ## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
 
 [Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)

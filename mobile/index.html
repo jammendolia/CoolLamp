@@ -40,6 +40,7 @@
 </svg>
 <span>Light</span>
 </button>
+<button data-page="groups"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"></circle><circle cx="5" cy="18" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="m10 9-3 6m7-6 3 6M8 18h8"></path></svg><span>Groups</span></button>
 <button data-page="settings">
 <svg viewBox="0 0 24 24" aria-hidden="true">
 <path d="M4 7h16M4 17h16">
@@ -104,6 +105,17 @@
 <button id="openBluetoothSettings" class="secondary" hidden>Open Bluetooth settings</button>
 <button id="dismissPairingRecovery" class="text-button">Done</button>
 </section>
+</section>
+<section id="page-groups" hidden>
+  <div class="section-title"><div><p class="eyebrow">A ROOM IN RHYTHM</p><h2 tabindex="-1">Groups</h2></div><button id="refreshAllGroups" type="button" class="secondary compact">Refresh</button></div>
+  <p class="hint">One coordinator per group. Each lamp belongs to one group at a time. Manage the room without switching the lamp you’re controlling.</p>
+  <p id="groupsInventoryStatus" class="hint" role="status" aria-live="polite">Available lamps refresh in the background.</p>
+  <div id="groupsList" class="room-groups"></div>
+  <section class="panel"><p class="eyebrow">YOUR OWN LIGHT</p><h3>Ungrouped lamps</h3><div id="ungroupedLamps" class="group-lamp-list"></div><p id="ungroupedEmpty" class="hint">No independent lamps found yet.</p></section>
+  <details id="groupsUnavailable" class="panel"><summary>Other lamps <span id="groupsUnavailableCount" class="small-badge">0</span></summary><div id="groupsUnavailableList" class="group-lamp-list"></div></details>
+  <p id="groupsFeedback" class="hint" role="status" aria-live="polite"></p>
+  <section id="globalGroupEditor" hidden aria-labelledby="globalGroupEditorTitle"><div class="section-title"><div><p class="eyebrow">SHARED LIGHT & SOUND</p><h3 id="globalGroupEditorTitle">Group effects</h3></div><button id="closeGroupEditor" type="button" class="text-button">Close</button></div><p id="globalGroupEditorStatus" class="hint" role="status"></p></section>
+  <details id="groupRecovery" class="panel group-recovery"><summary>Advanced · selected lamp recovery</summary><p class="hint">Use a group code only when normal group discovery cannot help. These controls apply to the lamp currently selected in Light.</p><div id="groupRecoveryContent"></div></details>
 </section>
 <section id="page-light" hidden>
 <div class="section-title">
@@ -497,6 +509,7 @@
 <span class="sync-orbit" aria-hidden="true">◉</span>
 </div>
   <p class="hint">One lamp leads. The others share its effect, colors and sound, each shaped to its own strip.</p>
+<button type="button" data-goto="groups">Manage all groups</button>
   <p id="syncStatus" class="sync-status" role="status">Connect over Wi-Fi to firmware with lamp groups.</p>
 <button id="refreshGroupCoordinators" type="button" class="secondary compact">Refresh coordinators</button>
 <p id="groupJoinEligibility" class="hint"></p>
@@ -506,7 +519,7 @@
 <h4>Join a coordinator</h4>
 <div id="syncPeers" class="sync-peers"></div>
 <p class="hint" id="syncDiscoveryHint">Coordinators are checked in the background. Choose Join without switching lamps.</p>
-<p class="hint">Joining saves this lamp’s group settings. Shared light starts when the lamps can reach each other on your home network.</p>
+<p class="hint">Joining saves this lamp’s group settings. Shared light starts when the lamps can reach the coordinator over Wi-Fi or their nearby radio link.</p>
 <details id="syncJoinAdvanced" class="group-join-advanced">
 <summary>Advanced · join with a group code</summary>
 <form id="syncJoinForm">

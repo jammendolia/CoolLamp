@@ -16,7 +16,8 @@ public:
 };
 inline uint32_t fakeNow=0;
 inline uint32_t millis(){return fakeNow;}
-struct ESPClass{uint64_t getEfuseMac(){return 0xaabbccddeeffULL;}};
+inline uint64_t fakeEfuseMac=0xaabbccddeeffULL;
+struct ESPClass{uint64_t getEfuseMac(){return fakeEfuseMac;}};
 inline ESPClass ESP;
 
 inline size_t fakeStrlcpy(char* out,const char* source,size_t size){const size_t n=strlen(source);if(size){const size_t copy=n<size-1?n:size-1;memcpy(out,source,copy);out[copy]=0;}return n;}

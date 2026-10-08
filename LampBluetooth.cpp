@@ -5,6 +5,7 @@
 #include "LampWifiSetup.h"
 #include "LampFactoryReset.h"
 #include "LampPlayback.h"
+#include "LampBleControl.h"
 
 #if COOL_LAMP_BLE
 #include <BLEDevice.h>
@@ -27,8 +28,14 @@ constexpr char FIRMWARE[] = "7b610004-6e2b-4f3d-9a71-28e45c001001";
 constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
 constexpr char IDENTITY[] = "7b610006-6e2b-4f3d-9a71-28e45c001001";
 constexpr char WIFI_SETUP[] = "7b610008-6e2b-4f3d-9a71-28e45c001001";
+constexpr char CONTROL_RPC[] = "7b61000a-6e2b-4f3d-9a71-28e45c001001";
 BLECharacteristic* wifiCharacteristic = nullptr;
 BLECharacteristic* centerCharacteristic = nullptr;
+BLECharacteristic* controlCharacteristic = nullptr;
+LampBleControlWire::FrameQueue controlCommands;
+std::atomic<uint32_t> controlPageGeneration{0};
+std::atomic<uint16_t> controlPageTransaction{0};
+std::atomic<bool> controlPageReady{false};
 // Catalog negotiated per connection: 0 = baseline, 37 = legacy app, 38 = outward droplets.
 std::atomic<uint8_t> extendedControls{0};
 BLECharacteristic* catalogCharacteristic = nullptr;
@@ -166,14 +173,34 @@ class Writes final : public BLECharacteristicCallbacks {
       rejectedSecure=secure.load();rejectedSameConnection=connection==event->conn_handle;rejectedEncrypted=event->sec_state.encrypted;
       ++rejectedWrites; return;
     }
-    const String value = characteristic->getValue();
+    String value = characteristic->getValue();
     if (value.length() >= 3) { lastCommandId = uint8_t(value[1]); lastOperation = uint8_t(value[2]); }
     // Protocol frames fit the minimum BLE MTU. No long/prepared writes.
     const size_t expected = value.length() >= 3 ? (uint8_t(value[2]) == 6 ? 7 : uint8_t(value[2]) == 11 ? 10 : uint8_t(value[2])==21?5:4) : 4;
     const bool wifiFrame = value.length() >= 3 && uint8_t(value[2]) >= WifiSetupWire::CONTROL && uint8_t(value[2]) <= WifiSetupWire::COMMIT;
-    if (wifiFrame ? !WifiSetupWire::validFrame(reinterpret_cast<const uint8_t*>(value.c_str()), value.length()) : value.length() != expected) {
+    const bool controlFrame=value.length()>=3&&LampBleControlWire::operation(uint8_t(value[2]));
+    const auto eraseControlWrite=[&](){
+      if(!controlFrame)return;
+      const size_t length=value.length();
+      LampBleControlWire::zero(const_cast<char*>(value.c_str()),length);
+      uint8_t erased[20]{};characteristic->setValue(erased,length>sizeof(erased)?sizeof(erased):length);
+    };
+    // Offline configuration/private invitations require a completed bond, not
+    // merely encryption while a new phone is still enrolling.
+    if(controlFrame&&!event->sec_state.bonded){eraseControlWrite();++rejectedWrites;return;}
+    if (controlFrame ? !LampBleControlWire::validFrame(reinterpret_cast<const uint8_t*>(value.c_str()),value.length()) : wifiFrame ? !WifiSetupWire::validFrame(reinterpret_cast<const uint8_t*>(value.c_str()), value.length()) : value.length() != expected) {
+      eraseControlWrite();
       disconnectRequested=true;
       server->disconnect(event->conn_handle);
+      return;
+    }
+    if(controlFrame){
+      LampBleControlWire::Frame command{};
+      command.generation=generation;command.length=value.length();
+      memcpy(command.bytes,value.c_str(),command.length);
+      if(!controlCommands.push(command)){disconnectRequested=true;server->disconnect(event->conn_handle);}
+      LampBleControlWire::zero(&command,sizeof(command));
+      eraseControlWrite();
       return;
     }
     Command command{};
@@ -189,6 +216,38 @@ Connections connectionCallbacks;
 Security securityCallbacks;
 Writes writeCallbacks;
 StateReads stateReadCallbacks;
+
+class ControlReads final : public BLECharacteristicCallbacks {
+  void onRead(BLECharacteristic* characteristic,ble_gap_conn_desc* peer) override {
+    if(peer&&authorizeEncryptedPeer(*peer)&&peer->sec_state.bonded&&controlPageReady&&
+       (!controlPageTransaction||controlPageGeneration==generation))return;
+    // Only a bounded binary header is touched on the host task. Snapshot/form
+    // parsing, allocation, Preferences and lamp/radio work stay on the loop.
+    uint8_t denied[LampBleControlWire::Header]{};
+    LampBleControlWire::header(denied,0,0,403,0,0,0);
+    characteristic->setValue(denied,sizeof(denied));controlPageReady=false;
+  }
+};
+ControlReads controlReadCallbacks;
+
+void cacheControlPage(uint8_t* bytes,size_t size,uint32_t owner){
+  if(!controlCharacteristic)return;
+  // Overwrite the previous characteristic storage before replacing its value;
+  // a prior explicit private invitation must not remain in a cached page.
+  uint8_t erased[LampBleControlWire::MaxPage]{};
+  controlPageReady=false;
+  const size_t previous=controlCharacteristic->getLength();
+  if(previous&&previous<=sizeof(erased))controlCharacteristic->setValue(erased,previous);
+  controlCharacteristic->setValue(bytes,size);
+  controlPageGeneration=owner;
+  controlPageTransaction=size>=LampBleControlWire::Header?LampBleControlWire::u16(bytes+1):0;
+  controlPageReady=true;
+}
+void cacheControlMetadata(){
+  uint8_t bytes[LampBleControlWire::MaxPage]{};
+  const size_t size=lampBleControlMetadata(bytes,sizeof(bytes));
+  cacheControlPage(bytes,size,generation);LampBleControlWire::zero(bytes,sizeof(bytes));
+}
 
 void updateAdvertising()
 {
@@ -275,6 +334,9 @@ void beginLampBluetooth(const String& name)
   wifiCharacteristic->setValue("{}");
   centerCharacteristic=service->createCharacteristic("7b610009-6e2b-4f3d-9a71-28e45c001001",BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC);
   centerCharacteristic->setValue("{}");
+  controlCharacteristic=service->createCharacteristic(CONTROL_RPC,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC);
+  controlCharacteristic->setCallbacks(&controlReadCallbacks);
+  cacheControlMetadata();
   // NimBLE creates the notification subscription descriptor automatically.
   publish(0, 0, false);
   service->start();
@@ -344,10 +406,12 @@ void serviceLampBluetooth()
   static uint32_t transferGeneration = 0;
   const uint32_t currentGeneration = generation;
   if (transferGeneration != currentGeneration) {
-    resetLampWifiSetupTransfer(); transferGeneration = currentGeneration;
+    resetLampWifiSetupTransfer();resetLampBleControlTransfer(currentGeneration);
+    cacheControlMetadata();transferGeneration = currentGeneration;
   }
   ble_gap_conn_desc peer{};
   const bool authenticated = connection != NO_CONNECTION && ble_gap_conn_find(connection, &peer) == 0 && authorizeEncryptedPeer(peer);
+  if(serviceLampBleControlTransfer(currentGeneration,authenticated&&peer.sec_state.bonded,lampUpdateOwnsResources())||!controlPageReady)cacheControlMetadata();
   if(authenticated) {
     // The wrapper registers characteristics by allocation address. Notify a
     // trusted phone once per boot so old ATT handles can be discarded. Keep the
@@ -367,13 +431,19 @@ void serviceLampBluetooth()
   }
   if (advertisingDirty.exchange(false)) updateAdvertising();
   Command command{};
+  LampBleControlWire::Frame controlFrame{};
+  const bool controlPending=controlCommands.pop(controlFrame);
+  bool commandPending=controlPending;
+  if(controlPending){command.generation=controlFrame.generation;command.length=controlFrame.length;memcpy(command.bytes,controlFrame.bytes,command.length);}
+  else commandPending=xQueueReceive(commands,&command,0)==pdTRUE;
+  LampBleControlWire::zero(&controlFrame,sizeof(controlFrame));
   // Bound work per frame; app waits for each application-level acknowledgment.
-  if (xQueueReceive(commands, &command, 0) == pdTRUE && authenticated && command.generation == generation) {
+  if (commandPending && authenticated && command.generation == generation) {
     const uint8_t version = command.bytes[0], id = command.bytes[1], op = command.bytes[2], value = command.bytes[3];
     auto state = getLampControlState();
     uint8_t result = 0;
     if (version != LAMP_PROTOCOL_VERSION || id == 0) result = 1;
-    else if (lampIsUpdating() && op != 5 && op != 12) result = 3;
+    else if (lampIsUpdating() && op != 5 && op != 12&&!LampBleControlWire::operation(op)) result = 3;
     else {
       switch (op) {
         case 1: if (value > 1) result = 2; else setLampControl(state.mode, state.brightness, value); break;
@@ -406,19 +476,33 @@ void serviceLampBluetooth()
           else {moveLampCalibration(position);centerCharacteristic->setValue(lampCenterCalibrationJson().c_str());}
           break;
         }
+        case 22: case 23: case 24: case 25: {
+          if(!peer.sec_state.bonded){result=3;break;}
+          uint8_t reply[LampBleControlWire::MaxPage]{};size_t replySize=0;
+          result=lampBleControlCommand(command.bytes,command.length,command.generation,reply,sizeof(reply),replySize);
+          if(command.generation!=generation||!secure){
+            resetLampBleControlTransfer(generation);cacheControlMetadata();result=3;
+          }else if(replySize)cacheControlPage(reply,replySize,command.generation);
+          LampBleControlWire::zero(reply,sizeof(reply));
+          break;
+        }
         case 8: if (value) result = 2; else if (!requestLampUpdateCheck()) result = 3; break;
         case 9: if (value) result = 2; else if (!requestLampUpdateInstall()) result = 3; break;
         case 10: if (value > 1) result = 2; else if (!setLampAutoUpdate(value)) result = 4; break;
         default: result = 2;
       }
     }
-    ++acknowledgments; lastAckId = id;
-    publish(id, result, true);
-    memset(command.bytes, 0, sizeof(command.bytes));
+    if(!LampBleControlWire::operation(op)||command.generation==generation){
+      ++acknowledgments;lastAckId=id;publish(id,result,true);
+    }else publish(0,0,false);
   } else {
     // Detect changes from the knob and HTTP without making those paths know BLE.
     publish(0, 0, false);
   }
+  LampBleControlWire::zero(&command,sizeof(command));
+  // A legacy update command above may have just reserved TLS resources. Free
+  // a prior full snapshot now, before serviceLampUpdater runs in this loop.
+  if(lampUpdateOwnsResources()&&serviceLampBleControlTransfer(generation,secure&&peer.sec_state.bonded,true))cacheControlMetadata();
   uint8_t firmware[20]; getLampUpdatePacket(firmware);
   if (memcmp(firmware, lastFirmware, sizeof(firmware))) {
     memcpy(lastFirmware, firmware, sizeof(firmware));

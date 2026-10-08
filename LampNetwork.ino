@@ -9,9 +9,11 @@
 #include "LampFactory.h"
 #include "LampPage.h"
 #include "LampWifiSetup.h"
+#include "LampControlHttpAdapter.h"
+#include "LampWifiRecoveryPolicy.h"
 
 LampSettings lampSettings;
-WebServer lampServer(80);
+LampControlHttpAdapter lampServer(80);
 String lampHost;
 String lampName;
 uint32_t identifyUntil = 0;
@@ -238,8 +240,10 @@ void sendLampDiagnostics()
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
-  String state = "{\"token\":" + jsonText(lampToken);
-  state += ",\"deviceId\":" + jsonText(lampIdentity()) + ",\"name\":" + jsonText(lampName);
+  String state = "{\"deviceId\":" + jsonText(lampIdentity());
+  if(!lampServer.controlActive())state += ",\"token\":" + jsonText(lampToken);
+  state += ",\"name\":" + jsonText(lampName) + ",\"uptimeMs\":" + String(millis());
+  state += ",\"controlVersion\":1";
   state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE) + ",\"startupBrightness\":" + String(lampSettings.brightness);
   state += ",\"catalogVersion\":1";
   state += ",\"factoryReset\":true";
@@ -282,6 +286,14 @@ void sendLampState()
   lampServer.send(200, "application/json", state);
 }
 
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form) {
+  return lampServer.executeControl(endpoint,mutation,form);
+}
+String lampControlSnapshotJson() {
+  auto response=lampControlRequest(LampControlEndpoint::State,false,String());
+  return response.status==200?std::move(response.body):String("{}");
+}
+
 void saveLampConfiguration()
 {
   if (!authorizedLampRequest(true)) return;
@@ -293,7 +305,7 @@ void saveLampConfiguration()
   }
   LampSettings next = lampSettings;
   next.ledCount = count; next.milliAmps = powerLimit; next.brightness = brightness; next.startupMode = mode;
-  const String ssid = lampServer.arg("ssid");
+  const String ssid = lampServer.hasArg("ssid") ? lampServer.arg("ssid") : String(next.ssid);
   const String wifiPass = lampServer.arg("wifiPassword");
   const String adminPass = lampServer.arg("adminPassword");
   if (ssid.length() > 32 || wifiPass.length() > 63 || (!wifiPass.isEmpty() && wifiPass.length() < 8) ||
@@ -302,7 +314,7 @@ void saveLampConfiguration()
   }
   if (lampServer.arg("forgetWifi") == "1") {
     memset(next.ssid, 0, sizeof(next.ssid)); memset(next.wifiPassword, 0, sizeof(next.wifiPassword));
-  } else {
+  } else if(lampServer.hasArg("ssid") || !wifiPass.isEmpty() || lampServer.arg("openNetwork") == "1") {
     if (ssid != String(next.ssid) && !ssid.isEmpty() && wifiPass.isEmpty() && lampServer.arg("openNetwork") != "1") {
       lampServer.send(400, "text/plain", "Enter the new network password or select the password-free network option."); return;
     }
@@ -390,6 +402,10 @@ void beginLampNetwork()
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.setControlRead(LampControlEndpoint::Sync, [](){
+    if(!authorizedLampRequest(false))return;
+    lampServer.send(200,"application/json",lampSyncJson());
+  });
   lampServer.on("/api/factory-reset",HTTP_POST,[](){
     if(!authorizedLampRequest(true))return;
     if(lampServer.arg("confirm")!="RESET"){lampServer.send(400,"text/plain","Confirm factory reset first.");return;}
@@ -648,7 +664,7 @@ void beginLampNetwork()
     WiFi.mode(WIFI_STA); WiFi.setAutoReconnect(true);
     applyLampWifiPowerProfile();
     WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
-  } else WiFi.mode(WIFI_OFF);
+  } else { WiFi.mode(WIFI_STA); applyLampWifiPowerProfile(); }
   beginLampBluetooth(lampAPName);
 }
 
@@ -656,7 +672,7 @@ void toggleLampSetup()
 {
   if (setupAP) {
     WiFi.softAPdisconnect(true); setupAP = false;
-    WiFi.mode(lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
+    WiFi.mode(WIFI_STA);
   } else {
     // Scanning needs STA even before home Wi-Fi credentials have been saved.
     // Enable it before clients join, rather than changing mode mid-request.
@@ -756,6 +772,25 @@ void serviceLampUSB()
   }
 }
 
+bool serviceLampOfflineWifi(uint32_t now) {
+  static LampWifiRecoveryPolicy policy;
+  wifi_ap_record_t accessPoint{};
+  const bool associated=WiFi.status()==WL_CONNECTED || esp_wifi_sta_get_ap_info(&accessPoint)==ESP_OK;
+  const bool intent=lampSettings.ssid[0] && lampSyncRole()>0 && !(lampSyncRole()==2&&lampSyncPaused());
+  const bool busy=setupAP || scanActive || lampWifiSetupBusy() || lampUpdateOwnsResources() || lampFactoryResetPending() || lampPairingOpen();
+  const auto action=policy.tick(now,intent,associated,busy,WiFi.getAutoReconnect());
+  if(action==LampWifiRecoveryPolicy::Suspend){WiFi.setAutoReconnect(false);WiFi.disconnect(false,false);}
+  else if(action==LampWifiRecoveryPolicy::Restore){
+    WiFi.setAutoReconnect(true);
+    // The core setter only changes a flag. A deliberate offline disconnect
+    // needs an explicit retry when grouping ends, without disturbing DHCP.
+    if(!associated&&lampSettings.ssid[0])WiFi.reconnect();
+  }
+  else if(action==LampWifiRecoveryPolicy::Probe){if(!WiFi.reconnect())policy.failed(now);}
+  else if(action==LampWifiRecoveryPolicy::AbortProbe)WiFi.disconnect(false,false);
+  return policy.probing()&&!associated;
+}
+
 void serviceLampNetwork()
 {
   serviceLampUSB();
@@ -768,7 +803,7 @@ void serviceLampNetwork()
   // hotspot during that attempt would otherwise switch a new lamp's radio OFF.
   if (setupAP && !otaActive && !lampWifiSetupBusy() && !scanActive && now - apLastActivity > 600000) {
     WiFi.softAPdisconnect(true); setupAP = false;
-    WiFi.mode(lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
+    WiFi.mode(WIFI_STA);
   }
   const bool connected = WiFi.status() == WL_CONNECTED;
   // Keep DHCP's primary resolver. Supply a backup when the router provides none.
@@ -789,7 +824,8 @@ void serviceLampNetwork()
   }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
-  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending());
+  const bool probeScanning=serviceLampOfflineWifi(now);
+  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending(),scanActive||probeScanning);
 }
 
 bool saveLampDefaults()

@@ -11,6 +11,8 @@ import { LampStore, LampDiscoverySession, lampAddress, lampFirmwareLabel, validF
 import { WifiTransport } from './wifi.js';
 import { FirmwareFleet } from './firmware-fleet.js';
 import { GroupDiscovery } from './group-discovery.js';
+import { BluetoothGroups, initializeGroupRadio } from './bluetooth-groups.js';
+import { Groups } from './groups.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
@@ -26,6 +28,8 @@ let pairingRecoveryTarget=null;
 const removedAccessoryIds=new Set();
 let centerStatus=null,centerTimer=null,centerSerial=0,centerWasActive=false;
 const bluetoothWifiAvailable=()=>lamp===bleLamp&&bleLamp.supportsWifiSetup&&Boolean(state);
+const advancedAvailable=()=>Boolean(state&&lamp?.raw&&(lamp===wifiLamp||lamp===bleLamp&&bleLamp.supportsOfflineControl));
+const groupsAvailable=()=>advancedAvailable()&&(lamp===wifiLamp||bleLamp.supportsOfflineGroups);
 const isNative = Capacitor.isNativePlatform();
 const sessionPasswords = new Map();
 const wifiFailures = new Map();
@@ -35,6 +39,13 @@ let fleetSummary='Versions refresh in the background. Updates start only when yo
 const groupCoordinatorStatuses=new Map();
 let groupDiscovery=null,groupScanRun=null,groupScanQueued=false,groupNativePending=false,nativeDiscoveryRun=null;
 let groupTaskSerial=0,groupJoinPending=null,groupJoinResult=null,groupPasswordTarget=null,groupScanMessage='';
+let bluetoothGroups=null;
+let roomGroups=null,groupsSnapshot={lamps:[],groups:[],ungrouped:[],unavailable:[],scanning:false};
+let roomGroupsRun=null,groupEditor=null,groupEditorSerial=0;
+const groupActions=new Set();
+const groupConnections=new Map();
+const groupRemovedIds=new Set();
+const groupDestinations=new Map();
 async function credential(id, value) {
   if (isNative) return native.credential({id, ...(value === undefined ? {} : {value})});
   if (value !== undefined) sessionPasswords.set(id,value);
@@ -42,10 +53,12 @@ async function credential(id, value) {
 }
 function page(name) {
   if(name!=='settings')hideWifiPassword();
+  if(name!=='groups')closeGroupEditor();
   if(name==='lamps'){renderLamps();refreshLampFirmware();}
-  for (const item of ['lamps','light','settings']) $('page-'+item).hidden=item!==name;
+  for (const item of ['lamps','light','groups','settings']) $('page-'+item).hidden=item!==name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===name)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(name==='settings'){renderSettings();if(settingsView==='groups')refreshGroupCoordinators();}
+  if(name==='groups'){$('status').textContent='Manage groups over Wi-Fi or authorized Bluetooth connections.';renderRoomGroups();refreshRoomGroups();}
   window.scrollTo(0,0);
   $('page-'+name).querySelector('h2')?.focus({preventScroll:true});
 }
@@ -71,7 +84,7 @@ function paintRanges() {
 }
 function renderEffectPane() {
   const entry=state && lamp?.catalog?.find(x=>x.id===state.mode);
-  const groupActive=lamp===wifiLamp && state?.sync?.scene>0;
+  const groupActive=groupsAvailable() && state?.sync?.scene>0;
   $('effectPane').hidden=!entry||groupActive;
   if(!entry||groupActive)return;
   const profile=effectSettings(entry);
@@ -103,18 +116,18 @@ function renderEffectPane() {
   $('effectAudio').hidden=!profile.audio||effectTab!=='sound';
   $('resetColor').hidden=profile.vu||profile.fountain||!state.supportsColor||effectTab==='sound';
   $('vuControls').hidden=!profile.vu||profile.fountain||effectTab!=='look';
-  const vu=lamp===wifiLamp?wifiLamp.raw?.vuColors:null;
+  const vu=advancedAvailable()?lamp.raw?.vuColors:null;
   $('vuFields').disabled=!vu||busy;
   if(!vu)$('vuFeedback').textContent='Connect over Wi-Fi to firmware 1.6.2 or newer to set meter colors.';
   if(vu&&!vuDirty){['vuLow','vuMid','vuPeak'].forEach((id,i)=>$(id).value='#'+vu[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintVu();}
 
   $('fountainControls').hidden=!profile.fountain||effectTab!=='look';
-  const fountain=lamp===wifiLamp?wifiLamp.raw?.fountainColors:null;
+  const fountain=advancedAvailable()?lamp.raw?.fountainColors:null;
   $('fountainFields').disabled=!fountain||busy;
   if(!fountain)$('fountainFeedback').textContent='Connect over Wi-Fi to firmware 1.6.6 or newer to set fountain colors.';
   if(fountain&&!fountainDirty){['fountainLow','fountainMid','fountainPeak'].forEach((id,i)=>$(id).value='#'+fountain[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintFountain();}
 
-  const audio=lamp===wifiLamp?wifiLamp.raw?.audio:null;
+  const audio=advancedAvailable()?lamp.raw?.audio:null;
   $('audioTuning').disabled=!audio || busy;
   $('audioScale').disabled=audio?.scale===undefined;
   $('audioConnectionHint').textContent=!audio?'Connect this lamp over Wi-Fi to adjust shared audio response.':
@@ -130,7 +143,7 @@ function renderEffectPane() {
 
 function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||fleetLampInstalling(selected?.id); }
 function renderPower() {
-  const sync=lamp===wifiLamp?state?.sync:null;
+  const sync=groupsAvailable()?state?.sync:null;
   const scope=sync?.role===1?'group':sync?.role===2?'this lamp':'lamp';
   $('power').textContent='Turn '+scope+(state?.power?' off':' on');
   $('power').setAttribute('aria-pressed',String(Boolean(state?.power)));
@@ -183,28 +196,30 @@ function renderFirmware() {
 }
 function renderSettings() {
   for(const panel of document.querySelectorAll('[data-settings-panel]')) {
-    const unsupported=panel.id==='hardwareForm'||panel.id==='bluetoothManagement'?lamp!==wifiLamp||!state:
+    const unsupported=panel.id==='hardwareForm'||panel.id==='bluetoothManagement'?!advancedAvailable():
       panel.id==='wifiSetupActions'?!bluetoothWifiAvailable():
-      panel.id==='geometrySettings'?!state||(lamp===wifiLamp?wifiLamp.raw?.midpoint===undefined:!(state.capabilities&128)):
-      panel.id==='audioSettings'?lamp!==wifiLamp||!state||!wifiLamp.raw?.audio:
-      panel.id==='calibrationPane'?lamp!==wifiLamp||!state?.calibration:false;
+      panel.id==='geometrySettings'?!state||(advancedAvailable()?lamp.raw?.midpoint===undefined:!(state.capabilities&128)):
+      panel.id==='audioSettings'?!advancedAvailable()||!lamp.raw?.audio:
+      panel.id==='calibrationPane'?!advancedAvailable()||!state?.calibration:false;
     panel.hidden=panel.dataset.settingsPanel!==settingsView||unsupported;
   }
-  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Wi-Fi setup over Bluetooth needs firmware 1.9.0 or newer. For a lamp already on your network, refresh the Wi-Fi list in Lamps and tap its card again. For first-time setup, hold the knob for three seconds to use its hotspot.':lamp!==wifiLamp&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':lamp!==wifiLamp&&['groups','hardware'].includes(settingsView)?'These controls need Wi-Fi. Refresh the Wi-Fi list in Lamps, then tap this lamp again.':'';
+  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Wi-Fi setup over Bluetooth needs firmware 1.9.0 or newer. For a lamp already on your network, refresh the Wi-Fi list in Lamps and tap its card again. For first-time setup, hold the knob for three seconds to use its hotspot.':!advancedAvailable()&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':!advancedAvailable()&&['groups','hardware'].includes(settingsView)?'Update this lamp to firmware 1.10.0 for full Bluetooth settings and offline groups, or use Wi-Fi.':'';
   if(state&&lamp===bleLamp&&['network','groups'].includes(settingsView)&&wifiFailures.has(selected?.id))$('settingsHint').textContent=wifiFailures.get(selected.id)+' '+$('settingsHint').textContent;
+  if(lamp===bleLamp&&advancedAvailable()&&['groups','hardware'].includes(settingsView))$('settingsHint').textContent=settingsView==='groups'?
+    'Nearby lamp groups work without a router. Pair the coordinator with this phone before joining it.':'Full lamp settings are available over encrypted Bluetooth.';
   $('settingsHint').hidden=!$('settingsHint').textContent;
   for(const button of document.querySelectorAll('[data-settings-section]'))button.setAttribute('aria-pressed',String(button.dataset.settingsSection===settingsView));
   $('summaryVersion').textContent=state?(firmware?.version||'Unavailable'):'—';
-  $('summaryLeds').textContent=lamp===wifiLamp&&state?wifiLamp.raw.leds+' LEDs':'—';
+  $('summaryLeds').textContent=advancedAvailable()?lamp.raw.leds+' LEDs':'—';
   $('summaryTransport').textContent=state?(lamp===wifiLamp?'Wi-Fi':'Bluetooth'):'Offline';
   const bleNetwork=bluetoothWifiAvailable();
-  $('networkSettings').disabled=!state||(lamp!==wifiLamp&&!bleNetwork)||busy||updatingLamp();
-  $('wifiSecurityControls').hidden=bleNetwork;
+  $('networkSettings').disabled=!state||(!advancedAvailable()&&!bleNetwork)||busy||updatingLamp();
+  $('wifiSecurityControls').hidden=bleNetwork&&!advancedAvailable();
   $('wifiSettingsHint').textContent=bleNetwork?'Start with Find Wi-Fi networks, then choose your 2.4 GHz home network. Your phone stays connected over Bluetooth. Settings are saved only after the lamp connects.':'To choose a different network, start with Find Wi-Fi networks. The lamp’s hotspot remains available for recovery.';
   $('scanWifi').textContent=wifiScanning?'Scanning…':'Find Wi-Fi networks';
   $('scanWifi').setAttribute('aria-busy',String(wifiScanning));
   $('scanWifi').disabled=wifiScanning||busy||connecting||updatingLamp()||!state||(!bleNetwork&&lamp!==wifiLamp);
-  $('saveWifi').textContent=bleNetwork?'Connect lamp to Wi-Fi':'Save & restart lamp';
+  $('saveWifi').textContent=bleNetwork&&!$('adminPassword').value&&!$('forgetWifi').checked?'Connect lamp to Wi-Fi':'Save & restart lamp';
   $('wifiPassword').disabled=$('openNetwork').checked;
   $('toggleWifiPassword').disabled=$('wifiPassword').disabled||busy||connecting||!state;
   if($('wifiPassword').disabled)hideWifiPassword();
@@ -221,7 +236,7 @@ function renderSettings() {
   $('room').disabled=!selected||busy||connecting;
   renderCenterTool();
 }
-function settingsSection(name) { if(name!=='network')hideWifiPassword();settingsView=name;renderSettings();if(name==='groups')refreshGroupCoordinators(); }
+function settingsSection(name) { if(name==='groups'){settingsView='overview';page('groups');return;}if(name!=='network')hideWifiPassword();settingsView=name;renderSettings(); }
 for(const button of document.querySelectorAll('[data-settings-section]'))button.onclick=()=>settingsSection(button.dataset.settingsSection);
 for(const button of document.querySelectorAll('[data-goto]'))button.onclick=()=>page(button.dataset.goto);
 let savedDevice = null;
@@ -245,7 +260,7 @@ const callbacks = {
     renderFirmware();
   },
   onState(next) {
-    if(lamp===bleLamp&&centerStatus?.active)next.calibration={active:true,kind:'center',position:centerStatus.position};
+    if(lamp===bleLamp&&!bleLamp.supportsOfflineControl&&centerStatus?.active)next.calibration={active:true,kind:'center',position:centerStatus.position};
     if(state?.mode!==next.mode){editingOptions=false;editingBrightness=false;}
     state = next;
     $('defaultPasswordNotice').hidden=next.usingDefaultPassword!==true;
@@ -327,6 +342,16 @@ fleet=new FirmwareFleet({http:CapacitorHttp,credential,getLamps:mergedLampEntrie
 }});
 groupDiscovery=new GroupDiscovery({http:CapacitorHttp,credential,getLamps:mergedLampEntries,getTarget:getGroupTarget,
   onStatus:(id,value)=>{groupCoordinatorStatuses.set(id,value);renderGroupCoordinators();}});
+bluetoothGroups=new BluetoothGroups({ble:BleClient,getTarget:()=>lamp===bleLamp&&verifiedSelectedLamp()?bleLamp:null,
+  getLamps:()=>store.items,acquire:acquireGroupLamp,onStatus:(id,value)=>{groupCoordinatorStatuses.set(id,value);renderGroupCoordinators();}});
+roomGroups=new Groups({getLamps:groupInventoryEntries,acquire:acquireGroupLamp,discover:async()=>{
+  if(!isNative)return [];
+  const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);renderLamps();return groupInventoryEntries();
+},onStatus:snapshot=>{groupsSnapshot=snapshot;renderRoomGroups();if(groupEditor)renderGroupScenes();}});
+$('globalGroupEditor').append($('groupScenePane'),$('groupOrderPane'));
+const selectedGroupRecovery=document.querySelector('.sync-panel');selectedGroupRecovery.removeAttribute('data-settings-panel');$('groupRecoveryContent').append(selectedGroupRecovery);
+$('page-groups').append($('groupCoordinatorPasswordDialog'));
+$('groupRecovery').ontoggle=()=>{if($('groupRecovery').open){renderSync();refreshGroupCoordinators();}};
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
 async function change(operation, value, activatePalette = false) {
@@ -345,6 +370,7 @@ async function connect(saved = null) {
   const id=saved?.id||saved?.lampId||store.items.find(entry=>entry.deviceId===saved?.deviceId)?.id;
   if(connecting||busy||fleetLampInstalling(id))return;
   connecting=true; $('connect').disabled=true; status('Connecting over Bluetooth…');
+  await stopGroupInspection(id);
   await lamp.disconnect(); lamp=bleLamp;
   try {
     const device=await lamp.connect(saved?.deviceId?saved:null);
@@ -352,6 +378,7 @@ async function connect(saved = null) {
     const prior=store.items.find(x=>x.id===device.lampId || x.deviceId===device.deviceId);
     selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp',
       bluetoothName:device.bluetoothName,accessoryName:device.accessoryName,accessoryManaged:Boolean(device.accessoryManaged)});
+    groupRemovedIds.delete(selected.id);roomGroups?.allow?.(selected.id);
     store.rememberFirmware(selected.id,firmware);
     $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
     savedDevice=device; connected('Bluetooth');
@@ -377,9 +404,9 @@ function connected(kind) {
   $('lampRoom').textContent=selected.room||'YOUR LAMP';
   $('lampName').value=selected.name; $('room').value=selected.room||'';
   $('settingsConnection').textContent=selected.name+' · '+kind;
-  $('identify').disabled=kind!=='Wi-Fi'||!wifiLamp.raw?.apiVersion;
+  $('identify').disabled=!advancedAvailable()||!lamp.raw?.apiVersion;
   $('networkSettings').disabled=kind!=='Wi-Fi'&&!bluetoothWifiAvailable();
-  if(kind==='Wi-Fi')fillNetwork();
+  if(advancedAvailable())fillNetwork();
   status('Connected to '+selected.name+'.');renderLamps(); filterEffects();page('light');renderSettings();
   if(kind==='Bluetooth'&&bluetoothWifiAvailable()) {
     const epoch=bleLamp.epoch;
@@ -391,7 +418,7 @@ function connected(kind) {
       renderSettings();
     }).catch(e=>{if(lamp===bleLamp&&epoch===bleLamp.epoch)$('wifiSetupFeedback').textContent=e.message;});
   }
-  if(kind==='Bluetooth'&&(state?.capabilities&128)) {
+  if(kind==='Bluetooth'&&!advancedAvailable()&&(state?.capabilities&128)) {
     const epoch=bleLamp.epoch;
     bleLamp.calibrateCenter('status').then(value=>{
       if(lamp!==bleLamp||epoch!==bleLamp.epoch)return;
@@ -402,6 +429,7 @@ function connected(kind) {
 async function connectWifi(entry,password) {
   if(connecting||busy||fleetLampInstalling(entry.id))return;
   connecting=true;status('Connecting over Wi-Fi…');
+  await stopGroupInspection(entry.id);
   await lamp.disconnect(); lamp=wifiLamp;
   try {
     if(password===undefined && entry.id) password=(await credential(entry.id)).value;
@@ -410,6 +438,7 @@ async function connectWifi(entry,password) {
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
     const prior=store.items.find(x=>x.id===id || x.id===entry.id);
     selected=store.upsertWifi({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
+    groupRemovedIds.delete(id);roomGroups?.allow?.(id);
     store.rememberFirmware(selected.id,raw.firmware);
     let warning='';try {await credential(id,password);}catch(e){warning=e.message;}
     wifiFailures.delete(entry.id);wifiFailures.delete(id);
@@ -423,7 +452,7 @@ function promptWifiPassword(entry) {
 }
 function reportWifiFallback(error) {
   wifiFailures.set(selected.id,'Wi-Fi connection failed: '+error.message);
-  status('Connected over Bluetooth. Wi-Fi failed: '+error.message+' Groups require Wi-Fi.');
+  status('Connected over Bluetooth. Wi-Fi failed: '+error.message+(bleLamp.supportsOfflineGroups?' Offline controls and nearby lamp groups remain available.':' Update this lamp to firmware 1.10.0 for full offline settings and groups.'));
   renderSettings();
 }
 $('connect').onclick=()=>connect();
@@ -566,6 +595,13 @@ function renderLamps() {
     remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting||fleetLampInstalling(entry.id);
     remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
     wrapper.append(button,remove);$('lampList').append(wrapper);
+    if(entry.deviceId&&entry.address){
+      const bluetooth=document.createElement('button');bluetooth.type='button';bluetooth.className='lamp-bluetooth text-button';
+      bluetooth.textContent='Connect by Bluetooth';bluetooth.setAttribute('aria-label','Connect '+(entry.name||'CoolLamp')+' by Bluetooth');
+      bluetooth.disabled=busy||connecting||fleetLampInstalling(entry.id);
+      bluetooth.onclick=()=>state&&selected?.id===entry.id&&lamp===bleLamp?page('light'):connect(entry);
+      wrapper.append(bluetooth);
+    }
     if(focusedId===entry.id){const control=focusedRemove?remove:button;if(!control.disabled)control.focus({preventScroll:true});}
   }
   renderFleetControls();
@@ -634,22 +670,22 @@ $('effectSearch').oninput=filterEffects;
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{category=button.dataset.category;document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x===button)));filterEffects();};
 $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new Set(selected.favorites||[]);if(favorites.has(state.mode))favorites.delete(state.mode);else favorites.add(state.mode);selected=store.upsert({...selected,favorites:[...favorites]});$('favoriteEffect').setAttribute('aria-pressed',String(favorites.has(state.mode)));$('favoriteEffect').textContent=favorites.has(state.mode)?'♥':'♡';filterEffects();};
 function fillNetwork() {
-  const raw=wifiLamp.raw;
+  const raw=lamp.raw;
   $('geometrySettings').hidden=raw.midpoint===undefined;
   $('midpoint').max=Math.max(0,raw.leds-1);$('midpoint').value=raw.midpoint?Math.min(raw.midpoint,raw.leds-1):0;
   $('audioSettings').hidden=!raw.audio;
   if(raw.audio){$('microphoneInstalled').checked=raw.audio.installed;renderEffectPane();}
   for(const id of ['ssid','leds','milliamps'])$(id).value=raw[id];
-  $('startupMode').replaceChildren(...wifiLamp.catalog.map(x=>new Option(x.name,x.id)));
+  $('startupMode').replaceChildren(...lamp.catalog.map(x=>new Option(x.name,x.id)));
   $('startupMode').value=raw.startupMode||raw.mode;$('startupBrightness').value=raw.startupBrightness||raw.brightness;
   for(const id of ['wifiPassword','adminPassword'])$(id).value='';
   for(const id of ['openNetwork','forgetWifi'])$(id).checked=false;
   renderSettings();
 }
 async function networkAction(action) {
-  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  if(busy||connecting||!advancedAvailable())return;
   busy=true;$('networkSettings').disabled=true;renderPower();renderSettings();
-  try{await wifiLamp.enqueue(action);}catch(e){if(e.uncertain)await wifiLamp.disconnect();status(e.message);}finally{busy=false;$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();renderSettings();}
+  try{await lamp.enqueue(action);}catch(e){if(e.uncertain)await lamp.disconnect();status(e.message);}finally{busy=false;$('networkSettings').disabled=!advancedAvailable();renderOptions();renderSettings();}
 }
 async function bluetoothNetworkAction(action) {
   if(busy||connecting||!bluetoothWifiAvailable())return;
@@ -697,13 +733,13 @@ $('identityForm').onsubmit=async e=>{
   if(new TextEncoder().encode(name).length>48){status('Use a lamp name of at most 48 UTF-8 bytes.');return;}
   busy=true;
   try {
-    if(lamp===wifiLamp&&state&&wifiLamp.raw.apiVersion)await wifiLamp.enqueue(()=>wifiLamp.request('/api/name',{name}));
-    selected=store.upsert({...selected,name,room});$('lampTitle').textContent=name;$('lampRoom').textContent=room||'YOUR LAMP';renderLamps();status(lamp===wifiLamp&&wifiLamp.raw?.apiVersion?'Lamp name saved. Room saved on this phone.':'Name and room saved on this phone.');
+    if(advancedAvailable()&&lamp.raw.apiVersion)await lamp.enqueue(()=>lamp.request('/api/name',{name}));
+    selected=store.upsert({...selected,name,room});$('lampTitle').textContent=name;$('lampRoom').textContent=room||'YOUR LAMP';renderLamps();status(advancedAvailable()&&lamp.raw?.apiVersion?'Lamp name saved. Room saved on this phone.':'Name and room saved on this phone.');
   }catch(e){status(e.message);}finally{busy=false;}
 };
-$('identify').onclick=()=>networkAction(async()=>status(await wifiLamp.request('/api/identify',{})));
-$('pairingStatus').onclick=()=>networkAction(async()=>{const result=await wifiLamp.request('/api/bluetooth');const value=typeof result==='string'?JSON.parse(result):result;status(value.pairing?'Pairing is open.':'Pairing is closed. Hold the knob for six seconds to open it.');});
-$('forgetPhones').onclick=()=>{if(confirm('Remove every phone paired with this lamp? Hold its knob for six seconds to open pairing first.'))networkAction(async()=>status(await wifiLamp.request('/api/bluetooth/forget',{})));};
+$('identify').onclick=()=>networkAction(async()=>status(await lamp.request('/api/identify',{})));
+$('pairingStatus').onclick=()=>networkAction(async()=>{const result=await lamp.request('/api/bluetooth');const value=typeof result==='string'?JSON.parse(result):result;status(value.pairing?'Pairing is open.':'Pairing is closed. Hold the knob for six seconds to open it.');});
+$('forgetPhones').onclick=()=>{if(confirm('Remove every phone paired with this lamp? Hold its knob for six seconds to open pairing first.'))networkAction(async()=>status(await lamp.request('/api/bluetooth/forget',{})));};
 function showWifiNetworks(networks) {
   $('networks').replaceChildren(new Option('Choose a network or enter its name below',''),...networks.map(x=>{
     const strength=typeof x.rssi==='number'?(x.rssi>=-60?'Strong signal':x.rssi>=-75?'Good signal':'Weak signal'):'';
@@ -766,8 +802,9 @@ $('scanWifi').onclick=async()=>{
 };
 $('networks').onchange=()=>{if($('networks').value){$('ssid').value=$('networks').value;$('openNetwork').checked=$('networks').selectedOptions[0].dataset.open==='true';if($('openNetwork').checked)$('wifiPassword').value='';renderSettings();}};
 $('openNetwork').onchange=()=>{if($('openNetwork').checked)$('wifiPassword').value='';renderSettings();};
+$('adminPassword').oninput=renderSettings;$('forgetWifi').onchange=renderSettings;
 for(const [id,section] of [['networkForm','network'],['hardwareForm','hardware']])$(id).onsubmit=e=>{
-  if(section==='network'&&bluetoothWifiAvailable()) {
+  if(section==='network'&&bluetoothWifiAvailable()&&(!advancedAvailable()||!$('adminPassword').value&&!$('forgetWifi').checked)) {
     e.preventDefault();if(busy||connecting)return;
     const ssid=$('ssid').value,password=$('wifiPassword').value,open=$('openNetwork').checked;
     hideWifiPassword();
@@ -779,23 +816,23 @@ for(const [id,section] of [['networkForm','network'],['hardwareForm','hardware']
       return handoffBluetoothWifi();
     }).catch(e=>status(e.message));return;
   }
-  e.preventDefault();if(!state||lamp!==wifiLamp||!confirm('Save '+(section==='hardware'?'strip and startup':'Wi-Fi and security')+' settings and restart this lamp?'))return;
+  e.preventDefault();if(!advancedAvailable()||!confirm('Save '+(section==='hardware'?'strip and startup':'Wi-Fi and security')+' settings and restart this lamp?'))return;
   const draft={};for(const field of ['ssid','wifiPassword','adminPassword','leds','milliamps','startupMode','startupBrightness'])draft[field]=$(field).value;
   for(const field of ['openNetwork','forgetWifi'])draft[field]=$(field).checked;
-  const data=configurationPayload(wifiLamp.raw,section,draft);
+  const data=configurationPayload(lamp.raw,section,draft);
   networkAction(async()=>{
-    const message=await wifiLamp.request('/api/config',data);
+    const message=await lamp.request('/api/config',data);
     if(data.adminPassword)await credential(selected.id,data.adminPassword);
-    await wifiLamp.disconnect();status(message+' Find the lamp again after it restarts.');
+    await lamp.disconnect();status(message+' Find the lamp again after it restarts.');
   });
 };
 $('geometryForm').onsubmit=e=>{
   e.preventDefault();networkAction(async()=>{
-    status(await wifiLamp.configureGeometry(Number($('midpoint').value)));
+    status(await lamp.configureGeometry(Number($('midpoint').value)));
   });
 };
 function renderCenterTool(){
-  const wifi=lamp===wifiLamp,raw=wifi?wifiLamp.raw:null,c=raw?.calibration;
+  const wifi=advancedAvailable(),raw=wifi?lamp.raw:null,c=raw?.calibration;
   const value=wifi?{active:Boolean(c?.active&&c.kind==='center'),position:c?.kind==='center'?c.position:raw?.effectiveMidpoint,leds:raw?.leds}:centerStatus;
   const supported=state&&(wifi?c?.centerSupported:Boolean(state.capabilities&128));
   const active=Boolean(value?.active);
@@ -812,7 +849,7 @@ function renderCenterTool(){
 }
 function setCenterStatus(value){
   centerStatus=value;
-  if(lamp===bleLamp&&state)state={...state,calibration:value.active?{active:true,kind:'center',position:value.position}:undefined};
+  if(lamp===bleLamp&&state&&!advancedAvailable())state={...state,calibration:value.active?{active:true,kind:'center',position:value.position}:undefined};
   renderOptions();
 }
 function pollCenter(){
@@ -832,13 +869,13 @@ async function centerAction(action){
   clearTimeout(centerTimer);++centerSerial;const target=lamp,epoch=lamp.epoch;
   busy=true;renderSettings();
   try {
-    const result=target===wifiLamp?await wifiLamp.enqueue(()=>wifiLamp.calibrateCenter(action)):await bleLamp.calibrateCenter(action);
+    const result=advancedAvailable()?await target.enqueue(()=>target.calibrateCenter(action)):await bleLamp.calibrateCenter(action);
     if(target!==lamp||epoch!==lamp.epoch)return;
-    if(target===bleLamp)setCenterStatus(result);
-    else if(action==='save')$('midpoint').value=wifiLamp.raw.midpoint;
+    if(target===bleLamp&&!advancedAvailable())setCenterStatus(result);
+    else if(action==='save')$('midpoint').value=lamp.raw.midpoint;
     $('centerFeedback').textContent=action==='save'?'Center saved. Normal lighting restored.':action==='cancel'?'Previous center kept. Normal lighting restored.':'Turn the knob to move the blinking white marker.';
   }catch(e){$('centerFeedback').textContent=e.message;}
-  finally{busy=false;renderOptions();if(lamp===bleLamp&&centerStatus?.active)pollCenter();}
+  finally{busy=false;renderOptions();if(lamp===bleLamp&&!advancedAvailable()&&centerStatus?.active)pollCenter();}
 }
 $('startCenter').onclick=()=>centerAction('start');$('saveCenter').onclick=()=>centerAction('save');$('cancelCenter').onclick=()=>centerAction('cancel');
 function audioLabels() {
@@ -850,19 +887,19 @@ for(const id of ['audioGain','audioGate','audioScale'])$(id).oninput=()=>{
   audioDirty=true;audioLabels();paintRanges();$('audioFeedback').textContent='Unapplied changes · shared across audio effects';
 };
 $('applyAudio').onclick=async()=>{
-  if(busy || connecting || lamp!==wifiLamp || !state)return;
-  const tuning={gain:Number($('audioGain').value),gate:Number($('audioGate').value),...(wifiLamp.raw.audio.scale===undefined?{}:{scale:Number($('audioScale').value)})};
+  if(busy || connecting || !advancedAvailable())return;
+  const tuning={gain:Number($('audioGain').value),gate:Number($('audioGate').value),...(lamp.raw.audio.scale===undefined?{}:{scale:Number($('audioScale').value)})};
   busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
   try {
-    const message=await wifiLamp.enqueue(()=>wifiLamp.tuneAudio(tuning));
+    const message=await lamp.enqueue(()=>lamp.tuneAudio(tuning));
     audioDirty=false;$('audioFeedback').textContent=message;status(message);
-  }catch(e){if(e.uncertain)await wifiLamp.disconnect();$('audioFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  }catch(e){if(e.uncertain)await lamp.disconnect();$('audioFeedback').textContent=e.message;status(e.message);}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=!advancedAvailable();renderOptions();}
 };
 $('audioForm').onsubmit=e=>{
   e.preventDefault();
   networkAction(async()=>{
-    const message=await wifiLamp.configureAudio({enabled:Number($('microphoneInstalled').checked),gain:wifiLamp.raw.audio.gain,gate:wifiLamp.raw.audio.gate,...(wifiLamp.raw.audio.scale===undefined?{}:{scale:wifiLamp.raw.audio.scale})});
+    const message=await lamp.configureAudio({enabled:Number($('microphoneInstalled').checked),gain:lamp.raw.audio.gain,gate:lamp.raw.audio.gate,...(lamp.raw.audio.scale===undefined?{}:{scale:lamp.raw.audio.scale})});
     status(message+' Reconnect after the lamp restarts.');
   });
 };
@@ -873,6 +910,8 @@ async function removeLampFromPhone(entry,confirmed=false) {
     ' The lamp’s settings stay unchanged.'))return;
   busy=true;connecting=true;renderLamps();renderSettings();
   try {
+    groupRemovedIds.add(entry.id);invalidateGroupTasks();roomGroups?.forget?.(entry.id);
+    await stopGroupInspection(entry.id);
     if(selected?.id===entry.id&&state)await lamp.disconnect();
     let result;
     try { result=await pairing.remove(entry); }
@@ -891,7 +930,7 @@ async function removeLampFromPhone(entry,confirmed=false) {
     $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
     if(result.manual)showPairingRecovery(entry);
     return result;
-  }catch(e){status('Could not finish removing the lamp: '+e.message);throw e;}
+  }catch(e){if(store.items.some(item=>item.id===entry.id)){groupRemovedIds.delete(entry.id);roomGroups?.allow?.(entry.id);}status('Could not finish removing the lamp: '+e.message);throw e;}
   finally{connecting=false;busy=false;renderLamps();renderSettings();}
 }
 function showPairingRecovery(device={}) {
@@ -952,24 +991,24 @@ if(isNative)discover();
 function paintVu(){const [a,b,c]=['vuLow','vuMid','vuPeak'].map(id=>$(id).value);$('vuPreview').style.background=`linear-gradient(to right,${a} 0 65%,${b} 65% 80%,${c} 80% 100%)`;}
 for(const id of ['vuLow','vuMid','vuPeak'])$(id).oninput=()=>{vuDirty=true;paintVu();$('vuFeedback').textContent='Unsaved meter colors';};
 async function saveVu(reset=false){
-  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  if(busy||connecting||!advancedAvailable())return;
   const colors=reset?null:['vuLow','vuMid','vuPeak'].map(id=>$(id).value.slice(1).match(/../g).map(v=>parseInt(v,16)));
   busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
-  try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureVuColors(colors));vuDirty=false;$('vuFeedback').textContent=message;status(message);}
-  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('vuFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  try{const message=await lamp.enqueue(()=>lamp.configureVuColors(colors));vuDirty=false;$('vuFeedback').textContent=message;status(message);}
+  catch(e){if(e.uncertain)await lamp.disconnect();$('vuFeedback').textContent=e.message;status(e.message);}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=!advancedAvailable();renderOptions();}
 }
 $('applyVu').onclick=()=>saveVu();$('resetVu').onclick=()=>saveVu(true);
 
 function paintFountain(){const [a,b,c]=['fountainLow','fountainMid','fountainPeak'].map(id=>$(id).value);$('fountainPreview').style.background=`linear-gradient(to right,${a} 0 33.33%,${b} 33.33% 66.67%,${c} 66.67% 100%)`;}
 for(const id of ['fountainLow','fountainMid','fountainPeak'])$(id).oninput=()=>{fountainDirty=true;paintFountain();$('fountainFeedback').textContent='Unsaved fountain colors';};
 async function saveFountain(reset=false){
-  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  if(busy||connecting||!advancedAvailable())return;
   const colors=reset?null:['fountainLow','fountainMid','fountainPeak'].map(id=>$(id).value.slice(1).match(/../g).map(v=>parseInt(v,16)));
   busy=true;$('controls').disabled=true;$('networkSettings').disabled=true;
-  try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureFountainColors(colors));fountainDirty=false;$('fountainFeedback').textContent=message;status(message);}
-  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('fountainFeedback').textContent=e.message;status(e.message);}
-  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=lamp!==wifiLamp||!state;renderOptions();}
+  try{const message=await lamp.enqueue(()=>lamp.configureFountainColors(colors));fountainDirty=false;$('fountainFeedback').textContent=message;status(message);}
+  catch(e){if(e.uncertain)await lamp.disconnect();$('fountainFeedback').textContent=e.message;status(e.message);}
+  finally{busy=false;$('controls').disabled=!state||Boolean(state?.sync?.active);$('networkSettings').disabled=!advancedAvailable();renderOptions();}
 }
 $('applyFountain').onclick=()=>saveFountain();$('resetFountain').onclick=()=>saveFountain(true);
 
@@ -981,9 +1020,188 @@ function readNativeLampDiscovery() {
   run.finally(()=>{if(nativeDiscoveryRun===run)nativeDiscoveryRun=null;}).catch(()=>{});
   return run;
 }
+function groupInventoryEntries() {
+  const entries=new Map(mergedLampEntries().filter(entry=>!groupRemovedIds.has(entry.id)).map(entry=>[entry.id,{...entry}]));
+  const sources=[lamp?.raw?.sync,groupEditor?.lamp?.raw?.sync,...groupsSnapshot.lamps.map(row=>row.sync)];
+  for(const source of sources)for(const peer of source?.peers||[]){
+    if(!/^[0-9a-f]{12}$/.test(peer.id)||groupRemovedIds.has(peer.id)||discovery.forgotten.has(peer.id))continue;
+    const previous=entries.get(peer.id)||{},value={id:peer.id,name:peer.name,...previous};
+    if(!value.address&&peer.address){try{value.address=lampAddress(peer.address);}catch{}}
+    entries.set(peer.id,value);
+  }
+  return [...entries.values()];
+}
+async function acquireGroupLamp(id,options={}) {
+  if(groupRemovedIds.has(id))throw Object.assign(Error('Connect to this lamp again to authorize group management.'),{needsAuthorization:true});
+  const current=groupInventoryEntries().find(entry=>entry.id===id);
+  if(!current)throw Object.assign(Error('Find or pair this lamp again before managing its groups.'),{needsAuthorization:true});
+  options={...options,entry:current};
+  if(verifiedSelectedLamp()&&lamp.identity===id&&advancedAvailable())return {lamp,release:async()=>{}};
+  if(groupEditor?.lamp?.identity===id)return {lamp:groupEditor.lamp,release:async()=>{}};
+  let connection=groupConnections.get(id);
+  if(!connection){connection={refs:0,closed:false,promise:createGroupLampLease(id,options)};groupConnections.set(id,connection);}
+  ++connection.refs;
+  try{
+    const lease=await connection.promise;
+    if(connection.closed)throw Error('Lamp connection changed. Refresh Groups.');
+    let released=false;
+    return {lamp:lease.lamp,release:async()=>{
+      if(released)return;released=true;
+      if(connection.closed)return;
+      if(--connection.refs===0){connection.closed=true;if(groupConnections.get(id)===connection)groupConnections.delete(id);await lease.release();}
+    }};
+  }catch(error){if(--connection.refs===0&&groupConnections.get(id)===connection)groupConnections.delete(id);throw error;}
+}
+async function stopGroupInspection(id) {
+  roomGroups?.cancel();
+  if(groupEditor?.id===id)await closeGroupEditor();
+  const connection=groupConnections.get(id);if(!connection)return;
+  connection.closed=true;groupConnections.delete(id);
+  try{const lease=await connection.promise;await lease.release();}catch{}
+}
+async function createGroupLampLease(id,{entry}={}) {
+  entry=groupInventoryEntries().find(value=>value.id===id);
+  if(!entry||!/^[0-9a-f]{12}$/.test(id))throw Error('Find or pair this lamp before managing its groups.');
+  let wifiError;
+  if(entry.address&&!(lamp===bleLamp&&state&&bleLamp.supportsOfflineGroups&&entry.deviceId)){
+    const transport=new WifiTransport(CapacitorHttp);
+    try{
+      const password=(await credential(id)).value||'coollamp';
+      await transport.connect(entry.address,password,id);clearTimeout(transport.timer);
+      return {lamp:transport,release:()=>transport.disconnect()};
+    }catch(error){wifiError=error;await transport.disconnect();}
+  }
+  if(lamp===bleLamp&&bleLamp.id&&bleLamp.identity===id)
+    throw Object.assign(Error('Keep using this lamp’s Bluetooth controls. Full group management needs firmware 1.10.0 or a working Wi-Fi connection.'),{incompatible:true});
+  if(!entry.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged){
+    if(wifiError)throw wifiError;
+    throw Object.assign(Error('Pair this lamp first. Hold its knob for six seconds and add it by Bluetooth.'),{needsPairing:true});
+  }
+  await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,
+    knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
+  const transport=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true});
+  try{
+    await transport.connect({...entry,lampId:id});
+    if(!transport.supportsOfflineGroups)throw Error('Update this lamp to firmware 1.10.0 for offline groups.');
+    return {lamp:transport,release:()=>transport.disconnect()};
+  }catch(error){await transport.disconnect();throw error;}
+}
+function refreshRoomGroups() {
+  if(!roomGroups||roomGroupsRun)return;
+  const run=roomGroups.refresh();roomGroupsRun=run;renderRoomGroups();
+  run.catch(error=>{$('groupsFeedback').textContent=error.message;}).finally(()=>{if(roomGroupsRun===run)roomGroupsRun=null;renderRoomGroups();});
+}
+async function roomGroupAction(id,action) {
+  if(groupActions.has(id))return;
+  groupActions.add(id);$('groupsFeedback').textContent='Saving group settings…';renderRoomGroups();
+  try{
+    const result=await action();
+    $('groupsFeedback').textContent=result?.message||(result?.phase==='joined'||result?.phase==='already-member'?
+      result.active?'Following coordinator.':'Group settings saved. Waiting for coordinator.':result?.phase==='left'?'Lamp left its group.':result?.phase==='created'?'Coordinator ready. Add lamps below.':'Group settings saved.');
+    if(groupEditor)renderGroupScenes();
+  }catch(error){$('groupsFeedback').textContent=error.leftPrevious?error.message:error.uncertain?'Change was not confirmed. Refresh this lamp before trying again.':error.message;}
+  finally{groupActions.delete(id);renderRoomGroups();}
+}
+function groupLampRow(row,{follower=false}={}) {
+  const item=document.createElement('div');item.className='room-group-lamp';item.dataset.groupLampId=row.id;
+  const copy=document.createElement('div'),name=document.createElement('strong'),detail=document.createElement('small');
+  name.textContent=row.name||row.id;
+  detail.textContent=!row.available?(row.message||'Offline · last seen'):row.role===2?(row.sync?.paused?'Paused · local settings':row.sync?.active?'Following coordinator':'Waiting for coordinator'):row.role===1?'Coordinator':'Independent';
+  copy.append(name,detail);item.append(copy);
+  const usable=row.available&&row.verified&&!groupActions.has(row.id);
+  if(row.state==='needs-pairing'){
+    const pair=document.createElement('button');pair.type='button';pair.className='secondary compact';pair.textContent='Pair to manage';
+    pair.onclick=()=>{page('lamps');status('Hold '+(row.name||'this lamp')+'’s knob for six seconds until it flashes blue, then choose Add using Bluetooth.');};item.append(pair);
+  }
+  if(row.state==='needs-identity'){
+    const verify=document.createElement('button');verify.type='button';verify.className='secondary compact';verify.textContent='Connect to verify';
+    verify.onclick=()=>connect(store.items.find(entry=>entry.id===row.id));item.append(verify);
+  }
+  if(row.role===2){
+    const leave=document.createElement('button');leave.type='button';leave.className='text-button';leave.textContent='Leave';leave.disabled=!usable;
+    leave.onclick=()=>roomGroupAction(row.id,()=>roomGroups.leave(row.id));item.append(leave);
+    const pause=document.createElement('button');pause.type='button';pause.className='text-button';pause.textContent=row.sync?.paused?'Resume':'Pause';pause.disabled=!usable;
+    pause.onclick=()=>roomGroupAction(row.id,()=>row.sync?.paused?roomGroups.resume(row.id):roomGroups.pause(row.id));item.append(pause);
+  }
+  if(row.role===0){
+    const lead=document.createElement('button');lead.type='button';lead.className='secondary compact';lead.textContent='Lead a new group';lead.disabled=!usable;
+    lead.onclick=()=>roomGroupAction(row.id,()=>roomGroups.create(row.id));item.append(lead);
+  }
+  if(row.role===0||follower){
+    const destinations=groupsSnapshot.groups.filter(group=>group.id!==row.leader&&group.id!==row.id&&group.available&&group.leader.verified&&group.remaining>0);
+    const controls=document.createElement('div');controls.className='room-group-destination';
+    const select=document.createElement('select');select.setAttribute('aria-label',(follower?'Move ':'Join ')+(row.name||'lamp')+' to group');select.add(new Option(follower?'Choose another group':'Choose a group',''));
+    for(const group of destinations)select.add(new Option(group.name,group.id));
+    select.disabled=!usable||destinations.length===0;
+    const draft=groupDestinations.get(row.id);if(destinations.some(group=>group.id===draft))select.value=draft;else groupDestinations.delete(row.id);
+    const move=document.createElement('button');move.type='button';move.className='secondary compact';move.textContent=follower?'Move':'Join';move.disabled=!usable||!select.value;
+    select.onchange=()=>{groupDestinations.set(row.id,select.value);move.disabled=!usable||!select.value;};
+    move.onclick=()=>roomGroupAction(row.id,()=>follower?roomGroups.move(row.id,select.value):roomGroups.join(row.id,select.value));
+    controls.append(select,move);item.append(controls);
+  }
+  return item;
+}
+function renderRoomGroups() {
+  if(!$('groupsList'))return;
+  const active=document.activeElement,focusedId=active?.closest('[data-group-lamp-id]')?.dataset.groupLampId;
+  const focusedTag=active?.tagName,focusedText=active?.textContent;
+  $('groupsList').replaceChildren();$('ungroupedLamps').replaceChildren();$('groupsUnavailableList').replaceChildren();
+  for(const group of groupsSnapshot.groups){
+    const card=document.createElement('section');card.className='panel room-group';card.dataset.groupId=group.id;
+    const heading=document.createElement('div');heading.className='section-title';
+    const title=document.createElement('div'),kicker=document.createElement('p'),name=document.createElement('h3');kicker.className='eyebrow';kicker.textContent='COORDINATOR';name.textContent=group.name||'Lamp group';title.append(kicker,name);heading.append(title);
+    const effects=document.createElement('button');effects.type='button';effects.className='secondary compact';effects.textContent='Effects';effects.disabled=!group.available||!group.leader.verified||groupActions.has(group.id);
+    effects.onclick=()=>openGroupEditor(group.id);heading.append(effects);card.append(heading);
+    const detail=document.createElement('p');detail.className='hint';detail.textContent=group.available?group.followers.length+' following · '+group.remaining+' spaces available':group.placeholder?'Coordinator unavailable. Its followers keep their saved membership.':'Coordinator offline · last seen';card.append(detail);
+    const members=document.createElement('div');members.className='group-lamp-list';
+    for(const row of group.followers)members.append(groupLampRow(row,{follower:true}));
+    if(!group.followers.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Ready for lamps. Choose this group beside an independent lamp below.';members.append(empty);}card.append(members);$('groupsList').append(card);
+  }
+  for(const row of groupsSnapshot.ungrouped)$('ungroupedLamps').append(groupLampRow(row));
+  const legacy=store.items.filter(entry=>entry.deviceId&&!/^[0-9a-f]{12}$/.test(entry.id)).map(entry=>({...entry,verified:false,available:false,role:null,
+    state:'needs-identity',message:'Connect once by Bluetooth to verify this lamp’s identity before managing its groups.'}));
+  const unavailable=[...groupsSnapshot.unavailable,...legacy];
+  for(const row of unavailable)$('groupsUnavailableList').append(groupLampRow(row));
+  $('ungroupedEmpty').hidden=groupsSnapshot.ungrouped.length>0;
+  $('groupsUnavailable').hidden=unavailable.length===0;$('groupsUnavailableCount').textContent=unavailable.length;
+  $('refreshAllGroups').disabled=Boolean(roomGroupsRun)||groupsSnapshot.scanning;$('refreshAllGroups').textContent=roomGroupsRun||groupsSnapshot.scanning?'Refreshing…':'Refresh';
+  $('groupsInventoryStatus').textContent=groupsSnapshot.scanning?'Checking lamps in the background. You can keep using the app.':
+    groupsSnapshot.groups.length?groupsSnapshot.groups.length+' '+(groupsSnapshot.groups.length===1?'group':'groups')+' · '+groupsSnapshot.ungrouped.length+' independent lamps.':'Create a group from an independent lamp below. Pair nearby lamps or find lamps on Wi-Fi to add them here.';
+  if(focusedId){const row=$('page-groups').querySelector('[data-group-lamp-id="'+focusedId+'"]');
+    const control=focusedTag==='SELECT'?row?.querySelector('select'):[...row?.querySelectorAll('button')||[]].find(button=>button.textContent===focusedText);
+    if(control&&!control.disabled)control.focus({preventScroll:true});}
+}
+async function closeGroupEditor() {
+  ++groupEditorSerial;const previous=groupEditor;groupEditor=null;$('globalGroupEditor').hidden=true;
+  if(previous)await previous.release();renderGroupScenes();
+}
+async function openGroupEditor(id) {
+  await closeGroupEditor();const serial=groupEditorSerial;$('groupsFeedback').textContent='Opening group effects…';
+  let lease;
+  try{
+    lease=await acquireGroupLamp(id);if(serial!==groupEditorSerial){await lease.release();return;}
+    await lease.lamp.enqueue(()=>lease.lamp.refresh(id));
+    if(serial!==groupEditorSerial){await lease.release();return;}
+    if(lease.lamp.raw.sync?.role!==1)throw Error('This lamp is no longer a coordinator. Refresh the group list.');
+    groupEditor={...lease,id,epoch:lease.lamp.epoch,busy:false};
+    sceneChoicesKey='';groupOrderKey='';groupSceneDirty=false;groupAudioDirty=false;
+    $('globalGroupEditorTitle').textContent=(lease.lamp.raw.name||'Group')+' · effects';$('globalGroupEditor').hidden=false;$('groupsFeedback').textContent='';renderGroupScenes();
+    $('globalGroupEditor').scrollIntoView({block:'start'});
+  }catch(error){await lease?.release();$('groupsFeedback').textContent=error.message;}
+}
+async function groupSceneAction(action) {
+  const editor=groupEditor;if(!editor||editor.busy)return;editor.busy=true;renderGroupScenes();
+  try{
+    const guard=()=>{if(groupEditor!==editor||editor.lamp.epoch!==editor.epoch||editor.lamp.identity!==editor.id)throw Error('The group changed. Open its effects again.');};
+    const result=await editor.lamp.enqueue(async()=>{guard();await editor.lamp.refresh(editor.id);guard();if(editor.lamp.raw.sync?.role!==1)throw Error('This lamp is no longer a coordinator.');return action(editor.lamp);});
+    guard();$('groupSceneFeedback').textContent=result||'Group updated.';$('globalGroupEditorStatus').textContent='Changes applied to this group.';refreshRoomGroups();
+  }catch(error){if(groupEditor===editor)$('groupSceneFeedback').textContent=error.message;}
+  finally{editor.busy=false;renderGroupScenes();}
+}
+$('refreshAllGroups').onclick=refreshRoomGroups;$('closeGroupEditor').onclick=closeGroupEditor;
 function getGroupTarget() {
-  if(lamp!==wifiLamp||!verifiedSelectedLamp())return null;
-  return {id:wifiLamp.identity,address:wifiLamp.base,epoch:wifiLamp.epoch,sync:wifiLamp.raw?.sync,wireVersion:wifiLamp.raw?.sync?.version};
+  if(!groupsAvailable()||!verifiedSelectedLamp())return null;
+  return {id:lamp.identity,address:lamp.base,epoch:lamp.epoch,sync:lamp.raw?.sync,wireVersion:lamp.raw?.sync?.version};
 }
 function sameGroupTarget(expected) {
   const target=getGroupTarget();
@@ -991,14 +1209,14 @@ function sameGroupTarget(expected) {
 }
 function groupJoinForCurrent() { return Boolean(groupJoinPending&&sameGroupTarget(groupJoinPending.target)); }
 function invalidateGroupTasks() {
-  ++groupTaskSerial;groupDiscovery?.cancel();groupScanRun=null;groupScanQueued=false;groupNativePending=false;
+  ++groupTaskSerial;groupDiscovery?.cancel();bluetoothGroups?.cancel();groupScanRun=null;groupScanQueued=false;groupNativePending=false;
   groupJoinPending=null;groupJoinResult=null;groupPasswordTarget=null;groupCoordinatorStatuses.clear();groupScanMessage='';
   $('groupCoordinatorPassword').value='';
   if($('groupCoordinatorPasswordDialog').open)$('groupCoordinatorPasswordDialog').close();
 }
 function groupJoinReason() {
   const target=getGroupTarget();
-  if(!target)return 'Connect to this lamp over Wi-Fi to join a coordinator.';
+  if(!target)return lamp===bleLamp&&state?'Update this lamp to firmware 1.10.0 for offline groups, or connect over Wi-Fi.':'Connect to this lamp to join a coordinator.';
   if(![1,2].includes(target.sync?.version))return 'Update this lamp’s firmware to use lamp groups.';
   if(target.sync.role!==0)return 'Leave this lamp’s current group before joining a different coordinator.';
   if(groupJoinForCurrent())return 'Joining this lamp. You can keep using other pages and lamps.';
@@ -1013,7 +1231,7 @@ function renderGroupCoordinators() {
   let verified=0,attention=0;
   for(const [id,value] of groupCoordinatorStatuses){
     if(id===selected?.id||value.state==='not-coordinator')continue;
-    if(!['checking','coordinator','needs-password','offline','failed'].includes(value.state))continue;
+    if(!['checking','coordinator','needs-password','needs-pairing','offline','failed'].includes(value.state))continue;
     if(value.state==='coordinator'&&(!value.verified||value.role!==1))continue;
     const known=mergedLampEntries().find(entry=>entry.id===id);
     const row=document.createElement('div');row.className='group-coordinator';row.dataset.coordinatorId=id;
@@ -1021,27 +1239,35 @@ function renderGroupCoordinators() {
     name.textContent=known?.name||value.name||'CoolLamp';
     if(value.state==='coordinator'){
       ++verified;detail.textContent=[known?.room,value.message||('Coordinator · '+(value.members??0)+' following')].filter(Boolean).join(' · ');
-    }else if(value.state==='needs-password'){++attention;detail.textContent='Enter its access password to verify the coordinator.';}
+    }else if(value.state==='needs-pairing'){++attention;detail.textContent='Pair this coordinator with this phone first. Hold its knob for six seconds, connect by Bluetooth, then return to this lamp.';}
+    else if(value.state==='needs-password'){++attention;detail.textContent='Enter its access password to verify the coordinator.';}
     else {if(['offline','failed'].includes(value.state))++attention;detail.textContent=value.message||'Checking this lamp…';}
     text.append(name,detail);row.append(text);
     const button=document.createElement('button');button.type='button';button.className='secondary compact';
     const retry=['offline','failed'].includes(value.state);
-    button.textContent=value.state==='needs-password'?'Enter password':value.state==='coordinator'?'Join':retry?'Retry':'Checking';
+    button.textContent=value.state==='needs-pairing'?'Pair first':value.state==='needs-password'?'Enter password':value.state==='coordinator'?'Join':retry?'Retry':'Checking';
     button.disabled=retry?Boolean(groupScanRun)||groupNativePending:Boolean(reason)||!['coordinator','needs-password'].includes(value.state)||
       (value.state==='coordinator'&&value.joinable===false);
     button.onclick=()=>retry?refreshGroupCoordinators():value.state==='needs-password'?askGroupCoordinatorPassword(id):joinGroupCoordinator(id);
     row.append(button);$('syncPeers').append(row);
     if(focused===id&&!button.disabled)button.focus({preventScroll:true});
   }
-  $('refreshGroupCoordinators').disabled=Boolean(groupScanRun)||groupNativePending;
+  $('refreshGroupCoordinators').disabled=Boolean(groupScanRun)||groupNativePending||groupJoinForCurrent();
   $('refreshGroupCoordinators').textContent=groupScanRun||groupNativePending?'Looking for coordinators…':'Refresh coordinators';
   $('syncDiscoveryHint').textContent=groupScanRun||groupNativePending?'Finding coordinators in the background. You can keep using the app.':
     groupScanMessage||(verified?'Choose Join beside a coordinator. Your selected lamp stays selected.'+(attention?' Some lamps need attention.':''):
       attention?'No coordinator verified yet. Check the lamps needing attention, or refresh.':'No coordinators found yet. Make another lamp a coordinator, then refresh.');
 }
 function refreshGroupCoordinators({useNative=true}={}) {
-  if(!groupDiscovery)return;
+  if(!groupDiscovery||groupJoinForCurrent())return;
   const serial=groupTaskSerial;
+  if(lamp===bleLamp){
+    if(groupScanRun||!bleLamp.supportsOfflineGroups)return;
+    const run=bluetoothGroups.scan();groupScanRun=run;groupScanMessage='';renderGroupCoordinators();
+    run.catch(error=>{if(serial===groupTaskSerial)groupScanMessage=error.message;}).finally(()=>{
+      if(groupScanRun===run)groupScanRun=null;if(serial===groupTaskSerial)renderGroupCoordinators();
+    });return;
+  }
   if(useNative&&isNative&&!groupNativePending){
     groupNativePending=true;renderGroupCoordinators();
     readNativeLampDiscovery().then(result=>{
@@ -1078,14 +1304,14 @@ async function joinGroupCoordinator(id,password,expected=getGroupTarget()) {
   const serial=groupTaskSerial;groupJoinPending={id,target:expected};
   $('syncFeedback').textContent='Getting the coordinator’s invitation…';renderSync();
   try{
-    const invitation=await groupDiscovery.invite(id,password);
+    const invitation=await (lamp===bleLamp?bluetoothGroups:groupDiscovery).invite(id,password);
     if(serial!==groupTaskSerial||!sameGroupTarget(expected))throw Error('The selected lamp changed. Choose Join again.');
     const fields=parseGroupCode(invitation.code);
     if(invitation.id!==id||invitation.targetId!==expected.id||fields.leader!==id)throw Error('The coordinator invitation changed. Refresh and try again.');
     let passwordWarning='';
     if(password!==undefined){try{await credential(id,password);}catch{passwordWarning=' The coordinator password could not be saved on this phone.';}}
     if(serial!==groupTaskSerial||!sameGroupTarget(expected))throw Error('The selected lamp changed. Choose Join again.');
-    const result=await wifiLamp.joinCoordinator(invitation.code,{...expected,leader:id});
+    const result=await lamp.joinCoordinator(invitation.code,{...expected,leader:id});
     if(serial!==groupTaskSerial||!sameGroupTarget(expected))return;
     groupJoinResult={target:expected,leader:id,passwordWarning};
     $('syncFeedback').textContent=(result.active?'Following coordinator · shared light and sound.':
@@ -1108,7 +1334,9 @@ $('groupCoordinatorPasswordForm').onsubmit=event=>{
 $('cancelGroupCoordinatorPassword').onclick=()=>{$('groupCoordinatorPasswordDialog').close();};
 $('groupCoordinatorPasswordDialog').addEventListener('close',()=>{$('groupCoordinatorPassword').value='';groupPasswordTarget=null;});
 function renderGroupScenes() {
-  const sync=lamp===wifiLamp?state?.sync:null;
+  const lamp=groupEditor?.lamp,state=lamp?.state||lamp?.raw,busy=Boolean(groupEditor?.busy);
+  const updatingLamp=()=>Boolean(state?.firmware&&[1,3,4].includes(state.firmware.phase));
+  const sync=state?.sync;
   const ready=sync?.version===2 && sync.role>0,controller=ready&&sync.role===1;
   $('groupScenePane').hidden=!ready;
   $('groupOrderPane').hidden=!controller;
@@ -1119,7 +1347,8 @@ function renderGroupScenes() {
   $('groupSceneTitle').textContent=scene.id?scene.name:'Group scenes';
   $('groupSceneSpeedLabel').textContent=scene.speedLabel||({3:'Flow speed',4:'Bloom speed',6:'Storm pace',8:'Wave speed'})[scene.id]||'Travel speed';
   $('groupSceneDescription').textContent=scene.description+(scene.id>8?' Requires firmware '+sceneFirmware+' or newer on every lamp.':'')+(controller?'':' Choose and tune scenes on the coordinator.');
-  $('groupScenePosition').textContent=sync.count?'Lamp '+(sync.position+1)+' of '+sync.count:'';
+  $('groupScenePosition').textContent=Number.isInteger(sync.count)&&sync.count>0&&Number.isInteger(sync.position)&&sync.position>=0?
+    'Lamp '+(sync.position+1)+' of '+sync.count:'';
   $('groupSceneWaiting').hidden=!controller||sync.members>=1;
   $('groupSceneWaiting').textContent='Join a second lamp to see the scene. Each lamp needs firmware '+sceneFirmware+' or newer.';
   $('groupSceneFields').hidden=!controller||!scene.id;
@@ -1134,7 +1363,7 @@ function renderGroupScenes() {
       button.dataset.needsMic=String(item.audio&&!item.optionalAudio);
       if(item.audio&&!item.optionalAudio)button.title='Requires a microphone in the coordinator';
       button.dataset.scene=String(item.id);button.dataset.sceneName=item.name;
-      button.onclick=async()=>{await syncAction(async()=>{const result=await wifiLamp.configureGroupScene({scene:item.id});groupSceneDirty=false;groupAudioDirty=false;return result;});if(state?.sync?.scene===item.id){$('groupSceneLibrary').open=false;$('groupSceneTitle').focus({preventScroll:true});}};
+      button.onclick=async()=>{await groupSceneAction(async target=>{const result=await target.configureGroupScene({scene:item.id});groupSceneDirty=false;groupAudioDirty=false;return result;});if(groupEditor?.lamp.raw?.sync?.scene===item.id){$('groupSceneLibrary').open=false;$('groupSceneTitle').focus({preventScroll:true});}};
       $('groupSceneChoices').append(button);
     }
   }
@@ -1156,18 +1385,18 @@ function renderGroupScenes() {
     groupOrderKey=orderKey;$('groupOrder').replaceChildren();
     (sync.order||[]).forEach((entry,index)=>{
       const row=document.createElement('li'),label=document.createElement('span');
-      label.textContent=(index+1)+'. '+(entry.id===wifiLamp.identity?state.name:entry.name||entry.id)+(entry.online?'':' · offline');
+      label.textContent=(index+1)+'. '+(entry.id===lamp.identity?state.name:entry.name||entry.id)+(entry.online?'':' · offline');
       row.append(label);
       for(const [direction,text] of [[-1,'↑'],[1,'↓']]){
         const button=document.createElement('button');button.type='button';button.textContent=text;button.className='secondary';
         button.setAttribute('aria-label','Move '+(entry.name||entry.id)+(direction<0?' earlier':' later'));
         button.dataset.edge=String(index+direction<0||index+direction>=sync.order.length);
-        button.onclick=()=>syncAction(()=>wifiLamp.configureGroupOrder(moveGroupLamp(wifiLamp.raw.sync.order,entry.id,direction)));
+        button.onclick=()=>groupSceneAction(target=>target.configureGroupOrder(moveGroupLamp(target.raw.sync.order,entry.id,direction)));
         row.append(button);
       }
-      if(!entry.online&&entry.id!==wifiLamp.identity){
+      if(!entry.online&&entry.id!==lamp.identity){
         const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.className='text-button';
-        remove.onclick=()=>syncAction(()=>wifiLamp.configureGroupOrder(wifiLamp.raw.sync.order.filter(x=>x.id!==entry.id).map(x=>x.id)));row.append(remove);
+        remove.onclick=()=>groupSceneAction(target=>target.configureGroupOrder(target.raw.sync.order.filter(x=>x.id!==entry.id).map(x=>x.id)));row.append(remove);
       }
       $('groupOrder').append(row);
     });
@@ -1183,8 +1412,8 @@ function groupSceneLabels(){
 }
 function renderSync() {
   renderPower();
-  const sync=lamp===wifiLamp?state?.sync:null;
-  const identity=lamp===wifiLamp?wifiLamp.identity:null;
+  const sync=groupsAvailable()?state?.sync:null;
+  const identity=groupsAvailable()?lamp.identity:null;
   if(syncIdentity!==identity){
     syncIdentity=identity;groupSceneDirty=false;groupAudioDirty=false;sceneChoicesKey='';groupOrderKey='';$('groupSceneFeedback').textContent='';$('syncCode').value='';$('syncCodeArea').hidden=true;
     $('syncJoinCode').value='';$('syncFeedback').textContent='';
@@ -1211,28 +1440,28 @@ function renderSync() {
   }
 }
 async function syncAction(action) {
-  if(busy||connecting||lamp!==wifiLamp||!state||groupJoinForCurrent())return;
+  if(busy||connecting||!advancedAvailable()||groupJoinForCurrent())return;
   groupJoinResult=null;$('syncFeedback').textContent='';
   busy=true;renderSync();
-  try {const result=await wifiLamp.enqueue(action);$('syncFeedback').textContent=result||'Group updated.';$('groupSceneFeedback').textContent=result||'Group updated.';}
-  catch(e){if(e.uncertain)await wifiLamp.disconnect();$('syncFeedback').textContent=e.message;$('groupSceneFeedback').textContent=e.message;}
+  try {const result=await lamp.enqueue(action);$('syncFeedback').textContent=result||'Group updated.';$('groupSceneFeedback').textContent=result||'Group updated.';}
+  catch(e){if(e.uncertain)await lamp.disconnect();$('syncFeedback').textContent=e.message;$('groupSceneFeedback').textContent=e.message;}
   finally{busy=false;renderOptions();}
 }
-$('manageSync').onclick=()=>{settingsSection('groups');page('settings');$('syncTitle').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};
+$('manageSync').onclick=()=>page('groups');
 $('createSync').onclick=()=>syncAction(async()=>{
-  const code=createGroupCode(wifiLamp.identity);
-  await wifiLamp.configureSync(1,code);$('syncCode').value='';$('syncCodeArea').hidden=true;
+  const code=createGroupCode(lamp.identity);
+  await lamp.configureSync(1,code);$('syncCode').value='';$('syncCodeArea').hidden=true;
   return 'Coordinator ready. Select another lamp, open Groups and choose this coordinator.';
 });
-$('showSyncCode').onclick=()=>syncAction(async()=>{$('syncCode').value=await wifiLamp.syncInvite();$('syncCodeArea').hidden=false;return 'Copy this code to join other lamps.';});
+$('showSyncCode').onclick=()=>syncAction(async()=>{$('syncCode').value=await lamp.syncInvite();$('syncCodeArea').hidden=false;return 'Copy this code to join other lamps.';});
 $('copySyncCode').onclick=async()=>{
   try{await navigator.clipboard.writeText($('syncCode').value);$('syncFeedback').textContent='Group code copied.';}
   catch{$('syncCode').focus();$('syncCode').select();$('syncFeedback').textContent='Code selected. Choose Copy to share it.';}
 };
-$('syncJoinForm').onsubmit=e=>{e.preventDefault();const code=$('syncJoinCode').value;syncAction(async()=>{parseGroupCode(code);const result=await wifiLamp.configureSync(2,code);$('syncJoinCode').value='';return result+' '+groupStatus(wifiLamp.raw.sync)+'.';});};
-$('pauseSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('pause'));
-$('resumeSync').onclick=()=>syncAction(()=>wifiLamp.syncAction('resume'));
-$('leaveSync').onclick=()=>syncAction(async()=>{const result=await wifiLamp.configureSync(0);$('syncCode').value='';$('syncCodeArea').hidden=true;return result;});
+$('syncJoinForm').onsubmit=e=>{e.preventDefault();const code=$('syncJoinCode').value;syncAction(async()=>{parseGroupCode(code);const result=await lamp.configureSync(2,code);$('syncJoinCode').value='';return result+' '+groupStatus(lamp.raw.sync)+'.';});};
+$('pauseSync').onclick=()=>syncAction(()=>lamp.syncAction('pause'));
+$('resumeSync').onclick=()=>syncAction(()=>lamp.syncAction('resume'));
+$('leaveSync').onclick=()=>syncAction(async()=>{const result=await lamp.configureSync(0);$('syncCode').value='';$('syncCodeArea').hidden=true;return result;});
 renderSync();
 
 $('changeDefaultPassword').onclick=()=>{
@@ -1242,13 +1471,13 @@ $('changeDefaultPassword').onclick=()=>{
 
 for(const id of ['groupSceneSpeed','groupSceneIntensity','groupScenePrimary','groupSceneSecondary'])$(id).oninput=()=>{groupSceneDirty=true;groupSceneLabels();paintRanges();};
 for(const id of ['groupAudioGain','groupAudioGate','groupAudioScale'])$(id).oninput=()=>{groupAudioDirty=true;groupSceneLabels();paintRanges();};
-$('applyGroupScene').onclick=()=>syncAction(async()=>{
+$('applyGroupScene').onclick=()=>groupSceneAction(async target=>{
   const rgb=id=>[1,3,5].map(i=>parseInt($(id).value.slice(i,i+2),16));
-  const result=await wifiLamp.configureGroupScene({speed:Number($('groupSceneSpeed').value),intensity:Number($('groupSceneIntensity').value),primary:rgb('groupScenePrimary'),secondary:rgb('groupSceneSecondary')});
+  const result=await target.configureGroupScene({speed:Number($('groupSceneSpeed').value),intensity:Number($('groupSceneIntensity').value),primary:rgb('groupScenePrimary'),secondary:rgb('groupSceneSecondary')});
   groupSceneDirty=false;return result;
 });
-$('applyGroupAudio').onclick=()=>syncAction(async()=>{
-  const result=await wifiLamp.tuneAudio({gain:Number($('groupAudioGain').value),gate:Number($('groupAudioGate').value),scale:Number($('groupAudioScale').value)});
+$('applyGroupAudio').onclick=()=>groupSceneAction(async target=>{
+  const result=await target.tuneAudio({gain:Number($('groupAudioGain').value),gate:Number($('groupAudioGate').value),scale:Number($('groupAudioScale').value)});
   groupAudioDirty=false;return result;
 });
 
@@ -1257,8 +1486,8 @@ var playbackIdentity=null, rotationDirty=false;
 function renderPlaybackTools() {
   renderPower();
   $('controls').disabled=busy||updatingLamp()||!state||Boolean(state?.sync?.active)||Boolean(state?.calibration?.active);
-  const raw=lamp===wifiLamp?state:null;
-  const identity=raw?wifiLamp.identity:null;
+  const raw=groupsAvailable()?state:null;
+  const identity=raw?lamp.identity:null;
   if(playbackIdentity!==identity){playbackIdentity=identity;rotationDirty=false;$('rotationFeedback').textContent='';$('calibrationFeedback').textContent='';}
   $('rotationPane').hidden=!raw?.rotation;
   $('calibrationPane').hidden=!raw?.calibration;
@@ -1283,20 +1512,20 @@ function renderPlaybackTools() {
 }
 $('rotationForm').oninput=()=>{rotationDirty=true;};
 $('rotationForm').onsubmit=async e=>{
-  e.preventDefault();if(busy||connecting||lamp!==wifiLamp||!state)return;
+  e.preventDefault();if(busy||connecting||!advancedAvailable())return;
   const value={enabled:$('rotationEnabled').checked,random:$('rotationOrder').value==='random',category:Number($('rotationCategory').value),seconds:Number($('rotationInterval').value)*Number($('rotationUnit').value)};
   busy=true;renderPlaybackTools();
-  try{const message=await wifiLamp.enqueue(()=>wifiLamp.configureRotation(value));rotationDirty=false;$('rotationFeedback').textContent=message;}
+  try{const message=await lamp.enqueue(()=>lamp.configureRotation(value));rotationDirty=false;$('rotationFeedback').textContent=message;}
   catch(e){$('rotationFeedback').textContent=e.message;}
   finally{busy=false;renderPlaybackTools();}
 };
 async function calibrationAction(action,position){
-  if(busy||connecting||lamp!==wifiLamp||!state)return;
+  if(busy||connecting||!advancedAvailable())return;
   busy=true;renderPlaybackTools();
   try{
-    const message=await wifiLamp.enqueue(()=>wifiLamp.calibrateLeds(action,position));
+    const message=await lamp.enqueue(()=>lamp.calibrateLeds(action,position));
     $('calibrationFeedback').textContent=message;
-    if(action==='save'){await wifiLamp.disconnect();status(message+' Reconnect after it restarts.');}
+    if(action==='save'){await lamp.disconnect();status(message+' Reconnect after it restarts.');}
   }catch(e){$('calibrationFeedback').textContent=e.message;}
   finally{busy=false;renderPlaybackTools();}
 }

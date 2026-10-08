@@ -4,7 +4,7 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 void beginLampSync();
-void serviceLampSync(const String& name, bool blocked);
+void serviceLampSync(const String& name, bool blocked, bool scanning=false);
 String lampSyncJson();
 bool configureLampSync(uint8_t role,const String& leader,const String& key);
 String lampSyncInvite();
@@ -12,6 +12,8 @@ bool configureLampScene(uint8_t scene,uint8_t speed,uint8_t intensity,const uint
 bool configureLampOrder(const String& order);
 LampSyncWire::Visual lampGroupVisual();
 uint8_t lampGroupScene();
+uint8_t lampSyncRole();
+bool lampSyncPaused();
 void resumeLampSync();
 #endif
 // All state is accessed on the loop task, never from the audio worker.

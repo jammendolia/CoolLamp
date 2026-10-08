@@ -27,8 +27,8 @@ void clearCandidate() {
 void restoreStation() {
   WiFi.disconnect(false, false);
   WiFi.setAutoReconnect(true);
-  WiFi.mode(setupAP ? WIFI_AP_STA : lampSettings.ssid[0] ? WIFI_STA : WIFI_OFF);
-  if (setupAP || lampSettings.ssid[0]) applyLampWifiPowerProfile();
+  WiFi.mode(setupAP ? WIFI_AP_STA : WIFI_STA);
+  applyLampWifiPowerProfile();
   if (lampSettings.ssid[0]) WiFi.begin(lampSettings.ssid, lampSettings.wifiPassword);
 }
 void fail(uint8_t reason) {
@@ -96,7 +96,10 @@ void finishLampWifiSetupScan(bool success) {
   using namespace LampWifiSetup;
   if (phase != SCANNING) return;
   phase = success ? SCANNED : FAILED; error = success ? 0 : 1;
-  if (!setupAP && !lampSettings.ssid[0]) WiFi.mode(WIFI_OFF);
+  if (!setupAP && !lampSettings.ssid[0]) {
+    WiFi.mode(WIFI_STA);
+    applyLampWifiPowerProfile();
+  }
 }
 uint8_t lampWifiSetupCommand(const uint8_t* frame, size_t size, uint32_t owner, String& reply) {
   using namespace LampWifiSetup;

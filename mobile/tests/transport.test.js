@@ -86,6 +86,47 @@ test('commands are serialized and notifications can precede write completion', a
   assert.deepEqual(radio.writes.slice(1).map(frame => frame.slice(2)), [[2,1], [2,255], [1,0]]);
   await lamp.disconnect();
 });
+
+test('native queue delay longer than the acknowledgment window does not disconnect a healthy lamp', {timeout:2000}, async () => {
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:30});await lamp.connect();
+  const original=radio.write.bind(radio);let release,ready,finished=false,attempts=0;
+  const queued=new Promise(resolve=>ready=resolve),hold=new Promise(resolve=>release=resolve);
+  radio.write=async(...args)=>{attempts++;assert.equal(lamp.pending.id,args[3].getUint8(1));ready();await hold;return original(...args);};
+  const pending=lamp.command('power',0);pending.then(()=>finished=true,()=>finished=true);
+  await queued;await new Promise(resolve=>setTimeout(resolve,80));
+  assert.equal(finished,false);assert.equal(lamp.id,'lamp-1');assert.equal(lamp.pending.timer,null);assert.equal(lamp.pending.probeTimer,null);
+  release();await pending;assert.equal(attempts,1);assert.equal(radio.writes.length,2);await lamp.disconnect();
+});
+
+test('an early acknowledgment remains settled when native write completion arrives after the acknowledgment window', {timeout:2000}, async () => {
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:30});await lamp.connect();
+  const originalRead=radio.read.bind(radio);let probes=0,attempts=0,release,ready;
+  radio.read=async(...args)=>{if(args[2]===STATE)probes++;return originalRead(...args);};
+  const acknowledged=new Promise(resolve=>ready=resolve),hold=new Promise(resolve=>release=resolve);
+  radio.write=async(id,service,char,frame)=>{attempts++;radio.listener(packet(frame.getUint8(1),0,173));ready();await hold;};
+  const pending=lamp.command('brightness',173);await acknowledged;
+  assert.equal(lamp.pending,null);await new Promise(resolve=>setTimeout(resolve,80));assert.equal(lamp.id,'lamp-1');
+  release();assert.equal((await pending).brightness,173);assert.equal(attempts,1);assert.equal(probes,0);await lamp.disconnect();
+});
+
+test('native write rejection clears an unarmed acknowledgment and never replays queued commands', async () => {
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:30});await lamp.connect();let attempts=0;
+  radio.write=async()=>{attempts++;throw Error('Native write failed.');};
+  const results=await Promise.allSettled([lamp.command('power',0),lamp.command('effect',2)]);
+  assert(results.every(result=>result.status==='rejected'));assert.match(results[0].reason.message,/Native write failed/);
+  assert.equal(attempts,1);assert.equal(lamp.id,null);assert.equal(lamp.pending,null);
+});
+
+test('late native write completion cannot arm a timer or acknowledge a replacement connection', {timeout:2000}, async()=>{
+  const radio=new Radio(),lamp=new LampTransport(radio,{timeout:30});await lamp.connect();
+  const originalWrite=radio.write.bind(radio);let release,ready;
+  const queued=new Promise(resolve=>ready=resolve),hold=new Promise(resolve=>release=resolve);
+  radio.write=async(id,service,char,frame)=>{const oldListener=radio.listener;ready();await hold;oldListener(packet(frame.getUint8(1),0,22));};
+  const pending=lamp.command('brightness',22),rejected=assert.rejects(pending,/disconnected/);await queued;
+  await lamp.disconnect();await rejected;radio.write=originalWrite;await lamp.connect();
+  const current=lamp.state;release();await new Promise(resolve=>setTimeout(resolve,80));
+  assert.equal(lamp.state,current);assert.equal(lamp.state.brightness,100);assert.equal(lamp.pending,null);assert.equal(lamp.id,'lamp-1');await lamp.disconnect();
+});
 test('timeout disconnects and queued changes never replay', async () => {
   const radio = new Radio(); const lamp = new LampTransport(radio, { timeout: 25 });
   await lamp.connect(); radio.reply = false;

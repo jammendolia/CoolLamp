@@ -89,10 +89,16 @@ int main(){
  lampSettings.ssid[0]=0;setupAP=true;clockMs=600001;
  credentials();assert(command(commit,sizeof(commit))==0);expireHotspot();
  assert(setupAP&&WiFi.radioMode==WIFI_AP_STA);
- assert(command(cancel,sizeof(cancel))==0);expireHotspot();assert(!setupAP&&WiFi.radioMode==WIFI_OFF);
+ // Expiring setup leaves STA running for offline group discovery.
+ assert(command(cancel,sizeof(cancel))==0);expireHotspot();assert(!setupAP&&WiFi.radioMode==WIFI_STA);
  setupAP=true;assert(command(scan,sizeof(scan))==0);expireHotspot();assert(setupAP);
  assert(command(cancel,sizeof(cancel))==0);scanActive=true;expireHotspot();assert(setupAP);
  scanActive=false;expireHotspot();assert(!setupAP);clockMs=0;
+ // First-time BLE Wi-Fi scans also leave the radio ready for ESP-NOW.
+ assert(command(scan,sizeof(scan))==0);scanActive=false;finishLampWifiSetupScan(true);
+ assert(WiFi.radioMode==WIFI_STA);
+ assert(command(scan,sizeof(scan))==0);scanActive=false;finishLampWifiSetupScan(false);
+ assert(WiFi.radioMode==WIFI_STA);
  strcpy(lampSettings.ssid,"Previous");
  assert(command(commit,sizeof(commit))==2);
  credentials();assert(command(commit,sizeof(commit),99)==2);

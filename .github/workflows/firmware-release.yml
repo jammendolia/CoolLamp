@@ -37,7 +37,11 @@ jobs:
           python3 tests/diagnostics.py
           python3 tests/temperature-runtime.py
           python3 tests/wifi-setup-runtime.py
+          python3 tests/wifi-recovery-runtime.py
           python3 tests/bluetooth-runtime.py
+          python3 tests/ble-control-runtime.py
+          python3 tests/control-http-adapter.py
+          python3 tests/espnow-runtime.py
           python3 tests/factory-reset-runtime.py
           node tests/update-page.cjs
           node tests/effects-page.cjs
@@ -52,8 +56,10 @@ jobs:
           /tmp/corkscrew-scenes-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/sync.cpp -o /tmp/sync-test
           /tmp/sync-test
-          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/sync-stubs -Itests/stubs tests/sync-runtime.cpp -o /tmp/sync-runtime-test
-          /tmp/sync-runtime-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/ble-control.cpp -o /tmp/ble-control-test
+          /tmp/ble-control-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/wifi-recovery.cpp -o /tmp/wifi-recovery-test
+          /tmp/wifi-recovery-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/audio.cpp -o /tmp/audio-test
           /tmp/audio-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/spectrum.cpp -o /tmp/spectrum-test
@@ -81,6 +87,7 @@ jobs:
       - name: Build public firmware and manifest
         run: |
           node tools/build-firmware.cjs --public
+          python3 tests/espnow-runtime.py --mbedtls-cache .build/tls-library
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
         env:

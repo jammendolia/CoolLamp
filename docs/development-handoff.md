@@ -1,5 +1,25 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Current development — 2026-10-08: offline groups and global Groups page
+
+The user requested Bluetooth control/configuration plus ESP-NOW group
+coordination when Wi-Fi is unavailable, and a separate Groups page showing
+leaders, followers and independent lamps without selecting a coordinator.
+The local firmware candidate is **1.10.0**, not published. Public OTA remains
+1.9.6 and the accepted TestFlight upload remains 1.0 (31.1). Read
+[the new implementation and test checkpoint](offline-groups.md) before
+resuming this work.
+
+The chosen test pair, CoolLamp 1 (`acb950b2f180`, `.154`) and CoolLamp 2
+(`f0b950b2f180`, `.222`), were freshly verified on 1.9.6 with stable Wi-Fi.
+The sanitized baseline is `.build/hybrid-test-lamps-baseline.json`.
+CoolLamp 1 still has startup effect 43/brightness 215; CoolLamp 2 has startup
+effect 46/brightness 55. Both currently participate in scene 27. One local OTA
+upload to CoolLamp 1 failed with an empty server reply; fresh readback confirms
+it still runs 1.9.6 with continued uptime and unchanged compared settings.
+CoolLamp 2 was not uploaded. USB access to CoolLamp 1 is pending. Preserve these
+current settings rather than assuming older handoff snapshots still apply.
+
 ## Latest release follow-up — 2026-10-07: 1.9.6 public; app 31.1 uploaded
 
 [Firmware 1.9.6](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.9.6)

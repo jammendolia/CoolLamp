@@ -7,6 +7,7 @@
 #include "LampConfig.h"
 #include "LampGeometry.h"
 #include "LampControl.h"
+#include "LampControlEndpoint.h"
 #include "LampPlayback.h"
 #include "LampSync.h"
 #include "LampGroupScenes.h"

@@ -20,9 +20,10 @@ class BluetoothTests(unittest.TestCase):
 #include <string>
 #include <cassert>
 #include "WifiSetupWire.h"
+#include "LampBleControlWire.h"
 using String=std::string;
 struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
-struct BLECharacteristic {String value;String getValue(){return value;}};
+struct BLECharacteristic {String value;String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
 struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){}};
 std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
 std::atomic<uint32_t> writes{0},rejectedWrites{0},generation{7},lastWriteAt{0};
@@ -33,6 +34,7 @@ struct {int disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
 auto* server=&instance;
 struct Command {uint32_t generation;uint8_t length;uint8_t bytes[20];};
 void* commands=nullptr;constexpr int pdTRUE=1;int queued=0;Command received{};
+LampBleControlWire::FrameQueue controlCommands;
 int xQueueSend(void*,const Command* c,int){++queued;received=*c;return pdTRUE;}
 '''
         main = r'''
@@ -48,6 +50,15 @@ int main(){
  peer.sec_state.encrypted=true;peer.conn_handle=2;callback.onWrite(&characteristic,&peer);assert(queued==1&&rejectedWrites==3&&!rejectedSameConnection);
  peer.conn_handle=1;knownPeer=false;pairing=true;callback.onWrite(&characteristic,&peer);assert(queued==2&&secure);
  characteristic.value.pop_back();callback.onWrite(&characteristic,&peer);assert(queued==2&&instance.disconnects==1);
+ disconnectRequested=false;knownPeer=true;secure=false;
+ const uint8_t rpc[]={1,9,22,1,0,7,2,3,0};characteristic.value.assign(reinterpret_cast<const char*>(rpc),sizeof(rpc));
+ callback.onWrite(&characteristic,&peer);LampBleControlWire::Frame transfer;
+ assert(controlCommands.pop(transfer)&&transfer.generation==7&&transfer.length==9&&transfer.bytes[2]==22&&queued==2);
+ assert(characteristic.value.size()==sizeof(rpc));for(char byte:characteristic.value)assert(byte==0);
+ peer.sec_state.bonded=false;characteristic.value.assign(reinterpret_cast<const char*>(rpc),sizeof(rpc));
+ callback.onWrite(&characteristic,&peer);assert(!controlCommands.pop(transfer)&&queued==2);
+ peer.sec_state.bonded=true;peer.sec_state.encrypted=false;
+ callback.onWrite(&characteristic,&peer);assert(!controlCommands.pop(transfer)&&queued==2);
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-write-') as directory:
@@ -126,6 +137,9 @@ std::atomic<uint32_t> generation{0},connects{0},authentications{0},serviceRefres
 std::atomic<bool> secure{false},knownPeer{false},pairing{false},advertisingDirty{false},lastEncrypted{false},lastBonded{false},lastAuthAccepted{false},disconnectRequested{false};
 std::atomic<uint32_t> lastDisconnectAt{0},lastAuthAt{0};
 std::atomic<uint8_t> extendedControls{0};
+std::atomic<bool> controlPageReady{true};constexpr uint32_t currentGeneration=0;
+bool serviceLampBleControlTransfer(uint32_t,bool,bool){return false;}
+bool lampUpdateOwnsResources(){return false;}void cacheControlMetadata(){}
 BLEServer* server=&instance;int deleted=0;uint32_t clockMs=0,pairingStarted=0;
 uint32_t millis(){return clockMs;}
 bool bonded(const ble_addr_t& peer){return peer.value==1;}
@@ -163,6 +177,49 @@ int main(){
             cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
             cpp.write_text(stub + helper + callbacks + cue + '\nvoid closeEnrollment(){\n' + closing + '}\n' + main)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+    def test_control_pages_are_bonded_and_generation_bound(self):
+        source = (ROOT / 'LampBluetooth.cpp').read_text()
+        helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
+        callback = source[source.index('class ControlReads final'):source.index('ControlReads controlReadCallbacks')]
+        stub = r'''
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <cassert>
+#include "LampBleControlWire.h"
+using String=std::string;
+struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
+struct BLECharacteristic {String value;void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
+struct BLECharacteristicCallbacks {virtual void onRead(BLECharacteristic*,ble_gap_conn_desc*){}};
+std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+std::atomic<uint32_t> generation{7},controlPageGeneration{7};
+std::atomic<uint16_t> controlPageTransaction{42};std::atomic<bool> controlPageReady{true};
+'''
+        main = r'''
+int main(){
+ ControlReads reads;BLECharacteristicCallbacks& callback=reads;BLECharacteristic characteristic;
+ characteristic.value="private-invitation";ble_gap_conn_desc peer;callback.onRead(&characteristic,&peer);
+ assert(characteristic.value=="private-invitation"&&secure);
+ generation=8;callback.onRead(&characteristic,&peer);
+ assert(characteristic.value.size()==12&&LampBleControlWire::u16(reinterpret_cast<const uint8_t*>(characteristic.value.data())+4)==403&&!controlPageReady);
+ controlPageReady=true;controlPageGeneration=8;characteristic.value="private-invitation";peer.sec_state.bonded=false;
+ callback.onRead(&characteristic,&peer);assert(characteristic.value.size()==12&&!controlPageReady);
+ controlPageReady=true;peer.sec_state.bonded=true;peer.sec_state.encrypted=false;characteristic.value="private-invitation";
+ callback.onRead(&characteristic,&peer);assert(characteristic.value.size()==12&&!controlPageReady);
+ controlPageReady=true;peer.sec_state.encrypted=true;peer.conn_handle=2;characteristic.value="private-invitation";
+ callback.onRead(&characteristic,&peer);assert(characteristic.value.size()==12&&!controlPageReady);
+ controlPageReady=true;peer.conn_handle=1;controlPageTransaction=0;controlPageGeneration=0;characteristic.value="metadata";
+ callback.onRead(&characteristic,&peer);assert(characteristic.value=="metadata");
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='lamp-ble-control-read-') as directory:
+            cpp, binary = pathlib.Path(directory)/'test.cpp', pathlib.Path(directory)/'test'
+            cpp.write_text(stub + helper + callback + main)
+            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I'+str(ROOT),
+                            *SANITIZERS, str(cpp), '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True)
 
 

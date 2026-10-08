@@ -1,5 +1,29 @@
 # CoolLamp assembled PCB — preliminary design brief
 
+## Enclosure Wi-Fi observation — 2026-10-08
+
+Owner reports that a couple of lamps can scan Wi-Fi and report strong signals,
+but cannot connect unless the ESP32-C3 development board is pulled slightly out
+of the enclosure. Exact affected units, antenna orientation, and whether power
+or a restart also changed have not yet been confirmed. This limits the earlier
+single-prototype report of reliable Wi-Fi inside the base; it does not establish
+reliable enclosed operation for every build.
+
+Antenna shielding/detuning is a leading suspect, while movement of wiring or
+mechanical contacts remains an alternative. Compare inside/exposed positions
+with the same lamp location, SSID, supply/cable and LED load, checking connection
+success and uptime/reset continuity. Do not treat scan RSSI as proof of a
+working two-way connection or combine this observation with the separate
+same-IoT client-forwarding fault.
+
+Identify the actual development-board antenna before selecting its position.
+Reserve antenna clearance from the metal walls, encoder and wiring; verify that
+the bottom cover/backing provides a nonconductive RF path. Final antenna/module
+selection and board/mount geometry must pass connection, reconnection and data
+tests with the complete base closed and on its intended surface. An external
+antenna is an option to evaluate if placement cannot provide reliable operation;
+no board swap, antenna modification, GPIO or firmware change has been made.
+
 ## HW-040 encoder update — 2026-09-30
 
 The selected encoder is now the owner's photographed HW-040 breakout, with onboard
@@ -48,7 +72,7 @@ Updated 2026-09-27. Planning only; not fabrication-ready.
 
 ## Working prototype placement (photos reviewed 2026-09-26)
 
-- Owner reports reliable Wi-Fi with the ESP32-C3 development board inside this base. Use that working internal-antenna arrangement as the starting reference; an external antenna is not currently justified by an observed problem.
+- The owner reported reliable Wi-Fi inside this particular base at the earlier photo checkpoint. The position-sensitive failures reported on 2026-10-08 supersede using that observation as a general design guarantee. Retain the working example for comparison; validate enclosed antenna placement before deciding whether an external antenna is needed.
 - The underside photo shows the electronics and wiring in a channel cut through white foam. The owner identifies the development board near the yellow wire, toward the upper-right portion of this particular photo. Its exact antenna end/orientation is obscured; do not infer an RF orientation from the wire colors.
 - A microphone is present according to the owner. Its acoustic port orientation and clear path to the room cannot be identified reliably in this photo.
 - Foam occupies much of the apparent cavity in the photo; owner subsequently confirmed it is easily removable. Measure the remaining encoder/stem/inlet obstructions with the foam removed before fixing the board outline.
