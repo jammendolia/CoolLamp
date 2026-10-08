@@ -260,6 +260,11 @@
 <button type="button" data-category="color" aria-pressed="false">Color</button>
 <button type="button" data-category="audio" aria-pressed="false" hidden>Audio</button>
 </div>
+<div class="chips style-effect-filters" role="group" aria-label="Lamp design recommendations">
+<button type="button" data-style-filter="all" aria-pressed="true">All effects</button>
+<button type="button" data-style-filter="recommended" aria-pressed="false">For this style</button>
+</div>
+<p id="styleEffectsHint" class="micro-copy"></p>
 <p id="currentEffect" class="hint">
 </p>
 <div id="effectGrid" class="effect-grid" role="group" aria-label="Choose an effect">
@@ -499,6 +504,18 @@
 <button id="saveIdentity" disabled>Save name & room</button>
 <button id="identify" disabled type="button" class="secondary">Identify lamp</button>
 <p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p>
+</form>
+<form id="lampStyleForm" class="panel lamp-style-panel" data-settings-panel="overview">
+<h3>Lamp design</h3>
+<p class="hint">Choose the physical shape for its card illustration and optional effect recommendations.</p>
+<fieldset id="lampStyleFields" disabled>
+<legend class="sr-only">Physical lamp design</legend>
+<div class="lamp-style-choice"><div id="lampStylePreview" aria-hidden="true"></div><div><label for="lampStyle">Physical style</label>
+<select id="lampStyle"><option value="unspecified">Not specified</option><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option></select></div></div>
+<button id="saveLampStyle" type="submit">Save lamp design</button>
+</fieldset>
+<p id="lampStyleScope" class="hint">Connect to a lamp to choose its physical design.</p>
+<p id="lampStyleFeedback" class="hint" role="status"></p>
 </form>
 <section class="panel sync-panel" aria-labelledby="syncTitle" data-settings-panel="groups">
   <div class="section-title">

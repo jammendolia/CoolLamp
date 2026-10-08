@@ -1,5 +1,6 @@
 import { lampAddress, validFirmwareVersion } from './lamps.js';
-import { wifiObservation } from './lamp-connectivity.js';
+import { wifiObservation,groupObservation } from './lamp-connectivity.js';
+import {normalizeLampStyle} from './lamp-style.js';
 
 const busyPhases = [1, 3, 4];
 const updateErrors = ['','Lamp is offline.','Lamp could not set its clock.','Lamp cannot reach the update server.',
@@ -125,14 +126,17 @@ export class FirmwareFleet {
     this.verifyIdentity(lamp, raw);
     const firmware = firmwareStatus(raw.firmware);
     if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.');
-    return {firmware, token: raw.token, wifi:wifiObservation(raw), wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
+    const lampStyle=raw.lampStyle&&typeof raw.lampStyle==='object'?normalizeLampStyle(raw.lampStyle):null;
+    return {firmware, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle, wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
   }
   live(lamp, run, identity, state = 'ready', message = '') {
     const fw = identity.firmware;
     return this.emit(lamp, run, {state, installedVersion: fw.version, latestVersion: fw.latest,
       available: fw.available === true && newer(fw.latest, fw.version), progress: fw.progress ?? 0,
       checkedAt: this.now(), verified: true, fresh: true, wifi:identity.wifi ?? null,
-      wifiObservedAt:identity.wifi?identity.wifiObservedAt:null, message, error: ''});
+      wifiObservedAt:identity.wifi?identity.wifiObservedAt:null,group:identity.group ?? null,
+      groupObservedAt:identity.group?identity.wifiObservedAt:null,lampStyle:identity.lampStyle ?? null,
+      styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null, message, error: ''});
   }
   async prepare(entry, run) {
     const lamp = target(entry);

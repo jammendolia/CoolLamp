@@ -8,6 +8,30 @@ function setup(items=[]){
  return {store:new LampStore(storage),data,get saves(){return saves;},storage};
 }
 
+test('style choices are per canonical lamp, survive restart and preserve every other preference',()=>{
+ const id='acb950b2f180',second='f0b950b2f180';
+ const model=setup([{id,name:'BACL',room:'Studio',favorites:[4,47],firmwareVersion:'1.9.6',deviceId:'phone-a'},{id:second,name:'CoolLamp 2'}]);
+ assert.equal(model.store.setLampStyle(id,'corkscrew',{source:'phone'}).phoneLampStyle,'corkscrew');
+ assert.equal(model.saves,1);model.store.setLampStyle(id,'corkscrew',{source:'phone'});assert.equal(model.saves,1);
+ assert.equal(new LampStore(model.storage).items[0].phoneLampStyle,'corkscrew');
+ const descriptor={version:1,code:2,id:'large-helix',family:'helix',token:'private'};
+ const entry=model.store.setLampStyle(id,descriptor,{source:'lamp'});assert.equal(model.saves,2);
+ assert.deepEqual(entry.lampStyle,{version:1,code:2,id:'large-helix',family:'helix'});
+ assert.equal(entry.phoneLampStyle,'corkscrew');assert.equal(entry.room,'Studio');assert.deepEqual(entry.favorites,[4,47]);assert.equal(entry.firmwareVersion,'1.9.6');
+ assert.deepEqual(model.store.items.map(row=>row.id),[id,second]);assert.equal(model.store.items[1].lampStyle,undefined);
+ model.store.setLampStyle(id,descriptor,{source:'lamp'});assert.equal(model.saves,2);
+ model.store.setLampStyle(id,'unspecified',{source:'phone'});assert.equal(model.saves,3);assert.equal(entry.phoneLampStyle,undefined);
+ assert(!model.data.get('coollamp-lamps').includes('private'));
+});
+
+test('bad style sources, mismatched descriptors, aliases and removed IDs cannot update inventory',()=>{
+ const id='acb950b2f180',model=setup([{id},{id:'ble:phone-a'}]);
+ for(const value of ['future',2,{version:1,code:2,id:'corkscrew',family:'corkscrew'},null])assert.equal(model.store.setLampStyle(id,value,{source:'lamp'}),false);
+ for(const target of ['unknown','ble:phone-a','ACB950B2F180'])assert.equal(model.store.setLampStyle(target,'helix',{source:'phone'}),false);
+ assert.equal(model.store.setLampStyle(id,'helix',{source:'unknown'}),false);assert.equal(model.saves,0);
+ model.store.remove(id);const before=model.saves;assert.equal(model.store.setLampStyle(id,'helix',{source:'phone'}),false);assert.equal(model.saves,before);
+});
+
 test('installed firmware accepts bounded triplets and rejects unavailable or malformed values',()=>{
  for(const version of ['1.9.5','1.4.0','0.0.1','65535.65535.65535'])assert.equal(validFirmwareVersion(version),version);
  for(const version of [null,undefined,0,'','0.0.0','v1.9.5','1.9','1.9.5-beta','1.9.5\n','01.9.5','65536.1.0','<script>'])assert.equal(validFirmwareVersion(version),null);

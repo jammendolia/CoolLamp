@@ -365,3 +365,24 @@ test('failed slow GET publishes its start time so newer BLE observations survive
   const pending=fleet.refresh();await tick();setNow(1500);reject(Error('offline'));
   const row=(await pending).results[0];assert.equal(row.state,'offline');assert.equal(row.attemptedAt,1000);
 });
+
+test('one verified diagnostics GET supplies role membership without private sync data or another request',async()=>{
+  const {fleet,devices,calls}=setup(2);
+  devices[0].request=()=>response({deviceId:ids[0],firmware:status(),sync:{version:2,role:2,leader:ids[1],key:'private',peers:[{password:'private'}]}});
+  devices[1].request=()=>response({deviceId:ids[1],firmware:status(),sync:{version:2,role:1,leader:ids[1],invite:'private'}});
+  const result=await fleet.refresh();
+  assert.deepEqual(result.results.map(row=>row.group),[{role:2,leader:ids[1]},{role:1,leader:ids[1]}]);
+  assert(result.results.every(row=>row.groupObservedAt===1000));assert.equal(calls.length,2);assert.equal(writes(calls).length,0);
+  assert(!JSON.stringify(result.results).includes('private'));
+});
+
+test('same verified diagnostic read carries sanitized physical style and its request-start timestamp',async()=>{
+ const {fleet,devices,calls,setNow}=setup();let finish;
+ devices[0].request=()=>new Promise(resolve=>{finish=resolve;});
+ const pending=fleet.refresh();await tick();setNow(1300);
+ finish(response({deviceId:ids[0],firmware:status(),lampStyle:{version:1,code:3,id:'corkscrew',family:'corkscrew',token:'private'}}));
+ const row=(await pending).results[0];assert.deepEqual(row.lampStyle,{version:1,code:3,id:'corkscrew',family:'corkscrew'});
+ assert.equal(row.styleObservedAt,1000);assert.equal(row.checkedAt,1300);assert.equal(calls.length,1);assert.equal(writes(calls).length,0);assert(!JSON.stringify(row).includes('private'));
+ setNow(2000);devices[0].request=()=>response({deviceId:ids[0],firmware:status(),lampStyle:'corkscrew'});
+ const next=(await fleet.refresh()).results[0];assert.equal(next.lampStyle,null);assert.equal(next.styleObservedAt,null);
+});

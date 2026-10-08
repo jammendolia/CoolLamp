@@ -1,3 +1,5 @@
+import {normalizeLampStyle} from './lamp-style.js';
+
 // Only display metadata lives here. Passwords belong in the native credential vault.
 // Discovery lasts for this app session only, including lamps not yet connected.
 export class LampDiscoverySession {
@@ -56,6 +58,26 @@ export class LampStore {
     entry.firmwareSeenAt = Number.isFinite(status?.checkedAt)&&status.checkedAt>0 ? status.checkedAt : Date.now();
     this.save();
     return entry;
+  }
+  setLampStyle(id, value, {source}={}) {
+    if(typeof id!=='string'||!/^[0-9a-f]{12}$/.test(id))return false;
+    const entry=this.items.find(item=>item.id===id),style=normalizeLampStyle(value);
+    if(!entry||!style||!['phone','lamp'].includes(source))return false;
+    if(source==='phone') {
+      if(style.id==='unspecified') {
+        if(!Object.hasOwn(entry,'phoneLampStyle'))return entry;
+        delete entry.phoneLampStyle;
+      } else {
+        if(entry.phoneLampStyle===style.id)return entry;
+        entry.phoneLampStyle=style.id;
+      }
+    } else {
+      const prior=normalizeLampStyle(entry.lampStyle);
+      if(prior?.id===style.id&&typeof entry.lampStyle==='object')return entry;
+      entry.lampStyle=style;
+      entry.styleSeenAt=Date.now();
+    }
+    this.save();return entry;
   }
   remove(id) { this.items = this.items.filter(x=>x.id!==id); this.save(); }
   save() { this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }

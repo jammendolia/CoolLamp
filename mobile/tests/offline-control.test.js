@@ -46,6 +46,7 @@ class Radio {
     else if(op===24){
       const request=this.transactions.get(id);assert.equal(request.tx,tx);assert.equal(request.body.length,request.length);
       const text=new TextDecoder().decode(Uint8Array.from(request.body));this.requests.push({...request,body:text});
+      if(request.endpoint===25&&request.method===2){const code=Number(new URLSearchParams(text).get('style'));this.model.lampStyle={version:1,code,id:['unspecified','helix','large-helix','corkscrew'][code],family:['unspecified','helix','helix','corkscrew'][code]};}
       let response=request.endpoint===1?JSON.stringify(this.model):request.endpoint===26?JSON.stringify(this.model.effects.map((name,i)=>({id:i+1,name,category:i>=38?'audio':'calm',speed:true}))):this.largeResponse||'Saved';
       this.response.set(id,{tx,endpoint:request.endpoint,status:this.responseStatus||200,text:response,offset:0});
     }else if(op===25){const result=this.response.get(id);assert.equal(result.tx,tx);result.offset=frame.getUint16(5,true);}
@@ -85,6 +86,14 @@ test('serialized RPC jobs chunk UTF-8 forms and read multiple coherent pages',as
 test('enqueue and domain helpers use fresh normalized state without command queue deadlock',async t=>{
   const {lamp,radio}=await connected(t);await lamp.enqueue(()=>lamp.configureRotation({enabled:true,random:false,category:0,seconds:60}));
   const write=radio.requests.find(request=>request.endpoint===10);assert.equal(new URLSearchParams(write.body).get('seconds'),'60');
+});
+test('encrypted style helper targets endpoint25 and publishes only validated design metadata',async t=>{
+  const {lamp,radio}=await connected(t);radio.model.lampStyle={version:1,code:1,id:'helix',family:'helix',secret:'excluded'};await lamp.refresh();
+  assert.deepEqual(lamp.raw.lampStyle,{version:1,code:1,id:'helix',family:'helix'});
+  const before={mode:lamp.state.mode,brightness:lamp.state.brightness,power:lamp.state.power};await lamp.enqueue(()=>lamp.configureLampStyle('large-helix'));
+  const changes=radio.requests.filter(request=>request.endpoint===25);assert.equal(changes.length,1);assert.equal(changes[0].method,2);assert.equal(changes[0].body,'style=2');
+  assert.equal(lamp.state.lampStyle.id,'large-helix');assert.deepEqual({mode:lamp.state.mode,brightness:lamp.state.brightness,power:lamp.state.power},before);
+  radio.model.lampStyle={version:1,code:1,id:'corkscrew',family:'helix'};await lamp.refresh();assert.equal(lamp.raw.lampStyle,undefined);
 });
 test('lost commit notification reads its exact acknowledgment without replaying COMMIT',async t=>{
   const {lamp,radio}=await connected(t);radio.omitCommitAck=true;const start=radio.writes.length;await lamp.request('/api/name',{name:'Lamp'});

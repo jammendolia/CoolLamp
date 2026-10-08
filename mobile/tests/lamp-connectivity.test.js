@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LampConnectivity,wifiObservation,wifiSignalArcs,validWifiRssi} from '../src/lamp-connectivity.js';
+import {LampConnectivity,wifiObservation,wifiSignalArcs,validWifiRssi,groupObservation} from '../src/lamp-connectivity.js';
 
 function setup(){
   let now=1000,entries=[{id:'aabbccddeeff',address:'http://192.168.1.20',deviceId:'phone-uuid'},{id:'112233445566',address:'http://192.168.1.21'}];
@@ -60,4 +60,31 @@ test('removal, address or Bluetooth identity changes invalidate previous observa
   cache.observe(id,{deviceId:id,wifi:{connected:true,rssi:-60}});cache.forget(id);
   assert.equal(cache.get(id).wifi.state,'unknown');
   setEntries([]);assert.equal(cache.observe(id,{deviceId:id,wifi:{connected:true,rssi:-40}}),false);
+});
+
+test('group evidence allows one verified role and leader and never retains invitation keys',()=>{
+  const id='aabbccddeeff',leader='112233445566';
+  assert.deepEqual(groupObservation({deviceId:id,sync:{version:2,role:0,leader:'',key:'private'}}),{role:0,leader:null});
+  assert.deepEqual(groupObservation({deviceId:id,sync:{version:2,role:1,leader:id}}),{role:1,leader:id});
+  assert.deepEqual(groupObservation({deviceId:id,sync:{version:2,role:2,leader,key:'private'}}),{role:2,leader});
+  for(const sync of [{version:2,role:1,leader},{version:2,role:2,leader:id},{version:3,role:0},{version:2,role:'2',leader},{version:2,role:2,leader:'private'}])assert.equal(groupObservation({deviceId:id,sync}),null);
+});
+test('membership has independent freshness and exact identity guards; Wi-Fi cannot renew it',()=>{
+  const {cache,id,other,setNow}=setup();
+  assert.equal(cache.get(id).group.state,'unknown');
+  assert.equal(cache.observeGroup(id,{deviceId:other,group:{role:1,leader:id}}),false);
+  cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,key:'private'}});
+  assert.equal(cache.get(id).group.state,'follower');assert.equal(cache.get(id).group.leader,other);
+  setNow(1080);cache.observe(id,{deviceId:id,wifi:{connected:true,rssi:-58}});
+  setNow(1101);assert.equal(cache.get(id).wifi.state,'connected');assert.equal(cache.get(id).group.state,'unknown');
+  cache.observeGroup(id,{deviceId:id,group:{role:0}});assert.equal(cache.get(id).group.state,'independent');
+  assert(!JSON.stringify(cache.get(id)).includes('private'));
+});
+test('late membership, old failed requests and removal cannot overwrite or revive newer membership',()=>{
+  const {cache,id,other,setNow}=setup();
+  cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other}});
+  setNow(1050);cache.observeGroup(id,{deviceId:id,group:{role:0}});
+  assert.equal(cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other},checkedAt:1000}),false);
+  assert.equal(cache.invalidateGroup(id,{attemptedAt:1000}),false);assert.equal(cache.get(id).group.state,'independent');
+  cache.forget(id);assert.equal(cache.get(id).group.state,'unknown');
 });

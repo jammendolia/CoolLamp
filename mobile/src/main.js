@@ -14,6 +14,7 @@ import { GroupDiscovery } from './group-discovery.js';
 import { BluetoothGroups, initializeGroupRadio } from './bluetooth-groups.js';
 import { Groups } from './groups.js';
 import { LampConnectivity } from './lamp-connectivity.js';
+import { LAMP_STYLES, styleDefinition, styleLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
@@ -51,12 +52,16 @@ const liveGroupBluetooth=new Map();
 let connectivity=null,lampStatusTimer=null;
 let wifiSettingsTarget=null;
 let bleConnectivityRead=null;
+let groupFocusSerial=0,pendingGroupFocus=null,roomGroupsRefreshQueued=false,roomGroupsGeneration=0,roomGroupsCompleted=0;
+let effectStyleFilter='all',styleDraftIdentity=null,styleDraftDirty=false,styleSaving=null;
+const lampStyleSeenAt=new Map();
 async function credential(id, value) {
   if (isNative) return native.credential({id, ...(value === undefined ? {} : {value})});
   if (value !== undefined) sessionPasswords.set(id,value);
   return {value:sessionPasswords.get(id)||''};
 }
-function page(name) {
+function page(name,{preserveGroupFocus=false}={}) {
+  if(name!=='groups'||!preserveGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}
   if(name!=='settings')hideWifiPassword();
   if(name!=='groups')closeGroupEditor();
   if(name==='lamps'){renderLamps();refreshLampFirmware();refreshBasicBluetoothTelemetry();}
@@ -240,7 +245,39 @@ function renderSettings() {
   $('factoryResetHint').textContent=!state?'Connect to the lamp to reset it.':!(state.capabilities&128)?'Update this lamp to firmware 1.9.1 or newer for factory reset.':'Available over Bluetooth or Wi-Fi. Only this lamp will be reset.';
   $('lampName').disabled=!selected||busy||connecting;
   $('room').disabled=!selected||busy||connecting;
+  renderLampStyleSettings();
   renderCenterTool();
+}
+function resolvedStyle(entry=selected) {
+  const raw=entry&&entry.id===selected?.id&&verifiedSelectedLamp()?lamp.raw?.lampStyle:null;
+  const reported=reportedLampStyle(raw)?raw:null,cached=reportedLampStyle(entry?.lampStyle)?entry.lampStyle:null;
+  return resolveLampStyle(cached??reported,entry?.phoneLampStyle);
+}
+const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?styleDefinition(value):null;
+$('lampStyle').replaceChildren(...LAMP_STYLES.map(style=>new Option(style.label,style.id)));
+function rememberLampStyle(id,value,seenAt=Date.now()) {
+  if(!reportedLampStyle(value)||!Number.isFinite(seenAt)||seenAt<(lampStyleSeenAt.get(id)||0))return;
+  const entry=store.setLampStyle(id,value,{source:'lamp'});if(!entry)return;
+  lampStyleSeenAt.set(id,seenAt);if(selected?.id===id)selected=entry;
+}
+function lampStyleIllustration(value) {
+  const definition=styleDefinition(value),id=definition?.id||'unspecified',span=document.createElement('span');
+  span.className='lamp-design';span.dataset.style=id;span.title=styleLabel(id);span.setAttribute('aria-label','Lamp style: '+styleLabel(id));span.setAttribute('role','img');
+  const helix='<path class="design-back" d="M24 7c18 0 18 10 0 10s-18 10 0 10 18 10 0 10-18 10 0 10"/><path class="design-light" d="M24 7c-18 0-18 10 0 10s18 10 0 10-18 10 0 10 18 10 0 10"/>';
+  const drawing=id==='helix'?helix:id==='large-helix'?'<g transform="translate(-4 0) scale(1.16 1)">'+helix+'</g>':id==='corkscrew'?'<path class="design-back" d="M24 6v44"/><path class="design-light" d="M28 7c-24 0-24 10 0 10s24 10 0 10-24 10 0 10 24 10 0 10"/>':'<path class="design-neutral" d="M15 49V17a9 9 0 0 1 18 0v32"/><path class="design-neutral" d="M24 21v11m0 6v1"/>';
+  span.innerHTML='<svg viewBox="0 0 48 64" aria-hidden="true" focusable="false">'+drawing+'<path class="design-base" d="M12 53h24l3 5H9z"/></svg>';return span;
+}
+function renderLampStyleSettings() {
+  const resolution=resolvedStyle(),supported=verifiedSelectedLamp()&&Boolean(reportedLampStyle(lamp.raw?.lampStyle));
+  const identity=state&&selected?selected.id+'|'+lamp.epoch:null;
+  if(identity!==styleDraftIdentity){styleDraftIdentity=identity;styleDraftDirty=false;$('lampStyleFeedback').textContent='';}
+  if(!styleDraftDirty)$('lampStyle').value=resolution.id;
+  $('lampStylePreview').replaceChildren(lampStyleIllustration($('lampStyle').value));
+  $('lampStyleScope').textContent=!state||!selected?'Connect to a lamp to choose its physical design.':supported?
+    resolution.source==='phone'?'Saved on this phone. Save to store this design on the lamp.':resolution.source==='lamp'?'Saved on this lamp. Changing its design keeps the current lighting and settings.':'Choose a design to save on this lamp. Its current lighting and settings stay intact.':
+    'Saved on this phone. Update to firmware 1.10.1 to keep this design on the lamp.';
+  $('lampStyleFields').disabled=!verifiedSelectedLamp()||!/^[0-9a-f]{12}$/.test(selected?.id||'')||busy||connecting||updatingLamp()||styleSaving?.id===selected?.id;
+  if(state&&selected&&!/^[0-9a-f]{12}$/.test(selected.id))$('lampStyleScope').textContent='Reconnect over Wi-Fi or update this lamp so its identity can be verified before choosing a design.';
 }
 function settingsSection(name) { if(name==='groups'){settingsView='overview';page('groups');return;}if(name!=='network')hideWifiPassword();settingsView=name;renderSettings(); }
 for(const button of document.querySelectorAll('[data-settings-section]'))button.onclick=()=>settingsSection(button.dataset.settingsSection);
@@ -270,6 +307,7 @@ const callbacks = {
     if(lamp===bleLamp&&!bleLamp.supportsOfflineControl&&centerStatus?.active)next.calibration={active:true,kind:'center',position:centerStatus.position};
     if(state?.mode!==next.mode){editingOptions=false;editingBrightness=false;}
     state = next;
+    if(verifiedSelectedLamp()&&lamp.raw?.lampStyle)rememberLampStyle(selected.id,lamp.raw.lampStyle);
     if(lamp===wifiLamp&&verifiedSelectedLamp())observeLampWifi(selected.id,next.connected,'state');
     $('defaultPasswordNotice').hidden=next.usingDefaultPassword!==true;
     $('controls').disabled=busy||Boolean(next.sync?.active)||Boolean(next.calibration?.active);
@@ -342,9 +380,13 @@ lamp=bleLamp;
 fleet=new FirmwareFleet({http:CapacitorHttp,credential,getLamps:mergedLampEntries,onStatus:(id,value)=>{
   if(!mergedLampEntries().some(entry=>entry.id===id))return;
   fleetStatuses.set(id,value);
-  if(value.verified&&value.fresh)connectivity?.observe(id,{deviceId:id,wifi:value.wifi,checkedAt:value.wifiObservedAt,source:'diagnostics'});
-  else if(value.state!=='checking')connectivity?.invalidate(id,{attemptedAt:value.attemptedAt});
+  if(value.verified&&value.fresh){
+    connectivity?.observe(id,{deviceId:id,wifi:value.wifi,checkedAt:value.wifiObservedAt,source:'diagnostics'});
+    if(value.group)connectivity?.observeGroup(id,{deviceId:id,group:value.group,checkedAt:value.groupObservedAt,source:'diagnostics'});
+    else connectivity?.invalidateGroup(id,{attemptedAt:value.wifiObservedAt??value.attemptedAt});
+  }else if(value.state!=='checking'){connectivity?.invalidate(id,{attemptedAt:value.attemptedAt});connectivity?.invalidateGroup(id,{attemptedAt:value.attemptedAt});}
   if(value.verified&&value.fresh)store.rememberFirmware(id,{version:value.installedVersion,checkedAt:value.checkedAt});
+  if(value.verified&&value.fresh&&value.lampStyle)rememberLampStyle(id,value.lampStyle,value.styleObservedAt);
   renderLamps();
   // Fleet tasks never select a lamp or set the app's global busy state.
   // Only the lamp actually installing needs its controls refreshed/disabled.
@@ -358,7 +400,9 @@ bluetoothGroups=new BluetoothGroups({ble:BleClient,getTarget:()=>lamp===bleLamp&
 roomGroups=new Groups({getLamps:groupInventoryEntries,acquire:acquireGroupLamp,discover:async()=>{
   if(!isNative)return [];
   const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);renderLamps();return groupInventoryEntries();
-},onStatus:snapshot=>{groupsSnapshot=snapshot;renderRoomGroups();if(groupEditor)renderGroupScenes();}});
+},onStatus:snapshot=>{groupsSnapshot=snapshot;
+  for(const row of snapshot.lamps)if(row.available&&row.verified)connectivity.observeGroup(row.id,{deviceId:row.id,group:{role:row.role,leader:row.leader},checkedAt:row.checkedAt,source:'groups'});
+  renderRoomGroups();if(groupEditor)renderGroupScenes();}});
 $('globalGroupEditor').append($('groupScenePane'),$('groupOrderPane'));
 const selectedGroupRecovery=document.querySelector('.sync-panel');selectedGroupRecovery.removeAttribute('data-settings-panel');$('groupRecoveryContent').append(selectedGroupRecovery);
 $('page-groups').append($('groupCoordinatorPasswordDialog'));
@@ -410,6 +454,8 @@ async function connect(saved = null,{expectedId=null,preserveWifiIntent=false}={
 function connected(kind) {
   $('addLamp').open=false;
   category='all'; $('effectSearch').value='';
+  effectStyleFilter='all';styleDraftDirty=false;
+  if(lamp.raw?.lampStyle)rememberLampStyle(selected.id,lamp.raw.lampStyle);
   document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.category==='all')));
   renderOptions();
   localStorage.setItem('coollamp-selected',selected.id);
@@ -616,6 +662,44 @@ function bluetoothCardIcon(entry) {
   button.disabled=busy||connecting||fleetLampInstalling(entry.id);button.onclick=()=>connectCardBluetooth(entry);
   return button;
 }
+function groupCardIcon(entry) {
+  const group=connectivity.get(entry.id).group,state=group.fresh?group.state:'unknown';
+  const name=entry.name||'CoolLamp',leader=mergedLampEntries().find(lamp=>lamp.id===group.leader)?.name;
+  const description=state==='leader'?name+' leads a group':state==='follower'?name+' is a member of '+(leader?leader+'’s group':'a coordinator’s group'):state==='independent'?name+' is independent':name+' group membership is unknown';
+  const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-group';button.dataset.connection='group';button.dataset.state=state;
+  button.title=description+' · Open Groups';button.setAttribute('aria-label',description+'. Open Groups');
+  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m10.5 8.5-3.5 7m6.5-7 3.5 7M8 18h8"/><circle class="group-leader" cx="12" cy="5.5" r="3"/><circle cx="5" cy="18" r="3"/><circle class="group-follower" cx="19" cy="18" r="3"/></svg>';
+  button.disabled=connecting;button.onclick=()=>openCardGroups(entry);return button;
+}
+function openCardGroups(entry) {
+  if(!mergedLampEntries().some(lamp=>lamp.id===entry.id))return;
+  const serial=++groupFocusSerial;pendingGroupFocus={id:entry.id,name:entry.name||'CoolLamp',serial,requestedAt:Date.now(),generation:roomGroupsGeneration+1};
+  if(roomGroupsRun)roomGroupsRefreshQueued=true;
+  page('groups',{preserveGroupFocus:true});focusPendingCardGroup();
+}
+function focusPendingCardGroup() {
+  const pending=pendingGroupFocus;if(!pending||pending.serial!==groupFocusSerial||$('page-groups').hidden)return;
+  if(!mergedLampEntries().some(lamp=>lamp.id===pending.id)){pendingGroupFocus=null;return;}
+  // Only a completed scan started after this card click may determine its destination.
+  if(roomGroupsCompleted<pending.generation||groupsSnapshot.scanning||roomGroupsRun||roomGroupsRefreshQueued)return;
+  const row=groupsSnapshot.lamps.find(lamp=>lamp.id===pending.id);
+  const fresh=row?.verified&&row.available&&row.checkedAt>=pending.requestedAt;
+  let target;
+  if(fresh){
+    const container=row.role===0?$('ungroupedLamps'):$('groupsList');
+    target=row.role===1?[...container.querySelectorAll('[data-group-id]')].find(group=>group.dataset.groupId===pending.id):
+      [...container.querySelectorAll('[data-group-lamp-id]')].find(lamp=>lamp.dataset.groupLampId===pending.id);
+  }else if(!groupsSnapshot.scanning&&!roomGroupsRun&&!roomGroupsRefreshQueued){
+    target=[...$('groupsUnavailableList').querySelectorAll('[data-group-lamp-id]')].find(lamp=>lamp.dataset.groupLampId===pending.id);
+    if(target)$('groupsUnavailable').open=true;
+    else{target=$('groupsFeedback');target.textContent='Current group membership for '+pending.name+' could not be verified. Refresh or connect to that lamp.';}
+  }
+  if(!target)return;
+  $('page-groups').querySelectorAll('.group-focus-target').forEach(element=>element.classList.remove('group-focus-target'));
+  target.classList.add('group-focus-target');target.tabIndex=-1;target.focus({preventScroll:true});target.scrollIntoView({block:'center',behavior:'instant'});
+  if(!groupsSnapshot.scanning&&!roomGroupsRun&&!roomGroupsRefreshQueued)pendingGroupFocus=null;
+}
+for(const event of ['pointerdown','keydown','wheel'])document.addEventListener(event,()=>{if(pendingGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}},{capture:true,passive:true});
 async function pairCardBluetooth(entry) {
   if(!/^[0-9a-f]{12}$/.test(entry.id)){status('Add this lamp by Bluetooth first so its identity can be verified.');return false;}
   const dialog=document.createElement('dialog'),form=document.createElement('form'),title=document.createElement('h2'),instructions=document.createElement('p'),actions=document.createElement('div');
@@ -675,7 +759,7 @@ function renderLamps() {
       Number.isFinite(observation.checkedAt)?observation.checkedAt:0;
     const seen=Math.max(activeAt,pingAt)||observation?.checkedAt||entry.firmwareSeenAt;
     if(seen)version.title='Last verified '+new Date(seen).toLocaleString();
-    button.append(title,detail,version);button.disabled=connecting||busy||fleetLampInstalling(entry.id);
+    button.append(lampStyleIllustration(resolvedStyle(entry).id),title,detail,version);button.disabled=connecting||busy||fleetLampInstalling(entry.id);
     const updateStatus=fleetCardStatus(observation,entry);
     if(updateStatus){const note=document.createElement('small');note.className='lamp-update-status';note.textContent=updateStatus;button.append(note);}
     if(fleetLampInstalling(entry.id)){
@@ -697,7 +781,7 @@ function renderLamps() {
     remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
     remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting||fleetLampInstalling(entry.id);
     remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
-    const links=document.createElement('div');links.className='lamp-connections';links.append(wifiCardIcon(entry),bluetoothCardIcon(entry));
+    const links=document.createElement('div');links.className='lamp-connections';links.append(wifiCardIcon(entry),bluetoothCardIcon(entry),groupCardIcon(entry));
     wrapper.append(button,links,remove);$('lampList').append(wrapper);
     if(focusedId===entry.id){const control=focusedConnection?links.querySelector('[data-connection="'+focusedConnection+'"]'):focusedRemove?remove:button;if(control&&!control.disabled)control.focus({preventScroll:true});}
   }
@@ -730,19 +814,24 @@ for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>
 function filterEffects() {
   const query=$('effectSearch').value.trim().toLowerCase();
   const catalog=state ? lamp?.catalog || [] : [];
+  const design=resolvedStyle(),knownStyle=design.id!=='unspecified';
+  if(!knownStyle)effectStyleFilter='all';
+  const styleCatalog=effectStyleFilter==='recommended'?recommendedEffects(catalog,design.id):catalog;
+  $('styleEffectsHint').textContent=knownStyle?'Recommendations for '+styleLabel(design.id)+'. All effects remain available.':'Choose a lamp design in Settings to see recommendations.';
+  for(const button of document.querySelectorAll('[data-style-filter]')){button.setAttribute('aria-pressed',String(button.dataset.styleFilter===effectStyleFilter));if(button.dataset.styleFilter==='recommended')button.disabled=!knownStyle;}
   $('libraryCount').textContent=catalog.length?catalog.length+' effects':'Explore the collection';
   $('currentEffect').textContent=state?'Current: '+(catalog.find(x=>x.id===state.mode)?.name || 'Loading effects…'):'Choose a lamp to browse its effects.';
   document.querySelector('[data-category=audio]').hidden=!catalog.some(entry=>entry.category==='audio');
   if(category==='audio' && !catalog.some(entry=>entry.category==='audio')) {
     category='all';document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.category==='all')));
   }
-  const key=JSON.stringify([catalog,query,category,selected?.favorites,state?.mode]);
+  const key=JSON.stringify([catalog,query,category,selected?.favorites,state?.mode,effectStyleFilter,design.id]);
   if(key===effectListKey)return;
   effectListKey=key;
   const focused=document.activeElement?.dataset.effect;
   $('effectGrid').replaceChildren();
   $('effect').replaceChildren();
-  catalog.forEach(({id:mode,name,category:group})=>{if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):group===category)))$('effect').add(new Option(name,mode));});
+  styleCatalog.forEach(({id:mode,name,category:group})=>{if((!query||name.toLowerCase().includes(query))&&(category==='all'||(category==='favorites'?selected?.favorites?.includes(mode):group===category)))$('effect').add(new Option(name,mode));});
   if(state)$('effect').value=state.mode;
   if(!$('effect').options.length){const option=new Option('No matching effects','');option.disabled=true;$('effect').add(option);}
   let previousGroup=null;
@@ -772,6 +861,7 @@ for(const tab of document.querySelectorAll('[data-effect-tab]')) {
   };
 }
 $('effectSearch').oninput=filterEffects;
+for(const button of document.querySelectorAll('[data-style-filter]'))button.onclick=()=>{effectStyleFilter=button.dataset.styleFilter;filterEffects();};
 for(const button of document.querySelectorAll('[data-category]'))button.onclick=()=>{category=button.dataset.category;document.querySelectorAll('[data-category]').forEach(x=>x.setAttribute('aria-pressed',String(x===button)));filterEffects();};
 $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new Set(selected.favorites||[]);if(favorites.has(state.mode))favorites.delete(state.mode);else favorites.add(state.mode);selected=store.upsert({...selected,favorites:[...favorites]});$('favoriteEffect').setAttribute('aria-pressed',String(favorites.has(state.mode)));$('favoriteEffect').textContent=favorites.has(state.mode)?'♥':'♡';filterEffects();};
 function fillNetwork() {
@@ -841,6 +931,21 @@ $('identityForm').onsubmit=async e=>{
     if(advancedAvailable()&&lamp.raw.apiVersion)await lamp.enqueue(()=>lamp.request('/api/name',{name}));
     selected=store.upsert({...selected,name,room});$('lampTitle').textContent=name;$('lampRoom').textContent=room||'YOUR LAMP';renderLamps();status(advancedAvailable()&&lamp.raw?.apiVersion?'Lamp name saved. Room saved on this phone.':'Name and room saved on this phone.');
   }catch(e){status(e.message);}finally{busy=false;}
+};
+$('lampStyle').onchange=()=>{styleDraftDirty=true;$('lampStyleFeedback').textContent='';renderLampStyleSettings();};
+$('lampStyleForm').onsubmit=async event=>{
+  event.preventDefault();if(!verifiedSelectedLamp()||!/^[0-9a-f]{12}$/.test(selected?.id||'')||styleSaving||busy||connecting||updatingLamp())return;
+  const definition=styleDefinition($('lampStyle').value);if(!definition)return;
+  const target=lamp,id=selected.id,epoch=target.epoch,supported=Boolean(reportedLampStyle(target.raw?.lampStyle));
+  styleSaving={id,epoch};renderLampStyleSettings();
+  const guard=()=>{if(lamp!==target||selected?.id!==id||target.epoch!==epoch||!verifiedSelectedLamp())throw Error('The selected lamp changed. Choose its design again.');};
+  try{
+    if(supported){await target.enqueue(async()=>{guard();await target.configureLampStyle(definition.id);guard();});guard();rememberLampStyle(id,target.raw.lampStyle);if(!store.setLampStyle(id,'unspecified',{source:'phone'}))throw Error('This lamp’s identity could not be saved. Reconnect before choosing its design.');}
+    else{guard();if(!store.setLampStyle(id,definition.id,{source:'phone'}))throw Error('This lamp’s identity could not be saved. Reconnect before choosing its design.');}
+    selected=store.items.find(entry=>entry.id===id)||selected;styleDraftDirty=false;
+    $('lampStyleFeedback').textContent=supported?'Lamp design saved on this lamp.':'Lamp design saved on this phone.';renderLamps();filterEffects();
+  }catch(error){if(lamp===target&&selected?.id===id&&target.epoch===epoch)$('lampStyleFeedback').textContent=error.uncertain?'Design was not confirmed. Reconnect to verify it before trying again.':error.message;}
+  finally{styleSaving=null;renderLampStyleSettings();}
 };
 $('identify').onclick=()=>networkAction(async()=>status(await lamp.request('/api/identify',{})));
 $('pairingStatus').onclick=()=>networkAction(async()=>{const result=await lamp.request('/api/bluetooth');const value=typeof result==='string'?JSON.parse(result):result;status(value.pairing?'Pairing is open.':'Pairing is closed. Hold the knob for six seconds to open it.');});
@@ -1196,9 +1301,13 @@ async function createGroupLampLease(id,{entry}={}) {
   }catch(error){await transport.disconnect();throw error;}
 }
 function refreshRoomGroups() {
-  if(!roomGroups||roomGroupsRun)return;
+  if(!roomGroups)return;if(roomGroupsRun)return roomGroupsRun;
+  const generation=++roomGroupsGeneration;
   const run=roomGroups.refresh();roomGroupsRun=run;renderRoomGroups();
-  run.catch(error=>{$('groupsFeedback').textContent=error.message;}).finally(()=>{if(roomGroupsRun===run)roomGroupsRun=null;renderRoomGroups();});
+  run.catch(error=>{$('groupsFeedback').textContent=error.message;}).finally(()=>{
+    if(roomGroupsRun===run){roomGroupsRun=null;roomGroupsCompleted=generation;}renderRoomGroups();
+    if(roomGroupsRefreshQueued){roomGroupsRefreshQueued=false;refreshRoomGroups();}
+  });return run;
 }
 async function roomGroupAction(id,action) {
   if(groupActions.has(id))return;
@@ -1279,6 +1388,7 @@ function renderRoomGroups() {
   if(focusedId){const row=$('page-groups').querySelector('[data-group-lamp-id="'+focusedId+'"]');
     const control=focusedTag==='SELECT'?row?.querySelector('select'):[...row?.querySelectorAll('button')||[]].find(button=>button.textContent===focusedText);
     if(control&&!control.disabled)control.focus({preventScroll:true});}
+  focusPendingCardGroup();
 }
 async function closeGroupEditor() {
   ++groupEditorSerial;const previous=groupEditor;groupEditor=null;$('globalGroupEditor').hidden=true;

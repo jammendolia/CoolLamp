@@ -2,12 +2,13 @@ import { CATALOG, validateCatalog, legacyCatalog } from './catalog.js';
 import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, CONTROL, CONTROL_ENDPOINTS, encodeCommand, decodeState, decodeFirmware, decodeEffectOptions, decodeControlCapabilities, decodeControlPage, resultError } from './protocol.js';
 import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wifiSetupMessage } from './wifi-setup.js';
 import { WifiTransport } from './wifi.js';
+import { normalizeLampStyle } from './lamp-style.js';
 
 const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/api/sync':4,'/api/sync/scene':5,
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
  '/api/calibration':12,'/api/name':13,'/api/identify':14,'/api/vu-colors':15,'/api/fountain-colors':16,
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
- '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/effects':26};
+ '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
 function publicControlSync(value){
   const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport']);
@@ -377,6 +378,7 @@ export class LampTransport {
       'audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint'])
       if(raw[field]!==undefined)snapshot[field]=raw[field];
     if(snapshot.sync)snapshot.sync=publicControlSync(snapshot.sync);
+    const design=raw.lampStyle&&typeof raw.lampStyle==='object'&&!Array.isArray(raw.lampStyle)?normalizeLampStyle(raw.lampStyle):null;if(design)snapshot.lampStyle=design;
     this.catalog=catalog;this.raw=snapshot;
     const color=raw.colors?.[raw.mode-1],binary=this.state;
     this.state={...snapshot,id:binary.id,result:binary.result,revision:binary.revision,capabilities:binary.capabilities,
@@ -470,5 +472,5 @@ export class LampTransport {
 // The encrypted adapter uses the same validation and readback as Wi-Fi without
 // importing HTTP tokens or changing the selected lamp's radio connection.
 for(const method of ['configureGroupScene','configureGroupOrder','configureSync','joinCoordinator','syncAction','syncInvite',
- 'calibrateLeds','configureRotation','configureGeometry','configureFountainColors','configureVuColors','tuneAudio','configureAudio'])
+ 'calibrateLeds','configureRotation','configureGeometry','configureFountainColors','configureVuColors','tuneAudio','configureAudio','configureLampStyle'])
   LampTransport.prototype[method]=WifiTransport.prototype[method];

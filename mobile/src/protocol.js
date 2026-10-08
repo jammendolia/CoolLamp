@@ -7,7 +7,7 @@ export const CONTROL = '7b61000a-6e2b-4f3d-9a71-28e45c001001';
 export const CONTROL_ENDPOINTS = Object.freeze({state:1,sync:2,invite:3,group:4,scene:5,order:6,
  config:7,audio:8,audioTuning:9,rotation:10,geometry:11,calibration:12,name:13,identify:14,
  vuColors:15,fountainColors:16,audioTest:17,firmware:18,firmwareCheck:19,firmwareInstall:20,
- firmwareAutomatic:21,factoryReset:22,bluetooth:24,effects:26});
+ firmwareAutomatic:21,factoryReset:22,bluetooth:24,style:25,effects:26});
 export const effects = ['Pacifica','Aurora','Rain','Fire','Split fire - rising','Split fire - falling',
   'Split fire - rising, reversed colors','Blue gas fire','Witch fire','Purple fire','Embers','Lava','Plasma',
   'Rainbow','Rainbow with glitter','Confetti','Comet collision','Sinelon','BPM','Juggle',

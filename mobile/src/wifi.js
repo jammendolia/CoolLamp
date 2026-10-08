@@ -2,6 +2,8 @@ import { legacyCatalog, validateCatalog } from './catalog.js';
 import { lampAddress } from './lamps.js';
 import { parseGroupCode } from './sync.js';
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
+import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
+const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
 
 export class WifiTransport {
   constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
@@ -174,6 +176,25 @@ export class WifiTransport {
     if(!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
     const message=await this.request('/api/geometry',{midpoint});
     await this.refresh();
+    return message;
+  }
+  async configureLampStyle(value) {
+    const definition=styleDefinition(value);if(!definition)throw Error('Choose a valid lamp design.');
+    const id=this.identity,epoch=this.epoch,address=this.base;
+    const guard=()=>{if(!id||this.identity!==id||this.epoch!==epoch||this.base!==address)throw Error('Connection changed.');};
+    guard();await this.refresh(id);guard();
+    if(!reportedLampStyle(this.raw?.lampStyle))throw Error('Update this lamp to firmware 1.10.1 to save its design on the lamp.');
+    let message;
+    try{guard();message=await this.request('/api/style',{style:definition.code});}
+    catch(error){
+      guard();if(!error.uncertain)throw error;
+      // A lost reply may follow a successful save. Verify once, never replay it.
+      try{await this.refresh(id);guard();}catch{throw error;}
+      if(reportedLampStyle(this.raw?.lampStyle)?.id!==definition.id)throw error;
+      return 'Lamp design verified.';
+    }
+    guard();await this.refresh(id);guard();
+    if(reportedLampStyle(this.raw?.lampStyle)?.id!==definition.id)throw Error('The lamp did not confirm its design. Refresh before trying again.');
     return message;
   }
   // Apply from the active effect pane. Older firmware retains its restart behavior.

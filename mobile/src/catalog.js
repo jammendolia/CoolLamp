@@ -5,7 +5,9 @@ export function validateCatalog(value, count) {
   if (!Array.isArray(value) || !Number.isInteger(count) || count<1 || count>255 || value.length!==count) throw new Error('Invalid lamp effect catalog.');
   return value.map((entry,i)=>{
     if (!entry || entry.id!==i+1 || typeof entry.name!=='string' || !entry.name.trim() || new TextEncoder().encode(entry.name).length>96 || /[\x00-\x1f]/.test(entry.name) || typeof entry.category!=='string' || typeof entry.speed!=='boolean') throw new Error('Invalid lamp effect catalog.');
-    return {id:entry.id,name:entry.name,category:['calm','fire','color','audio'].includes(entry.category)?entry.category:'other',speed:entry.speed};
+    const result={id:entry.id,name:entry.name,category:['calm','fire','color','audio'].includes(entry.category)?entry.category:'other',speed:entry.speed};
+    if(Object.hasOwn(entry,'styles'))result.styles=Array.isArray(entry.styles)&&entry.styles.length<=4&&entry.styles.every(style=>['unspecified','helix','large-helix','corkscrew'].includes(style))?[...new Set(entry.styles)]:null;
+    return result;
   });
 }
 export function legacyCatalog(names) {

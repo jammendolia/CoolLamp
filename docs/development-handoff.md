@@ -1,5 +1,29 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Physical design and recommendations — 2026-10-08
+
+The latest user request adds explicit Helix, Large helix and Corkscrew design
+classification, representative card illustrations and an optional **For this
+style** effect filter. All effects remains the default, using only the current
+lamp's catalog. Existing effect IDs, group rendering, GPIOs and saved lighting
+settings remain unchanged. See [the design contract](lamp-styles.md).
+
+The app stores selections on the phone for existing 1.9.6 lamps, with explicit
+scope labeling. The new **1.10.1 candidate** persists design on the lamp through
+protected HTTP or Bluetooth endpoint 25 and reports it through state and
+diagnostics. Neither test lamp has this candidate installed yet. The earlier
+1.10.0 CI image/draft is preserved; public OTA remains 1.9.6. USB access to
+CoolLamp 1 is still pending after the failed local OTA upload. No second upload
+or settings changes were attempted. New candidate and app CI evidence will be
+recorded below after completion.
+
+App **1.0 (33.1)**, the Wi-Fi/Bluetooth card indicator checkpoint, was accepted
+by Apple on source `437727f34030262a8f7f1ed6525c1e6162fff1ab`, workflow run
+`37824190571`, at `2026-10-08T18:30:49.6000750Z` (13:30:49 CDT), with 233 tests.
+Its log is `.build/ios-testflight-33.1-ci.log`. It does not include the later
+group shortcut or physical-design UI. All GitHub actions used verified personal
+`jammendolia`; HiFin remains untouched.
+
 ## Lamp-card connection indicators — 2026-10-08
 
 The user requested clickable Wi-Fi strength and Bluetooth icons on every lamp
@@ -24,9 +48,18 @@ saved pairing and pending connections remain subdued. Its icon initiates
 Bluetooth connection, with exact lamp identity checks and existing six-second
 physical pairing for a new device. The old card text link is removed.
 
-Fresh read-only integration made two GETs: CoolLamp 1 reported -61 dBm and
-CoolLamp 2 -59 dBm, both two arcs. Evidence:
-`.build/lamp-card-connectivity-live.json`. The 40 focused telemetry/fleet tests
+The user then requested a third group-membership icon. Verified leaders and
+followers are highlighted; independent/unknown lamps stay subdued. Its
+identity-verified role/leader data comes from the same diagnostics request,
+with a separate freshness timestamp. Clicking opens Groups and focuses the
+lamp's latest group or independent/unavailable row after fresh inventory.
+The selected control lamp remains unchanged; no membership mutation occurs.
+Navigation/click generation guards prevent a late result stealing focus.
+
+Fresh read-only integration made two GETs: both test lamps most recently
+reported -60 dBm (two arcs), with CoolLamp 1 a follower of CoolLamp 2 and
+CoolLamp 2 the leader. Evidence:
+`.build/lamp-card-connectivity-live.json`. The 44 focused telemetry/fleet tests
 passed. Final app validation passed **233/233 tests**, the Vite production
 build, and mocked production card interactions: three/two/one arcs, timeout
 question mark, confirmed disconnection slash, verified main/auxiliary blue
