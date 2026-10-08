@@ -1,5 +1,41 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Lamp-card connection indicators — 2026-10-08
+
+The user requested clickable Wi-Fi strength and Bluetooth icons on every lamp
+card, replacing the separate Connect by Bluetooth text link. This is an
+app-only change: firmware 1.9.6 already supplies authenticated per-lamp RSSI
+through `/api/diagnostics`. The existing bounded background firmware reads
+also collect identity-verified Wi-Fi telemetry; no extra HTTP polling is added.
+
+RSSI uses three arcs at -55 dBm or better, two through -67, one through -80,
+and a dot for weaker connected signals. Missing, invalid or 30-second-old
+strength/status gets a small question-mark badge; a circle/slash requires a
+fresh explicit disconnected report. Request-start timestamps and separate
+signal age prevent slow replies or boolean-only Bluetooth updates from making
+old RSSI appear current. No signal data or credentials are persisted by the
+session cache. Foreground Lamps refreshes reuse the fleet pipeline every
+20 seconds and pause when hidden.
+
+Wi-Fi icon clicks open that exact lamp's Network panel after identity-verified
+Wi-Fi or Bluetooth connection, including a guarded password retry. Bluetooth
+is blue only for a live identity/epoch-verified connection owned by this app;
+saved pairing and pending connections remain subdued. Its icon initiates
+Bluetooth connection, with exact lamp identity checks and existing six-second
+physical pairing for a new device. The old card text link is removed.
+
+Fresh read-only integration made two GETs: CoolLamp 1 reported -61 dBm and
+CoolLamp 2 -59 dBm, both two arcs. Evidence:
+`.build/lamp-card-connectivity-live.json`. The 40 focused telemetry/fleet tests
+passed. Final app validation passed **233/233 tests**, the Vite production
+build, and mocked production card interactions: three/two/one arcs, timeout
+question mark, confirmed disconnection slash, verified main/auxiliary blue
+Bluetooth only, exact-lamp Wi-Fi settings/password retry, wrong Bluetooth
+picker rejection before commands, cancellation and legacy firmware polling.
+Mobile and desktop previews are `.build/ui-check/lamp-connectivity-mobile.png`
+and `lamp-connectivity-desktop.png`. Phone acceptance remains pending. Public
+OTA remains 1.9.6, and the ESP-NOW 1.10.0 draft's USB test remains pending.
+
 ## Current development — 2026-10-08: offline groups and global Groups page
 
 The user requested Bluetooth control/configuration plus ESP-NOW group

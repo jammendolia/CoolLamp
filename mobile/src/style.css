@@ -156,13 +156,25 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-card { position: relative; width: 100%; min-width: 0; text-align: left; padding: 22px; border: 1px solid #566780; color: #f4f3ed; background: linear-gradient(130deg,#283748,#1c283b); min-height: 145px; }
 .lamp-card[aria-current=true] { border-color: var(--accent); }
 .lamp-card::before { content: ''; display: block; width: 24px; height: 30px; border: 2px solid #a9f0d8; border-radius: 12px 12px 7px 7px; margin-bottom: 16px; box-shadow: 0 0 18px #a9f0d81c; }
-.lamp-card::after { content: '↗'; position: absolute; top: 20px; right: 22px; font-size: 1.25rem; color: var(--muted); }
+.lamp-card::after { content: none; }
 .lamp-card strong { display: block; font-size: 1.375rem; letter-spacing: -.5px; font-weight: 600; overflow-wrap: anywhere; }
 .lamp-card span { display: block; padding-right: 46px; font-size: 0.75rem; color: #bac8d8; line-height: 1.6; margin-top: 9px; overflow-wrap: anywhere; }
 .lamp-card .lamp-firmware { display: block; padding-right: 46px; font-size: 0.75rem; color: #bac8d8; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; }
 .lamp-card .lamp-update-status { display: block; padding-right: 46px; font-size: 0.75rem; color: var(--muted); line-height: 1.6; margin-top: 7px; overflow-wrap: anywhere; }
 .lamp-card .lamp-update-progress { width: calc(100% - 46px); height: 6px; margin: 12px 0 0; accent-color: var(--accent); }
 .lamp-entry { display: grid; position: relative; }
+.lamp-connections { position: absolute; top: 16px; right: 16px; display: flex; gap: 6px; }
+.lamp-connection { display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 9px; border-radius: 13px; border: 1px solid #64778e; background: #1c293d; color: #94a4ba; }
+.lamp-connection svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.lamp-connection:hover:not(:disabled), .lamp-connection:focus-visible { border-color: var(--accent); background: #263b47; }
+.lamp-wifi .wifi-arc { opacity: .27; }
+.lamp-wifi .wifi-dot { fill: currentColor; stroke: none; opacity: .35; }
+.lamp-wifi .active { color: var(--accent); opacity: 1; }
+.lamp-wifi .wifi-question circle { fill: #24344b; stroke: #adb9ca; stroke-width: 1; }
+.lamp-wifi .wifi-question text { fill: #d7e0ee; stroke: none; font-size: 10px; font-weight: 700; }
+.lamp-wifi .wifi-slash { color: #c2cad6; }
+.lamp-wifi[data-state=disconnected] .wifi-arc,.lamp-wifi[data-state=disconnected] .wifi-dot { opacity: .15; }
+.lamp-bluetooth.is-active { color: #82bcff; border-color: #4c8bd4; background: #17304d; }
 .lamp-remove { position: absolute; right: 12px; bottom: 12px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 12px; color: var(--muted); background: transparent; }
 .lamp-remove svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .lamp-remove:hover:not(:disabled),.lamp-remove:focus-visible { color: var(--accent); background: #a9f0d812; }
@@ -280,7 +292,6 @@ progress { width: 100%; height: 10px; margin-top: 20px; accent-color: var(--acce
   .lamp-art { grid-row: 1/4; height: 185px; }
   .lamp-art svg { width: 160px; height: 190px; }
 }
-.lamp-bluetooth { grid-column: 1 / -1; justify-self: start; margin-left: .8rem; font-size: .8rem; }
 .room-groups { display: grid; gap: 18px; margin: 24px 0; }
 .room-group { margin: 0; border-top: 3px solid var(--accent); }
 .group-lamp-list { display: grid; gap: 12px; }

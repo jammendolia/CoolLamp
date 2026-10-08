@@ -290,6 +290,13 @@ export class LampTransport {
   receiveFirmware(next) {
     if(this.raw)this.raw.firmware=next;if(this.state)this.state.firmware=next;this.onFirmware(next);
   }
+  async refreshFirmware() {
+    if(!this.id||!(this.state?.capabilities&4))throw Error('Firmware status is unavailable over Bluetooth.');
+    const epoch=this.epoch,id=this.id;
+    const value=await this.ble.read(id,SERVICE,FIRMWARE,{timeout:this.timeout});
+    if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');
+    const status=decodeFirmware(value);this.receiveFirmware(status);return status;
+  }
   get supportsOfflineControl() { return Boolean(this.id&&this.control?.capabilities.includes('control')); }
   get supportsOfflineGroups() { return Boolean(this.supportsOfflineControl&&this.control.capabilities.includes('groups')); }
   get identity() { return this.deviceIdentity; }

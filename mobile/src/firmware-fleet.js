@@ -1,4 +1,5 @@
 import { lampAddress, validFirmwareVersion } from './lamps.js';
+import { wifiObservation } from './lamp-connectivity.js';
 
 const busyPhases = [1, 3, 4];
 const updateErrors = ['','Lamp is offline.','Lamp could not set its clock.','Lamp cannot reach the update server.',
@@ -61,6 +62,7 @@ export class FirmwareFleet {
     return {cancelled: false, cancellation, stop() {this.cancelled = true; stop();}};
   }
   cancelRefresh() { this.refreshRun?.stop(); this.refreshRun = null; }
+  forget(id) { this.cancelRefresh();this.statuses.delete(id); }
   cancel() { this.cancelRefresh(); this.bulkRun?.stop(); }
   assertCurrent(lamp, run) {
     if (run.cancelled) throw failure('Firmware task cancelled.', {cancelled: true});
@@ -81,6 +83,7 @@ export class FirmwareFleet {
   }
   async request(lamp, run, path, token) {
     this.assertCurrent(lamp, run);
+    const attemptedAt=this.now();
     let timer;
     const mutation = token !== undefined;
     const options = {url: lamp.base + path, method: mutation ? 'POST' : 'GET',
@@ -96,14 +99,14 @@ export class FirmwareFleet {
     } catch (error) {
       this.assertCurrent(lamp, run);
       throw failure(mutation ? 'The lamp did not confirm the update request. Checking its status without sending it again.' : 'Lamp did not respond on Wi-Fi.',
-        {offline: !mutation, uncertain: mutation, cause: error});
+        {offline: !mutation, uncertain: mutation, cause: error, attemptedAt});
     } finally { clearTimeout(timer); }
     this.assertCurrent(lamp, run);
-    if (response?.url && response.url !== options.url) throw failure('Lamp redirected the request. Find it on Wi-Fi again.');
-    if (response?.status === 401 || response?.status === 403) throw failure('Check this lamp’s access password.', {needsPassword: true});
+    if (response?.url && response.url !== options.url) throw failure('Lamp redirected the request. Find it on Wi-Fi again.',{attemptedAt});
+    if (response?.status === 401 || response?.status === 403) throw failure('Check this lamp’s access password.', {needsPassword: true,attemptedAt});
     if (!Number.isInteger(response?.status) || response.status < 200 || response.status >= 300) {
       throw failure(response?.status >= 300 && response.status < 400 ? 'Lamp redirected the request. Find it on Wi-Fi again.' : 'Lamp rejected the firmware request.',
-        {httpStatus: response?.status, confirmed: true});
+        {httpStatus: response?.status, confirmed: true,attemptedAt});
     }
     return response;
   }
@@ -112,23 +115,24 @@ export class FirmwareFleet {
     if (identity !== lamp.id) throw failure('This address belongs to a different lamp. Refresh the Wi-Fi list.', {identity: true});
   }
   async identify(lamp, run, state = false) {
-    let response;
+    let response, wifiObservedAt=this.now();
     if (!state) {
       try { response = await this.request(lamp, run, '/api/diagnostics'); }
       catch (error) { if (error.httpStatus !== 404) throw error; }
     }
-    if (!response) response = await this.request(lamp, run, '/api/state');
+    if (!response) {wifiObservedAt=this.now();response = await this.request(lamp, run, '/api/state');}
     const raw = parse(response);
     this.verifyIdentity(lamp, raw);
     const firmware = firmwareStatus(raw.firmware);
     if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.');
-    return {firmware, token: raw.token, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
+    return {firmware, token: raw.token, wifi:wifiObservation(raw), wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
   }
   live(lamp, run, identity, state = 'ready', message = '') {
     const fw = identity.firmware;
     return this.emit(lamp, run, {state, installedVersion: fw.version, latestVersion: fw.latest,
       available: fw.available === true && newer(fw.latest, fw.version), progress: fw.progress ?? 0,
-      checkedAt: this.now(), verified: true, fresh: true, message, error: ''});
+      checkedAt: this.now(), verified: true, fresh: true, wifi:identity.wifi ?? null,
+      wifiObservedAt:identity.wifi?identity.wifiObservedAt:null, message, error: ''});
   }
   async prepare(entry, run) {
     const lamp = target(entry);
@@ -154,11 +158,11 @@ export class FirmwareFleet {
     try {
       const lamp = target(entry);
       return this.emit(lamp, run, {state: error.needsPassword ? 'needs-password' : error.unsupported ? 'unsupported' : error.offline ? 'offline' : 'failed',
-        message: error.message, error: error.message, attemptedAt: this.now(), verified: false, fresh: false});
+        message: error.message, error: error.message, attemptedAt: error.attemptedAt ?? this.statuses.get(entry.id)?.attemptedAt ?? this.now(), verified: false, fresh: false});
     } catch {
       if (run.cancelled || !this.getLamps().some(lamp => lamp.id === entry.id && lamp.address === entry.address)) return null;
       const value = {...this.statuses.get(entry.id), state: error.unsupported ? 'unsupported' : 'failed', message: error.message,
-        error: error.message, attemptedAt: this.now(), fresh: false, verified: false};
+        error: error.message, attemptedAt: error.attemptedAt ?? this.statuses.get(entry.id)?.attemptedAt ?? this.now(), fresh: false, verified: false};
       this.statuses.set(entry.id, value); this.onStatus?.(entry.id, value);
       return {id: entry.id, ...value};
     }

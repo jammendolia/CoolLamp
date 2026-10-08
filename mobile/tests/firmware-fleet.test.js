@@ -325,3 +325,43 @@ test('failed refresh retains its last verified timestamp and cached version with
   assert.equal(result.state, 'offline'); assert.equal(result.installedVersion, '1.9.4'); assert.equal(result.checkedAt, 1000);
   assert.equal(result.attemptedAt, 2000); assert.equal(result.fresh, false); assert.equal(result.verified, false);
 });
+
+test('same identity-verified diagnostic read supplies per-lamp signal without additional requests or private fields',async()=>{
+  const {fleet,devices,calls}=setup(2);
+  devices[0].request=()=>response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-58,password:'private',ssid:'private'}});
+  devices[1].request=()=>response({deviceId:ids[1],firmware:status(),wifi:{connected:false,rssi:0}});
+  const result=await fleet.refresh();
+  assert.deepEqual(result.results.map(row=>row.wifi),[{connected:true,rssi:-58},{connected:false,rssi:null}]);
+  assert(result.results.every(row=>row.wifiObservedAt===1000));assert.equal(calls.length,2);assert.equal(writes(calls).length,0);
+  assert(!JSON.stringify(result.results).includes('private'));
+});
+test('slow diagnostic signal retains its own observation time instead of later firmware completion time',async()=>{
+  const {fleet,devices,setNow}=setup();let finish;
+  devices[0].request=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=fleet.refresh();await tick();setNow(1200);
+  finish(response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-67}}));
+  const row=(await pending).results[0];assert.equal(row.checkedAt,1200);assert.equal(row.wifiObservedAt,1000);
+});
+test('a subsequent signal-less read cannot merge a previously valid RSSI into fresh firmware status',async()=>{
+  const {fleet,devices,setNow}=setup();
+  devices[0].request=()=>response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-45}});
+  await fleet.refresh();setNow(2000);devices[0].request=undefined;
+  const row=(await fleet.refresh()).results[0];assert.deepEqual(row.wifi,{connected:true});assert.equal(row.wifiObservedAt,2000);
+  devices[0].identity=ids[1];const wrong=(await fleet.refresh()).results[0];assert.equal(wrong.verified,false);assert.equal(wrong.fresh,false);
+});
+test('forget cancels pending reads and removes internal signal telemetry before rediscovery',async()=>{
+  const {fleet,devices}=setup();
+  devices[0].request=()=>response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-50}});
+  await fleet.refresh();assert.equal(fleet.statuses.get(ids[0]).wifi.rssi,-50);
+  let finish;devices[0].request=()=>new Promise(resolve=>{finish=resolve;});
+  const pending=fleet.refresh();await tick();fleet.forget(ids[0]);
+  finish(response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-40}}));
+  assert.equal((await pending).cancelled,true);assert.equal(fleet.statuses.has(ids[0]),false);
+});
+
+test('failed slow GET publishes its start time so newer BLE observations survive invalidation',async()=>{
+  const {fleet,devices,setNow}=setup();let reject;
+  devices[0].request=()=>new Promise((_,fail)=>{reject=fail;});
+  const pending=fleet.refresh();await tick();setNow(1500);reject(Error('offline'));
+  const row=(await pending).results[0];assert.equal(row.state,'offline');assert.equal(row.attemptedAt,1000);
+});

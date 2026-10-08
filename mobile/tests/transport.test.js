@@ -49,6 +49,23 @@ test('firmware subscription is separate, stale notifications are ignored, and re
   const stale=radio.firmwareListener;await lamp.disconnect();const count=received.length;stale(firmwarePacket());assert.equal(received.length,count);
 });
 
+test('basic Bluetooth telemetry reads fresh protected firmware once with an epoch guard and no commands',async()=>{
+  class UpdateRadio extends Radio {
+    wifi=false;readOptions=null;hold=null;ready=null;
+    async read(id,service,char,options){
+      if(char===FIRMWARE){this.readOptions=options;if(this.hold){this.ready();await this.hold;}const data=firmwarePacket();data.setUint8(3,Number(this.wifi));return data;}
+      if(char===STATE){const data=packet();data.setUint8(7,5);return data;}throw Error('Not present');
+    }
+    async startNotifications(id,service,char,listener){if(char===STATE)this.listener=listener;}
+    async write(id,service,char,frame){this.writes.push([...new Uint8Array(frame.buffer)]);const data=packet(frame.getUint8(1));data.setUint8(7,5);this.listener(data);}
+  }
+  const radio=new UpdateRadio(),updates=[],lamp=new LampTransport(radio,{onFirmware:value=>updates.push(value),timeout:70});await lamp.connect();
+  const before=radio.writes.length;radio.wifi=true;assert.equal((await lamp.refreshFirmware()).wifi,true);assert.equal(updates.at(-1).wifi,true);
+  assert.equal(radio.writes.length,before);assert.equal(radio.readOptions.timeout,70);
+  let release,ready;const reading=new Promise(resolve=>ready=resolve);radio.hold=new Promise(resolve=>release=resolve);radio.ready=ready;
+  const pending=lamp.refreshFirmware();await reading;await lamp.disconnect();const count=updates.length;release();await assert.rejects(pending,/changed/);assert.equal(updates.length,count);
+});
+
 test('wire frames preserve boundaries and reject invalid values', () => {
   assert.deepEqual([...new Uint8Array(encodeCommand(255, 'brightness', 255).buffer)], [1,255,2,255]);
   for (const args of [[0,'power',1], [1,'power',2], [1,'brightness',0], [1,'brightness',256], [1,'effect',39], [1,'effect',1.2], [1,'saveDefaults',1], [1,'unknown',0]]) assert.throws(() => encodeCommand(...args));
