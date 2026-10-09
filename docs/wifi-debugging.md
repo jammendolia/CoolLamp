@@ -1,6 +1,98 @@
 # Debugging lamps over Wi-Fi
 
-## Latest publication — 2026-10-08: firmware 1.10.2 public; app 35.1 accepted
+## Latest physical/app checkpoint — 2026-10-09: 1.10.2 installed; app 36.1 accepted
+
+Fresh read-only fleet evidence at `2026-10-09T04:41:55.438Z`
+(2026-10-08 23:41:55 CDT) confirms **CoolLamp 1, CoolLamp 2 and the new lamp
+running `COOLLAMP-PUBLIC-1.10.2`**. Evidence:
+`.build/group-power-fleet-1791520915438.json` and
+`.build/group-power-context-live.json`. Public Latest remains firmware 1.10.2;
+its published image/tag verification is retained in the publication checkpoint
+below. The runtime reads confirm version/public marker; no raw-flash digest was
+read, and the installation path is not established.
+
+| Lamp | Installed version | Original automatic preference | Current group observation | Uptime (ms) |
+| --- | --- | --- | --- | ---: |
+| CoolLamp 1 | 1.10.2 | Enabled | Active follower on ESP-NOW | 9,986,966 |
+| CoolLamp 2 | 1.10.2 | Enabled | Hybrid coordinator with three followers | 24,718,633 |
+| New lamp | 1.10.2 | Disabled | Active follower on UDP | 26,012,820 |
+| BACL | 1.9.6 | Disabled | Firmware phase 2, offering 1.10.2 | Not recorded here |
+
+CoolLamp 1/2/new lamp each reported firmware phase 0/error 0, latest 1.10.2 and
+TLS error 0 in this snapshot. This establishes successful current status and
+observed 1.10.2 runtime, **not complete repeat-TLS validation** or proof that the
+previous intermittent failure is permanently fixed. No update, update check or
+reboot was forced by the agent after publication. Do not attribute these
+installations to automatic updates solely because CoolLamp 1/2 retain enabled
+preferences; the new lamp retains its original disabled preference.
+
+All four lamps reported power off in the fresh fleet read. An earlier CoolLamp 2
+read at about `2026-10-09T04:39Z` showed power on; the intervening state change
+was external to the agent, which made **zero POST writes**. The read-only
+snapshots do not establish which user control caused that change. Original
+automatic-update preferences remain unchanged.
+
+The healthy observed CoolLamp 2 boot on 1.10.2 supersedes the older manual
+partial-upload record's uncertainty about whether its next boot would still
+run 1.10.1. That transfer remains a historical partial upload; it is not evidence
+of the installation path. The agent did not perform a controlled next-boot test.
+USB remains an optional recovery/diagnostic path.
+
+The user's app 35.1 power-control complaint was reproduced in the mobile layout:
+the group Off button appeared around viewport y=1348 below Scene 19 controls.
+The finished app-only fix moves group power first: production browser mocks
+place it around mobile y=292 and desktop y=239. Lamp-card footers now contain a
+power SVG icon labeled **Group power**, **Lamp power** or **Power**, showing
+current **On/Off** state or **Check status** when unknown. Its accessibility title
+states the action, such as turning the named lamp/group off or on. No new
+firmware is required; published 1.10.2 already supports the guarded controls.
+
+The first tap on unknown card state performs a read only. Each card runs
+asynchronously and validates fresh device identity, group role, address and
+connection epoch. The helper captures the shown current state and applies its
+absolute inverse as the requested action; a later read cannot reverse that
+captured intent. A coordinator controls its whole group; a follower's power is
+local and pauses
+runtime following. Turning that follower on does not call Resume or silently
+change group membership. Shared command lanes, focus/removal checks and fresh
+readback protect the exact target; double taps and uncertain writes do not
+cause automatic replay. A modern Bluetooth lamp with an unknown group role
+requires Wi-Fi verification; protected legacy firmware through 1.6.6 with no
+group capability retains its normal power path.
+
+Frozen source is `a971e4d558e1614be76a575be01ac69df50e3c17`. Local validation
+passed **309/309 mobile tests**, including 18 helper and 18 GroupLighting checks,
+the Vite production build, 13 production mocked card-power scenarios, the
+Scene 19 power-first layouts and independent review. All mutating UI validation
+was **mocked**, not performed on lamps. Screenshots include
+`.build/ui-check/lamp-card-power-mobile.png` and its desktop companion.
+A separate actual helper run made **12 GETs and zero mutations**, verified all
+four device identities and Off states, and returned follower/leader/follower/
+follower roles for CoolLamp 1/CoolLamp 2/BACL/new lamp, with firmware
+1.10.2/1.10.2/1.9.6/1.10.2. Evidence:
+`.build/lamp-card-power-live-1791522831461.json`.
+
+App **1.0 (36.1)** is now the latest accepted TestFlight upload. Existing iOS
+workflow `37887641465` succeeded on `macos-26` and source
+`a971e4d558e1614be76a575be01ac69df50e3c17`. The log confirms build 36.1 and
+`UPLOAD SUCCEEDED with no errors` at `2026-10-09T05:19:43.5045960Z`
+(2026-10-09 00:19:43 CDT). Evidence: `.build/ios-testflight-36.1-ci.log`.
+Tester availability and phone installation remain unverified after upload.
+**Physical acceptance of the new power commands has not been performed**;
+mutating UI checks were mocked, and the live helper validation was GET-only.
+App 35.1 is the earlier accepted navigation checkpoint whose hidden lower power
+control prompted this fix. Firmware 1.10.2 remains published; no additional
+firmware release was needed. Existing per-lamp catalogs, group/standalone
+behavior and Mirrored controls remain preserved.
+
+GPIO assignments and saved lamp settings remain preserved. Lamps outside AP
+coverage, same-IoT router forwarding, repeat HTTPS checks under representative
+conditions, physical new-scene/music acceptance and longer blackout/thermal
+diagnosis remain open. Raw Mac diagnostics/prototype binaries remain an unfilled
+migration gap. Use only verified personal `jammendolia` for GitHub work and
+preserve the original working tree.
+
+## Earlier publication checkpoint — 2026-10-08: firmware 1.10.2 and app 35.1
 
 The user explicitly requested publication despite the known physical-acceptance
 gap, overriding the earlier hold. [Firmware 1.10.2](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.10.2)
@@ -26,11 +118,10 @@ GETs: `.build/ota-1.10.1-fleet-baseline-1791494436377.json`. CoolLamp 1/2 were
 on 1.10.1 with their original automatic-update preferences enabled; BACL/new
 lamp were on 1.9.6 with their original preferences disabled. Publication did
 not introduce automatic-update holds or change those preferences. No check or
-installation was forced for publication. Automatic checks/installations can now
-occur on the enabled lamps; **no 1.10.2 lamp
-installation has yet been verified**. Do not present this pre-publication
-snapshot as proof of a lamp's running version after a subsequent automatic
-update.
+installation was forced for publication. **At that checkpoint no 1.10.2 lamp
+installation had yet been verified.** The subsequent physical checkpoint above
+confirms CoolLamp 1/2/new lamp on 1.10.2. The pre-publication snapshot remains
+historical and does not establish the later installation path.
 
 App **1.0 (35.1)** is already the latest accepted TestFlight upload; no additional
 app build is required for this firmware. Existing macOS CI `37843221334`, source
@@ -39,13 +130,15 @@ at `2026-10-08T21:01:24.3685690Z` (16:01:24 CDT), with evidence in
 `.build/ios-testflight-35.1-ci.log`. Tester availability and phone installation
 remain unverified.
 
-Publication does not establish physical 1.10.2 acceptance, a completed device
-installation or repaired intermittent HTTPS checks. The earlier partial manual
-C2 transfer and possible queued boot-slot uncertainty remain recorded below;
-no controlled next-boot test or 1.10.2 TLS check has been performed. The bounded
-1.10.1 encrypted-frame test and phone-Wi-Fi-off Bluetooth test remain valid,
-while lamps outside AP coverage, same-IoT forwarding, new-scene/music acceptance,
-blackout/thermal diagnosis and raw Mac diagnostic migration remain open.
+Publication alone did not establish a device installation or repaired HTTPS
+checks. The later physical checkpoint above now confirms 1.10.2 runtime and
+successful firmware status on three lamps; repeat HTTPS/AP-off acceptance remains
+open. The earlier partial manual C2 transfer is retained below as historical
+failure evidence. Its next-boot uncertainty was superseded by the observed
+healthy 1.10.2 boot, without proving how the image was installed. No controlled
+next-boot test was forced by the agent. The bounded 1.10.1 encrypted-frame and
+phone-Wi-Fi-off Bluetooth tests remain valid; same-IoT forwarding, new-scene/music,
+blackout/thermal and raw Mac diagnostic migration gaps remain open.
 GPIO assignments and existing lamp settings are retained.
 
 ## Earlier pre-publication checkpoint — 2026-10-08: live OTA, radio and CI draft
@@ -152,11 +245,13 @@ partial upload: the follower remained active on ESP-NOW in scene 19, accepted
 146 more frames, and the coordinator retained three members. Evidence:
 `.build/ota-1.10.2-post-upload-radio-proof.json`.
 
-**Physical 1.10.2 acceptance and repeat TLS checks remain pending; no 1.10.2
-TLS check has run on a lamp.** USB remains an optional recovery/diagnostic
-fallback. A controlled next-boot test has not been performed. Preserve the
-possible boot-slot uncertainty; do not assume the partial transfer installed
-new firmware or repaired TLS, and do not repeat the manual upload.
+**At this earlier checkpoint, no 1.10.2 device runtime or TLS result had been
+observed.** The latest physical section now confirms running 1.10.2 and successful
+firmware status on CoolLamp 1/2/new lamp, while repeat TLS/AP-off acceptance
+remains open. CoolLamp 2's healthy later boot supersedes this record's next-boot
+uncertainty; the partial transfer does not establish the installation path.
+USB remains optional, and no controlled next-boot test or repeated manual upload
+was performed by the agent.
 
 New app navigation uses lamp-card gears and organized per-lamp settings, with
 only Lamps and Groups in bottom navigation. Independent lighting stays in lamp
@@ -174,8 +269,8 @@ and reports `UPLOAD SUCCEEDED with no errors` at
 `2026-10-08T21:01:24.3685690Z` (2026-10-08 16:01:24 CDT). Evidence:
 `.build/ios-testflight-35.1-ci.log`. Tester availability and phone installation
 are not independently queried. App 34.1 is the earlier accepted design/filter
-checkpoint. Firmware 1.10.2 CI succeeded; its physical/TLS acceptance remains
-pending independently of this successful app upload.
+checkpoint. Firmware 1.10.2 CI succeeded; device runtime/TLS evidence was still
+pending at this earlier checkpoint and is superseded where noted above.
 
 The earlier 1.10.0/1.10.1 draft and USB-pending checkpoints below are historical
 and superseded by this live GitHub OTA evidence. Same-IoT forwarding, lamps'
