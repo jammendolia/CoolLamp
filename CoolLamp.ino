@@ -14,6 +14,7 @@
 #include "LampGroupScenes.h"
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
+#include "LampFirmwareRelay.h"
 #include "LampGestures.h"
 #include "LampAudio.h"
 #include "LampFactoryReset.h"
@@ -22,7 +23,7 @@
 #include "LampWifiSetup.h"
 #include "AudioAnalysis.h"
 #include <new>
-SET_LOOP_TASK_STACK_SIZE(4096);
+SET_LOOP_TASK_STACK_SIZE(6144);
 
 // ESP32-C3 Mini wiring.
 #define DATA_PIN 0
@@ -154,6 +155,7 @@ void setup() {
   beginLampTemperature();
   beginLampUpdater();
   beginLampNetwork();
+  LampFirmwareRelay::begin();
 }
 
 void loop() {

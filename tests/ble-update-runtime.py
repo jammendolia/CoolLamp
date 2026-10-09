@@ -69,6 +69,7 @@ using namespace LampBleUpdateWire;
 uint32_t clockMs=100000;uint32_t millis(){return clockMs;}
 unsigned begins=0,aborts=0,ends=0,boots=0,releases=0;bool reserved=false,verified=false,cancelled=false;
 bool allowReserve=true,allowBegin=true,allowWrite=true,allowEnd=true,allowBoot=true;
+bool lampUpdateOwnsResources(){return reserved;}
 bool partitionPresent=true;esp_partition_t partition;
 std::vector<uint8_t> flash;
 bool beginLampBluetoothUpdate(){if(!allowReserve||reserved)return false;reserved=true;return true;}

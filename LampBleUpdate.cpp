@@ -17,6 +17,7 @@ FirmwareManifest manifest{};
 const esp_partition_t* target=nullptr;
 esp_ota_handle_t ota=0;
 bool reserved=false,hashing=false,headerValid=false,markerFound=false;
+uint32_t radioOwner=0;
 constexpr size_t Prefix=sizeof(esp_image_header_t)+sizeof(esp_image_segment_header_t)+sizeof(esp_app_desc_t);
 uint8_t prefix[Prefix]{};size_t prefixUsed=0,markerAt=0;
 char marker[64]{};
@@ -90,7 +91,7 @@ bool enqueueLampBleUpdate(const uint8_t* bytes,size_t size,uint32_t generation){
  if(!LampBleUpdateWire::valid(bytes,size))return false;
  LampBleUpdateWire::Frame frame;frame.generation=generation;frame.length=size;memcpy(frame.bytes,bytes,size);return queue.push(frame);
 }
-void serviceLampBleUpdate(uint32_t generation,bool bonded){
+static void serviceReceiver(uint32_t generation,bool bonded){
  using namespace LampBleUpdateWire;
  // Commit is durable. Disconnect after Finish never cancels its scheduled boot.
  if(phase==Restarting)return;
@@ -104,6 +105,14 @@ void serviceLampBleUpdate(uint32_t generation,bool bonded){
  }
  Frame frame;for(unsigned i=0;i<4&&queue.pop(frame);++i)if(bonded&&frame.generation==generation)consume(frame);
 }
+void serviceLampBleUpdate(uint32_t generation,bool bonded){if(!radioOwner)serviceReceiver(generation,bonded);}
+bool beginLampRadioFirmwareReceiver(uint32_t generation){
+ if(!generation||radioOwner||reserved||phase==LampBleUpdateWire::Restarting||lampUpdateOwnsResources())return false;
+ reset();radioOwner=generation;return true;
+}
+bool enqueueLampRadioFirmwareFrame(const uint8_t* bytes,size_t size){return radioOwner&&enqueueLampBleUpdate(bytes,size,radioOwner);}
+void serviceLampRadioFirmwareReceiver(){if(radioOwner)serviceReceiver(radioOwner,true);}
+void abortLampRadioFirmwareReceiver(){if(radioOwner&&phase!=LampBleUpdateWire::Restarting){reset();radioOwner=0;}}
 void getLampBleUpdateStatus(uint8_t* out){
  using namespace LampBleUpdateWire;memset(out,0,20);out[0]=1;out[1]=phase;out[2]=error;out[3]=phase==Restarting?1:0;
  put32(out+4,session);put32(out+8,manifest.size);put32(out+12,offset);put16(out+16,ack);put16(out+18,MaxData);

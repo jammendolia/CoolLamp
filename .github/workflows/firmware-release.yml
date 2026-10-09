@@ -92,6 +92,7 @@ jobs:
           node tools/build-firmware.cjs --public
           python3 tests/espnow-runtime.py --mbedtls-cache .build/tls-library
           python3 tests/ble-update-runtime.py --mbedtls-cache .build/tls-library
+          python3 tests/firmware-relay-runtime.py
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
         env:

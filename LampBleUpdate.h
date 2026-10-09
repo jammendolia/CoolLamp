@@ -4,3 +4,7 @@
 bool enqueueLampBleUpdate(const uint8_t* bytes,size_t size,uint32_t generation);
 void serviceLampBleUpdate(uint32_t generation,bool bonded);
 void getLampBleUpdateStatus(uint8_t* out); // Exactly 20 bytes; minimum ATT MTU.
+bool beginLampRadioFirmwareReceiver(uint32_t generation);
+bool enqueueLampRadioFirmwareFrame(const uint8_t* bytes,size_t size);
+void serviceLampRadioFirmwareReceiver();
+void abortLampRadioFirmwareReceiver();

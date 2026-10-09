@@ -2,6 +2,7 @@
 #include "LampAudio.h"
 #include "LampEspNow.h"
 #include "LampSyncRadioCrypto.h"
+#include "LampFirmwareRelay.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Preferences.h>
@@ -212,7 +213,13 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
   const bool connected=WiFi.status()==WL_CONNECTED;
   wifi_ap_record_t association{};
   const bool associated=connected||esp_wifi_sta_get_ap_info(&association)==ESP_OK;
-  if(blocked){if(started){udp.stop();started=false;}LampEspNow::service(now,true,scanning,associated,false);if(receiver.locked)clearFollower();return;}
+  if(blocked){LampFirmwareRelay::suspend();if(started){udp.stop();started=false;}LampEspNow::service(now,true,scanning,associated,false);if(receiver.locked)clearFollower();return;}
+  if(LampFirmwareRelay::ownsRadio()){
+    if(started){udp.stop();started=false;}if(receiver.locked)clearFollower();
+    LampEspNow::holdChannel(now+5000);LampEspNow::service(now,false,scanning,associated,false);
+    LampEspNow::Received message;for(unsigned n=0;n<4&&LampEspNow::receive(message);++n)LampFirmwareRelay::receive(message);
+    LampFirmwareRelay::service(now);LampEspNow::service(now,false,scanning,associated,false);return;
+  }
   const auto ip=WiFi.localIP();
   if(started&&(!connected||ip!=bound)){udp.stop();started=false;if(receiver.locked&&!followingRadio)clearFollower();}
   if(connected&&!started){started=udp.begin(Port);if(started){bound=ip;lastBeacon=now-2000;}}
@@ -237,6 +244,7 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
     if(!fromRadio&&!size)break;
     ++receivedPackets;
     if(fromRadio){
+      if(LampFirmwareRelay::receive(message))continue;
       if(now-message.receivedAt>200)continue;
       char sender[13];if(!LampSyncRadioCrypto::identityFromMac(message.source,sender))continue;
       if(message.length==sizeof(p)&&!memcmp(message.data,"CLSY",4)){
@@ -279,6 +287,7 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
       if(item.udpKnown&&item.udpSubscribed&&now-item.udpSubscribed<Timeout)send(p,item.ip);
     }
   }
+  LampFirmwareRelay::service(now);
   LampEspNow::service(now,false,scanning,associated,config.role!=1&&!receiver.locked);
 }
 String lampSyncJson(){

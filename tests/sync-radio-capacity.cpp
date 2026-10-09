@@ -1,4 +1,5 @@
 #define ARDUINO 1
+#include "firmware-relay-fixture.h"
 #include "../LampSync.cpp"
 #include <esp_now.h>
 #include <cassert>

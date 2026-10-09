@@ -33,6 +33,7 @@ uint32_t clockMs=100;uint32_t millis(){return clockMs;}
 bool updating=false;bool lampUpdateOwnsResources(){return updating;}
 unsigned calls=0;uint8_t lastEndpoint=0;bool lastMutation=false;String lastForm;
 String lampControlSnapshotJson(){return "{}";}
+namespace LampFirmwareRelay {LampControlReply control(bool,const String&){return {200,"{}"};}}
 LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form){
  ++calls;lastEndpoint=endpoint;lastMutation=mutation;lastForm=form;
  LampControlReply reply;reply.status=200;

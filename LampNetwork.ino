@@ -860,7 +860,7 @@ void serviceLampNetwork()
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   if (serverStarted) lampServer.handleClient();
   const bool probeScanning=serviceLampOfflineWifi(now);
-  serviceLampSync(lampName, lampUpdateOwnsResources() || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending(),scanActive||probeScanning);
+  serviceLampSync(lampName, (lampUpdateOwnsResources()&&!LampFirmwareRelay::ownsRadio()) || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending(),scanActive||probeScanning);
 }
 
 bool saveLampDefaults()

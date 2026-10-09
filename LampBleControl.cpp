@@ -2,10 +2,11 @@
 #include "LampControlEndpoint.h"
 #include "LampUpdate.h"
 #include "LampVersion.h"
+#include "LampFirmwareRelay.h"
 
 namespace {
 LampBleControlWire::Transfer transfer;
-constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
+constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
 void clearText(String& text){
   if(text.length())LampBleControlWire::zero(const_cast<char*>(text.c_str()),text.length());
   text=String();
@@ -42,7 +43,7 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
     if(!form.reserve(transfer.bodySize())||!form.concat(reinterpret_cast<const char*>(transfer.body()),transfer.bodySize())){
       clearText(form);transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
     }
-    LampControlReply response=lampControlRequest(transfer.endpointId(),transfer.mutation(),form);
+    LampControlReply response=transfer.endpointId()==LampControlEndpoint::FirmwareFleet?LampFirmwareRelay::control(transfer.mutation(),form):lampControlRequest(transfer.endpointId(),transfer.mutation(),form);
     clearText(form);
     const bool sizeOkay=response.body.length()<=MaxResponse&&(!updating||response.body.length()<=PageBytes);
     if(!sizeOkay){clearText(response.body);response.status=507;response.body="Control response exceeds the bounded Bluetooth transfer.";}

@@ -952,3 +952,42 @@ Native iOS compilation and simulator/device debugging still require macOS/Xcode.
 Suggested Windows continuation prompt:
 
 Continue CoolLamp development on this Windows computer. First read docs/development-handoff.md and docs/wifi-debugging.md in the transferred repository. Verify that the Mac's pending TLS build changes and diagnostic evidence were transferred before modifying anything. Set up and validate the Windows build/test tools, preserving GPIO assignments, lamp settings and the working tree. Then resume the OTA heap/TLS fix, validate the 16 KB receive / 4 KB transmit implementation on the USB lamp, and prepare firmware 1.9.5 for OTA after tests pass. App 1.0 (26.1) is already uploaded to TestFlight; use the existing macOS CI workflow for future iOS builds. Firmware 1.9.5 is not published, and group UDP connectivity remains a separate follow-up. Report the current state and migration gaps first; do not repeat completed work or reset lamps.
+
+## Windows checkpoint — 2026-10-09: Corkscrew recovery and relay candidate
+
+Firmware **1.11.0** is public Latest. Its CI image is 1,868,416 bytes, SHA-256
+`e60d0830750e7219c4229bc51d6f6e80f6647f3feb3ef9a2db8e5a7809118a8c`.
+Corkscrew CoolLamp (`5894af4aec24`, USB MAC `24:EC:4A:AF:94:58`, COM6)
+failed two release checks while on 1.10.2: GitHub redirected successfully, then
+the asset-host TLS handshake failed with code 12288 and almost no minimum heap.
+One streamed LAN upload returned an empty reply after 458,752 bytes. Subsequent
+diagnostics confirmed continuous uptime and the old version; it was not replayed.
+
+The user authorized USB bootstrap. The partition/configuration region was backed
+up privately under ignored `.build`, the active OTA slot was verified at
+`0x10000`, and only that application slot was flashed with the exact published
+1.11.0 image. Esptool verified its hash. USB and authenticated LAN reads confirmed
+a healthy 1.11.0 boot and active ESP-NOW following of CoolLamp 2. A complete saved
+settings comparison passed, including 184 LEDs, midpoint 46, current limit,
+startup effect/brightness, colors/options, microphone absent, audio tuning,
+Wi-Fi identity, group configuration, lamp style and automatic installation off.
+The corrected saved name is **Corkscrew CoolLamp**, also verified in coordinator
+discovery. Evidence: `.build/corkscrew-1.11.0-usb-validation.json` and
+`.build/corkscrew-1.11.0-usb-boot.jsonl`. Private flash/state files must not ship.
+
+The app update adds background public-release lookup, a per-card update arrow,
+Continue/Cancel confirmation and Wi-Fi preference with paired Bluetooth fallback.
+Ambiguous Wi-Fi installations are never replayed over Bluetooth. The existing
+macOS TestFlight workflow was dispatched on app commit `d9791317058e50082b6362e39dcb8796dc328b7e`,
+run `37958872925`; inspect its actual conclusion and Apple acceptance before
+claiming upload success. This dispatch uses only the personal `jammendolia` account.
+
+Firmware **1.12.0 is a candidate, not published**. It adds authenticated ESP-NOW
+firmware relaying across paired lamps regardless of group, with receiver opt-in
+through Automatic Updates. Fleet credentials are provisioned through protected
+BLE and stored separately from group membership in the existing NVS namespace.
+The radio transfer shares the verified BLE flash receiver and resource owner.
+The loop stack is 6 KiB to allow the additional crypto/flash call path; GPIOs and
+lamp settings are unchanged. See `docs/firmware-relay.md` for trust, channel,
+revocation and physical-validation limits. Host tests and a successful C3 build
+do not establish real-lamp relay behavior; do not publish this candidate yet.
