@@ -17,7 +17,6 @@
 <p class="eyebrow">Light, composed.</p>
 </div>
 </div>
-<span id="connectionBadge" class="badge">Not connected</span>
 </header>
 <nav aria-label="Main navigation">
 <button data-page="lamps" aria-current="page">
@@ -36,13 +35,6 @@
 <button data-page="groups"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"></circle><circle cx="5" cy="18" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="m10 9-3 6m7-6 3 6M8 18h8"></path></svg><span>Groups</span></button>
 </nav>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
-  <aside id="defaultPasswordNotice" class="sync-banner" hidden>
-<div>
-<p class="eyebrow">MAKE IT YOURS</p>
-<p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p>
-</div>
-<button id="changeDefaultPassword" class="secondary compact">Change password</button>
-</aside>
   <section id="page-lamps">
 <div class="section-title">
 <div>
@@ -455,7 +447,12 @@
 <section id="page-settings" hidden>
 <div class="section-title"><div id="settingsLampHeading"><p class="eyebrow">YOUR LAMP</p><h2 tabindex="-1">Lamp settings</h2></div><button type="button" data-goto="lamps" class="text-button compact">All lamps</button></div>
 <p class="page-intro">Lighting and settings for this lamp.</p>
+<span id="connectionBadge" class="badge">Not connected</span>
 <p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
+<aside id="defaultPasswordNotice" class="sync-banner" hidden>
+<div><p class="eyebrow">MAKE IT YOURS</p><p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p></div>
+<button id="changeDefaultPassword" class="secondary compact">Change password</button>
+</aside>
 <div class="settings-navigation" role="group" aria-label="Settings sections">
 <button type="button" data-settings-section="lighting" aria-pressed="true">Lighting</button>
 <button type="button" data-settings-section="overview" aria-pressed="false">General</button>

@@ -78,7 +78,7 @@ function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
   if(name!=='groups'||!preserveGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}
   if(name!=='settings')hideWifiPassword();
   if(name!=='groups')closeGroupEditor();
-  if(name==='lamps'){$('status').textContent=state&&selected?'Connected to '+selected.name+'.':'Find a lamp on Wi-Fi, or add one using Bluetooth.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();}
+  if(name==='lamps'){$('status').textContent='Choose a lamp’s gear to open its settings, or add a new lamp.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();}
   for (const item of ['lamps','groups','settings']) $('page-'+item).hidden=item!==name;
   scheduleLampStatusRefresh();
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===(name==='settings'?'lamps':name))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
@@ -332,7 +332,6 @@ for(const button of document.querySelectorAll('[data-goto]'))button.onclick=()=>
 let savedDevice = null;
 try { const saved = JSON.parse(localStorage.getItem('coollamp-device')); if (typeof saved?.deviceId === 'string') savedDevice = saved; } catch {}
 $('reconnect').hidden = !savedDevice;
-if (savedDevice) status('Reconnect to your saved lamp. There is no need to enter pairing mode again.');
 const callbacks = {
   onOptions(next) { effectOptions = next; renderOptions(); },
   onFirmware(next) {
@@ -703,7 +702,7 @@ async function updateLampCard(entry){
 }
 function cardFirmwareButton(entry){
  const release=availableCardRelease(cardInstalledVersion(entry),publicFirmware);if(!release)return null;
- const button=document.createElement('button');button.type='button';button.className='lamp-firmware-update';button.dataset.connection='update';
+ const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-firmware-update';button.dataset.connection='update';
  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 17V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg>';
  button.title='Update '+(entry.name||'lamp')+' to firmware '+release.version;button.setAttribute('aria-label',button.title);
  button.disabled=Boolean(cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||cardFirmwareUnconfirmed.has(entry.id));button.onclick=()=>updateLampCard(entry);return button;
@@ -1006,7 +1005,7 @@ function renderLamps() {
     button.setAttribute('aria-current',String(connected));
     if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
     button.onclick=()=>openCardSettings(entry,{section:'lighting',preferWifi:true});
-    const remove=document.createElement('button');remove.type='button';remove.className='lamp-remove';
+    const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove';
     remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
     remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id);
     remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
@@ -1021,17 +1020,13 @@ function renderLamps() {
   renderFleetControls();
 }
 async function discover(includeForgotten=false) {
-  const startedNavigation=navigationSerial;
   if(!isNative){status('Automatic discovery is available in the iPhone and Android app. You can enter a lamp address here.');return;}
   $('discover').disabled=true;status('Looking for lamps on your Wi-Fi…');
   if(includeForgotten)discovery.beginRefresh();
   try {
     const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);
-    renderLamps();status(discovered.length?'Choose a lamp to connect.':'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
+    renderLamps();status(discovered.length?'Tap a lamp’s gear to open its settings.':'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
     refreshLampFirmware({newDiscovery:true});
-    const remembered=store.items.find(x=>x.id===localStorage.getItem('coollamp-selected'));
-    const available=remembered&&discovered.find(x=>x.id===remembered.id);
-    if(available&&!state&&!connecting)await connectWifi({...remembered,address:available.address},undefined,{navigate:navigationSerial===startedNavigation});
   }catch(e){status(e.message);}finally{$('discover').disabled=false;}
 }
 $('discover').onclick=()=>discover(true);

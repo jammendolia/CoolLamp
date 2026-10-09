@@ -196,7 +196,7 @@ summary .summary-detail + * { margin-left: 0; }
 .group-transport-badge { position: absolute; bottom: -4px; right: -4px; padding: 2px 4px; border: 1px solid #bb9559; border-radius: 5px; color: #f4cd85; background: #30271b; font-size: 8px; font-weight: 800; line-height: 1; letter-spacing: .03em; }
 .lamp-group[data-state=leader] .group-leader,.lamp-group[data-state=follower] .group-follower { fill: currentColor; }
 .group-focus-target { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 14px; }
-.lamp-remove { position: absolute; right: 12px; bottom: 12px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 12px; color: var(--muted); background: transparent; }
+.lamp-remove { position: absolute; right: 12px; bottom: 12px; color: var(--muted); }
 .lamp-settings { position: absolute; right: 63px; bottom: 12px; color: #c6d6e0; }
 .lamp-power { position: absolute; left: 16px; bottom: 12px; display: flex; align-items: center; gap: 9px; width: calc(100% - 142px); max-width: 188px; min-height: 52px; padding: 8px 11px; border: 1px solid #71829a; border-radius: 14px; color: #c4cfdf; background: #1c293d; text-align: left; }
 .lamp-power svg { width: 24px; height: 24px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
@@ -209,7 +209,7 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-power-feedback { display: block; font-size: .75rem; color: var(--muted); line-height: 1.5; margin-top: 8px; }
 #settingsLampHeading { min-width: 0; }
 #page-light > .light-hero { margin-top: 18px; }
-.lamp-remove svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.lamp-remove svg { stroke-linecap: round; stroke-linejoin: round; }
 .lamp-remove:hover:not(:disabled),.lamp-remove:focus-visible { color: var(--accent); background: #a9f0d812; }
 .danger-button { background: #80363c; color: #fff6f4; border: 1px solid #ffb6b3; }
 .danger-button:hover:not(:disabled) { background: #96434b; }
@@ -340,7 +340,7 @@ progress { width: 100%; height: 10px; margin-top: 20px; accent-color: var(--acce
 #groupOrderPane { padding: 20px; border: 1px solid var(--line); border-radius: 18px; margin-top: 16px; }
 .group-recovery { margin-top: 28px; }
 .group-recovery .sync-panel { border: 0; padding: 18px 0 0; margin: 0; background: transparent; box-shadow: none; }
-.lamp-firmware-update { position: absolute; right: 112px; bottom: 14px; width: 44px; height: 44px; padding: 10px; border: 1px solid var(--accent); border-radius: 14px; background: #a9f0d815; color: var(--accent); }
-.lamp-firmware-update svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.lamp-firmware-update { position: absolute; right: 114px; bottom: 12px; border-color: var(--accent); color: var(--accent); }
+.lamp-firmware-update svg { stroke-linecap: round; stroke-linejoin: round; }
 .lamp-firmware-update:disabled { opacity: .4; }
 .lamp-entry:has(.lamp-firmware-update) .lamp-power { width: calc(100% - 188px); }
