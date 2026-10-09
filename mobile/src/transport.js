@@ -9,7 +9,7 @@ const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/a
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
  '/api/calibration':12,'/api/name':13,'/api/identify':14,'/api/vu-colors':15,'/api/fountain-colors':16,
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
- '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26};
+ '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26,'/api/firmware/fleet':27};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
 function publicControlSync(value){
   const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport']);

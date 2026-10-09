@@ -26,7 +26,7 @@ function binary(value){
 export function firmwareBase64(bytes){
  let text='';for(let offset=0;offset<bytes.length;offset+=16384)text+=String.fromCharCode(...bytes.subarray(offset,offset+16384));return btoa(text);
 }
-export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()=>true,signal,digest}={}){
+function phoneRequest(http,{isCurrent=()=>true,signal}={}){
  const request=async url=>{
   if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
   if(signal?.aborted)throw error('Firmware download cancelled.',{cancelled:true});
@@ -40,8 +40,16 @@ export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()
   if(response.url){const final=new URL(response.url);if(final.protocol!=='https:'||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(final.hostname))throw error('Unexpected firmware download address.');}
   return binary(response.data);
  };
+ return request;
+}
+export async function fetchPhoneManifest(http,options={}){
+ return parsePhoneManifest(new TextDecoder().decode(await phoneRequest(http,options)(root+'latest/download/coollamp-manifest.txt')));
+}
+export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()=>true,signal,digest,expectedManifest}={}){
+ const request=phoneRequest(http,{isCurrent,signal});
  onProgress({stage:'downloading',progress:0});
- const manifest=parsePhoneManifest(new TextDecoder().decode(await request(root+'latest/download/coollamp-manifest.txt')));
+ const manifest=expectedManifest?parsePhoneManifest(new TextDecoder().decode(await request(root+'download/firmware-v'+parsePhoneManifest(expectedManifest.text).version+'/coollamp-manifest.txt'))):await fetchPhoneManifest(http,{isCurrent,signal});
+ if(expectedManifest&&manifest.text!==expectedManifest.text)throw error('The selected release changed. Refresh before updating.');
  const image=await request(root+'download/firmware-v'+manifest.version+'/CoolLamp.ino.bin');
  if(image.length!==manifest.size||image[0]!==0xe9||new DataView(image.buffer,image.byteOffset,image.byteLength).getUint16(12,true)!==5||new DataView(image.buffer,image.byteOffset,image.byteLength).getUint32(32,true)!==0xabcd5432)throw error('Downloaded file is not a compatible ESP32-C3 application.');
  const checksum=digest?await digest(image):[...new Uint8Array(await crypto.subtle.digest('SHA-256',image))].map(byte=>byte.toString(16).padStart(2,'0')).join('');

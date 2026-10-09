@@ -7,7 +7,7 @@ export const CONTROL = '7b61000a-6e2b-4f3d-9a71-28e45c001001';
 export const CONTROL_ENDPOINTS = Object.freeze({state:1,sync:2,invite:3,group:4,scene:5,order:6,
  config:7,audio:8,audioTuning:9,rotation:10,geometry:11,calibration:12,name:13,identify:14,
  vuColors:15,fountainColors:16,audioTest:17,firmware:18,firmwareCheck:19,firmwareInstall:20,
- firmwareAutomatic:21,factoryReset:22,bluetooth:24,style:25,effects:26});
+ firmwareAutomatic:21,factoryReset:22,bluetooth:24,style:25,effects:26,firmwareFleet:27});
 export const effects = ['Pacifica','Aurora','Rain','Fire','Split fire - rising','Split fire - falling',
   'Split fire - rising, reversed colors','Blue gas fire','Witch fire','Purple fire','Embers','Lava','Plasma',
   'Rainbow','Rainbow with glitter','Confetti','Comet collision','Sinelon','BPM','Juggle',
@@ -49,7 +49,7 @@ export function encodeControlCommand(id,operation,value) {
   const tx=[value.tx&255,value.tx>>8];let bytes;
   if(operation==='controlBegin'){
     const cancel=value.endpoint===0&&value.method===0&&value.length===0;
-    if(!cancel&&(!value.tx||!integer(value.endpoint,1,26)||![1,2].includes(value.method)||!integer(value.length,0,1024)))throw Error('Invalid Bluetooth control request.');
+    if(!cancel&&(!value.tx||!integer(value.endpoint,1,27)||![1,2].includes(value.method)||!integer(value.length,0,1024)))throw Error('Invalid Bluetooth control request.');
     bytes=[1,id,22,...tx,value.endpoint,value.method,value.length&255,value.length>>8];
   }else if(operation==='controlChunk'){
     if(!value.tx||!integer(value.offset,0,1023)||!(value.bytes instanceof Uint8Array)||value.bytes.length<1||value.bytes.length>13||value.offset+value.bytes.length>1024)throw Error('Invalid Bluetooth control chunk.');
@@ -66,7 +66,7 @@ export function decodeControlPage(data,expected={}) {
   if(!(data instanceof DataView)||data.byteLength<12||data.getUint8(0)!==1)throw Error('Invalid Bluetooth control response.');
   const page={tx:data.getUint16(1,true),endpoint:data.getUint8(3),status:data.getUint16(4,true),
     total:data.getUint16(6,true),offset:data.getUint16(8,true),length:data.getUint16(10,true)};
-  if(page.endpoint>26||page.status<100||page.status>599||page.total>8192||page.length>480||
+  if(page.endpoint>27||page.status<100||page.status>599||page.total>8192||page.length>480||
      page.offset+page.length>page.total||data.byteLength!==12+page.length||
      Object.entries(expected).some(([key,value])=>page[key]!==value))throw Error('Invalid Bluetooth control response.');
   page.bytes=new Uint8Array(data.buffer,data.byteOffset+12,page.length).slice();return page;

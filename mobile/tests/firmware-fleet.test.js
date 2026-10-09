@@ -45,6 +45,27 @@ function setup(count = 1) {
 const writes = calls => calls.filter(call => call.method === 'POST');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('single card update marks a confirmed pre-install server failure safe for BLE without an install POST',async()=>{
+ const {fleet,devices,calls,entries}=setup();devices[0].polls=[{...status(),phase:5,error:3}];
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);
+ assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
+});
+test('single card update does not mark an uncertain update check safe for BLE',async()=>{
+ const {fleet,devices,calls,entries}=setup();devices[0].request=async(options,path)=>{if(path==='/api/firmware/check')throw Error('Reply lost.');};
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>!error.safeBluetoothFallback);
+ assert.equal(writes(calls).length,1);
+});
+test('single card update rejects an available release changing before the install token read',async()=>{
+ const {fleet,devices,calls,entries}=setup();devices[0].polls=[status('1.9.4',2,'1.9.5')];
+ devices[0].request=async(options,path)=>{if(path==='/api/state'&&devices[0].firmware.phase===2)devices[0].firmware=status('1.9.4',2,'1.9.6');};
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),/release changed/);
+ assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
+});
+test('single card update never confirms a different newer installed release as its target',async()=>{
+ const {fleet,devices,entries}=setup();devices[0].polls=[status('1.9.6')];
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),/different release/);
+});
+
 test('page refresh reads every lamp independently and displays installed, never offered firmware', async () => {
   const {fleet, devices, calls, changes} = setup(2);
   devices[0].firmware = status('1.9.4', 2, '1.9.5'); devices[1].firmware = status('1.9.5');

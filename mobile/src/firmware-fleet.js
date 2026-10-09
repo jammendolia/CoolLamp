@@ -56,7 +56,7 @@ export class FirmwareFleet {
     requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000} = {}) {
     this.http = http; this.credential = credential; this.getLamps = getLamps; this.onStatus = onStatus;
     Object.assign(this, {now, sleep, requestTimeout, pollInterval, checkTimeout, updateTimeout, healthyUptime});
-    this.statuses = new Map(); this.catalogues=new Map();this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;
+    this.statuses = new Map(); this.catalogues=new Map();this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;this.singleRuns=new Map();
   }
   run() {
     let stop;
@@ -65,7 +65,7 @@ export class FirmwareFleet {
   }
   cancelRefresh() { this.refreshRun?.stop(); this.refreshRun = null; }
   forget(id) { this.cancelRefresh();this.statuses.delete(id);this.catalogues.delete(id); }
-  cancel() { this.cancelRefresh(); this.bulkRun?.stop(); }
+  cancel() { this.cancelRefresh(); this.bulkRun?.stop();for(const run of this.singleRuns.values())run.stop(); }
   assertCurrent(lamp, run) {
     if (run.cancelled) throw failure('Firmware task cancelled.', {cancelled: true});
     const current = this.getLamps().find(entry => entry.id === lamp.id);
@@ -192,7 +192,7 @@ export class FirmwareFleet {
     }
   }
   async refresh() {
-    if (this.bulkRun && !this.bulkRun.cancelled) return {results: [], cancelled: false, busy: true};
+    if (this.bulkRun && !this.bulkRun.cancelled||this.singleRuns.size) return {results: [], cancelled: false, busy: true};
     this.cancelRefresh();
     const run = this.run(); this.refreshRun = run;
     const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()], results = [];
@@ -217,6 +217,7 @@ export class FirmwareFleet {
   }
   updateAll() {
     if (this.bulkPromise) return this.bulkPromise;
+    if(this.singleRuns.size)return Promise.reject(failure('Finish the current lamp update first.'));
     this.cancelRefresh();
     const run = this.run(); this.bulkRun = run;
     const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()];
@@ -236,6 +237,7 @@ export class FirmwareFleet {
     const identity = await this.identify(lamp, run, true);
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if (busyPhases.includes(identity.firmware.phase)) return {identity, busy: true};
+    if(path.endsWith('/install')&&run.expectedVersion&&identity.firmware.latest!==run.expectedVersion)throw failure('The available release changed. Refresh before updating.');
     if (path.endsWith('/install') && !(identity.firmware.available && newer(identity.firmware.latest, identity.firmware.version))) {
       return {identity, skipped: true};
     }
@@ -251,6 +253,8 @@ export class FirmwareFleet {
     let identity = await this.identify(lamp, run);
     this.live(lamp, run, identity, 'checking', 'Checking for updates…');
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
+    if(identity.firmware.wifi===false)throw failure('This lamp is not connected to Wi-Fi.',{safeBluetoothFallback:true});
+    if(run.expectedVersion&&!newer(run.expectedVersion,identity.firmware.version))return this.live(lamp,run,identity,'ready','Already up to date.');
     const originalVersion = identity.firmware.version;
     if (!busyPhases.includes(identity.firmware.phase)) {
       const check = await this.post(lamp, run, '/api/firmware/check');
@@ -282,6 +286,7 @@ export class FirmwareFleet {
         throw failure('Lamp updater is busy or starting. The update check was not accepted.');
       }
       if (newer(fw.version, originalVersion)) {
+        if(run.expectedVersion&&fw.version!==run.expectedVersion)throw failure('Lamp firmware changed to a different release. Refresh its installed version.');
         let identity;
         try { identity = await this.identify(lamp, run); }
         catch (error) { if (!updating || !error.offline) throw error; await this.wait(lamp, run); fw = null; continue; }
@@ -297,7 +302,7 @@ export class FirmwareFleet {
       } else if (fw.version !== originalVersion) {
         throw failure('Lamp firmware changed unexpectedly. Refresh the Wi-Fi list.');
       } else if (fw.phase === 5) {
-        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.');
+        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
       } else if ([3,4].includes(fw.phase)) {
         if (!updating) deadline = this.now() + this.updateTimeout;
         updating = true; observedActivity = true;
@@ -322,7 +327,8 @@ export class FirmwareFleet {
         if (busyPhases.includes(identity.firmware.phase) || (identity.firmware.available && newer(identity.firmware.latest, identity.firmware.version))) {
           fw = identity.firmware; continue;
         }
-        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.');
+        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
+        if(run.expectedVersion&&newer(run.expectedVersion,identity.firmware.version))throw failure('The lamp did not find the selected release. Refresh before trying again.');
         return this.live(lamp, run, identity, 'ready', 'Already up to date.');
       }
       await this.wait(lamp, run);
@@ -330,5 +336,14 @@ export class FirmwareFleet {
     }
     throw failure(updating ? 'Update not confirmed before the timeout. The install request was not repeated.' :
       check.uncertain ? 'Update check was not confirmed. The request was not repeated.' : 'Lamp update check timed out.');
+  }
+  async updateLamp(entry,expectedVersion){
+    if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update is already running.');
+    this.cancelRefresh();const run=this.run();run.expectedVersion=expectedVersion;this.singleRuns.set(entry.id,run);
+    try{
+      let lamp;try{lamp=await this.prepare(entry,run);await this.identify(lamp,run);}catch(error){if(error.offline||error.unsupported)error.safeBluetoothFallback=true;throw error;}
+      return await this.updateOne(lamp,run);
+    }catch(error){this.errorStatus(entry,run,error);throw error;}
+    finally{if(this.singleRuns.get(entry.id)===run)this.singleRuns.delete(entry.id);}
   }
 }
