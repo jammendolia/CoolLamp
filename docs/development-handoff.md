@@ -1013,3 +1013,23 @@ over ESP-NOW. No candidate firmware or fleet credential was installed on hardwar
 The user has been asked to test a same-version 1.11.0 reinstall through the phone
 over Bluetooth after installing app 39.1. This tests the physical upgrade path
 without publishing or installing the relay candidate.
+
+## Lamps page without a default selection — 2026-10-09
+
+The Lamps page now starts with no selected control session, even when a saved
+selection or legacy Bluetooth record exists. Native discovery and independent
+firmware/status reads still populate the cards. Discovery no longer reconnects
+or navigates to Settings; the user opens a lamp's settings through its card.
+The connection badge and default-password banner belong to that lamp's Settings
+page instead of the global header. Returning to Lamps shows generic instructions.
+
+Update, gear and remove buttons share the same 44-pixel rounded button and
+24-pixel SVG dimensions. The remove icon now has a visible border/background.
+359 mobile tests passed. Mocked production UI checks verified saved and legacy
+startup, inventory-only discovery, exact-lamp gear navigation, Settings-only
+connection details and matching button geometry at 320, 393 and 1280 pixels;
+the existing update and card-power scenarios also passed. No hardware was changed.
+App source: `1e3d89b1c430b8eef1c534e8051b149208a3c01b`; TestFlight workflow
+`37963110135` completed successfully and Apple accepted app **1.0 (40.1)** for
+TestFlight processing. Tester availability is not independently verified.
+Firmware 1.12.0 remains an unpublished draft.
