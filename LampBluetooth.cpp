@@ -428,6 +428,7 @@ void forgetLampPhones()
   for (int i = 0; i < count; ++i) ble_store_util_delete_peer(&peers[i]);
   advertisingDirty = true;
 }
+bool lampBluetoothHasBonds(){if(!server)return false;ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];return bondedPeers(peers)>0;}
 
 void serviceLampBluetooth()
 {
@@ -554,5 +555,6 @@ bool lampPairingOpen() { return false; }
 bool lampPairingCueActive() { return false; }
 String lampBluetoothStatusJson() { return "{\"enabled\":false,\"pairing\":false,\"cue\":false,\"connected\":false,\"secure\":false,\"knownPeer\":false,\"bonds\":0}"; }
 bool lampBluetoothReady() { return false; }
+bool lampBluetoothHasBonds() { return false; }
 void forgetLampPhones() {}
 #endif

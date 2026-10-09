@@ -34,6 +34,11 @@ bool PowerOn=true;
 bool failSave=false;
 int brightnessSaves=0,colorSaves=0,wifiToggles=0,pairToggles=0;
 bool microphone=false;
+namespace LampCommission {
+bool pending=false;unsigned approvals=0;
+bool physicalPending(){return pending;}
+void approvePhysical(){if(pending){++approvals;pending=false;}}
+}
 uint8_t lampAvailableEffectCount(){return microphone?47:38;}
 LampColor colors[48]{};
 struct Encoder {
@@ -106,6 +111,25 @@ int main(){
   calibrating=true;resetLampCalibrationKnob();tick(500);assert(calibrating);turn(10000);assert(position==1024&&Mode==oldMode&&Brightness==oldBrightness);
   turn(-10000);assert(position==1);turn(199);clicks(1);assert(!calibrating&&calibrationSaved&&position==200);
   calibrating=true;syncLampKnob();clicks(2);assert(!calibrating&&!calibrationSaved);
+  // Enrollment consumes only a fresh, debounced single click. It cannot turn
+  // the lamp on, change the effect, persist knob settings, or open pairing.
+  const auto setupMode=Mode,setupBrightness=Brightness;
+  const bool setupPower=PowerOn;
+  const int setupBrightnessWrites=brightnessSaves,setupColorWrites=colorSaves;
+  const int setupWifi=wifiToggles,setupPairing=pairToggles,setupResets=factoryResets;
+  button=true;tick(80);LampCommission::pending=true;tick(1);button=false;tick(500);
+  assert(LampCommission::pending&&LampCommission::approvals==0); // Pre-held release is not approval.
+  turn(20);clicks(2);clicks(3);
+  assert(LampCommission::pending&&LampCommission::approvals==0);
+  button=true;tick(12000);button=false;tick(500);
+  assert(LampCommission::pending&&LampCommission::approvals==0);
+  assert(Mode==setupMode&&Brightness==setupBrightness&&PowerOn==setupPower);
+  assert(brightnessSaves==setupBrightnessWrites&&colorSaves==setupColorWrites);
+  assert(wifiToggles==setupWifi&&pairToggles==setupPairing&&factoryResets==setupResets);
+  clicks(1);assert(!LampCommission::pending&&LampCommission::approvals==1);
+  assert(Mode==setupMode&&Brightness==setupBrightness&&PowerOn==setupPower);
+  LampCommission::pending=true;tick(1);button=true;tick(80);LampCommission::pending=false;tick(1);
+  button=false;tick(500);assert(LampCommission::approvals==1&&knobMode==KnobMode::Effects);
   // Factory reset arms at ten seconds, but only commits on release, once.
   button=true;tick(10001);assert(factoryArmed&&factoryResets==0);
   tick(5000);assert(factoryResets==0);button=false;tick(40);assert(factoryResets==1&&!factoryArmed);

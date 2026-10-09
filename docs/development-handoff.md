@@ -1,5 +1,42 @@
 # CoolLamp development handoff — 2026-10-06
 
+## ESP-NOW control mesh and new-lamp setup candidate — 2026-10-09
+
+The current source candidate is **1.13.0**, unpublished and not installed on a
+test lamp. The separate 1.12.0 firmware-relay draft is preserved. Public Latest
+remains 1.11.0. Existing uncommitted work is preserved. GPIO assignments and
+physical lamps were not changed; no hardware command or flash was sent.
+
+See [lamp-mesh.md](lamp-mesh.md) for protocol, enrollment, channel/trust limits
+and physical acceptance. An owned reachable lamp can bridge bounded multi-hop
+commands and exact target responses. Missing acknowledgments/results stay
+uncertain, with no mutation replay or implicit direct-target Bluetooth fallback.
+New unconfigured lamps advertise public setup candidates. The app offers guided
+setup through a nearby owned broker after commitment/reveal, encrypted key
+agreement and a matching four-color sequence approved by a physical knob click.
+Discovery alone never grants ownership. Single-lamp Wi-Fi/Bluetooth setup remains.
+
+Existing saved 1.13.0 bridges can establish their owner fleet through an already
+authorized Bluetooth pairing without selecting a lamp on startup. A different
+fleet is preserved. Independent offline lamps retain a channel with authenticated
+neighbors and use bounded Wi-Fi retry windows, alongside existing group behavior.
+Updater reservations and background retries cannot interrupt active enrollment.
+
+Mobile validation: **411 tests**, production Vite build, **7 mocked mesh/setup
+UI scenarios**, and **13 card-power UI regressions** passed. Knob tests execute
+the production gesture branch and reject pre-held, multiple-click and long-hold
+approval without power/effect/settings side effects. Real pinned cryptography
+tests cover mesh, commissioning and adapter behavior; Windows build and Linux CI
+results are recorded after completion. Mock and host passes do not establish
+phone/RF acceptance. Existing macOS CI remains the iOS build/upload route, using
+only personal `jammendolia`. The previously missing raw Mac diagnostics,
+same-IoT forwarding and BACL thermal/blackout questions remain separate gaps.
+
+Private local evidence: `.build/mesh-mobile-node-tests.log`,
+`.build/mesh-mobile-ui-result.json`, `.build/lamp-card-power-ui-result.json`,
+and `.build/ui-check/mesh-*.png`. New guides and candidates require a real-lamp
+acceptance pass before public OTA publication.
+
 ## Firmware 1.11.0 published for OTA — 2026-10-09
 
 The user authorized publication. **Firmware 1.11.0 is public Latest**, published

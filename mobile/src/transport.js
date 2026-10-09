@@ -9,7 +9,9 @@ const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/a
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
  '/api/calibration':12,'/api/name':13,'/api/identify':14,'/api/vu-colors':15,'/api/fountain-colors':16,
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
- '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26,'/api/firmware/fleet':27};
+ '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26,'/api/firmware/fleet':27,
+ '/api/mesh/status':28,'/api/mesh/request':29,'/api/mesh/result':30,'/api/power':31,'/api/preview':32,'/api/defaults':33,'/api/color':34,'/api/effect-options':35,
+ '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
 function publicControlSync(value){
   const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport']);
@@ -342,13 +344,13 @@ export class LampTransport {
     });
     this.controlTail=result.catch(()=>{});return result;
   }
-  request(path,data) {
+  request(path,data,epoch=this.epoch,beforeWrite=null) {
     const endpoint=controlPaths[path];
     if(!endpoint)return Promise.reject(Error('This setting is unavailable over Bluetooth.'));
     if(path==='/api/bluetooth/forget')data={...data,action:'forget'};
-    return this.controlRequest(endpoint,data===undefined?1:2,data);
+    return this.controlRequest(endpoint,data===undefined?1:2,data,()=>{if(this.epoch!==epoch)throw Error('Bluetooth control connection changed.');beforeWrite?.();});
   }
-  controlRequest(endpoint,method,data) {
+  controlRequest(endpoint,method,data,beforeWrite=null) {
     const body=new TextEncoder().encode(data===undefined?'':new URLSearchParams(data).toString());
     if(body.length>1024){body.fill(0);return Promise.reject(Error('Bluetooth settings exceed the supported size.'));}
     return this.controlJob(async epoch=>{
@@ -356,13 +358,14 @@ export class LampTransport {
       const guard=()=>{if(epoch!==this.epoch||this.id!==deviceId||this.deviceIdentity!==identity)throw Error('Bluetooth control connection changed.');};
       let responseBytes;
       try{
+        beforeWrite?.();
         await this.command('controlBegin',{tx,endpoint,method,length:body.length});guard();
         for(let offset=0;offset<body.length;offset+=13){
           await this.command('controlChunk',{tx,offset,bytes:body.slice(offset,offset+13)});guard();
         }
         // A consumed commit is never resent. The existing command path only
         // reads a matching cached acknowledgment if its notification is lost.
-        await this.command('controlCommit',{tx});guard();
+        beforeWrite?.();await this.command('controlCommit',{tx},null,beforeWrite);guard();
         let offset=0,status,total;
         do{
           await this.command('controlPage',{tx,offset});guard();

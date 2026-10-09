@@ -93,6 +93,9 @@ jobs:
           python3 tests/espnow-runtime.py --mbedtls-cache .build/tls-library
           python3 tests/ble-update-runtime.py --mbedtls-cache .build/tls-library
           python3 tests/firmware-relay-runtime.py
+          python3 tests/mesh-runtime.py
+          python3 tests/commission-runtime.py
+          python3 tests/mesh-adapter-runtime.py
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
         env:

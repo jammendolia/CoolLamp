@@ -16,6 +16,7 @@ struct LampAudioFeatures {
 void beginLampAudio();
 bool lampHasMicrophone();
 bool saveLampAudioConfiguration(bool enabled, uint8_t gain, uint16_t gate, uint16_t scale = 0);
+bool saveLampMicrophoneInstalled(bool enabled); // Preserve existing tuning; applies at reboot.
 uint16_t lampAudioScale();
 bool tuneLampAudio(uint8_t gain, uint16_t gate, uint16_t scale);
 bool adjustLampAudioGain(bool increase); // USB tuning; saves and applies without reboot.

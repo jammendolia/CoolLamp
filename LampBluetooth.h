@@ -12,4 +12,5 @@ bool lampPairingOpen();
 bool lampPairingCueActive();
 String lampBluetoothStatusJson();
 bool lampBluetoothReady();
+bool lampBluetoothHasBonds();
 void forgetLampPhones();

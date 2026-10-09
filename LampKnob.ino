@@ -98,6 +98,15 @@ bool serviceLampKnob() {
     syncLampKnob();
     return false;
   }
+  static bool wasCommissioning=false;
+  if(LampCommission::physicalPending()){
+    if(!wasCommissioning)knobGestures.reset(now,down);
+    wasCommissioning=true;
+    const auto gesture=knobGestures.poll(now,down);rotaryEncoder.encoderChanged();
+    if(gesture==LampGesture::Single)LampCommission::approvePhysical();
+    return false; // Approval never toggles power, pauses a group, or edits a setting.
+  }
+  if(wasCommissioning){wasCommissioning=false;knobGestures.reset(now,down);syncLampKnob();return false;}
   if(lampCalibrationActive()) {
     const auto gesture=knobGestures.poll(now,down);
     if(knobGestures.pressed())touchLampCalibration();

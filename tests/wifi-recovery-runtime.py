@@ -22,6 +22,10 @@ class WifiRecoveryRuntime(unittest.TestCase):
 constexpr int WL_CONNECTED=3,ESP_OK=0;
 struct wifi_ap_record_t {};
 bool associated=false,setupAP=false,scanActive=false,wifiBusy=false,updateBusy=false,resetBusy=false,pairingBusy=false,paused=false;
+bool commissionBusy=false;
+namespace LampCommission {bool working(){return commissionBusy;}}
+bool meshEnabled=false;
+namespace LampMeshAdapter {bool enabled(){return meshEnabled;}}
 uint8_t role=1;
 struct Settings {char ssid[33]="SavedSSID";char password[64]="unchanged";uint8_t powerProfile=34;} lampSettings;
 struct FakeWiFi {
@@ -69,12 +73,41 @@ int main(int argc,char** argv){
   role=1;paused=false;assert(!tick(105)&&WiFi.disconnects==3);
   lampSettings.ssid[0]=0;assert(!tick(106)&&WiFi.automatic&&WiFi.reconnects==2);
  }else if(scenario=="busy"){
-  bool* owners[]={&setupAP,&scanActive,&wifiBusy,&updateBusy,&resetBusy,&pairingBusy};
-  for(unsigned i=0;i<6;++i){*owners[i]=true;assert(!tick(100+i));*owners[i]=false;assert(WiFi.disconnects==0&&WiFi.reconnects==0&&WiFi.automatic);}
+  bool* owners[]={&setupAP,&scanActive,&wifiBusy,&updateBusy,&resetBusy,&pairingBusy,&commissionBusy};
+  for(unsigned i=0;i<7;++i){*owners[i]=true;assert(!tick(100+i));*owners[i]=false;assert(WiFi.disconnects==0&&WiFi.reconnects==0&&WiFi.automatic);}
   assert(!tick(200)&&WiFi.disconnects==1);assert(tick(60200)&&WiFi.reconnects==1);
   updateBusy=true;assert(!tick(60201));assert(!tick(63000));assert(WiFi.disconnects==1&&WiFi.reconnects==1);
   associated=true;assert(!tick(63001)&&WiFi.disconnects==1);updateBusy=false;
   assert(!tick(63002)&&WiFi.automatic&&WiFi.reconnects==1&&WiFi.disconnects==1);
+ }else if(scenario=="commission"){
+  // Commissioning has temporarily frozen retries. A 60s recovery probe must
+  // not steal that hold or reconnect until the physical approval session ends.
+  WiFi.automatic=false;commissionBusy=true;
+  assert(!tick(100)&&!tick(60100)&&!tick(120100));
+  assert(!WiFi.disconnects&&!WiFi.reconnects&&!WiFi.autoChanges);
+  commissionBusy=false;assert(!tick(120101)&&WiFi.disconnects==1);
+  assert(!tick(180100));assert(tick(180101)&&WiFi.reconnects==1);
+ }else if(scenario=="independent-mesh"){
+  role=0;meshEnabled=true;
+  assert(!tick(100)&&!WiFi.automatic&&WiFi.disconnects==1);
+  assert(!tick(60099)&&!WiFi.reconnects);assert(tick(60100)&&WiFi.reconnects==1);
+  assert(tick(62099)&&WiFi.disconnects==1);assert(!tick(62100)&&WiFi.disconnects==2);
+  // Local group pause does not remove the trusted mesh's channel ownership.
+  role=2;paused=true;assert(!tick(62101)&&!WiFi.automatic&&WiFi.autoChanges==1);
+  assert(!tick(122099));assert(tick(122100)&&WiFi.reconnects==2);
+  associated=true;assert(!tick(122101)&&WiFi.automatic&&WiFi.disconnects==2); // DHCP association owns the AP channel
+ }else if(scenario=="mesh-busy"){
+  role=0;meshEnabled=true;commissionBusy=true;
+  assert(!tick(100)&&!WiFi.disconnects&&!WiFi.reconnects&&WiFi.automatic);
+  commissionBusy=false;assert(!tick(200)&&!WiFi.automatic&&WiFi.disconnects==1);
+  commissionBusy=true;assert(!tick(60200)&&!tick(64000)&&!WiFi.reconnects);
+  commissionBusy=false;assert(tick(64001)&&WiFi.reconnects==1);
+  assert(!tick(66001)&&WiFi.disconnects==2);
+  // Releasing the mesh intent restores normal auto-reconnect exactly once;
+  // the transport's transient pause never changes the persistent credentials.
+  meshEnabled=false;assert(!tick(66002)&&WiFi.automatic&&WiFi.reconnects==2);
+  assert(!tick(66003)&&WiFi.reconnects==2);
+  meshEnabled=true;lampSettings.ssid[0]=0;assert(!tick(66004)&&WiFi.automatic&&WiFi.disconnects==2&&WiFi.reconnects==2);
  }else if(scenario=="dhcp"){
   associated=true;assert(!tick(100)&&WiFi.disconnects==0&&WiFi.reconnects==0); // STA association is enough before DHCP
   associated=false;assert(!tick(101)&&WiFi.disconnects==1);
@@ -100,7 +133,7 @@ int main(int argc,char** argv){
             cpp.write_text(stub + '\n' + adapter + '\n' + main)
             subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS,
                             '-I' + str(ROOT), str(cpp), '-o', str(executable)], check=True)
-            for scenario in ['bounded', 'release', 'busy', 'dhcp', 'independent', 'rollover']:
+            for scenario in ['bounded', 'release', 'busy', 'commission', 'independent-mesh', 'mesh-busy', 'dhcp', 'independent', 'rollover']:
                 subprocess.run([str(executable), scenario], check=True)
 
 

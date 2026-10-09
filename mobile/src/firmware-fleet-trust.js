@@ -11,18 +11,18 @@ export class FirmwareFleetTrust {
    return value;
   })().catch(error=>{this.keyRun=null;throw error;});return this.keyRun;
  }
- provision(transport){
+ provision(transport,{isCurrent=()=>true}={}){
   if(!transport?.control?.capabilities?.includes('firmware-relay'))return Promise.resolve({supported:false});
   const id=transport.identity,deviceId=transport.id,epoch=transport.epoch;
   const paired=()=>this.getPairedLamps().some(entry=>entry.id===id&&entry.deviceId===deviceId);
   if(!paired())return Promise.reject(Error('Only lamps paired with this phone can join its firmware fleet.'));
   if(this.tasks.has(id))return this.tasks.get(id);
-  const current=()=>{if(!paired()||transport.identity!==id||transport.id!==deviceId||transport.epoch!==epoch)throw Error('Paired lamp changed. Fleet trust was not sent.');};
+  const current=()=>{if(!isCurrent()||!paired()||transport.identity!==id||transport.id!==deviceId||transport.epoch!==epoch)throw Object.assign(Error('Paired lamp changed. Fleet trust was not sent.'),{cancelled:true,confirmed:true});};
   const task=(async()=>{
    const key=await this.key();current();
    // Idempotent receiver preserves any different existing owner. The key is
    // never returned by the lamp, stored in cards, or sent over local HTTP.
-   const reply=await transport.request('/api/firmware/fleet',{key});current();
+   const reply=await transport.request('/api/firmware/fleet',{key},epoch,current);current();
    let result;try{result=typeof reply==='string'?JSON.parse(reply):reply;}catch{throw Error('Lamp did not confirm its firmware fleet.');}
    if(result?.version!==1||result.paired!==true||!/^[a-f0-9]{16}$/.test(result.fleetId))throw Error('Lamp did not confirm its firmware fleet.');
    return {supported:true,paired:true,fleetId:result.fleetId,automatic:result.automatic===true};

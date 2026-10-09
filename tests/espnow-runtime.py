@@ -90,6 +90,9 @@ with tempfile.TemporaryDirectory(prefix='coollamp-espnow-') as folder:
         ('sync-radio-capacity.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp']),
         ('sync-runtime.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp'])
     ]:
+        # The included Sync source links inert mesh/commissioning loop hooks
+        # through firmware-relay-fixture.h. Their real routing, key exchange and
+        # flash behavior stay in the dedicated runtime suites, not these mocks.
         output = Path(folder) / (Path(source).stem + '.exe')
         command = ['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS,
                    *profile, *defines, 'tests/' + source, *extra, *objects, '-o', str(output)]

@@ -6,7 +6,7 @@
 
 namespace {
 LampBleControlWire::Transfer transfer;
-constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
+constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
 void clearText(String& text){
   if(text.length())LampBleControlWire::zero(const_cast<char*>(text.c_str()),text.length());
   text=String();

@@ -26,6 +26,8 @@ fixture=r'''
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
 #include "fixture.h"
+bool commissionBusy=false;
+namespace LampCommission {bool working(){return commissionBusy;}}
 int side=0;bool automatic=true,reservations[2]{},verified=false,radioAvailable=true;
 unsigned begins=0,writes=0,ends=0,boots=0;bool dropAck=false,dropData=false,dropFinish=false,corrupt=false;
 bool ackDropped=false,dataDropped=false,finishDropped=false,corrupted=false;unsigned rejectedData=0;
@@ -97,6 +99,7 @@ int main(int argc,char** argv){
  assert(Recipient::control(true,scenario=="wrong-fleet"?String("key=ffffffffffffffffffffffffffffffff"):form).status==200);
  auto status=Recipient::control(false,"");assert(status.body.find(keyHex)==std::string::npos);assert(Recipient::control(true,"key=11111111111111111111111111111111").status==409);
  if(scenario=="auto-off")automatic=false;
+ if(scenario=="commission")commissionBusy=true;
  dropAck=scenario=="lost-ack";dropData=scenario=="lost-data";dropFinish=scenario=="lost-finish-ack";corrupt=scenario=="corrupt";
  if(scenario=="old-offer")installed[300+16]='0';
  for(unsigned i=0;i<160000&&!boots;++i){
@@ -108,7 +111,7 @@ int main(int argc,char** argv){
  if(scenario=="lost-finish-ack")for(unsigned i=0;i<2000;++i){side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();++fakeNow;}
  if(scenario=="success"||scenario=="lost-ack"||scenario=="lost-data"||scenario=="lost-finish-ack"){
   assert(boots==1&&ends==1&&verified&&flash==installed);assert(begins==1);if(dropAck)assert(ackDropped);if(dropData)assert(dataDropped);if(dropFinish)assert(finishDropped);
- }else{assert(!boots&&!verified);if(scenario=="auto-off"||scenario=="wrong-fleet"||scenario=="old-offer")assert(!begins);}
+ }else{assert(!boots&&!verified);if(scenario=="auto-off"||scenario=="wrong-fleet"||scenario=="old-offer"||scenario=="commission")assert(!begins);}
  std::cout<<"PASS relay "<<scenario<<" begins="<<begins<<" boots="<<boots<<"\n";
 }
 '''
@@ -127,6 +130,6 @@ with tempfile.TemporaryDirectory(prefix='coollamp-firmware-relay-') as folder:
   output=folder/(name+'.o');subprocess.run(['gcc','-std=c11',*SANITIZERS,*includes,*defines,'-c',str(source/'library'/f'{name}.c'),'-o',str(output)],check=True);objects.append(str(output))
  binary=folder/'relay.exe'
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,*includes,*defines,str(folder/'fixture.cpp'),str(ROOT/'LampFirmwareRelayCrypto.cpp'),str(ROOT/'LampBleUpdate.cpp'),*objects,'-o',str(binary)],check=True)
- scenarios=['crypto','success','auto-off','wrong-fleet','old-offer','lost-data','lost-ack','lost-finish-ack','corrupt','auto-disabled-midway','radio-lost']
+ scenarios=['crypto','success','auto-off','commission','wrong-fleet','old-offer','lost-data','lost-ack','lost-finish-ack','corrupt','auto-disabled-midway','radio-lost']
  for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
  print(f'PASS: {len(scenarios)} production relay scenarios; real pinned AES-GCM and SHA-256')

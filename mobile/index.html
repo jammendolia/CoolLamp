@@ -51,6 +51,29 @@
 </div>
 <p id="fleetFirmwareStatus" class="hint" role="status" aria-live="polite">Versions refresh in the background. Updates start only when you choose Update all lamps.</p>
 </div>
+<section id="newMeshLamps" class="panel mesh-onboarding" hidden aria-labelledby="newMeshLampsTitle">
+<h3 id="newMeshLampsTitle">A new lamp has been detected!</h3>
+<p class="hint">An existing lamp can help you set it up. Keep the new lamp nearby.</p>
+<div id="newMeshLampList" class="mesh-new-list"></div>
+</section>
+<section id="meshSetup" class="panel mesh-onboarding" hidden aria-labelledby="meshSetupTitle">
+<h3 id="meshSetupTitle" tabindex="-1">Set up your new lamp</h3>
+<p id="meshSetupStatus" class="hint" role="status" aria-live="polite"></p>
+<div id="meshSetupPattern" class="mesh-confirm-colors" hidden aria-label="Compare these four colors with the lamp"></div>
+<form id="meshSetupForm" hidden>
+<fieldset id="meshSetupFields">
+<label for="meshSetupName">Lamp name</label><input id="meshSetupName" maxlength="32" required autocomplete="off">
+<label for="meshSetupStyle">Lamp design</label><select id="meshSetupStyle"></select>
+<div class="mesh-setup-grid"><div><label for="meshSetupLeds">Number of LEDs</label><input id="meshSetupLeds" type="number" min="1" max="1024" required></div><div><label for="meshSetupMilliamps">Power limit (mA)</label><input id="meshSetupMilliamps" type="number" min="100" max="20000" required></div></div>
+<label class="check"><input id="meshSetupMicrophone" type="checkbox">Microphone is installed</label>
+<label class="check"><input id="meshSetupPower" type="checkbox">Turn the lamp on</label>
+<label class="check"><input id="meshSetupWifi" type="checkbox">Also connect to Wi-Fi (optional)</label>
+<div id="meshSetupWifiFields" hidden><label for="meshSetupSsid">Wi-Fi network</label><input id="meshSetupSsid" maxlength="32" autocomplete="off"><label for="meshSetupWifiPassword">Wi-Fi password</label><input id="meshSetupWifiPassword" type="password" maxlength="63" autocomplete="new-password"><label class="check"><input id="meshSetupWifiOpen" type="checkbox">This is an open network</label></div>
+<button id="meshSetupSave" type="submit">Save lamp settings</button>
+</fieldset></form>
+<button id="meshSetupRecover" type="button" class="secondary" hidden>Check setup</button>
+<button id="meshSetupCancel" type="button" class="text-button">Cancel setup</button>
+</section>
 <div id="lampList" class="lamp-list">
 </div>
 <p class="micro-copy">Group power controls the coordinator and its followers. Lamp power controls only that lamp; turning off a follower pauses following.</p>

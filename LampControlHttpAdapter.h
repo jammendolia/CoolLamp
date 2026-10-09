@@ -5,11 +5,11 @@
 #include <utility>
 
 // HTTP and encrypted/bonded BLE commands share the same loop-only handlers.
-// Only the trusted BLE service calls executeControl(); HTTP cannot select this
+// Only trusted loop-owned BLE/mesh services call executeControl(); HTTP cannot select this
 // context with a URL, header or form field. No handler executes on a callback.
 extern String lampToken;
 class LampControlHttpAdapter : public WebServer {
-  static constexpr unsigned Slots=27, Fields=16;
+  static constexpr unsigned Slots=40, Fields=16;
   THandlerFunction controls[Slots][2];
   struct Entry { String key,value; } fields[Fields];
   unsigned fieldCount=0;
@@ -62,7 +62,7 @@ class LampControlHttpAdapter : public WebServer {
   }
   static uint8_t endpoint(const char* path,HTTPMethod method){
     using namespace LampControlEndpoint;
-    if(method==HTTP_GET){if(!strcmp(path,"/api/state"))return State;if(!strcmp(path,"/api/firmware"))return Firmware;if(!strcmp(path,"/api/bluetooth"))return Bluetooth;if(!strcmp(path,"/api/effects"))return Effects;return 0;}
+    if(method==HTTP_GET){if(!strcmp(path,"/api/state"))return State;if(!strcmp(path,"/api/firmware"))return Firmware;if(!strcmp(path,"/api/bluetooth"))return Bluetooth;if(!strcmp(path,"/api/effects"))return Effects;if(!strcmp(path,"/api/mesh/status"))return MeshStatus;if(!strcmp(path,"/api/mesh/new"))return MeshNew;return 0;}
     if(method!=HTTP_POST)return 0;
     const char* paths[]={"/api/sync/invite","/api/sync","/api/sync/scene","/api/sync/order","/api/config","/api/audio","/api/audio/tuning","/api/rotation","/api/geometry","/api/calibration","/api/name","/api/identify","/api/vu-colors","/api/fountain-colors","/api/audio/test"};
     for(unsigned i=0;i<sizeof(paths)/sizeof(paths[0]);++i)if(!strcmp(path,paths[i]))return SyncInvite+i;
@@ -72,11 +72,21 @@ class LampControlHttpAdapter : public WebServer {
     if(!strcmp(path,"/api/factory-reset"))return FactoryReset;
     if(!strcmp(path,"/api/bluetooth/forget"))return Bluetooth;
     if(!strcmp(path,"/api/style"))return Style;
+    if(!strcmp(path,"/api/mesh/request"))return MeshRequest;
+    if(!strcmp(path,"/api/mesh/result"))return MeshResult;
+    if(!strcmp(path,"/api/power"))return Power;
+    if(!strcmp(path,"/api/preview"))return Preview;
+    if(!strcmp(path,"/api/defaults"))return Defaults;
+    if(!strcmp(path,"/api/color"))return Color;
+    if(!strcmp(path,"/api/effect-options"))return EffectOptions;
+    if(!strcmp(path,"/api/mesh/enroll/start"))return EnrollStart;
+    if(!strcmp(path,"/api/mesh/enroll/status"))return EnrollStatus;
+    if(!strcmp(path,"/api/mesh/enroll/cancel"))return EnrollCancel;
     return 0;
   }
   static const char* route(uint8_t id,bool mutation){
     using namespace LampControlEndpoint;
-    if(!mutation){if(id==State)return "/api/state";if(id==Sync)return "/api/sync";if(id==Firmware)return "/api/firmware";if(id==Bluetooth)return "/api/bluetooth";if(id==Effects)return "/api/effects";return "";}
+    if(!mutation){if(id==State)return "/api/state";if(id==Sync)return "/api/sync";if(id==Firmware)return "/api/firmware";if(id==Bluetooth)return "/api/bluetooth";if(id==Effects)return "/api/effects";if(id==MeshStatus)return "/api/mesh/status";if(id==MeshNew)return "/api/mesh/new";return "";}
     const char* paths[]={"/api/sync/invite","/api/sync","/api/sync/scene","/api/sync/order","/api/config","/api/audio","/api/audio/tuning","/api/rotation","/api/geometry","/api/calibration","/api/name","/api/identify","/api/vu-colors","/api/fountain-colors","/api/audio/test"};
     if(id>=SyncInvite&&id<=AudioTest)return paths[id-SyncInvite];
     if(id==FirmwareCheck)return "/api/firmware/check";
@@ -85,6 +95,16 @@ class LampControlHttpAdapter : public WebServer {
     if(id==FactoryReset)return "/api/factory-reset";
     if(id==Bluetooth)return "/api/bluetooth/forget";
     if(id==Style)return "/api/style";
+    if(id==MeshRequest)return "/api/mesh/request";
+    if(id==MeshResult)return "/api/mesh/result";
+    if(id==Power)return "/api/power";
+    if(id==Preview)return "/api/preview";
+    if(id==Defaults)return "/api/defaults";
+    if(id==Color)return "/api/color";
+    if(id==EffectOptions)return "/api/effect-options";
+    if(id==EnrollStart)return "/api/mesh/enroll/start";
+    if(id==EnrollStatus)return "/api/mesh/enroll/status";
+    if(id==EnrollCancel)return "/api/mesh/enroll/cancel";
     return "";
   }
 public:

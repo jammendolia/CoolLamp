@@ -69,6 +69,8 @@ using namespace LampBleUpdateWire;
 uint32_t clockMs=100000;uint32_t millis(){return clockMs;}
 unsigned begins=0,aborts=0,ends=0,boots=0,releases=0;bool reserved=false,verified=false,cancelled=false;
 bool allowReserve=true,allowBegin=true,allowWrite=true,allowEnd=true,allowBoot=true;
+bool commissionBusy=false;
+namespace LampCommission {bool working(){return commissionBusy;}}
 bool lampUpdateOwnsResources(){return reserved;}
 bool partitionPresent=true;esp_partition_t partition;
 std::vector<uint8_t> flash;
@@ -104,6 +106,12 @@ int main(int argc,char** argv){
  if(test=="wire"){
   Queue q;Frame f;for(unsigned i=0;i<8;++i){f.generation=i;assert(q.push(f));}assert(!q.push(f));for(unsigned i=0;i<8;++i){assert(q.pop(f)&&f.generation==i);}assert(!q.pop(f));
   auto p=packet(Data,0,image,232);assert(valid(p.data(),p.size()));p.push_back(0);assert(!valid(p.data(),p.size()));p=packet(Start);assert(valid(p.data(),p.size()));p[0]=2;assert(!valid(p.data(),p.size()));p=packet(Manifest,191,image,1);assert(!valid(p.data(),p.size()));return 0;
+ }
+ if(test=="commission"){
+  commissionBusy=true;assert(!beginLampRadioFirmwareReceiver(9));
+  assert(!begins&&!boots&&!reserved&&status()[1]==Idle);
+  commissionBusy=false;assert(beginLampRadioFirmwareReceiver(9));
+  abortLampRadioFirmwareReceiver();assert(!begins&&!boots&&!reserved&&status()[1]==Idle);return 0;
  }
  if(test=="downgrade"){std::string old=manifestText;old.replace(old.find(fixtureVersion),strlen(fixtureVersion),"0.0.0");send(Manifest,0,reinterpret_cast<const uint8_t*>(old.data()),old.size());send(Start);assert(status()[1]==Error&&status()[2]==Invalid&&!begins&&!reserved);return 0;}
  if(test=="busy"){allowReserve=false;send(Manifest,0,reinterpret_cast<const uint8_t*>(manifestText),strlen(manifestText));send(Start);assert(status()[2]==Busy&&!begins);return 0;}
@@ -169,7 +177,7 @@ with tempfile.TemporaryDirectory(prefix='coollamp-ble-update-') as folder:
     binary = folder/'test.exe'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, *include, *defines,
                     str(folder/'test.cpp'), str(ROOT/'LampBleUpdate.cpp'), *objects, '-o', str(binary)], check=True)
-    scenarios = ['wire', 'success', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
+    scenarios = ['wire', 'commission', 'success', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
                  'begin-error', 'bond', 'generation', 'timeout', 'cancel', 'offset', 'truncated', 'write-error', 'end-error', 'boot-error']
     for scenario in scenarios:
         subprocess.run([str(binary), scenario], check=True)

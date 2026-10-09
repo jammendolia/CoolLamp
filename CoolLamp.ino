@@ -15,6 +15,8 @@
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
 #include "LampFirmwareRelay.h"
+#include "LampMeshAdapter.h"
+#include "LampCommission.h"
 #include "LampGestures.h"
 #include "LampAudio.h"
 #include "LampFactoryReset.h"
@@ -156,6 +158,7 @@ void setup() {
   beginLampUpdater();
   beginLampNetwork();
   LampFirmwareRelay::begin();
+  LampMeshAdapter::begin();LampCommission::begin();
 }
 
 void loop() {
@@ -176,6 +179,10 @@ void loop() {
   // Keep input polling responsive between frames, including while off.
   static uint32_t lastFrameMs = 0;
   const uint32_t now = millis();
+  uint8_t commissionR=0,commissionG=0,commissionB=0;
+  if(LampCommission::cue(now,commissionR,commissionG,commissionB)){
+    ::memcpy(originalFrame,leds,NUM_LEDS*sizeof(CRGB));fill_solid(leds,NUM_LEDS,CRGB(commissionR,commissionG,commissionB));FastLED.show(100);::memcpy(leds,originalFrame,NUM_LEDS*sizeof(CRGB));delay(1);return;
+  }
   static bool wasPairing = false;
   static bool pairingFlashOn = false;
   const bool pairingNow = lampPairingCueActive();

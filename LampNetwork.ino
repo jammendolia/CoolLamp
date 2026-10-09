@@ -12,6 +12,8 @@
 #include "LampControlHttpAdapter.h"
 #include "LampWifiRecoveryPolicy.h"
 #include "LampStyle.h"
+#include "LampMeshAdapter.h"
+#include "LampCommission.h"
 
 LampSettings lampSettings;
 LampControlHttpAdapter lampServer(80);
@@ -34,6 +36,14 @@ bool mdnsStarted = false;
 bool otaActive = false;
 bool otaAccepted = false;
 bool otaComplete = false;
+bool lampMeshEnrollmentEligible(){
+  uint8_t key[16]{};
+  const bool paired=LampFirmwareRelay::copyFleetKey(key);
+  volatile uint8_t* clear=key;for(unsigned i=0;i<16;++i)clear[i]=0;
+  return !paired&&!lampSettings.ssid[0]&&!lampBluetoothHasBonds()&&lampSyncRole()==0&&
+    !setupAP&&!scanActive&&!lampPairingOpen()&&!lampWifiSetupBusy()&&!lampUpdateOwnsResources()&&
+    !lampFactoryResetPending()&&!lampFactoryResetArmed()&&!lampCalibrationActive();
+}
 uint32_t apLastActivity = 0;
 uint32_t setupPulseStart = 0;
 bool setupPulseActive = false;
@@ -307,6 +317,9 @@ void saveLampConfiguration()
     lampServer.send(400, "text/plain", "Check LED count, power limit, brightness, and effect."); return;
   }
   LampSettings next = lampSettings;
+  uint32_t microphone=0;
+  const bool updateMicrophone=lampServer.hasArg("microphoneInstalled");
+  if(updateMicrophone&&!readNumber("microphoneInstalled",0,1,microphone)){lampServer.send(400,"text/plain","Choose whether a microphone is installed.");return;}
   next.ledCount = count; next.milliAmps = powerLimit; next.brightness = brightness; next.startupMode = mode;
   const String ssid = lampServer.hasArg("ssid") ? lampServer.arg("ssid") : String(next.ssid);
   const String wifiPass = lampServer.arg("wifiPassword");
@@ -328,9 +341,11 @@ void saveLampConfiguration()
   if (!adminPass.isEmpty()) { memset(next.adminPassword, 0, sizeof(next.adminPassword)); strlcpy(next.adminPassword, adminPass.c_str(), sizeof(next.adminPassword)); }
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) { lampServer.send(500, "text/plain", "Could not open saved settings. Nothing changed."); return; }
+  const bool previousMicrophone=lampHasMicrophone();
+  if(updateMicrophone&&!saveLampMicrophoneInstalled(microphone)){prefs.end();lampServer.send(500,"text/plain","Could not save microphone settings. Configuration was not changed.");return;}
   const bool saved = prefs.putBytes("settings", &next, sizeof(next)) == sizeof(next);
   prefs.end();
-  if (!saved) { lampServer.send(500, "text/plain", "Settings could not be saved. Please retry."); return; }
+  if (!saved) {const bool restored=!updateMicrophone||saveLampMicrophoneInstalled(previousMicrophone);lampServer.send(500,"text/plain",restored?"Settings could not be saved. Nothing changed.":"Settings could not be saved and microphone rollback was not confirmed. Read the lamp settings before retrying.");return;}
   if (!saveLampColors()) { lampServer.send(500, "text/plain", "Settings saved, but colors could not be saved. Please retry."); return; }
   lampServer.send(200, "text/plain", "Saved. Restarting… If needed, hold the knob for three seconds to reopen setup. On home Wi-Fi, use http://" + lampHost + ".local/");
   restartAt = millis() + 1200;
@@ -666,6 +681,30 @@ void beginLampNetwork()
     setLampControl(Mode, Brightness, on); FastLED.show();
     lampServer.send(200, "text/plain", PowerOn ? "Light on." : "Light off.");
   });
+  lampServer.on("/api/mesh/status", HTTP_GET, [](){
+    if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",LampMeshAdapter::statusJson());
+  });
+  lampServer.on("/api/mesh/request", HTTP_POST, [](){
+    if(!authorizedLampRequest(true))return;
+    const auto reply=LampMeshAdapter::request(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("endpoint"),lampServer.arg("method"),lampServer.arg("body"));lampServer.send(reply.status,"application/json",reply.body);
+  });
+  // This POST only reads a retained result; it never dispatches the command.
+  lampServer.on("/api/mesh/result", HTTP_POST, [](){
+    if(!authorizedLampRequest(true))return;
+    const auto reply=LampMeshAdapter::result(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("offset"));lampServer.send(reply.status,"application/json",reply.body);
+  });
+  lampServer.on("/api/mesh/new", HTTP_GET, [](){
+    if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",LampCommission::candidatesJson());
+  });
+  lampServer.on("/api/mesh/enroll/start", HTTP_POST, [](){
+    if(!authorizedLampRequest(true))return;const auto reply=LampCommission::start(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"));lampServer.send(reply.status,"application/json",reply.body);
+  });
+  lampServer.on("/api/mesh/enroll/status", HTTP_POST, [](){
+    if(!authorizedLampRequest(true))return;const auto reply=LampCommission::status(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"));lampServer.send(reply.status,"application/json",reply.body);
+  });
+  lampServer.on("/api/mesh/enroll/cancel", HTTP_POST, [](){
+    if(!authorizedLampRequest(true))return;const auto reply=LampCommission::cancel(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"));lampServer.send(reply.status,"application/json",reply.body);
+  });
   lampServer.on("/update", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     lampServer.send(otaComplete ? 200 : 400, "text/plain", otaMessage);
@@ -793,8 +832,9 @@ bool serviceLampOfflineWifi(uint32_t now) {
   static LampWifiRecoveryPolicy policy;
   wifi_ap_record_t accessPoint{};
   const bool associated=WiFi.status()==WL_CONNECTED || esp_wifi_sta_get_ap_info(&accessPoint)==ESP_OK;
-  const bool intent=lampSettings.ssid[0] && lampSyncRole()>0 && !(lampSyncRole()==2&&lampSyncPaused());
-  const bool busy=setupAP || scanActive || lampWifiSetupBusy() || lampUpdateOwnsResources() || lampFactoryResetPending() || lampPairingOpen();
+  const bool groupIntent=lampSyncRole()>0 && !(lampSyncRole()==2&&lampSyncPaused());
+  const bool intent=lampSettings.ssid[0] && (groupIntent||LampMeshAdapter::enabled());
+  const bool busy=setupAP || scanActive || LampCommission::working() || lampWifiSetupBusy() || lampUpdateOwnsResources() || lampFactoryResetPending() || lampPairingOpen();
   const auto action=policy.tick(now,intent,associated,busy,WiFi.getAutoReconnect());
   if(action==LampWifiRecoveryPolicy::Suspend){WiFi.setAutoReconnect(false);WiFi.disconnect(false,false);}
   else if(action==LampWifiRecoveryPolicy::Restore){

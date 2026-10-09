@@ -9,6 +9,8 @@ import { createGroupCode, parseGroupCode, groupStatus } from './sync.js';
 import { Capacitor, CapacitorHttp, registerPlugin } from '@capacitor/core';
 import { LampStore, LampDiscoverySession, lampAddress, lampFirmwareLabel, validFirmwareVersion } from './lamps.js';
 import { WifiTransport } from './wifi.js';
+import { MeshInventorySession, acquireMeshLamp, meshBridgeSupported } from './mesh.js';
+import { MeshOnboarding } from './mesh-onboarding.js';
 import { FirmwareFleet } from './firmware-fleet.js';
 import { GroupDiscovery } from './group-discovery.js';
 import { BluetoothGroups, initializeGroupRadio } from './bluetooth-groups.js';
@@ -20,12 +22,16 @@ import {availableCardRelease,updateCardFirmware} from './card-firmware.js';
 import {FirmwareFleetTrust} from './firmware-fleet-trust.js';
 import { LampConnectivity, lightingObservation, groupObservation, groupCardPresentation } from './lamp-connectivity.js';
 import { LAMP_STYLES, styleDefinition, styleLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
-import { wifiSetupMessage } from './wifi-setup.js';
+import { wifiSetupMessage, wifiCredentials } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
 const native = registerPlugin('LampNetwork');
 const accessoryNative = registerPlugin('LampAccessory');
 const store = new LampStore(localStorage);
 const discovery = new LampDiscoverySession();
+const meshInventory=new MeshInventorySession();
+let meshSelection=null;
+let meshOnboarding=null,meshWizard=null,newMeshCandidates=[];
+const meshNetworkMessages=new Map();
 let selected = null, lamp = null, connecting = false, discovered = [], category = 'all';
 let bluetoothFirmwareTask=null;
 let publicFirmware=null,publicFirmwareCheckedAt=0,publicFirmwareRun=null;
@@ -38,8 +44,8 @@ let pairingRecoveryTarget=null;
 const removedAccessoryIds=new Set();
 let centerStatus=null,centerTimer=null,centerSerial=0,centerWasActive=false;
 const bluetoothWifiAvailable=()=>lamp===bleLamp&&bleLamp.supportsWifiSetup&&Boolean(state);
-const advancedAvailable=()=>Boolean(state&&lamp?.raw&&(lamp===wifiLamp||lamp===bleLamp&&bleLamp.supportsOfflineControl));
-const groupsAvailable=()=>advancedAvailable()&&(lamp===wifiLamp||bleLamp.supportsOfflineGroups);
+const advancedAvailable=()=>Boolean(state&&lamp?.raw&&(lamp===wifiLamp||lamp?.isMesh||lamp===bleLamp&&bleLamp.supportsOfflineControl));
+const groupsAvailable=()=>advancedAvailable()&&(lamp===wifiLamp||lamp?.isMesh||bleLamp.supportsOfflineGroups);
 const isNative = Capacitor.isNativePlatform();
 const sessionPasswords = new Map();
 const wifiFailures = new Map();
@@ -73,12 +79,14 @@ async function credential(id, value) {
 const firmwareFleetTrust=new FirmwareFleetTrust({credential,getPairedLamps:()=>store.items.filter(entry=>entry.deviceId)});
 function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
 function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
+  cancelMeshSelection();
   if(name==='light'){name='settings';settingsView='lighting';}
   ++navigationSerial;if(!preserveCardSettings)wifiSettingsTarget=null;
   if(name!=='groups'||!preserveGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}
   if(name!=='settings')hideWifiPassword();
   if(name!=='groups')closeGroupEditor();
-  if(name==='lamps'){$('status').textContent='Choose a lamp’s gear to open its settings, or add a new lamp.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();}
+  if(name==='lamps'){$('status').textContent='Choose a lamp’s gear to open its settings, or add a new lamp.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();}
+  else if(meshWizard&&!meshWizard.saving)void closeMeshWizard();
   for (const item of ['lamps','groups','settings']) $('page-'+item).hidden=item!==name;
   scheduleLampStatusRefresh();
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===(name==='settings'?'lamps':name))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
@@ -257,7 +265,7 @@ function renderSettings() {
   if(membershipUnknown)$('lampGroupLightingHint').textContent='This Bluetooth firmware cannot report fresh group membership. Connect over Wi-Fi or update to firmware 1.10.0 or newer to verify that this lamp is independent before changing its lighting.';
   $('openLampGroupLighting').textContent=membershipUnknown?'Open Groups':'Open group controls';$('connectLampLightingWifi').hidden=!membershipUnknown;
   $('connectLampLightingWifi').textContent=selected?.address?'Connect over Wi-Fi':'Open Wi-Fi settings';
-  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Wi-Fi setup over Bluetooth needs firmware 1.9.0 or newer. For a lamp already on your network, refresh the Wi-Fi list in Lamps and tap its card again. For first-time setup, hold the knob for three seconds to use its hotspot.':!advancedAvailable()&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':!advancedAvailable()&&['groups','hardware'].includes(settingsView)?'Update this lamp to firmware 1.10.0 for full Bluetooth settings and offline groups, or use Wi-Fi.':'';
+  $('settingsHint').textContent=!state?'Connect to a lamp to manage its settings.':lamp?.isMesh&&settingsView==='network'?'Enter your Wi-Fi network manually. These settings travel through your trusted mesh; network scanning needs a direct connection.':lamp!==wifiLamp&&settingsView==='network'&&!bluetoothWifiAvailable()?'Wi-Fi setup over Bluetooth needs firmware 1.9.0 or newer. For a lamp already on your network, refresh the Wi-Fi list in Lamps and tap its card again. For first-time setup, hold the knob for three seconds to use its hotspot.':!advancedAvailable()&&settingsView==='hardware'&&(state.capabilities&128)?'Fine-tune the center over Bluetooth. Other hardware settings need Wi-Fi.':!advancedAvailable()&&['groups','hardware'].includes(settingsView)?'Update this lamp to firmware 1.10.0 for full Bluetooth settings and offline groups, or use Wi-Fi.':'';
   if(state&&lamp===bleLamp&&['network','groups'].includes(settingsView)&&wifiFailures.has(selected?.id))$('settingsHint').textContent=wifiFailures.get(selected.id)+' '+$('settingsHint').textContent;
   if(lamp===bleLamp&&advancedAvailable()&&['groups','hardware'].includes(settingsView))$('settingsHint').textContent=settingsView==='groups'?
     'Nearby lamp groups work without a router. Pair the coordinator with this phone before joining it.':'Full lamp settings are available over encrypted Bluetooth.';
@@ -265,7 +273,7 @@ function renderSettings() {
   for(const button of document.querySelectorAll('[data-settings-section]'))button.setAttribute('aria-pressed',String(button.dataset.settingsSection===settingsView));
   $('summaryVersion').textContent=state?(firmware?.version||'Unavailable'):'—';
   $('summaryLeds').textContent=advancedAvailable()?lamp.raw.leds+' LEDs':'—';
-  $('summaryTransport').textContent=state?(lamp===wifiLamp?'Wi-Fi':'Bluetooth'):'Offline';
+  $('summaryTransport').textContent=state?(lamp?.isMesh?'ESP-NOW mesh':lamp===wifiLamp?'Wi-Fi':'Bluetooth'):'Offline';
   const bleNetwork=bluetoothWifiAvailable();
   $('networkSettings').disabled=!state||(!advancedAvailable()&&!bleNetwork)||busy||updatingLamp();
   $('wifiSecurityControls').hidden=bleNetwork&&!advancedAvailable();
@@ -353,7 +361,7 @@ const callbacks = {
     if(lamp===bleLamp&&!bleLamp.supportsOfflineControl&&centerStatus?.active)next.calibration={active:true,kind:'center',position:centerStatus.position};
     if(state?.mode!==next.mode){editingOptions=false;editingBrightness=false;}
     state = next;
-    if(verifiedSelectedLamp()&&(lamp===wifiLamp||metadata?.freshControl||lamp===bleLamp&&!bleLamp.supportsOfflineControl&&legacyWithoutGroups(firmware?.version)))observeLampLighting(selected.id,{...next,deviceId:selected.id},lamp.catalog);
+    if(verifiedSelectedLamp()&&(lamp===wifiLamp||lamp?.isMesh||metadata?.freshControl||lamp===bleLamp&&!bleLamp.supportsOfflineControl&&legacyWithoutGroups(firmware?.version)))observeLampLighting(selected.id,{...next,deviceId:selected.id},lamp.catalog);
     if(verifiedSelectedLamp()&&lamp.raw?.lampStyle)rememberLampStyle(selected.id,lamp.raw.lampStyle);
     if(lamp===wifiLamp&&verifiedSelectedLamp())observeLampWifi(selected.id,next.connected,'state');
     $('defaultPasswordNotice').hidden=next.usingDefaultPassword!==true;
@@ -411,7 +419,8 @@ async function rememberAuthorizedAccessories() {
   rememberAccessories(store,result.devices,removedAccessoryIds);
   renderLamps();renderSettings();
 }
-const bleLamp = new LampTransport(BleClient, {...callbacks,
+function transportCallbacks(target){return Object.fromEntries(Object.entries(callbacks).map(([name,callback])=>[name,(...args)=>{if(lamp===target())return callback(...args);} ]));}
+const bleLamp = new LampTransport(BleClient, {...transportCallbacks(()=>bleLamp),
   ...(phonePlatform==='ios'?{selectDevice:device=>pairing.select(device),onRadioReady:()=>{pairing.radioStarted=true;},
     onDeviceSelected:device=>{
       if(!device.accessoryManaged)return;
@@ -419,7 +428,8 @@ const bleLamp = new LampTransport(BleClient, {...callbacks,
       rememberAccessories(store,[device],removedAccessoryIds);renderLamps();
       status('Authorized '+device.name+'. Connecting to the lamp…');
     }}:{})});
-const wifiLamp = new WifiTransport(CapacitorHttp, {...callbacks,onError:async e=>{
+const wifiLamp = new WifiTransport(CapacitorHttp, {...transportCallbacks(()=>wifiLamp),onError:async e=>{
+  if(lamp!==wifiLamp)return;
   if(selected?.deviceId&&!connecting&&!e.needsPassword){await connect(selected,{navigate:false});if(state&&lamp===bleLamp)reportWifiFallback(e);}
   else {if(e.needsPassword)promptWifiPassword(selected);status(e.message);}
 }});
@@ -473,6 +483,7 @@ async function change(operation, value, activatePalette = false) {
   finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
 }
 async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,navigate=true}={}) {
+  cancelMeshSelection();
   if(bluetoothFirmwareTask){status('Finish or cancel the Bluetooth update before switching connections.');return;}
   const startedNavigation=navigationSerial;
   if(!preserveWifiIntent)wifiSettingsTarget=null;
@@ -519,6 +530,7 @@ function connected(kind,{navigate=true}={}) {
   $('favoriteEffect').setAttribute('aria-pressed',String(Boolean(selected.favorites?.includes(state.mode))));
   $('favoriteEffect').textContent=selected.favorites?.includes(state.mode)?'♥':'♡';
   $('connectionBadge').textContent=kind; $('lampTitle').textContent=selected.name;
+  $('connectionBadge').title=lamp?.isMesh?'Through '+(lamp.bridge.raw?.name||lamp.bridgeIdentity):kind;
   $('lampRoom').textContent=selected.room||'YOUR LAMP';
   $('lampName').value=selected.name; $('room').value=selected.room||'';
   $('settingsConnection').textContent=selected.name+' · '+kind;
@@ -546,6 +558,7 @@ function connected(kind,{navigate=true}={}) {
   }
 }
 async function connectWifi(entry,password,{navigate=true,settingsIntent=null}={}) {
+  cancelMeshSelection();
   if(bluetoothFirmwareTask){status('Finish or cancel the Bluetooth update before switching connections.');return;}
   const startedNavigation=navigationSerial;
   if(connecting||busy||fleetLampInstalling(entry.id))return;
@@ -647,12 +660,14 @@ for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange =
 
 function verifiedSelectedLamp() {
   if(connecting||!state||!selected)return false;
+  if(lamp?.isMesh)return lamp.identity===selected.id&&lamp.target===selected.id;
   if(lamp===wifiLamp)return wifiLamp.identity===selected.id;
   return lamp===bleLamp&&bleLamp.id===selected.deviceId&&
     (!bleLamp.deviceIdentity||bleLamp.deviceIdentity===selected.id);
 }
 function mergedLampEntries() {
   const merged=new Map(store.items.map(entry=>[entry.id,entry]));
+  for(const entry of meshInventory.items)if(!discovery.forgotten.has(entry.id))merged.set(entry.id,{...entry,...merged.get(entry.id)});
   for(const entry of discovered)merged.set(entry.id,{...entry,...merged.get(entry.id),address:entry.address});
   return [...merged.values()];
 }
@@ -764,7 +779,7 @@ async function updateAllLamps() {
   }catch(error){fleetSummary=error.message||'Updates could not finish. Review each lamp before trying again.';}
   finally{fleetUpdating=false;renderLamps();renderPower();renderFirmware();renderOptions();renderSettings();}
 }
-$('refreshLampFirmware').onclick=()=>refreshLampFirmware();
+$('refreshLampFirmware').onclick=()=>{refreshLampFirmware();refreshNewMeshLamps();};
 $('updateAllLamps').onclick=()=>updateAllLamps();
 function observeLampWifi(id,wifi,source) {
   if(typeof wifi==='boolean')wifi={connected:wifi};
@@ -778,7 +793,7 @@ function observeLampLighting(id,raw,catalog,checkedAt=Date.now()){
 function scheduleLampStatusRefresh() {
   clearTimeout(lampStatusTimer);lampStatusTimer=null;
   if(document.hidden||$('page-lamps').hidden)return;
-  lampStatusTimer=setTimeout(()=>{if(!document.hidden&&!$('page-lamps').hidden){renderLamps();refreshLampFirmware();refreshBasicBluetoothTelemetry();scheduleLampStatusRefresh();}},20000);
+  lampStatusTimer=setTimeout(()=>{if(!document.hidden&&!$('page-lamps').hidden){renderLamps();refreshLampFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();scheduleLampStatusRefresh();}},20000);
 }
 function refreshBasicBluetoothTelemetry() {
   if(bleConnectivityRead||connecting||busy||lamp!==bleLamp||!verifiedSelectedLamp()||bleLamp.supportsOfflineControl||!(state.capabilities&4)||updatingLamp())return;
@@ -947,23 +962,191 @@ function completeCardSettings(intent) {
   settingsSection(intent.section,{preserveCardSettings:true});if(lamp!==target||target.epoch!==epoch||!verifiedSelectedLamp()||selected.id!==intent.id)return false;
   page('settings');$('lampTitle').focus({preventScroll:true});return true;
 }
+function cancelMeshSelection(){const task=meshSelection;if(!task)return;meshSelection=null;task.abort.abort();renderLamps();}
+async function createMeshLampLease(id,{signal,isCurrent=()=>true,bridgeId=null}={}){
+  const candidates=[];
+  const activeBridge=lamp?.isMesh?lamp.bridge:lamp;
+  if(activeBridge&&activeBridge.identity!==id&&meshBridgeSupported(activeBridge))candidates.push({transport:activeBridge,epoch:activeBridge.epoch,id:activeBridge.identity});
+const entries=mergedLampEntries().filter(entry=>entry.id!==id&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&(!entry.firmwareVersion||compareFirmwareVersions(entry.firmwareVersion,'1.12.0')>=0)).sort((a,b)=>(b.id===bridgeId)-(a.id===bridgeId));
+  for(const entry of entries)if(entry.address)candidates.push({entry,kind:'wifi'});
+  for(const entry of entries)if(entry.deviceId&&(phonePlatform!=='ios'||entry.accessoryManaged))candidates.push({entry,kind:'bluetooth'});
+  return acquireMeshLamp({target:id,candidates,signal,isCurrent,options:{timeout:6000},onInventory:(value,bridge)=>{meshInventory.remember(value,bridge);renderLamps();},acquireBridge:async candidate=>{
+    if(candidate.transport){if(candidate.transport.epoch!==candidate.epoch||candidate.transport.identity!==candidate.id)throw Error('Bridge connection changed.');return {lamp:candidate.transport,borrowed:true,release:async()=>{}};}
+    const entry=candidate.entry;
+    if(candidate.kind==='wifi'){
+      const bridge=new WifiTransport(CapacitorHttp);
+      try{const password=(await credential(entry.id)).value||'coollamp';await bridge.connect(entry.address,password,entry.id);clearTimeout(bridge.timer);return {lamp:bridge,release:()=>bridge.disconnect()};}
+      catch(error){await bridge.disconnect();throw error;}
+    }
+    await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
+    const bridge=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
+    try{await bridge.connect({...entry,lampId:entry.id});clearTimeout(bridge.controlTimer);if(isNative)await firmwareFleetTrust.provision(bridge);return {lamp:bridge,release:()=>bridge.disconnect()};}
+    catch(error){await bridge.disconnect();throw error;}
+  }});
+}
+async function connectMeshCard(entry,intent){
+  cancelMeshSelection();const task={id:entry.id,abort:new AbortController()};meshSelection=task;renderLamps();status('Finding a mesh route to '+(entry.name||'this lamp')+'…');
+  const current=()=>meshSelection===task&&wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===entry.id);
+  let lease;
+  try{
+    lease=await createMeshLampLease(entry.id,{signal:task.abort.signal,isCurrent:current});if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    const transport=lease.lamp,previous=lamp;
+    await stopGroupInspection(entry.id);if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    if(previous?.isMesh&&previous.bridge===transport.bridge&&transport.lease.borrowed){const inherited=previous.lease;previous.lease=null;transport.lease.release=()=>inherited?.release?.();await previous.disconnect();}
+    else if(previous!==transport.bridge)await previous.disconnect();else if(transport.lease.borrowed)transport.lease.release=()=>previous.disconnect();
+    transport.guard();
+    if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    meshSelection=null;selected=store.upsert({...store.items.find(value=>value.id===entry.id),...entry,id:transport.identity});lamp=transport;
+    transport.signal=null;transport.isCurrent=()=>lamp===transport;transport.callbacks={...transportCallbacks(()=>transport),onError:error=>{if(lamp===transport)status(error.message);}};
+    callbacks.onState(transport.state,{freshControl:true});callbacks.onFirmware(transport.raw.firmware);
+    const options=transport.raw.effectOptions?.[transport.raw.mode-1];callbacks.onOptions(options?{mode:transport.raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);
+    transport.schedule();lease=null;connected('ESP-NOW mesh',{navigate:false});return {connected:true,id:entry.id};
+  }catch(error){if(current()&&!error.cancelled)status(error.message);return {connected:false,error};}
+  finally{await lease?.release?.();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();}
+}
+async function connectCardWifiAsync(entry,intent){
+  cancelMeshSelection();const task={id:entry.id,kind:'wifi',abort:new AbortController()},probe=new WifiTransport(CapacitorHttp);meshSelection=task;renderLamps();status('Checking this lamp over Wi-Fi…');
+  const current=()=>meshSelection===task&&!task.abort.signal.aborted&&wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===entry.id&&value.address===intent.address);
+  let timer,abort;
+  try{
+    const password=(await credential(entry.id)).value;if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    if(!password)throw Object.assign(Error('Enter the lamp access password to connect over Wi-Fi.'),{needsPassword:true});
+    const pending=probe.connect(entry.address,password,entry.id);
+    await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Lamp did not respond over Wi-Fi.')),6000);abort=()=>reject(Object.assign(Error('Lamp selection changed.'),{cancelled:true}));task.abort.signal.addEventListener('abort',abort,{once:true});})]);
+    if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});clearTimeout(probe.timer);
+    const value={base:probe.base,authorization:probe.authorization,identity:probe.identity,raw:probe.raw,state:probe.state,catalog:probe.catalog};
+    await stopGroupInspection(entry.id);if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    await lamp.disconnect();if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    if(lamp!==wifiLamp)await wifiLamp.disconnect();Object.assign(wifiLamp,value);lamp=wifiLamp;meshSelection=null;
+    const raw=value.raw,prior=store.items.find(value=>value.id===entry.id);selected=store.upsertWifi({...prior,id:raw.deviceId||entry.id,address:entry.address,hostname:raw.hostname,name:raw.name||prior?.name||entry.name},entry.id);
+    groupRemovedIds.delete(selected.id);roomGroups?.allow?.(selected.id);wifiFailures.delete(entry.id);callbacks.onState(value.state);callbacks.onFirmware(raw.firmware);
+    const options=raw.effectOptions?.[raw.mode-1];callbacks.onOptions(options?{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);
+    wifiLamp.schedule();connected('Wi-Fi',{navigate:false});return {connected:true,id:selected.id};
+  }catch(error){return {connected:false,error};}
+  finally{clearTimeout(timer);task.abort.signal.removeEventListener('abort',abort);await probe.disconnect();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();}
+}
+function renderNewMeshLamps(){
+  $('newMeshLampList').replaceChildren();const rows=newMeshCandidates.filter(row=>!store.items.some(entry=>entry.id===row.id)&&row.online);
+  $('newMeshLamps').hidden=!rows.length||Boolean(meshWizard);
+  for(const row of rows){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Set up '+(row.name||'new lamp');button.disabled=busy||connecting;button.onclick=()=>beginMeshSetup(row);$('newMeshLampList').append(button);}
+}
+function refreshNewMeshLamps(){if(!meshOnboarding||meshWizard||document.hidden)return;void meshOnboarding.discover().catch(()=>{});}
+async function acquireOnboardingBridge(id,options={}){
+  const current=()=>!options.signal?.aborted&&!groupRemovedIds.has(id)&&store.items.some(entry=>entry.id===id);
+  const entry=store.items.find(entry=>entry.id===id);
+  let lease=await acquireGroupLamp(id,options);
+  if(!current())return lease;
+  let inventory;try{const text=await lease.lamp.request('/api/mesh/status');inventory=typeof text==='string'?JSON.parse(text):text;}catch{return lease;}
+  if(inventory?.version!==1||inventory.deviceId!==id||inventory.available!==false||typeof inventory.fleetId!=='string'||inventory.fleetId)return lease;
+  if(!isNative||!entry?.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged){meshNetworkMessages.set(id,'Enable the lamp network on this existing lamp by connecting its saved Bluetooth card once.');renderLamps();return lease;}
+  await lease.release();lease=null;
+  if(!current())throw Object.assign(Error('Bridge setup changed.'),{cancelled:true});
+  const selectedBridge=lamp===bleLamp&&bleLamp.id===entry.deviceId&&bleLamp.identity===id;
+  let bridge;
+  if(selectedBridge)bridge=bleLamp;
+  else{
+    await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[entry],onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
+    bridge=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true});
+  }
+  try{
+    if(!selectedBridge){await bridge.connect({...entry,lampId:id});clearTimeout(bridge.controlTimer);}
+    if(!current())throw Object.assign(Error('Bridge setup changed.'),{cancelled:true});
+    const result=await firmwareFleetTrust.provision(bridge,{isCurrent:current});
+    if(!result.supported)throw Error('Update this existing lamp to enable its lamp network.');
+    meshNetworkMessages.delete(id);
+    if(!selectedBridge){liveGroupBluetooth.set(id,{transport:bridge,epoch:bridge.epoch});renderLamps();}
+    return {lamp:bridge,release:async()=>{if(selectedBridge)return;if(liveGroupBluetooth.get(id)?.transport===bridge)liveGroupBluetooth.delete(id);await bridge.disconnect();renderLamps();}};
+  }catch(error){if(!selectedBridge)await bridge.disconnect();meshNetworkMessages.set(id,'Enable the lamp network by connecting this existing lamp over paired Bluetooth. '+error.message);renderLamps();throw error;}
+}
+const meshConfirmPalette=[[255,0,0],[255,96,0],[255,220,0],[128,255,0],[0,255,0],[0,255,96],[0,220,255],[0,96,255],[0,0,255],[96,0,255],[180,0,255],[255,0,220],[255,0,96],[255,170,96],[128,180,255],[255,255,255]];
+const meshConfirmNames=['Red','Orange','Yellow','Lime','Green','Mint','Cyan','Sky blue','Blue','Violet','Purple','Magenta','Pink','Warm white','Cool white','White'];
+function meshSetupStatus(value){
+  const task=meshWizard;if(!task||value.target!==task.candidate.id)return;
+  $('meshSetupStatus').textContent=value.message+(value.error?' '+value.error:'');
+  $('meshSetupPattern').hidden=value.phase!=='confirm';$('meshSetupPattern').replaceChildren();
+  if(value.phase==='confirm'){
+    $('meshSetupStatus').textContent='Compare this four-color sequence with the new lamp. Only if it matches, click that lamp’s knob once to approve setup. Otherwise cancel.';
+    for(const [index,slot] of (value.pattern||[]).entries()){const swatch=document.createElement('span');swatch.style.background='rgb('+meshConfirmPalette[slot].join(',')+')';swatch.title=(index+1)+'. '+meshConfirmNames[slot];swatch.setAttribute('role','img');swatch.setAttribute('aria-label',swatch.title);$('meshSetupPattern').append(swatch);}
+  }
+  $('meshSetupRecover').hidden=!value.uncertain;
+}
+async function closeMeshWizard(){
+  const task=meshWizard;if(!task)return;meshWizard=null;task.abort.abort();
+  $('meshSetup').hidden=true;$('meshSetupForm').hidden=true;$('meshSetupWifiPassword').value='';
+  if(task.target)groupEditorMutations.delete(task.target);await meshOnboarding?.cancel();await task.lease?.release?.();renderNewMeshLamps();renderLamps();
+}
+async function prepareMeshWizard(task,result){
+  const current=()=>meshWizard===task&&!task.abort.signal.aborted;
+  const lease=await createMeshLampLease(result.target,{signal:task.abort.signal,isCurrent:current,bridgeId:result.bridgeId});
+  if(!current()){await lease.release();return;}
+  const transport=lease.lamp;if(transport.identity!==result.target||transport.raw.deviceId!==result.target){await lease.release();throw Error('The new lamp’s identity was not confirmed. Check setup before continuing.');}
+  task.lease=lease;task.result=result;task.target=result.target;
+  const raw=transport.raw,prior=store.items.find(entry=>entry.id===result.target);
+  store.upsert({...prior,id:result.target,name:prior?.name||raw.name||task.candidate.name||'CoolLamp',meshEnrolled:true,meshBridgeId:result.bridgeId});
+  groupRemovedIds.delete(result.target);roomGroups?.allow?.(result.target);store.rememberFirmware(result.target,raw.firmware);observeLampLighting(result.target,raw,transport.catalog);observeLampWifi(result.target,raw.firmware?.wifi,'firmware');
+  groupEditorMutations.add(result.target);
+  $('meshSetupName').value=raw.name||'CoolLamp';$('meshSetupStyle').value=reportedLampStyle(raw.lampStyle)?.id||'unspecified';
+  $('meshSetupLeds').value=raw.leds;$('meshSetupMilliamps').value=raw.milliamps||500;$('meshSetupMicrophone').checked=raw.audio?.installed===true;$('meshSetupPower').checked=raw.power;
+  $('meshSetupWifi').checked=false;$('meshSetupWifiFields').hidden=true;$('meshSetupSsid').required=false;$('meshSetupSsid').value=raw.ssid||'';$('meshSetupWifiPassword').value='';$('meshSetupWifiOpen').checked=false;
+  $('meshSetupFields').disabled=false;$('meshSetupForm').hidden=false;$('meshSetupPattern').hidden=true;$('meshSetupRecover').hidden=true;
+  $('meshSetupStatus').textContent='Your lamp is approved and connected through the mesh. Choose its settings below.';renderLamps();$('meshSetupName').focus();
+}
+async function beginMeshSetup(candidate,{recover=false}={}){
+  if(busy||connecting)return;cancelMeshSelection();await closeMeshWizard();
+  const task={candidate,abort:new AbortController(),saving:false,lease:null};meshWizard=task;meshOnboarding.cancelDiscover();
+  $('meshSetup').hidden=false;$('meshSetupForm').hidden=true;$('meshSetupPattern').hidden=true;$('meshSetupRecover').hidden=true;$('meshSetupStatus').textContent='Contacting the new lamp through an existing lamp…';renderNewMeshLamps();$('meshSetupTitle').focus();
+  try{const result=recover?await meshOnboarding.recover(candidate.id):await meshOnboarding.start(candidate);if(meshWizard!==task)return;await prepareMeshWizard(task,result);}
+  catch(error){if(meshWizard!==task)return;$('meshSetupStatus').textContent=error.message;$('meshSetupRecover').hidden=!error.uncertain;task.uncertain=error.uncertain===true;}
+}
+$('meshSetupStyle').replaceChildren(...LAMP_STYLES.map(style=>new Option(style.label,style.id)));
+$('meshSetupCancel').onclick=()=>closeMeshWizard();
+$('meshSetupRecover').onclick=()=>{const candidate=meshWizard?.candidate;if(candidate)void beginMeshSetup(candidate,{recover:true});};
+$('meshSetupWifi').onchange=()=>{const enabled=$('meshSetupWifi').checked;$('meshSetupWifiFields').hidden=!enabled;$('meshSetupSsid').required=enabled;};
+$('meshSetupWifiOpen').onchange=()=>{$('meshSetupWifiPassword').disabled=$('meshSetupWifiOpen').checked;if($('meshSetupWifiOpen').checked)$('meshSetupWifiPassword').value='';};
+$('meshSetupForm').onsubmit=async event=>{
+  event.preventDefault();const task=meshWizard;if(!task?.lease||task.saving)return;
+  const transport=task.lease.lamp,raw=transport.raw,name=$('meshSetupName').value.trim(),style=$('meshSetupStyle').value;
+  const config={ssid:raw.ssid||'',leds:Number($('meshSetupLeds').value),milliamps:Number($('meshSetupMilliamps').value),mode:raw.startupMode||raw.mode,brightness:raw.startupBrightness||raw.brightness,microphoneInstalled:Number($('meshSetupMicrophone').checked)};
+  const wifi=$('meshSetupWifi').checked,power=$('meshSetupPower').checked;
+  if(!name||name.length>32||!styleDefinition(style)||!Number.isInteger(config.leds)||config.leds<1||config.leds>1024||!Number.isInteger(config.milliamps)||config.milliamps<100||config.milliamps>20000){$('meshSetupStatus').textContent='Check the lamp name, LED count and power limit.';return;}
+  if(wifi){try{const credentials=wifiCredentials($('meshSetupSsid').value,$('meshSetupWifiPassword').value,$('meshSetupWifiOpen').checked);credentials.bytes.fill(0);}catch(error){$('meshSetupStatus').textContent=error.message;return;}
+    Object.assign(config,{ssid:$('meshSetupSsid').value,wifiPassword:$('meshSetupWifiPassword').value,openNetwork:Number($('meshSetupWifiOpen').checked),forgetWifi:0});}
+  task.saving=true;$('meshSetupFields').disabled=true;$('meshSetupStatus').textContent='Saving this lamp’s settings through the mesh…';
+  const current=()=>{if(meshWizard!==task||task.abort.signal.aborted||transport.identity!==task.target)throw Object.assign(Error('Lamp setup changed.'),{cancelled:true,confirmed:true});};
+  try{
+    current();if(name!==raw.name)await transport.enqueue(()=>{current();return transport.request('/api/name',{name});});
+    current();if(style!==(reportedLampStyle(transport.raw.lampStyle)?.id||'unspecified'))await transport.enqueue(()=>{current();return transport.configureLampStyle(style);});
+    current();if(power!==transport.state.power)await transport.command('power',Number(power),null,current);
+    current();const changed=wifi||config.leds!==raw.leds||config.milliamps!==raw.milliamps||Boolean(config.microphoneInstalled)!==Boolean(raw.audio?.installed);
+    if(changed)await transport.enqueue(()=>{current();return transport.request('/api/config',config);});
+    current();store.upsert({...store.items.find(entry=>entry.id===task.target),name});if(transport.raw.lampStyle)rememberLampStyle(task.target,transport.raw.lampStyle);
+    await closeMeshWizard();status(changed?'Lamp settings saved. It is restarting; its card will reconnect through the mesh.':'Your new lamp is ready. Choose its card to open controls.');
+  }catch(error){if(meshWizard!==task)return;const message=error.uncertain?'Settings were not confirmed. No request was repeated. Check the lamp’s card before saving again.':error.message;$('meshSetupStatus').textContent=message;status(message);
+    $('meshSetupRecover').hidden=true;task.unconfirmed=error.uncertain===true;if(!task.unconfirmed)$('meshSetupFields').disabled=false;
+  }finally{delete config.wifiPassword;$('meshSetupWifiPassword').value='';if(meshWizard===task)task.saving=false;}
+};
 async function openCardSettings(entry,{section='overview',bluetooth=false,preferWifi=false}={}) {
   if(busy||connecting||fleetLampInstalling(entry.id))return;
+  cancelMeshSelection();
   let current=mergedLampEntries().find(value=>value.id===entry.id);if(!current)return;
   const intent={id:current.id,address:current.address,deviceId:current.deviceId,section,serial:++cardSettingsSerial,navigation:navigationSerial};
   wifiSettingsTarget=intent;
   const pending=()=>wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===intent.id&&value.address===intent.address&&value.deviceId===intent.deviceId);
-  if(!(verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp===wifiLamp||!current.address))){
+  const offline=connectivity?.get(entry.id).wifi?.state==='disconnected'||['offline','failed'].includes(fleetStatuses.get(entry.id)?.state);
+  if(!(verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp===wifiLamp||lamp?.isMesh&&offline||!current.address))){
     let result,wifiResult;
-    if(current.address&&!bluetooth)result=wifiResult=await connectWifi(current,undefined,{navigate:false,settingsIntent:intent});
+    if(current.address&&!bluetooth&&!offline)result=wifiResult=await connectCardWifiAsync(current,intent);
     if(!pending())return result;
+    if(!result?.connected&&!bluetooth)result=await connectMeshCard(current,intent);
+    if(!pending())return result;
+    if(!result?.connected&&result?.error?.uncertain){status(result.error.message);wifiSettingsTarget=null;return result;}
     if(!result?.connected){
       current=mergedLampEntries().find(value=>value.id===entry.id);if(!current)return;
       if(current.deviceId||!current.address||bluetooth)result=await connectCardBluetooth(current,{forCardSettings:true});
     }
     if(result?.connected&&!intent.deviceId&&wifiSettingsTarget===intent&&lamp===bleLamp&&bleLamp.deviceIdentity===intent.id&&selected?.id===intent.id)intent.deviceId=selected.deviceId;
     if(!pending())return result;
-    if(!result?.connected){if(wifiResult?.error?.needsPassword)return wifiResult;if(!result?.error?.needsPassword)wifiSettingsTarget=null;return result;}
+    if(!result?.connected){if(wifiResult?.error?.needsPassword){promptWifiPassword(current);return wifiResult;}if(!result?.error?.needsPassword)wifiSettingsTarget=null;return result;}
   }
   if(!completeCardSettings(intent)){if(wifiSettingsTarget===intent)wifiSettingsTarget=null;return;}
   return {connected:true,id:entry.id};
@@ -980,7 +1163,7 @@ function renderLamps() {
     const wrapper=document.createElement('div');wrapper.className='lamp-entry';wrapper.dataset.lampId=entry.id;
     const button=document.createElement('button');button.className='lamp-card';
     const title=document.createElement('strong');title.textContent=entry.name||'CoolLamp';
-    const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
+    const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':entry.meshEnrolled?'Saved mesh lamp':entry.meshBridgeId?'Found through mesh':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
     const connected=verifiedSelectedLamp()&&entry.id===selected.id;
     const version=document.createElement('small');version.className='lamp-firmware';
     const observation=fleetStatuses.get(entry.id);
@@ -997,13 +1180,15 @@ function renderLamps() {
     if(updateStatus){const note=document.createElement('small');note.className='lamp-update-status';note.textContent=updateStatus;button.append(note);}
     if(cardPowerMessages.has(entry.id)){const message=document.createElement('small');message.className='lamp-power-feedback';message.textContent=cardPowerMessages.get(entry.id);message.setAttribute('role','status');button.append(message);}
     if(cardFirmwareMessages.has(entry.id)){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=cardFirmwareMessages.get(entry.id);message.setAttribute('role','status');button.append(message);}
+    if(meshNetworkMessages.has(entry.id)){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=meshNetworkMessages.get(entry.id);message.setAttribute('role','status');button.append(message);}
     if(['updating','restarting'].includes(observation?.state)){
       const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;
       if(observation.state==='updating'&&Number.isInteger(observation.progress))progress.value=observation.progress;
       progress.setAttribute('aria-label',(entry.name||'Lamp')+' firmware update progress');button.append(progress);
     }
     button.setAttribute('aria-current',String(connected));
-    if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
+    if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp?.isMesh?'ESP-NOW mesh':lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
+    if(meshSelection?.id===entry.id){detail.textContent=meshSelection.kind==='wifi'?'Checking Wi-Fi…':'Finding a mesh route…';button.setAttribute('aria-busy','true');}
     button.onclick=()=>openCardSettings(entry,{section:'lighting',preferWifi:true});
     const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove';
     remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
@@ -1354,6 +1539,7 @@ async function removeLampFromPhone(entry,confirmed=false) {
     (phonePlatform==='ios'?'Its iPhone pairing will also be removed where supported.':'You may also need to forget its pairing in Bluetooth settings.')+
     ' The lamp’s settings stay unchanged.'))return;
   busy=true;connecting=true;renderLamps();renderSettings();
+  cancelMeshSelection();meshInventory.forget(entry.id);
   try {
     const powerTask=cardPowerTasks.get(entry.id);if(powerTask)powerTask.cancelled=true;cardPowerTasks.delete(entry.id);cardPowerMessages.delete(entry.id);
     groupRemovedIds.add(entry.id);invalidateGroupTasks();roomGroups?.forget?.(entry.id);fleet?.forget(entry.id);connectivity?.forget(entry.id);
@@ -1407,6 +1593,7 @@ $('repairPairing').onclick=async()=>{
 };
 $('forgetLamp').onclick=()=>removeLampFromPhone(selected).catch(()=>{});
 $('factoryReset').onclick=()=>{
+  if(lamp?.isMesh){status('Connect directly to this lamp over Bluetooth or Wi-Fi to reset it.');return;}
   if(!selected||!state||busy||connecting||!(state.capabilities&128))return;
   resetTarget={entry:{...selected},transport:lamp,epoch:lamp.epoch};
   $('factoryResetTitle').textContent='Reset '+selected.name+'?';$('factoryResetDialog').returnValue='';$('factoryResetDialog').showModal();
@@ -1521,6 +1708,8 @@ async function createGroupLampLease(id,{entry}={}) {
       return {lamp:transport,release:()=>transport.disconnect()};
     }catch(error){wifiError=error;await transport.disconnect();}
   }
+  try{return await createMeshLampLease(id,{isCurrent:()=>!groupRemovedIds.has(id)&&groupInventoryEntries().some(value=>value.id===id)});}
+  catch(error){if(error.cancelled||error.uncertain)throw error;if(!error.noRoute)wifiError=error;}
   if(lamp===bleLamp&&bleLamp.id&&bleLamp.identity===id)
     throw Object.assign(Error('Keep using this lamp’s Bluetooth controls. Full group management needs firmware 1.10.0 or a working Wi-Fi connection.'),{incompatible:true});
   if(!entry.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged){
@@ -2009,6 +2198,9 @@ function filterScenes() {
 }
 $('sceneSearch').oninput=filterScenes;
 renderPower();renderSettings();renderFirmware();
+meshOnboarding=new MeshOnboarding({getBridges:()=>mergedLampEntries().filter(entry=>/^[a-f0-9]{12}$/.test(entry.id)&&(entry.deviceId||entry.meshEnrolled)&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.13.0')>=0),
+ acquireBridge:acquireOnboardingBridge,onCandidates:rows=>{newMeshCandidates=rows;renderNewMeshLamps();},onStatus:meshSetupStatus});
+refreshNewMeshLamps();
 
 // Keep focused controls above the persistent navigation, including after Tab.
 document.addEventListener('focusin',event=>{

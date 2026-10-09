@@ -7,3 +7,8 @@ test('network discovery alone does not authorize firmware trust',async()=>{const
 test('key creation and provisioning are serialized across concurrent lamps',async()=>{const {trust,transport,calls,saved}=setup();await Promise.all([trust.provision(transport),trust.provision(transport)]);assert.equal(calls.length,1);assert.equal(saved.size,1);});
 test('invalid saved credential is not replaced silently',async()=>{const {trust,transport,calls,saved}=setup();saved.set('coollamp-firmware-fleet-v1','bad');await assert.rejects(trust.provision(transport),/preserved/);assert.equal(calls.length,0);assert.equal(saved.get('coollamp-firmware-fleet-v1'),'bad');});
 test('readback failure prevents sending a credential that cannot be recovered',async()=>{const {transport}=setup();let calls=0;const trust=new FirmwareFleetTrust({getPairedLamps:()=>[{id:transport.identity,deviceId:transport.id}],credential:async()=>{++calls;return {value:''};}});await assert.rejects(trust.provision(transport),/securely/);assert.equal(calls,3);});
+test('provisioning rechecks cancellation immediately before the queued paired-BLE write',async()=>{
+ const {trust,transport,calls}=setup();let release,current=true;
+ transport.request=async(path,data,epoch,fence)=>{await new Promise(resolve=>release=resolve);fence();calls.push({path,data});return {version:1,paired:true,fleetId:'0123456789abcdef'};};
+ const pending=trust.provision(transport,{isCurrent:()=>current});await new Promise(resolve=>setTimeout(resolve,1));current=false;release();await assert.rejects(pending,error=>error.cancelled===true);assert.equal(calls.length,0);
+});

@@ -55,6 +55,9 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'String jsonText(', 'bool authorizedLampRequest(', 'bool readNumber(', 'String lampEffectCatalogEntry(',
             'void sendLampState()', 'LampControlReply lampControlRequest(',
             'String lampControlSnapshotJson()', 'void saveLampConfiguration()'])
+        audio_source = (ROOT/'LampAudio.cpp').read_text()
+        audio_settings = '\n'.join(function(audio_source, signature) for signature in [
+            'bool lampHasMicrophone()', 'bool saveLampMicrophoneInstalled(', 'bool saveLampAudioConfiguration('])
         sync_json = function(sync_source, 'String lampSyncJson()')
         quote_json = function(sync_source, 'String quote(')
         routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style'])
@@ -69,6 +72,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
 #include "LampFactory.h"
 #include "LampGeometry.h"
 #include "LampStyle.h"
+#include "LampAudio.h"
 #include "LampSyncProtocol.h"
 #include "Preferences.h"
 LampControlHttpAdapter lampServer(80);
@@ -80,6 +84,7 @@ bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return
 bool lampRemoteUpdateBusy(){return remoteBusy;}bool lampWifiSetupBusy(){return wifiSetupBusy;}
 bool resetPending=false;bool lampFactoryResetPending(){return resetPending;}
 bool lampIsUpdating(){return ownsUpdate;}bool saveLampColors(){return colorsSaved;}
+bool installed=true;uint8_t gain=17;uint16_t gate=23,scale=250;
 uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
 constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38;
 uint8_t lampAvailableEffectCount(){return 47;}
@@ -92,7 +97,7 @@ RGB fountainPaletteColor(unsigned){return {};}RGB renderVuColor(unsigned){return
 bool lampCalibrationActive(){return false;}bool lampCalibrationCenter(){return false;}unsigned lampCalibrationPosition(){return 134;}
 struct {bool enabled=true,random=false;uint8_t category=0;uint32_t seconds=30;} lampRotation;
 String lampUpdateJson(){return "{\"version\":\"1.10.0\",\"phase\":0,\"progress\":0,\"error\":0,\"wifi\":false,\"available\":false,\"automatic\":false,\"latest\":\"1.10.0\"}";}
-String lampAudioJson(){return "{\"installed\":true,\"gain\":8,\"gate\":8,\"scale\":100}";}
+String lampAudioJson(){return String("{\"installed\":")+(installed?"true":"false")+",\"gain\":"+String(gain)+",\"gate\":"+String(gate)+",\"scale\":"+String(scale)+"}";}
 constexpr int WL_CONNECTED=3;
 struct Address {String toString(){return "0.0.0.0";}};
 struct {int status(){return 0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int){return {};}} WiFi;
@@ -167,6 +172,44 @@ int main(int argc,char** argv){
  // Startup defaults change only when the caller explicitly chooses them.
  result=lampControlRequest(LampControlEndpoint::Config,true,"leds=205&milliamps=700&brightness=99&mode=8");
  assert(result.status==200);next=stored();assert(next.brightness==99&&next.startupMode==8&&!strcmp(next.ssid,"Saved network"));
+ // Optional hardware microphone configuration uses the actual production
+ // settings helper. Its saved change applies only at reboot, retaining tuning.
+ assert(Preferences::storage.count("audioV2")==0);
+ assert(saveLampMicrophoneInstalled(true));const auto originalAudio=Preferences::storage.at("audioV2");
+ const auto originalHardware=Preferences::storage.at("settings");
+ const auto microphoneCalls=Preferences::audioWrites;
+ result=lampControlRequest(LampControlEndpoint::Config,true,hardware);
+ assert(result.status==200&&Preferences::audioWrites==microphoneCalls&&Preferences::storage.at("audioV2")==originalAudio);
+ restartAt=0;const auto validationWrites=Preferences::writes;
+ for(const char* value:{"","-1","2","1x","true"}){
+  result=lampControlRequest(LampControlEndpoint::Config,true,hardware+"&microphoneInstalled="+value);
+  assert(result.status==400&&Preferences::writes==validationWrites&&!restartAt&&lampHasMicrophone());
+ }
+ Preferences::failKey="audioV2";
+ result=lampControlRequest(LampControlEndpoint::Config,true,hardware+"&microphoneInstalled=0");
+ assert(result.status==500&&Preferences::storage.at("audioV2")==originalAudio&&!restartAt);
+ Preferences::failKey="";
+ result=lampControlRequest(LampControlEndpoint::Config,true,hardware+"&microphoneInstalled=0");
+ assert(result.status==200&&restartAt==2200&&lampHasMicrophone());
+ const auto disabledAudio=Preferences::storage.at("audioV2");assert(disabledAudio.size()==7&&disabledAudio[0]==2&&disabledAudio[1]==0);
+ for(unsigned i=2;i<7;++i)assert(disabledAudio[i]==originalAudio[i]);
+ assert(lampSettings.ledCount==134&&Mode==4&&Brightness==55&&PowerOn);
+ auto microphoneSettings=stored();assert(!strcmp(microphoneSettings.ssid,"Saved network")&&!strcmp(microphoneSettings.wifiPassword,"wifi-password-private")&&!strcmp(microphoneSettings.adminPassword,"admin-password-private"));
+ Preferences::storage["audioV2"]=originalAudio;Preferences::storage["settings"]=originalHardware;restartAt=0;
+ // The second durable write fails: the actual handler restores the previous
+ // microphone state and never schedules reboot or changes runtime hardware.
+ Preferences::failKey="settings";
+ result=lampControlRequest(LampControlEndpoint::Config,true,hardware+"&microphoneInstalled=0");
+ assert(result.status==500&&result.body.find("Nothing changed")!=String::npos&&Preferences::storage.at("audioV2")==originalAudio&&Preferences::storage.at("settings")==originalHardware&&!restartAt);
+ // A failed rollback must report a real partial outcome, not 'nothing changed'.
+ Preferences::audioWrites=0;Preferences::failAudioAfter=1;
+ result=lampControlRequest(LampControlEndpoint::Config,true,hardware+"&microphoneInstalled=0");
+ assert(result.status==500&&result.body.find("rollback was not confirmed")!=String::npos&&Preferences::storage.at("audioV2")[1]==0&&Preferences::storage.at("settings")==originalHardware&&!restartAt&&lampHasMicrophone());
+ Preferences::failKey="";Preferences::failAudioAfter=0;Preferences::storage["audioV2"]=originalAudio;
+ colorsSaved=false;
+ result=lampControlRequest(LampControlEndpoint::Config,true,"leds=300&milliamps=900&brightness=99&mode=8&microphoneInstalled=0");
+ assert(result.status==500&&result.body.find("Settings saved")!=String::npos&&stored().ledCount==300&&Preferences::storage.at("audioV2")[1]==0&&!restartAt);
+ colorsSaved=true;Preferences::storage["audioV2"]=originalAudio;Preferences::storage["settings"]=originalHardware;
  const auto saved=Preferences::storage["settings"];
  restartAt=0;Preferences::failWrites=true;
  result=lampControlRequest(LampControlEndpoint::Config,true,"leds=300&milliamps=800&brightness=120&mode=9");
@@ -231,13 +274,25 @@ int main(int argc,char** argv){
  std::cout<<"PASS: real HTTP/BLE handlers preserve auth, URI/update/follower guards, strict forms, NVS failures, hardware-only credentials, private snapshot and context cleanup; snapshot bytes="<<snapshot.length()<<"\n";
 }
 '''
-        fixture = setup + effect_names + quote_json + sync_json + definitions + '\nvoid registerRoutes(){\n' + routes + '\n}\n' + main
+        fixture = setup + audio_settings + effect_names + quote_json + sync_json + definitions + '\nvoid registerRoutes(){\n' + routes + '\n}\n' + main
         with tempfile.TemporaryDirectory(prefix='lamp-control-http-') as directory:
             directory = pathlib.Path(directory)
             cpp, binary, snapshot, catalog = directory/'test.cpp', directory/'test', directory/'snapshot.json', directory/'catalog.json'
+            # Keep failure injection test-local: real production handlers and
+            # audio helpers still call the typed Preferences API unchanged.
+            preferences = (ROOT/'tests/control-stubs/Preferences.h').read_text()
+            preferences = preferences.replace('inline static unsigned writes=0;',
+                'inline static unsigned writes=0,audioWrites=0,failAudioAfter=0;\n  inline static String failKey="";')
+            preferences = preferences.replace('if(failWrites)return 0;',
+                'if(failWrites||failKey==key)return 0;')
+            preferences = preferences.replace('const auto* bytes=static_cast<const uint8_t*>(data);',
+                'if(!strcmp(key,"audioV2")&&++audioWrites&&failAudioAfter&&audioWrites>failAudioAfter)return 0;\n    const auto* bytes=static_cast<const uint8_t*>(data);')
+            (directory/'Preferences.h').write_text(preferences)
+            # Put the local directory before the shared stub directory for both
+            # this translation unit and the actual LampStyle implementation.
             cpp.write_text(fixture)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-misleading-indentation',
-                            '-I'+str(ROOT/'tests/control-stubs'), '-I'+str(ROOT), *SANITIZERS,
+                            '-I'+str(directory), '-I'+str(ROOT/'tests/control-stubs'), '-I'+str(ROOT), *SANITIZERS,
                             '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'), '-o', str(binary)], check=True)
             subprocess.run([str(binary), str(snapshot), str(catalog)], check=True)
             value = json.loads(snapshot.read_text())

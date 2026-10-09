@@ -12,6 +12,7 @@ stub = r'''
 #include <string>
 constexpr int WL_CONNECTED=3,ESP_OK=0;
 bool associated=false,scanActive=false;
+namespace LampCommission {bool working(){return false;}}
 struct wifi_ap_record_t{};
 int esp_wifi_sta_get_ap_info(wifi_ap_record_t*){return associated?0:-1;}
 struct {char ssid[33]="saved-ssid",password[65]="saved-password";unsigned gpio=3,leds=134;}lampSettings;

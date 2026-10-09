@@ -1,4 +1,5 @@
 #include "LampBleUpdate.h"
+#include "LampCommission.h"
 #include "LampUpdate.h"
 #include "UpdateManifest.h"
 #include <esp_ota_ops.h>
@@ -107,7 +108,7 @@ static void serviceReceiver(uint32_t generation,bool bonded){
 }
 void serviceLampBleUpdate(uint32_t generation,bool bonded){if(!radioOwner)serviceReceiver(generation,bonded);}
 bool beginLampRadioFirmwareReceiver(uint32_t generation){
- if(!generation||radioOwner||reserved||phase==LampBleUpdateWire::Restarting||lampUpdateOwnsResources())return false;
+ if(!generation||radioOwner||reserved||phase==LampBleUpdateWire::Restarting||LampCommission::working()||lampUpdateOwnsResources())return false;
  reset();radioOwner=generation;return true;
 }
 bool enqueueLampRadioFirmwareFrame(const uint8_t* bytes,size_t size){return radioOwner&&enqueueLampBleUpdate(bytes,size,radioOwner);}

@@ -10,7 +10,10 @@ enum Id : uint8_t {
   Calibration=12, Name=13, Identify=14, VuColors=15,
   FountainColors=16, AudioTest=17, Firmware=18, FirmwareCheck=19,
   FirmwareInstall=20, FirmwareAutomatic=21, FactoryReset=22,
-  OfflineJoin=23, Bluetooth=24, Style=25, Effects=26, FirmwareFleet=27
+  OfflineJoin=23, Bluetooth=24, Style=25, Effects=26, FirmwareFleet=27,
+  MeshStatus=28, MeshRequest=29, MeshResult=30,
+  Power=31, Preview=32, Defaults=33, Color=34, EffectOptions=35,
+  MeshNew=36, EnrollStart=37, EnrollStatus=38, EnrollCancel=39
 };
 }
 struct LampControlReply {

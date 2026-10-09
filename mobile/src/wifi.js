@@ -7,8 +7,9 @@ const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(va
 
 export class WifiTransport {
   constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
-  async request(path, data, epoch=this.epoch) {
+  async request(path, data, epoch=this.epoch, beforeWrite=null) {
     let response;
+    beforeWrite?.();
     try { response = await this.http.request({url:this.base+path,method:data===undefined?'GET':'POST',
       headers:{Authorization:this.authorization,...(data===undefined?{}:{'X-Lamp-Token':this.raw.token,'Content-Type':'application/x-www-form-urlencoded'})},
       ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }

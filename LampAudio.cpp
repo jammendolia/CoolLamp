@@ -153,6 +153,7 @@ void beginLampAudio() {
 }
 bool lampHasMicrophone() { return installed; }
 uint16_t lampAudioScale() { return scale; }
+bool saveLampMicrophoneInstalled(bool enabled){return saveLampAudioConfiguration(enabled,gain,gate,scale);}
 bool saveLampAudioConfiguration(bool enabled, uint8_t nextGain, uint16_t nextGate, uint16_t nextScale) {
   if (!nextScale) nextScale = scale;
   if (!nextGain || nextGain > 64 || nextGate > 1024 || nextScale < 100 || nextScale > 400) return false;

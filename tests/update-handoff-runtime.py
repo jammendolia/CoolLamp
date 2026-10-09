@@ -50,6 +50,8 @@ constexpr int WL_CONNECTED=3;
 struct {int state=WL_CONNECTED;int status(){return state;}} WiFi;
 struct {unsigned restarts=0;void restart(){++restarts;}} ESP;
 bool wifiBusy=false,resetPending=false,resetArmed=false,audioStopWorks=true,audioActive=true;
+bool commissionBusy=false;
+namespace LampCommission {bool working(){return commissionBusy;}}
 bool radioActive=true,callerLive=false;
 size_t udpBytes=1460;
 unsigned audioStops=0,notifications=0;
@@ -109,7 +111,7 @@ int main(int argc,char** argv){
  }else if(origin=="guards"){
   worker=nullptr;assert(!requestLampUpdateCheck());worker=reinterpret_cast<void*>(1);
   healthy=false;assert(!requestLampUpdateCheck());healthy=true;
-  for(bool* guard:{&wifiBusy,&resetPending,&resetArmed,&manual}){*guard=true;assert(!requestLampUpdateCheck());*guard=false;}
+  for(bool* guard:{&wifiBusy,&resetPending,&resetArmed,&manual,&commissionBusy}){*guard=true;assert(!requestLampUpdateCheck());*guard=false;}
   for(uint8_t p:{uint8_t(UPDATE_CHECKING),uint8_t(UPDATE_DOWNLOADING),uint8_t(UPDATE_RESTARTING)}){status.phase=p;assert(!requestLampUpdateCheck());}
   status.phase=UPDATE_IDLE;job=1;assert(!requestLampUpdateCheck());job=0;
   assert(!requestLampUpdateInstall());assert(!notifications&&!audioStops&&responseBytes==8192);
@@ -123,6 +125,15 @@ int main(int argc,char** argv){
   assert(!requestLampUpdateCheck());assert(!reserveLampManualUpdate());
   releaseLampManualUpdate();assert(requestLampUpdateCheck());assert(!reserveLampManualUpdate());
   tick();tick();assert(notifications==1);
+ }else if(origin=="commission-exclusion"){
+  trigger=false;nextCheck=clockMs;commissionBusy=true;status.available=true;status.automatic=true;
+  assert(!requestLampUpdateCheck()&&!requestLampUpdateInstall()&&!reserveLampManualUpdate());
+  tick();tick();assert(!notifications&&!job&&!manual&&!audioStops&&responseBytes==8192);
+  // Releasing commissioning allows exactly one ordinary reservation/handoff;
+  // a denied request cannot have stolen another owner's Wi-Fi freeze or DMA.
+  commissionBusy=false;nextCheck=clockMs+60000;status.automatic=false;
+  assert(reserveLampManualUpdate()&&manual&&audioStops==1);releaseLampManualUpdate();
+  assert(requestLampUpdateCheck()&&job==1);tick();tick();assert(notifications==1);
  }else if(origin=="health"){
   trigger=false;nextCheck=clockMs+60000;healthy=false;clockMs=29999;imageState=ESP_OTA_IMG_PENDING_VERIFY;
   serviceLampUpdater();assert(!healthy&&!confirmations&&!notifications);
@@ -178,7 +189,7 @@ class UpdateHandoffTests(unittest.TestCase):
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             for scenario in ('http','ble','automatic','install','guards','audio-failure',
-                             'manual-exclusion','health','automatic-install','same-version-no-retry',
+                             'manual-exclusion','commission-exclusion','health','automatic-install','same-version-no-retry',
                              'error-backoff','restart'):
                 subprocess.run([str(binary),scenario],check=True)
 

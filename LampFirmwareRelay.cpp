@@ -2,6 +2,7 @@
 #include "LampFirmwareRelayCrypto.h"
 #include "LampBleUpdate.h"
 #include "LampUpdate.h"
+#include "LampCommission.h"
 #include <Preferences.h>
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
@@ -86,7 +87,7 @@ bool receive(const LampEspNow::Received& message){
  if(!opened)return true;
  const uint32_t now=millis(),incomingSequence=u32(message.data+12);const uint64_t incomingBoot=u64(message.data+4);
  if(body[0]==Offer){
-  if(state!=Idle||int32_t(now-retryAt)<0||!getLampUpdateStatus().automatic||lampUpdateOwnsResources()||now<35000)return true;
+  if(state!=Idle||int32_t(now-retryAt)<0||!getLampUpdateStatus().automatic||LampCommission::working()||lampUpdateOwnsResources()||now<35000)return true;
   uint16_t version[3];for(unsigned i=0;i<3;++i)version[i]=LampBleUpdateWire::u16(body+1+2*i);
   if(!newer(version,current))return true;
   memcpy(offeredVersion,version,sizeof(version));offeredSize=u32(body+7);memcpy(offeredHash,body+11,32);offerToken=u64(body+43);
@@ -158,6 +159,21 @@ void service(uint32_t now){
  }
  if(now-lastOffer>=10000){lastOffer=now;offerToken=randomSession();uint8_t p[51]{Offer};for(unsigned i=0;i<3;++i)LampBleUpdateWire::put16(p+1+2*i,current[i]);put32(p+7,imageSize);memcpy(p+11,ownHash,32);put64(p+43,offerToken);send(p,sizeof(p),broadcast);}
 }
+bool copyFleetKey(uint8_t* out){if(!out||!paired)return false;memcpy(out,fleet,16);return true;}
+bool provisionFleetKey(const uint8_t* next){
+ if(!next||ownsRadio()||lampUpdateOwnsResources())return false;
+ uint8_t any=0;for(unsigned i=0;i<16;++i)any|=next[i];if(!any)return false;
+ if(paired)return memcmp(next,fleet,16)==0;
+ Preferences prefs;if(!prefs.begin("coollamp",false))return false;
+ const bool saved=prefs.putBytes("fleetKeyV1",next,16)==16;prefs.end();if(!saved)return false;
+ memcpy(fleet,next,16);paired=true;return true;
+}
+String fleetId(){
+ uint8_t digest[32]{};char id[17]{};
+ constexpr char domain[]="CoolLamp fleet identifier v1";
+ if(paired&&mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),fleet,16,reinterpret_cast<const uint8_t*>(domain),sizeof(domain)-1,digest)==0){for(unsigned i=0;i<8;++i)snprintf(id+i*2,3,"%02x",digest[i]);}
+ erase(digest,sizeof(digest));return String(id);
+}
 LampControlReply control(bool mutation,const String& form){
  if(mutation){
   if(ownsRadio()||lampUpdateOwnsResources())return {409,"Firmware updater is busy."};
@@ -165,13 +181,9 @@ LampControlReply control(bool mutation,const String& form){
   uint8_t next[16]{};for(unsigned i=0;i<32;++i){const char c=form[4+i];if(!((c>='0'&&c<='9')||(c>='a'&&c<='f'))){erase(next,sizeof(next));return {400,"Invalid fleet credential."};}next[i/2]|=uint8_t(c<='9'?c-'0':c-'a'+10)<<(i%2?0:4);}
   uint8_t any=0;for(const auto byte:next)any|=byte;if(!any){erase(next,sizeof(next));return {400,"Invalid fleet credential."};}
   if(paired&&memcmp(next,fleet,16)){erase(next,sizeof(next));return {409,"Lamp belongs to another paired fleet. Existing trust was preserved."};}
-  if(!paired){Preferences prefs;if(!prefs.begin("coollamp",false)){erase(next,sizeof(next));return {507,"Could not save fleet trust."};}const bool saved=prefs.putBytes("fleetKeyV1",next,16)==16;prefs.end();if(!saved){erase(next,sizeof(next));return {507,"Could not save fleet trust."};}memcpy(fleet,next,16);paired=true;}
+  if(!provisionFleetKey(next)){erase(next,sizeof(next));return {507,"Could not save fleet trust."};}
   erase(next,sizeof(next));
  }
- uint8_t digest[32]{};char id[17]{};
- constexpr char domain[]="CoolLamp fleet identifier v1";
- if(paired&&mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),fleet,16,reinterpret_cast<const uint8_t*>(domain),sizeof(domain)-1,digest)==0){for(unsigned i=0;i<8;++i)snprintf(id+i*2,3,"%02x",digest[i]);}
- erase(digest,sizeof(digest));
- return {200,String("{\"version\":1,\"paired\":")+(paired?"true":"false")+",\"fleetId\":\""+id+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")+"}"};
+ return {200,String("{\"version\":1,\"paired\":")+(paired?"true":"false")+",\"fleetId\":\""+fleetId()+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")+"}"};
 }
 }

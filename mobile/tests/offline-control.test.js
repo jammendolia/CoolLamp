@@ -56,6 +56,7 @@ class Radio {
 }
 async function connected(t){const radio=new Radio(),lamp=new LampTransport(radio,{timeout:60});await lamp.connect();clearTimeout(lamp.controlTimer);t.after(()=>lamp.disconnect());return {radio,lamp};}
 test('RPC frames fit minimum ATT payload and reject malformed envelopes',()=>{
+  assert.equal(encodeControlCommand(1,'controlBegin',{tx:1,endpoint:39,method:2,length:0}).getUint8(5),39);
   assert.equal(encodeControlCommand(255,'controlBegin',{tx:65535,endpoint:26,method:1,length:1024}).byteLength,9);
   assert.equal(encodeControlCommand(1,'controlChunk',{tx:1,offset:1011,bytes:new Uint8Array(13)}).byteLength,20);
   assert.deepEqual([...new Uint8Array(encodeControlCommand(1,'controlCommit',{tx:258}).buffer)],[1,1,24,2,1]);
@@ -63,6 +64,20 @@ test('RPC frames fit minimum ATT payload and reject malformed envelopes',()=>{
   assert.equal(decodeControlCapabilities(envelope(descriptor)).firmware,'1.10.0');
   assert.throws(()=>decodeControlPage(envelope('ok',2,1),{tx:1}));
   const short=envelope('ok');short.setUint16(10,3,true);assert.throws(()=>decodeControlPage(short));
+});
+test('queued relay RPC fence cancels before BEGIN or target dispatch',async t=>{
+ const {radio,lamp}=await connected(t);let release;
+ const held=lamp.controlJob(()=>new Promise(resolve=>release=resolve));await new Promise(resolve=>setTimeout(resolve,1));
+ let current=true;const before=radio.requests.length;
+ const request=lamp.request('/api/mesh/request',{target:'112233445566',requestId:'1234567890abcdef',endpoint:31,method:2,body:'on=0'},lamp.epoch,()=>{if(!current)throw Object.assign(Error('Selection changed.'),{confirmed:true,cancelled:true});});
+ current=false;release();await held;await assert.rejects(request,/Selection changed/);assert.equal(radio.requests.length,before);
+});
+test('relay RPC rechecks the fence immediately before its commit',async t=>{
+ const {radio,lamp}=await connected(t),original=radio.write.bind(radio);let current=true;
+ radio.write=async(...args)=>{const frame=args[3];await original(...args);if(frame.getUint8(2)===23)current=false;};
+ const before=radio.requests.length;
+ await assert.rejects(lamp.request('/api/mesh/request',{target:'112233445566',requestId:'1234567890abcdef',endpoint:31,method:2,body:'on=0'},lamp.epoch,()=>{if(!current)throw Object.assign(Error('Selection changed.'),{confirmed:true,cancelled:true});}),/Selection changed/);
+ assert.equal(radio.requests.length,before);
 });
 test('protected snapshot populates advanced settings without retaining tokens or group secrets',async t=>{
   const {lamp}=await connected(t);assert(lamp.supportsOfflineGroups);assert.equal(lamp.raw.leds,134);assert.equal(lamp.identity,identity);
