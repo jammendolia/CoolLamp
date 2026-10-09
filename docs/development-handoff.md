@@ -26,8 +26,10 @@ Mobile validation: **411 tests**, production Vite build, **7 mocked mesh/setup
 UI scenarios**, and **13 card-power UI regressions** passed. Knob tests execute
 the production gesture branch and reject pre-held, multiple-click and long-hold
 approval without power/effect/settings side effects. Real pinned cryptography
-tests cover mesh, commissioning and adapter behavior; Windows build and Linux CI
-results are recorded after completion. Mock and host passes do not establish
+tests cover mesh, commissioning and adapter behavior. Windows build and Linux CI
+passed, including **19 mesh, 21 enrollment and 11 adapter scenarios** with Linux
+ASan/UBSan. Six additional startup/layout UI scenarios and nine Wi-Fi recovery
+scenarios passed. Mock and host passes do not establish
 phone/RF acceptance. Existing macOS CI remains the iOS build/upload route, using
 only personal `jammendolia`. The previously missing raw Mac diagnostics,
 same-IoT forwarding and BACL thermal/blackout questions remain separate gaps.
@@ -36,6 +38,31 @@ Private local evidence: `.build/mesh-mobile-node-tests.log`,
 `.build/mesh-mobile-ui-result.json`, `.build/lamp-card-power-ui-result.json`,
 and `.build/ui-check/mesh-*.png`. New guides and candidates require a real-lamp
 acceptance pass before public OTA publication.
+
+Both successful workflows used source
+`238c9dd616eb2cce0b13167551374298cbfd7a11` on
+`codex/espnow-control-mesh-1.13.0`. Firmware CI **37971580203** created an
+unpublished [1.13.0 draft](https://github.com/jammendolia/CoolLamp/releases/tag/untagged-67be753c870e9a497d4d).
+The verified CI image is **1,920,432 bytes**, SHA-256
+`eede1a3970737173fd78e231451b30a5419c33ff50956f42bebc293a82b1cd58`.
+Manifest SHA-256:
+`2e820317c1de6c2e5744d7b4e28210dc78e460b47e977c95ce1ab130a8941bcb`.
+Program usage is 1,920,288 bytes; globals 76,940 bytes. OTA image space remaining
+is 111,184 bytes. GitHub asset digests, manifest regeneration, C3 header, public
+marker and credential exclusion checks passed. Use these CI assets for canary
+tests. The separately preserved Windows image is 1,920,816 bytes, SHA-256
+`07e7a24d795a0ad548592c2490f1060c92e7270100eca35bb7048a09ec3e98bc`.
+
+App **1.0 (41.1)** was accepted by Apple at
+`2026-10-09T18:14:48.9199060Z`, successful macOS CI **37971361480**. Tester
+availability and physical phone acceptance are not verified. New mesh/setup
+features require 1.13.0 on participating lamps; older direct Wi-Fi/Bluetooth
+paths remain available. Evidence: `.build/mesh-app41.1-record.json`,
+`.build/mesh-ios-ci.log`, `.build/mesh-firmware-ci.log`,
+`.build/mesh-1.13.0-ci-assets/verification.json`,
+`.build/mesh-1.13.0-windows-assets/verification.json`, and
+`.build/mesh-source-verification.json`. Public Latest was rechecked after draft
+creation and remains **firmware-v1.11.0**. No HiFin account action was taken.
 
 ## Firmware 1.11.0 published for OTA — 2026-10-09
 

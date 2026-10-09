@@ -92,6 +92,15 @@ owner transfer and fleet-wide revocation remain future work.
 
 ## Validation and physical acceptance
 
+The Windows public build and firmware CI **37971580203** passed on source
+`238c9dd616eb2cce0b13167551374298cbfd7a11`. Linux sanitizer checks include 19
+mesh, 21 enrollment and 11 real adapter scenarios. Mobile has 411 passing tests,
+seven mesh/setup UI scenarios, thirteen card-power regressions and six startup
+checks. App **1.0 (41.1)** was uploaded through macOS CI **37971361480**.
+The verified 1.13.0 CI image and manifest remain an unpublished draft; see the
+current [development handoff](development-handoff.md) for exact hashes and
+private evidence paths. Neither test lamps nor a newcomer were flashed here.
+
 Host suites exercise the real pinned Mbed TLS crypto and production mesh and
 commissioning state machines. They cover three-node forwarding without a direct
 end-to-end link, packet loss/reordering/duplication, full response fragmentation,
