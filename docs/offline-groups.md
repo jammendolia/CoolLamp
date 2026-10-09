@@ -1,5 +1,16 @@
 # Bluetooth control, ESP-NOW and the Groups page
 
+## Current OTA checkpoint — 2026-10-09
+
+Firmware 1.11.0 is public Latest for OTA, published at 09:59:37 CDT under
+`jammendolia`, with public downloads verified against successful CI. It adds
+Bluetooth firmware transfer alongside Wi-Fi OTA after one initial Wi-Fi
+installation. App 1.0 (38.1) is uploaded and accepted by Apple. Physical
+Bluetooth update acceptance remains pending. Older candidate/public-version
+statements below describe historical checkpoints; no new per-lamp or router
+configuration was changed during publication.
+
+
 ## Group-card transport indicator — 2026-10-09
 
 The coordinator supports both Wi-Fi UDP and ESP-NOW in one group. It tracks

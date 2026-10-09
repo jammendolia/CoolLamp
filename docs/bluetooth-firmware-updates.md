@@ -1,5 +1,11 @@
 # Firmware updates through a phone
 
+Firmware **1.11.0 is now public Latest for OTA**, published on 2026-10-09 at
+09:59:37 CDT. Its public manifest and image downloads were verified against
+the successful CI build. Install it once over Wi-Fi on an older lamp to enable
+this Bluetooth receiver. App 1.0 (38.1) is uploaded and accepted by Apple;
+physical Bluetooth update acceptance remains pending.
+
 Firmware 1.11.0 adds an encrypted, bonded Bluetooth firmware receiver alongside
 the existing Wi-Fi OTA, automatic updates, and USB recovery paths. The phone
 downloads the public release using its own cellular data or Wi-Fi, verifies
@@ -68,9 +74,9 @@ faulty application is promised.
 
 ## Acceptance test still required
 
-App 1.0 (37.1) was accepted by Apple on 2026-10-09. Firmware 1.11.0 passed
-Windows and Linux CI builds and is staged as an unpublished draft; public
-Latest remains 1.10.2. Local checks include 333 mobile tests, 19 receiver cases
+App 1.0 (37.1), followed by 38.1, was accepted by Apple on 2026-10-09.
+Firmware 1.11.0 passed Windows and Linux CI builds and is published as Latest.
+Local firmware-source checks include 333 mobile tests, 19 receiver cases
 using real pinned SHA-256, six offline radio handoff cases, five security
 callback tests, and five mocked production update-panel scenarios.
 

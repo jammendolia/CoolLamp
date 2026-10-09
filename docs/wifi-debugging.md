@@ -1,5 +1,21 @@
 # Debugging lamps over Wi-Fi
 
+## Firmware 1.11.0 published for OTA — 2026-10-09
+
+Public Latest is now `firmware-v1.11.0`, published at
+`2026-10-09T14:59:37Z` (09:59:37 CDT), source
+`83e80bf3de5d4923c16a8cdd4270d1e56fc36b3e`. The anonymous Latest manifest and
+pinned image/manifest URLs were verified against successful CI `37944143744`:
+1,868,416-byte image, SHA-256
+`e60d0830750e7219c4229bc51d6f6e80f6647f3feb3ef9a2db8e5a7809118a8c`.
+Evidence: `.build/firmware-1.11.0-public-verification.json`.
+This supersedes the historical draft/Latest statements below. Publication used
+only `jammendolia`; no per-lamp settings, GPIO, automatic-update preferences or
+router settings were changed, and no installation was forced. Verify a lamp's
+installed version before the Bluetooth acceptance test; successful publication
+alone does not prove that a lamp has installed the update.
+
+
 ## Bluetooth update candidate — 2026-10-09
 
 Source 1.11.0 adds firmware transfer through the phone's Bluetooth connection

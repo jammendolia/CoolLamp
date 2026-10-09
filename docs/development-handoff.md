@@ -1,5 +1,32 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Firmware 1.11.0 published for OTA — 2026-10-09
+
+The user authorized publication. **Firmware 1.11.0 is public Latest**, published
+at `2026-10-09T14:59:37Z` (09:59:37 CDT), tag `firmware-v1.11.0`, source
+`83e80bf3de5d4923c16a8cdd4270d1e56fc36b3e`, successful CI `37944143744`.
+This supersedes the staged/unpublished status in the historical checkpoints below.
+Release: https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.11.0.
+
+Anonymous downloads of the Latest manifest, version-pinned manifest and firmware
+all succeeded and matched the verified CI assets: **1,868,416 bytes**, image
+SHA-256 `e60d0830750e7219c4229bc51d6f6e80f6647f3feb3ef9a2db8e5a7809118a8c`,
+manifest SHA-256
+`a5ee83a52abc4e01f510f8ee6782e4ffcd21b04e9d205b47714711e5e4034554`.
+Evidence: `.build/firmware-1.11.0-published-metadata.json`,
+`.build/firmware-1.11.0-public-verification.json`, and
+`.build/firmware-1.11.0-public-assets/`. CI/Windows artifacts remain separately
+preserved. Publication used only personal `jammendolia`; HiFin was not used.
+
+Wi-Fi OTA and automatic updates remain available. Automatic installation is
+eligible where already enabled; the agent did not alter any lamp's automatic
+preference, GPIO, lamp/group/hardware settings, force an installation, or reboot.
+Publication does not prove installation on any lamp. Each older lamp needs this
+one Wi-Fi installation to enable subsequent phone-to-lamp Bluetooth updates;
+physical Bluetooth acceptance is still pending. App 1.0 (38.1) is the latest
+accepted TestFlight upload and includes the ESP-NOW follower card indicator.
+
+
 ## Group transport card indicator — 2026-10-09
 
 The app now carries verified `sync.active`, `sync.paused`, and `sync.transport`
