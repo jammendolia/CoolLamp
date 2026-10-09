@@ -8,13 +8,26 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
     public let jsName = "LampNetwork"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "discover", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "credential", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "credential", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "firmwareDigest", returnType: CAPPluginReturnPromise)
     ]
     private var browser: NetServiceBrowser?
     private var services: [NetService] = []
     private var found: [[String: String]] = []
     private var pending: CAPPluginCall?
     private var deadline: DispatchWorkItem?
+
+    @objc func firmwareDigest(_ call: CAPPluginCall) {
+        guard let encoded = call.getString("data"), encoded.utf8.count <= 2_708_824 else {
+            call.reject("Invalid firmware image."); return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let digest = LampFirmwareDigest.sha256(encoded) else {
+                call.reject("Invalid firmware image."); return
+            }
+            call.resolve(["sha256": digest])
+        }
+    }
 
     @objc func discover(_ call: CAPPluginCall) {
         DispatchQueue.main.async {

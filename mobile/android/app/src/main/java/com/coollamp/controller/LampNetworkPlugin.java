@@ -12,6 +12,7 @@ import com.getcapacitor.*;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.util.*;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -28,6 +29,21 @@ public class LampNetworkPlugin extends Plugin {
     private boolean resolving = false;
     private PluginCall pending;
     private NsdManager manager;
+
+    @PluginMethod public void firmwareDigest(PluginCall call) {
+        String encoded=call.getString("data");
+        if(encoded==null || encoded.length()>2708824){call.reject("Invalid firmware image.");return;}
+        getBridge().execute(() -> {
+            try {
+                byte[] bytes=Base64.decode(encoded,Base64.NO_WRAP);
+                if(bytes.length<288 || bytes.length>2031616){call.reject("Invalid firmware image.");return;}
+                byte[] digest=MessageDigest.getInstance("SHA-256").digest(bytes);
+                StringBuilder hex=new StringBuilder(64);
+                for(byte value:digest)hex.append(String.format(Locale.ROOT,"%02x",value & 255));
+                JSObject result=new JSObject();result.put("sha256",hex.toString());call.resolve(result);
+            }catch(Exception error){call.reject("Could not verify firmware image.");}
+        });
+    }
 
     @PluginMethod public void discover(PluginCall call) {
         handler.post(() -> {

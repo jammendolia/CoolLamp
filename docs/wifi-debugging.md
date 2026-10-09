@@ -1,5 +1,15 @@
 # Debugging lamps over Wi-Fi
 
+## Bluetooth update candidate — 2026-10-09
+
+Source 1.11.0 adds firmware transfer through the phone's Bluetooth connection
+in addition to Wi-Fi OTA. Each old lamp needs one Wi-Fi installation of the
+receiver firmware; subsequent transfers can use phone cellular data and need
+no lamp internet connection. See [Bluetooth firmware updates](bluetooth-firmware-updates.md).
+Public Latest remains 1.10.2 until publication is recorded. No physical BLE
+update or Wi-Fi-off update test has yet been completed. Do not treat the new
+path as a resolution of TLS, enclosure/antenna, or same-IoT forwarding issues.
+
 ## Latest physical/app checkpoint — 2026-10-09: 1.10.2 installed; app 36.1 accepted
 
 Fresh read-only fleet evidence at `2026-10-09T04:41:55.438Z`

@@ -1,5 +1,25 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Bluetooth update candidate — 2026-10-09
+
+The working source now targets **1.11.0** and adds phone-to-lamp Bluetooth
+firmware transfer alongside unchanged Wi-Fi OTA/automatic updates. Public
+Latest is still **1.10.2** and the last accepted app remains **36.1** until a
+new CI checkpoint is recorded. No lamp was flashed during this implementation.
+See [Bluetooth firmware updates](bluetooth-firmware-updates.md) for protocol,
+bootstrap requirements, cancellation behavior, and the physical acceptance plan.
+
+Local checks: 333 mobile tests (24 new transfer/download/identity checks),
+19 production receiver scenarios using the SHA-verified pinned Mbed TLS source,
+five Bluetooth security callback tests, six offline radio handoff scenarios,
+updater resource handoff tests, Vite build, five production mocked update-panel
+scenarios and 13 existing card-power scenarios passed. The final Windows public
+candidate is **1,868,800 bytes**,
+SHA-256 `18bbca316683307a64d2193e0f429f52734e08fe112114122b6e0427a29f2fc4`,
+with **162,816 bytes** remaining in the OTA slot; globals use 64,668 bytes.
+It is a candidate build, not evidence of physical installation or BLE transfer.
+Existing GPIO assignments, NVS settings, and prior migration gaps remain intact.
+
 ## Latest physical/app checkpoint — 2026-10-09: 1.10.2 installed; app 36.1 accepted
 
 Fresh read-only fleet evidence at `2026-10-09T04:41:55.438Z`

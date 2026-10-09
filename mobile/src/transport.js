@@ -3,6 +3,7 @@ import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, CONTROL, CO
 import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wifiSetupMessage } from './wifi-setup.js';
 import { WifiTransport } from './wifi.js';
 import { normalizeLampStyle } from './lamp-style.js';
+import { BluetoothFirmwareTransfer } from './bluetooth-firmware.js';
 
 const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/api/sync':4,'/api/sync/scene':5,
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
@@ -209,11 +210,13 @@ export class LampTransport {
     }
   }
   async disconnect() {
+    if(this.bluetoothUpdate)await this.bluetoothUpdate.cancel();
     const id = this.id;
     this.disconnected();
     if (id) { try { await this.ble.disconnect(id);this.connectionAttempts.delete(id); } catch {} }
   }
   command(operation, value = 0, responseCharacteristic = null, beforeWrite = null) {
+    if(this.bluetoothUpdate)return Promise.reject(Error('Finish or cancel the Bluetooth firmware transfer before changing this lamp.'));
     const fence=()=>{try{beforeWrite?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Connection changed.'),{confirmed:true,cancelled:true});}};
     if(operation==='effect'&&this.supportsOfflineControl&&this.raw?.sync?.role===1&&this.raw.sync.scene){
       try{fence();}catch(error){return Promise.reject(error);}
@@ -221,6 +224,7 @@ export class LampTransport {
     }
     const epoch = this.epoch;
     const run = async () => {
+      if(this.bluetoothUpdate)throw Object.assign(Error('Bluetooth firmware transfer owns this connection.'),{confirmed:true});
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
       if(operation.startsWith('control')&&!this.supportsOfflineControl)throw Error('Update this lamp to firmware 1.10.0 or newer for full Bluetooth settings.');
       if(this.raw?.sync?.active&&['brightness','effect','saveDefaults','color','resetColor','effectOptions'].includes(operation))throw Error('Edit the coordinator or pause this lamp’s group first.');
@@ -301,6 +305,26 @@ export class LampTransport {
     const value=await this.ble.read(id,SERVICE,FIRMWARE,{timeout:this.timeout});
     if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');
     const status=decodeFirmware(value);this.receiveFirmware(status);return status;
+  }
+  async updateOverBluetooth(packageValue,onProgress=()=>{},{signal}={}) {
+    if(this.bluetoothUpdate||!this.id||!this.deviceIdentity||!this.supportsOfflineControl)throw Error('Connect to the intended lamp over Bluetooth first.');
+    const epoch=this.epoch,id=this.id,identity=this.deviceIdentity;
+    const transfer=new BluetoothFirmwareTransfer({ble:this.ble,deviceId:id,isCurrent:()=>this.epoch===epoch&&this.id===id&&this.deviceIdentity===identity,onProgress});
+    // Close all normal command lanes before taking ownership of the radio.
+    clearTimeout(this.controlTimer);this.controlTimer=null;
+    await Promise.all([this.actionTail,this.controlTail,this.tail]);
+    if(signal?.aborted)throw Error('Bluetooth update cancelled. No firmware was sent.');
+    if(this.bluetoothUpdate||epoch!==this.epoch||id!==this.id)throw Error('The Bluetooth connection changed.');
+    this.bluetoothUpdate=transfer;
+    const cancel=()=>void transfer.cancel();signal?.addEventListener('abort',cancel,{once:true});
+    try{
+    transfer.current();
+    // Verify protected device identity again after the phone download.
+    const value=await this.ble.read(id,SERVICE,'7b610006-6e2b-4f3d-9a71-28e45c001001',{timeout:this.timeout});
+    const actual=new TextDecoder().decode(new Uint8Array(value.buffer,value.byteOffset,value.byteLength));
+    if(epoch!==this.epoch||id!==this.id||actual!==identity)throw Error('The Bluetooth lamp changed. No firmware was sent.');
+    return await transfer.send(packageValue);}
+    finally{signal?.removeEventListener('abort',cancel);if(this.bluetoothUpdate===transfer)this.bluetoothUpdate=null;if(this.id&&this.epoch===epoch)this.scheduleControlRefresh();}
   }
   get supportsOfflineControl() { return Boolean(this.id&&this.control?.capabilities.includes('control')); }
   get supportsOfflineGroups() { return Boolean(this.supportsOfflineControl&&this.control.capabilities.includes('groups')); }
@@ -396,7 +420,7 @@ export class LampTransport {
   scheduleControlRefresh() {
     clearTimeout(this.controlTimer);const epoch=this.epoch;
     this.controlTimer=setTimeout(async()=>{
-      if(epoch!==this.epoch||!this.supportsOfflineControl)return;
+      if(epoch!==this.epoch||!this.supportsOfflineControl||this.bluetoothUpdate)return;
       try{
         if(![1,3,4].includes(this.raw?.firmware?.phase))await this.enqueue(()=>this.refresh());
       }catch{ /* Radio loss/legacy control handles connection state independently. */ }

@@ -57,6 +57,8 @@ bool lampWifiSetupBusy(){return wifiBusy;}
 bool lampFactoryResetPending(){return resetPending;}
 bool lampFactoryResetArmed(){return resetArmed;}
 bool stopLampAudio(){++audioStops;if(!audioStopWorks)return false;audioActive=false;return true;}
+bool beginLampBluetoothUpdateRadio(){return true;}
+void finishLampBluetoothUpdateRadio(bool){}
 enum esp_ota_img_states_t {ESP_OTA_IMG_VALID,ESP_OTA_IMG_PENDING_VERIFY};
 constexpr int ESP_OK=0;
 esp_ota_img_states_t imageState=ESP_OTA_IMG_VALID;bool confirmWorks=true;unsigned confirmations=0;

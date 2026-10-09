@@ -6,6 +6,7 @@
 #include "LampFactoryReset.h"
 #include "LampPlayback.h"
 #include "LampBleControl.h"
+#include "LampBleUpdate.h"
 
 #if COOL_LAMP_BLE
 #include <BLEDevice.h>
@@ -29,6 +30,10 @@ constexpr char EFFECT[] = "7b610005-6e2b-4f3d-9a71-28e45c001001";
 constexpr char IDENTITY[] = "7b610006-6e2b-4f3d-9a71-28e45c001001";
 constexpr char WIFI_SETUP[] = "7b610008-6e2b-4f3d-9a71-28e45c001001";
 constexpr char CONTROL_RPC[] = "7b61000a-6e2b-4f3d-9a71-28e45c001001";
+constexpr char OTA_WRITE[] = "7b61000b-6e2b-4f3d-9a71-28e45c001001";
+constexpr char OTA_STATUS[] = "7b61000c-6e2b-4f3d-9a71-28e45c001001";
+BLECharacteristic* otaStatusCharacteristic=nullptr;
+uint8_t lastOtaStatus[20]{};
 BLECharacteristic* wifiCharacteristic = nullptr;
 BLECharacteristic* centerCharacteristic = nullptr;
 BLECharacteristic* controlCharacteristic = nullptr;
@@ -230,6 +235,24 @@ class ControlReads final : public BLECharacteristicCallbacks {
 };
 ControlReads controlReadCallbacks;
 
+class OtaWrites final : public BLECharacteristicCallbacks {
+ void onWrite(BLECharacteristic* characteristic,ble_gap_conn_desc* peer) override {
+  if(!peer||!authorizeEncryptedPeer(*peer)||!peer->sec_state.bonded)return;
+  const String value=characteristic->getValue();
+  if(!enqueueLampBleUpdate(reinterpret_cast<const uint8_t*>(value.c_str()),value.length(),generation)){
+   disconnectRequested=true;server->disconnect(peer->conn_handle);
+  }
+ }
+};
+class OtaReads final : public BLECharacteristicCallbacks {
+ void onRead(BLECharacteristic* characteristic,ble_gap_conn_desc* peer) override {
+  if(peer&&authorizeEncryptedPeer(*peer)&&peer->sec_state.bonded)return;
+  uint8_t denied[20]{};denied[0]=1;denied[1]=LampBleUpdateWire::Error;denied[2]=LampBleUpdateWire::Denied;
+  characteristic->setValue(denied,sizeof(denied));
+ }
+};
+OtaWrites otaWriteCallbacks;OtaReads otaReadCallbacks;
+
 void cacheControlPage(uint8_t* bytes,size_t size,uint32_t owner){
   if(!controlCharacteristic)return;
   // Overwrite the previous characteristic storage before replacing its value;
@@ -300,6 +323,7 @@ void beginLampBluetooth(const String& name)
   commands = xQueueCreate(8, sizeof(Command));
   if (!commands) return;
   BLEDevice::init(name);
+  BLEDevice::setMTU(247);
   if(lampFactoryResetNeedsBondErase()) {
     if(ble_store_clear()!=0 || !completeLampFactoryReset()) {
       Serial.println("Factory reset could not clear phone bonds; retrying.");
@@ -337,6 +361,11 @@ void beginLampBluetooth(const String& name)
   controlCharacteristic=service->createCharacteristic(CONTROL_RPC,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC);
   controlCharacteristic->setCallbacks(&controlReadCallbacks);
   cacheControlMetadata();
+  auto* otaWrite=service->createCharacteristic(OTA_WRITE,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_ENC);
+  otaWrite->setCallbacks(&otaWriteCallbacks);
+  otaStatusCharacteristic=service->createCharacteristic(OTA_STATUS,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC|BLECharacteristic::PROPERTY_NOTIFY);
+  otaStatusCharacteristic->setCallbacks(&otaReadCallbacks);
+  getLampBleUpdateStatus(lastOtaStatus);otaStatusCharacteristic->setValue(lastOtaStatus,sizeof(lastOtaStatus));
   // NimBLE creates the notification subscription descriptor automatically.
   publish(0, 0, false);
   service->start();
@@ -412,6 +441,13 @@ void serviceLampBluetooth()
   ble_gap_conn_desc peer{};
   const bool authenticated = connection != NO_CONNECTION && ble_gap_conn_find(connection, &peer) == 0 && authorizeEncryptedPeer(peer);
   if(serviceLampBleControlTransfer(currentGeneration,authenticated&&peer.sec_state.bonded,lampUpdateOwnsResources())||!controlPageReady)cacheControlMetadata();
+  serviceLampBleUpdate(currentGeneration,authenticated&&peer.sec_state.bonded);
+  uint8_t otaStatus[20];getLampBleUpdateStatus(otaStatus);
+  // Restore even an unauthorized cached read; reads never expose a write buffer.
+  const bool otaChanged=memcmp(lastOtaStatus,otaStatus,20);
+  if(otaChanged)memcpy(lastOtaStatus,otaStatus,20);
+  otaStatusCharacteristic->setValue(otaStatus,20);
+  if(otaChanged&&authenticated&&peer.sec_state.bonded)otaStatusCharacteristic->notify();
   if(authenticated) {
     // The wrapper registers characteristics by allocation address. Notify a
     // trusted phone once per boot so old ATT handles can be discarded. Keep the

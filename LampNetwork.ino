@@ -808,6 +808,24 @@ bool serviceLampOfflineWifi(uint32_t now) {
   return policy.probing()&&!associated;
 }
 
+// Freeze only unassociated Wi-Fi retries during a Bluetooth image transfer.
+// These are transient core flags; saved credentials and Wi-Fi mode stay intact.
+bool bluetoothUpdateWifiHeld=false,bluetoothUpdateWifiAutomatic=false;
+bool beginLampBluetoothUpdateRadio() {
+  if(scanActive)return false;
+  if(bluetoothUpdateWifiHeld)return true;
+  wifi_ap_record_t accessPoint{};
+  if(WiFi.status()==WL_CONNECTED||esp_wifi_sta_get_ap_info(&accessPoint)==ESP_OK)return true;
+  bluetoothUpdateWifiHeld=true;bluetoothUpdateWifiAutomatic=WiFi.getAutoReconnect();
+  WiFi.setAutoReconnect(false);WiFi.disconnect(false,false);
+  return true;
+}
+void finishLampBluetoothUpdateRadio(bool restarting) {
+  if(!bluetoothUpdateWifiHeld||restarting)return;
+  bluetoothUpdateWifiHeld=false;WiFi.setAutoReconnect(bluetoothUpdateWifiAutomatic);
+  if(bluetoothUpdateWifiAutomatic&&lampSettings.ssid[0])WiFi.reconnect();
+}
+
 void serviceLampNetwork()
 {
   serviceLampUSB();
@@ -818,7 +836,7 @@ void serviceLampNetwork()
   if (otaActive && now - otaLastActivity > 30000) failLampUpdate("Upload timed out.");
   // A BLE join keeps credentials provisional until DHCP succeeds. Expiring the
   // hotspot during that attempt would otherwise switch a new lamp's radio OFF.
-  if (setupAP && !otaActive && !lampWifiSetupBusy() && !scanActive && now - apLastActivity > 600000) {
+  if (setupAP && !otaActive && !lampUpdateOwnsResources() && !lampWifiSetupBusy() && !scanActive && now - apLastActivity > 600000) {
     WiFi.softAPdisconnect(true); setupAP = false;
     WiFi.mode(WIFI_STA);
   }

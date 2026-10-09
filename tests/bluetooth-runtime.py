@@ -9,6 +9,48 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class BluetoothTests(unittest.TestCase):
+    def test_ota_callbacks_only_copy_from_live_encrypted_bonded_peer(self):
+        source = (ROOT/'LampBluetooth.cpp').read_text()
+        helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
+        callbacks = source[source.index('class OtaWrites final'):source.index('OtaWrites otaWriteCallbacks;')]
+        stub = r'''
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <cassert>
+#include "LampBleUpdateWire.h"
+using String=std::string;
+struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
+struct BLECharacteristic {String value;String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
+struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){};virtual void onRead(BLECharacteristic*,ble_gap_conn_desc*){};};
+std::atomic<uint16_t> connection{1};std::atomic<uint32_t> generation{7};
+std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+struct {unsigned disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
+auto* server=&instance;
+unsigned copied=0;bool room=true;
+bool enqueueLampBleUpdate(const uint8_t* p,size_t size,uint32_t owner){assert(owner==7);if(!room||!LampBleUpdateWire::valid(p,size))return false;++copied;return true;}
+'''
+        main = r'''
+int main(){
+ OtaWrites writes;OtaReads reads;BLECharacteristicCallbacks& write=writes;BLECharacteristicCallbacks& read=reads;
+ BLECharacteristic characteristic;ble_gap_conn_desc peer;
+ uint8_t frame[8]={1,2,11,0,0,0,1,0};characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==1&&secure);
+ peer.sec_state.bonded=false;write.onWrite(&characteristic,&peer);assert(copied==1);peer.sec_state.bonded=true;
+ peer.sec_state.encrypted=false;write.onWrite(&characteristic,&peer);assert(copied==1);peer.sec_state.encrypted=true;
+ peer.conn_handle=2;write.onWrite(&characteristic,&peer);assert(copied==1);peer.conn_handle=1;
+ write.onWrite(&characteristic,nullptr);assert(copied==1);
+ characteristic.value="status";read.onRead(&characteristic,&peer);assert(characteristic.value=="status");
+ peer.sec_state.bonded=false;read.onRead(&characteristic,&peer);assert(characteristic.value.size()==20&&characteristic.value[2]==LampBleUpdateWire::Denied);peer.sec_state.bonded=true;
+ room=false;characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==1&&instance.disconnects==1&&disconnectRequested);
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='lamp-ble-ota-auth-') as folder:
+            cpp, binary = pathlib.Path(folder)/'test.cpp', pathlib.Path(folder)/'test'
+            cpp.write_text(stub+helper+callbacks+main)
+            subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
     def test_encrypted_write_without_authentication_callback(self):
         source = (ROOT / 'LampBluetooth.cpp').read_text()
         helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
@@ -119,6 +161,7 @@ int main(){
         callbacks = source[source.index('class Connections final'):source.index('class StateReads final')]
         cue = source[source.index('bool lampPairingCueActive()'):source.index('bool lampBluetoothReady()')]
         closing = source[source.index('  ble_gap_conn_desc peer{};'):source.index('  if (advertisingDirty.exchange(false))')]
+        closing = closing[:closing.index('  serviceLampBleUpdate(')] + closing[closing.index('  if(authenticated) {'):]
         stub = r'''
 #include <atomic>
 #include <cstdint>

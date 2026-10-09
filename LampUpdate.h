@@ -19,5 +19,10 @@ bool lampRemoteUpdateBusy();
 bool lampUpdateOwnsResources();
 bool reserveLampManualUpdate();
 void releaseLampManualUpdate();
+bool beginLampBluetoothUpdate();
+void setLampBluetoothUpdateProgress(uint32_t received,uint32_t total);
+void finishLampBluetoothUpdate(bool verified,bool cancelled=false);
+bool beginLampBluetoothUpdateRadio();
+void finishLampBluetoothUpdateRadio(bool restarting);
 void getLampUpdatePacket(uint8_t* packet); // Exactly 20 bytes; fits minimum BLE MTU.
 String lampUpdateJson();

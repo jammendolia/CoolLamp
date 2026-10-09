@@ -204,6 +204,22 @@ bool reserveLampManualUpdate() {
   return ok;
 }
 void releaseLampManualUpdate() { portENTER_CRITICAL(&mux); manual = false; portEXIT_CRITICAL(&mux); }
+bool beginLampBluetoothUpdate() {
+  if(!reserveLampManualUpdate())return false;
+  if(!beginLampBluetoothUpdateRadio()){releaseLampManualUpdate();return false;}
+  portENTER_CRITICAL(&mux);status.phase=UPDATE_DOWNLOADING;status.error=0;status.progress=0;status.available=false;portEXIT_CRITICAL(&mux);
+  return true;
+}
+void setLampBluetoothUpdateProgress(uint32_t received,uint32_t total) {
+  portENTER_CRITICAL(&mux);status.progress=total?received*100ULL/total:0;portEXIT_CRITICAL(&mux);
+}
+void finishLampBluetoothUpdate(bool verified,bool cancelled) {
+  portENTER_CRITICAL(&mux);
+  manual=false;status.phase=verified?UPDATE_RESTARTING:cancelled?UPDATE_IDLE:UPDATE_ERROR;
+  status.error=verified||cancelled?UPDATE_OK:UPDATE_IMAGE;status.progress=verified?100:0;
+  portEXIT_CRITICAL(&mux);
+  finishLampBluetoothUpdateRadio(verified);
+}
 void serviceLampUpdater() {
   const uint32_t now = millis();
   if (!healthy && now >= 30000) {

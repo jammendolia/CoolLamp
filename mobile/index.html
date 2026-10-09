@@ -708,6 +708,15 @@
   <progress id="firmwareProgress" max="100" value="0" hidden aria-label="Firmware update progress">
 </progress>
 </fieldset>
+<fieldset id="bluetoothFirmwareControls" class="panel firmware-panel" data-settings-panel="updates" disabled>
+<legend>Update through your phone</legend>
+<p id="bluetoothFirmwareHint" class="hint">Your phone downloads verified firmware using cellular data or Wi-Fi, then sends it over Bluetooth. The lamp does not need internet access. Requires firmware 1.11.0 or newer, installed once over Wi-Fi.</p>
+<button id="installBluetoothFirmware" type="button">Download &amp; update over Bluetooth</button>
+<button id="cancelBluetoothFirmware" type="button" class="secondary" hidden>Cancel transfer</button>
+<label class="switch-row"><span>Reinstall the current release</span><input id="reinstallBluetoothFirmware" type="checkbox"></label>
+<p id="bluetoothFirmwareStatus" class="hint" role="status">Connect to this lamp over Bluetooth to use phone updates.</p>
+<progress id="bluetoothFirmwareProgress" max="100" hidden aria-label="Bluetooth firmware transfer progress"></progress>
+</fieldset>
 <button id="forgetLamp" disabled class="text-button" data-settings-panel="overview">Remove lamp from this phone</button>
 <p id="bluetoothIdentity" class="hint" data-settings-panel="overview" hidden></p>
 <section class="panel recovery-panel" data-settings-panel="overview">

@@ -39,6 +39,7 @@ jobs:
           python3 tests/wifi-setup-runtime.py
           python3 tests/wifi-recovery-runtime.py
           python3 tests/bluetooth-runtime.py
+          python3 tests/ble-update-radio-runtime.py
           python3 tests/ble-control-runtime.py
           python3 tests/control-http-adapter.py
           python3 tests/espnow-runtime.py
@@ -90,6 +91,7 @@ jobs:
         run: |
           node tools/build-firmware.cjs --public
           python3 tests/espnow-runtime.py --mbedtls-cache .build/tls-library
+          python3 tests/ble-update-runtime.py --mbedtls-cache .build/tls-library
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
         env:
