@@ -991,3 +991,25 @@ The loop stack is 6 KiB to allow the additional crypto/flash call path; GPIOs an
 lamp settings are unchanged. See `docs/firmware-relay.md` for trust, channel,
 revocation and physical-validation limits. Host tests and a successful C3 build
 do not establish real-lamp relay behavior; do not publish this candidate yet.
+
+Both release checks subsequently completed successfully. App **1.0 (39.1)** was
+accepted for TestFlight processing at `2026-10-09T16:29:43.8386050Z`, with
+`UPLOAD SUCCEEDED with no errors` in run `37958872925`. Tester availability is
+not independently verified. Firmware draft CI run `37959215286` passed on
+`7487b6bfeb20e436a91078840ef2ffef8b8fb115`. Its verified 1.12.0 image is
+1,876,656 bytes, SHA-256
+`2d93dc81a93fa4055eb4c174459bea85fa361b1f0ebad5434ee87dbbe9d1732e`.
+The release is still a draft and public Latest remains **1.11.0**. Windows local
+candidate bytes differ and are recorded separately; do not mix their manifests.
+Validation includes 359 mobile tests, five mocked update-card scenarios, five
+existing mocked Bluetooth-update scenarios, eleven production relay scenarios
+with real cryptography, existing BLE receiver/hybrid coordination regressions,
+native iOS tests and the pinned full C3 firmware build.
+
+A subsequent read-only lamp check found CoolLamp 2 already on **1.11.0**, with
+automatic installation still enabled; CoolLamp 1 remains **1.10.2**, automatic
+enabled. Corkscrew remains **1.11.0**, automatic disabled, actively following
+over ESP-NOW. No candidate firmware or fleet credential was installed on hardware.
+The user has been asked to test a same-version 1.11.0 reinstall through the phone
+over Bluetooth after installing app 39.1. This tests the physical upgrade path
+without publishing or installing the relay candidate.
