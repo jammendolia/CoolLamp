@@ -103,7 +103,11 @@ export async function runGroupLighting({getEditor,run},intent) {
           action==='resetColor'?mode:action==='effectOptions'?{...value,mode}:value??0;
         // The callback runs inside the actual transport queue immediately before
         // sending; a queued Leave/scene change cannot overtake this validation.
-        result=await lamp.command(action,parameter,null,beforeWrite);
+        const command=()=>lamp.command(action,parameter,null,beforeWrite);
+        // Real BLE binary writes have a separate wire queue. Also hold its
+        // action queue so a queued/in-flight RPC Leave finishes before fencing.
+        result=typeof lamp.id==='string'&&lamp.id&&typeof lamp.supportsOfflineControl==='boolean'?
+          await lamp.enqueue(()=>{beforeWrite();return command();}):await command();
         guard();
         // Wi-Fi commands already refresh. Binary BLE acknowledgments need the
         // protected full snapshot for current color/options/startup readback.
