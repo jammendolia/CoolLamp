@@ -93,7 +93,9 @@ int main(){
  assert(command(cancel,sizeof(cancel))==0);expireHotspot();assert(!setupAP&&WiFi.radioMode==WIFI_STA);
  setupAP=true;assert(command(scan,sizeof(scan))==0);expireHotspot();assert(setupAP);
  assert(command(cancel,sizeof(cancel))==0);scanActive=true;expireHotspot();assert(setupAP);
- scanActive=false;expireHotspot();assert(!setupAP);clockMs=0;
+ scanActive=false;expireHotspot();assert(!setupAP);
+ setupAP=true;updating=true;expireHotspot();assert(setupAP);
+ updating=false;expireHotspot();assert(!setupAP);clockMs=0;
  // First-time BLE Wi-Fi scans also leave the radio ready for ESP-NOW.
  assert(command(scan,sizeof(scan))==0);scanActive=false;finishLampWifiSetupScan(true);
  assert(WiFi.radioMode==WIFI_STA);
@@ -174,7 +176,7 @@ int main(){
 '''
         engine = (ROOT / 'LampWifiSetup.ino').read_text().replace('#include "LampWifiSetup.h"', '')
         network = (ROOT / 'LampNetwork.ino').read_text()
-        expiry = network[network.index('  if (setupAP && !otaActive && !lampWifiSetupBusy()'):network.index('  const bool connected = WiFi.status()', network.index('void serviceLampNetwork()'))]
+        expiry = network[network.index('  if (setupAP && !otaActive && !lampUpdateOwnsResources()'):network.index('  const bool connected = WiFi.status()', network.index('void serviceLampNetwork()'))]
         with tempfile.TemporaryDirectory(prefix='coollamp-wifi-setup-') as directory:
             directory = pathlib.Path(directory)
             (directory / 'Arduino.h').write_text(arduino)
