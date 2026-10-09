@@ -17,6 +17,12 @@ unknown transport is neutral with respect to the path. The leader's hybrid
 tooltip states that it supports both protocols. The separate Wi-Fi icon continues
 to describe AP association and RSSI, so a lamp may show Wi-Fi connected while
 its group icon says NOW. No new firmware is required for this card change.
+App 1.0 (38.1) containing this indicator was accepted by Apple at
+`2026-10-09T14:53:20.1434970Z`, macOS CI `37946872212`, source
+`5e4111e097df6a7f0f72fae826c304e08aaf4013`. Physical phone validation remains
+pending; local tests passed 338 mobile cases, six mocked icon scenarios and
+13 existing mocked card-power scenarios. Both group transports passed the
+runtime tests using the pinned real Mbed TLS cryptography source.
 
 
 ## Development checkpoint — 2026-10-08

@@ -13,10 +13,21 @@ Wi-Fi association and phone Bluetooth connectivity remain separate indicators.
 
 Local checks passed: **338 mobile tests**, six production mocked icon scenarios,
 the Vite build, and real-pinned-Mbed-TLS hybrid runtime tests. Existing card-power
-tests are retained, including local follower pause/On behavior. No firmware or
+tests passed all 13 production mocked scenarios, including local follower
+pause/On behavior. No firmware or
 lamp settings were changed for this app-only feature. The 1.11.0 Bluetooth-update
 firmware remains an unpublished draft; its replacement CI run `37944143744`
 succeeded after first run `37943794751` failed on an older test's source matcher.
+
+**App 1.0 (38.1) uploaded successfully and was accepted by Apple** at
+`2026-10-09T14:53:20.1434970Z` (09:53:20 CDT), through existing macOS CI run
+`37946872212`, source `5e4111e097df6a7f0f72fae826c304e08aaf4013` on
+`codex/group-transport-icons`. The run passed all 338 mobile tests and native
+checks, signed/exported the app, and completed successfully. Log:
+`.build/espnow-card-ios-ci.log`; simulated UI evidence:
+`.build/espnow-card-ui-result.json` and `.build/ui-check/espnow-cards-mobile.png`.
+Apple upload acceptance is separate from tester availability and physical
+phone validation. Public firmware remains 1.10.2.
 
 
 ## Bluetooth update candidate — 2026-10-09
