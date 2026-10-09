@@ -9,6 +9,14 @@ no lamp internet connection. See [Bluetooth firmware updates](bluetooth-firmware
 Public Latest remains 1.10.2 until publication is recorded. No physical BLE
 update or Wi-Fi-off update test has yet been completed. Do not treat the new
 path as a resolution of TLS, enclosure/antenna, or same-IoT forwarding issues.
+App 1.0 (37.1) containing the new Updates panel was accepted by Apple at
+`2026-10-09T14:28:53.8770350Z` through the existing macOS workflow; test-device
+installation and physical Bluetooth transfer remain pending.
+Firmware CI `37944143744` succeeded and the 1.11.0 draft assets were verified:
+1,868,416-byte image, SHA-256
+`e60d0830750e7219c4229bc51d6f6e80f6647f3feb3ef9a2db8e5a7809118a8c`.
+Public Latest was separately verified still `firmware-v1.10.2`; no lamp was
+flashed or rebooted by the agent during this work.
 
 ## Latest physical/app checkpoint — 2026-10-09: 1.10.2 installed; app 36.1 accepted
 

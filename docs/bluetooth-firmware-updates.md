@@ -68,6 +68,12 @@ faulty application is promised.
 
 ## Acceptance test still required
 
+App 1.0 (37.1) was accepted by Apple on 2026-10-09. Firmware 1.11.0 passed
+Windows and Linux CI builds and is staged as an unpublished draft; public
+Latest remains 1.10.2. Local checks include 333 mobile tests, 19 receiver cases
+using real pinned SHA-256, six offline radio handoff cases, five security
+callback tests, and five mocked production update-panel scenarios.
+
 Use CoolLamp 1 first, followed by CoolLamp 2. Bootstrap the candidate over
 Wi-Fi, verify normal boot, saved settings, and coordination, then use the
 phone's same-version reinstall option over Bluetooth with **phone Wi-Fi off**

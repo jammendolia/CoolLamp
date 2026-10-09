@@ -4,8 +4,10 @@
 
 The working source now targets **1.11.0** and adds phone-to-lamp Bluetooth
 firmware transfer alongside unchanged Wi-Fi OTA/automatic updates. Public
-Latest is still **1.10.2** and the last accepted app remains **36.1** until a
-new CI checkpoint is recorded. No lamp was flashed during this implementation.
+Latest is still **1.10.2**. **App 1.0 (37.1)** was uploaded successfully and
+accepted by Apple at `2026-10-09T14:28:53.8770350Z` (09:28:53 CDT); processing
+and availability to testers are separate from upload acceptance.
+No lamp was flashed during this implementation.
 See [Bluetooth firmware updates](bluetooth-firmware-updates.md) for protocol,
 bootstrap requirements, cancellation behavior, and the physical acceptance plan.
 
@@ -19,6 +21,27 @@ SHA-256 `18bbca316683307a64d2193e0f429f52734e08fe112114122b6e0427a29f2fc4`,
 with **162,816 bytes** remaining in the OTA slot; globals use 64,668 bytes.
 It is a candidate build, not evidence of physical installation or BLE transfer.
 Existing GPIO assignments, NVS settings, and prior migration gaps remain intact.
+
+App source: `2cd03ab1c7d84c3bf344c764d3116f0f712945a5`, existing macOS CI run
+`37943799328` succeeded, including native CryptoKit digest/bounds tests. Log:
+`.build/bluetooth-ci-37943799328.log`. Firmware candidate source after the
+hotspot-expiry host test correction:
+`83e80bf3de5d4923c16a8cdd4270d1e56fc36b3e`; firmware CI run `37944143744`.
+
+Firmware CI **succeeded** and created the **unpublished draft**
+`firmware-v1.11.0` targeting that exact source. Downloaded CI image:
+**1,868,416 bytes**, SHA-256
+`e60d0830750e7219c4229bc51d6f6e80f6647f3feb3ef9a2db8e5a7809118a8c`.
+Manifest SHA-256:
+`a5ee83a52abc4e01f510f8ee6782e4ffcd21b04e9d205b47714711e5e4034554`.
+The CI image has 163,200 bytes of OTA margin; globals use 64,668 bytes.
+The CI and Windows images are distinct retained builds; do not interchange
+their manifests. Evidence: `.build/firmware-1.11.0-ci-assets/`,
+`.build/firmware-1.11.0-draft-metadata.json`,
+`.build/bluetooth-ci-37944143744.log`, and
+`.build/bluetooth-firmware-1.11.0-record.json`.
+Public Latest was verified still `firmware-v1.10.2`. Publication and physical
+CoolLamp 1 Bluetooth acceptance are pending the user's test/publication choice.
 
 ## Latest physical/app checkpoint — 2026-10-09: 1.10.2 installed; app 36.1 accepted
 
