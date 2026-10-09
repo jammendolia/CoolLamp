@@ -19,7 +19,19 @@ export function groupObservation(raw) {
   if(![1,2].includes(group?.version)||![0,1,2].includes(group.role))return null;
   if(group.role===0)return {role:0,leader:null};
   if(!canonical.test(id)||!canonical.test(group.leader)||group.role===1&&group.leader!==id||group.role===2&&group.leader===id)return null;
-  return {role:group.role,leader:group.leader};
+  const value={role:group.role,leader:group.leader};
+  for(const key of ['active','paused'])if(typeof group[key]==='boolean')value[key]=group[key];
+  if(['udp','esp-now','hybrid','none'].includes(group.transport))value.transport=group.transport;
+  return value;
+}
+// Inactive firmware can report available interfaces instead of an accepted path.
+// Membership and a leader's discovery hints do not prove an active follower link.
+export function groupCardPresentation(group){
+  const state=group?.fresh===true&&['leader','follower','independent'].includes(group.state)?group.state:'unknown';
+  const active=state==='follower'&&group.active===true&&group.paused===false;
+  const transport=active&&['udp','esp-now'].includes(group.transport)?group.transport:'unknown';
+  const detail=state==='follower'?group.paused===true?'Group sync paused':group.active===false?'Waiting for coordinator':transport==='esp-now'?'Following via ESP-NOW':transport==='udp'?'Following via Wi-Fi UDP':'Coordination path unknown':state==='leader'&&group.transport==='hybrid'?'Coordinator supports Wi-Fi UDP and ESP-NOW':null;
+  return {state,transport,detail,badge:transport==='esp-now'?'NOW':null};
 }
 const effectName=value=>typeof value==='string'&&value.trim()&&!/[\x00-\x1f\x7f]/.test(value)&&new TextEncoder().encode(value).length<=96?value.trim():null;
 export function lightingObservation(raw,catalog=null) {
@@ -91,7 +103,8 @@ export class LampConnectivity {
     const entry=this.entry(id),sample=this.groups.get(id),now=this.now();
     if(!entry||!sample||sample.location!==locator(entry)||now<sample.checkedAt||now-sample.checkedAt>this.ttl)
       return {state:'unknown',leader:null,checkedAt:null,fresh:false};
-    return {state:sample.role===1?'leader':sample.role===2?'follower':'independent',leader:sample.leader,checkedAt:sample.checkedAt,fresh:true};
+    const {location,...value}=sample;
+    return {...value,state:sample.role===1?'leader':sample.role===2?'follower':'independent',leader:sample.leader,checkedAt:sample.checkedAt,fresh:true};
   }
   observeLighting(id,{deviceId,lighting,checkedAt=this.now()}={}){
     const entry=this.entry(id),value=cleanLighting(lighting),now=this.now();

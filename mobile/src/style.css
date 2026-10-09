@@ -191,6 +191,9 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-bluetooth.is-active { color: #82bcff; border-color: #4c8bd4; background: #17304d; }
 .lamp-group[data-state=leader] { color: var(--accent); border-color: #68ab95; background: #1b3939; }
 .lamp-group[data-state=follower] { color: var(--sound); border-color: #9480b7; background: #302941; }
+.lamp-group { position: relative; }
+.lamp-group[data-transport=esp-now] { color: #f4cd85; border-color: #bb9559; background: #3a3020; }
+.group-transport-badge { position: absolute; bottom: -4px; right: -4px; padding: 2px 4px; border: 1px solid #bb9559; border-radius: 5px; color: #f4cd85; background: #30271b; font-size: 8px; font-weight: 800; line-height: 1; letter-spacing: .03em; }
 .lamp-group[data-state=leader] .group-leader,.lamp-group[data-state=follower] .group-follower { fill: currentColor; }
 .group-focus-target { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 14px; }
 .lamp-remove { position: absolute; right: 12px; bottom: 12px; display: grid; place-items: center; width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 12px; color: var(--muted); background: transparent; }

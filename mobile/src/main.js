@@ -16,7 +16,7 @@ import { Groups } from './groups.js';
 import { GroupLightingUi } from './group-lighting-ui.js';
 import { runLampPower } from './lamp-power.js';
 import { downloadPhoneFirmware, compareFirmwareVersions, firmwareBase64 } from './bluetooth-firmware.js';
-import { LampConnectivity, lightingObservation } from './lamp-connectivity.js';
+import { LampConnectivity, lightingObservation, groupObservation, groupCardPresentation } from './lamp-connectivity.js';
 import { LAMP_STYLES, styleDefinition, styleLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
 import { wifiSetupMessage } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
@@ -445,7 +445,7 @@ roomGroups=new Groups({getLamps:groupInventoryEntries,acquire:acquireGroupLamp,d
   if(!isNative)return [];
   const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);renderLamps();return groupInventoryEntries();
 },onStatus:snapshot=>{groupsSnapshot=snapshot;
-  for(const row of snapshot.lamps)if(row.available&&row.verified)connectivity.observeGroup(row.id,{deviceId:row.id,group:{role:row.role,leader:row.leader},checkedAt:row.checkedAt,source:'groups'});
+  for(const row of snapshot.lamps)if(row.available&&row.verified)connectivity.observeGroup(row.id,{deviceId:row.id,group:row.sync,checkedAt:row.checkedAt,source:'groups'});
   renderRoomGroups();renderLamps();if(groupEditor)renderGroupScenes();}});
 $('globalGroupEditor').append($('groupScenePane'),$('groupOrderPane'));
 groupLightingUi=new GroupLightingUi({root:$('groupLightingControls'),getEditor:()=>groupEditor,run:action=>groupSceneAction(action,{outsideQueue:true})});
@@ -715,6 +715,7 @@ function observeLampWifi(id,wifi,source) {
   if(wifi&&typeof wifi.connected==='boolean')connectivity?.observe(id,{deviceId:id,wifi,checkedAt:Date.now(),source});
 }
 function observeLampLighting(id,raw,catalog,checkedAt=Date.now()){
+  if(raw?.deviceId===id){const group=groupObservation(raw);if(group)connectivity?.observeGroup(id,{deviceId:id,group,checkedAt});}
   const lighting=lightingObservation(raw,catalog);
   if(lighting)connectivity?.observeLighting(id,{deviceId:id,lighting,checkedAt});
 }
@@ -762,12 +763,14 @@ function bluetoothCardIcon(entry) {
   return button;
 }
 function groupCardIcon(entry) {
-  const group=connectivity.get(entry.id).group,state=group.fresh?group.state:'unknown';
+  const group=connectivity.get(entry.id).group,presentation=groupCardPresentation(group),{state,transport}=presentation;
   const name=entry.name||'CoolLamp',leader=mergedLampEntries().find(lamp=>lamp.id===group.leader)?.name;
   const description=state==='leader'?name+' leads a group':state==='follower'?name+' is a member of '+(leader?leader+'’s group':'a coordinator’s group'):state==='independent'?name+' is independent':name+' group membership is unknown';
-  const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-group';button.dataset.connection='group';button.dataset.state=state;
-  button.title=description+' · Open Groups';button.setAttribute('aria-label',description+'. Open Groups');
-  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m10.5 8.5-3.5 7m6.5-7 3.5 7M8 18h8"/><circle class="group-leader" cx="12" cy="5.5" r="3"/><circle cx="5" cy="18" r="3"/><circle class="group-follower" cx="19" cy="18" r="3"/></svg>';
+  const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-group';button.dataset.connection='group';button.dataset.state=state;button.dataset.transport=transport;
+  const detail=description+(presentation.detail?' · '+presentation.detail:'');
+  button.title=detail+' · Open Groups';button.setAttribute('aria-label',detail+'. Open Groups');
+  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m10.5 8.5-3.5 7m6.5-7 3.5 7M8 18h8"/><circle class="group-leader" cx="12" cy="5.5" r="3"/><circle cx="5" cy="18" r="3"/><circle class="group-follower" cx="19" cy="18" r="3"/>'+(presentation.badge?'<path class="group-radio" d="M15 11.5a6 6 0 0 1 8 0m-6 2a3 3 0 0 1 4 0"/>':'')+'</svg>';
+  if(presentation.badge){const badge=document.createElement('span');badge.className='group-transport-badge';badge.setAttribute('aria-hidden','true');badge.textContent=presentation.badge;button.append(badge);}
   button.disabled=connecting;button.onclick=()=>openCardGroups(entry);return button;
 }
 function powerLaneBusy(id){return bluetoothFirmwareTask?.id===id||groupActions.has(id)||groupEditorMutations.has(id)||groupsSnapshot.busyIds?.includes(id)||groupJoinPending?.target?.id===id;}

@@ -392,6 +392,15 @@ test('group current effect comes from verified scene metadata with no extra cata
  devices[0].request=()=>response({deviceId:ids[0],firmware:status(),render:{mode:46,power:true},sync:{version:2,role:2,leader:ids[1],scene:27,sceneCount:32,active:true,paused:false}});
  const row=(await fleet.refresh()).results[0];assert.equal(row.lighting.name,'Chromatic screw');assert.equal(row.lighting.kind,'group');assert.equal(row.lightingObservedAt,1000);assert.equal(calls.length,1);
 });
+
+test('background diagnostics report actual follower transport without selecting or changing a lamp',async()=>{
+ const {fleet,devices,calls}=setup();
+ devices[0].request=()=>response({deviceId:ids[0],firmware:status(),wifi:{connected:true,rssi:-49},sync:{version:2,role:2,leader:ids[1],active:true,paused:false,transport:'esp-now',key:'private'}});
+ const row=(await fleet.refresh()).results[0];
+ assert.deepEqual(row.group,{role:2,leader:ids[1],active:true,paused:false,transport:'esp-now'});
+ assert.equal(row.wifi.connected,true);assert.equal(calls.length,1);assert.equal(writes(calls).length,0);
+ assert(!JSON.stringify(row.group).includes('private'));
+});
 test('standalone catalogues are per lamp and firmware profile, fetched once without delaying first verified status',async()=>{
  const {fleet,devices,calls,changes,setNow}=setup(2);
  for(let i=0;i<2;i++)devices[i].request=(_,path)=>path==='/api/effects'?response([{id:1,name:'Effect on lamp '+i,category:'calm',speed:true}]):response({deviceId:ids[i],firmware:status(),render:{mode:1,power:true},audio:{installed:true},sync:{version:2,role:0}});

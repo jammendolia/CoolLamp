@@ -1,5 +1,24 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Group transport card indicator — 2026-10-09
+
+The app now carries verified `sync.active`, `sync.paused`, and `sync.transport`
+through background diagnostics, full protected Bluetooth snapshots, and Groups
+reads. The existing group icon becomes amber with radio arcs and a **NOW** badge
+only for a fresh, actively following, unpaused ESP-NOW follower. Wi-Fi UDP
+followers keep the existing purple icon; tooltips/accessibility labels state
+the active path. Paused/waiting/legacy/malformed/stale observations do not claim
+an active ESP-NOW connection. Tapping continues to focus the same lamp in Groups.
+Wi-Fi association and phone Bluetooth connectivity remain separate indicators.
+
+Local checks passed: **338 mobile tests**, six production mocked icon scenarios,
+the Vite build, and real-pinned-Mbed-TLS hybrid runtime tests. Existing card-power
+tests are retained, including local follower pause/On behavior. No firmware or
+lamp settings were changed for this app-only feature. The 1.11.0 Bluetooth-update
+firmware remains an unpublished draft; its replacement CI run `37944143744`
+succeeded after first run `37943794751` failed on an older test's source matcher.
+
+
 ## Bluetooth update candidate — 2026-10-09
 
 The working source now targets **1.11.0** and adds phone-to-lamp Bluetooth

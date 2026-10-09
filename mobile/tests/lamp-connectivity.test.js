@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {LampConnectivity,wifiObservation,wifiSignalArcs,validWifiRssi,groupObservation} from '../src/lamp-connectivity.js';
+import {LampConnectivity,wifiObservation,wifiSignalArcs,validWifiRssi,groupObservation,groupCardPresentation} from '../src/lamp-connectivity.js';
 
 function setup(){
   let now=1000,entries=[{id:'aabbccddeeff',address:'http://192.168.1.20',deviceId:'phone-uuid'},{id:'112233445566',address:'http://192.168.1.21'}];
@@ -87,4 +87,47 @@ test('late membership, old failed requests and removal cannot overwrite or reviv
   assert.equal(cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other},checkedAt:1000}),false);
   assert.equal(cache.invalidateGroup(id,{attemptedAt:1000}),false);assert.equal(cache.get(id).group.state,'independent');
   cache.forget(id);assert.equal(cache.get(id).group.state,'unknown');
+});
+
+test('active coordination path is independent of AP association and phone connectivity',()=>{
+  const {cache,id,other}=setup();
+  cache.observe(id,{deviceId:id,wifi:{connected:true,rssi:-40}});
+  cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,active:true,paused:false,transport:'esp-now',key:'private'}});
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,'NOW');
+  assert.equal(cache.get(id).wifi.state,'connected');
+  cache.observe(id,{deviceId:id,wifi:{connected:false}});
+  assert.equal(groupCardPresentation(cache.get(id).group).transport,'esp-now');
+  cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,active:true,paused:false,transport:'udp'}});
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+  assert.equal(groupCardPresentation(cache.get(id).group).detail,'Following via Wi-Fi UDP');
+  assert(!JSON.stringify(cache.get(id)).includes('private'));
+});
+
+test('pause, waiting, available hybrid interfaces and missing metadata never claim ESP-NOW following',()=>{
+  const {cache,id,other}=setup();
+  for(const patch of [{active:false},{paused:true},{transport:'hybrid'},{transport:'none'},{active:undefined},{paused:undefined},{transport:2}]){
+    cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,active:true,paused:false,transport:'esp-now',...patch}});
+    assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+  }
+  cache.observeGroup(id,{deviceId:id,group:{role:1,leader:id,active:false,paused:false,transport:'hybrid'}});
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+  assert.match(groupCardPresentation(cache.get(id).group).detail,/supports Wi-Fi UDP and ESP-NOW/);
+});
+
+test('a membership-only observation, expired evidence or changed address cannot retain an active radio badge',()=>{
+  const {cache,id,other,setNow,setEntries,entries}=setup();
+  const observe=()=>cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,active:true,paused:false,transport:'esp-now'}});
+  observe();setNow(1101);assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+  observe();cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other}});
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+  observe();setEntries(entries().map(entry=>entry.id===id?{...entry,address:'http://192.168.1.99'}:entry));
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,null);
+});
+
+test('late or wrong-device telemetry cannot replace a fresh accepted ESP-NOW path',()=>{
+  const {cache,id,other,setNow}=setup();setNow(1050);
+  cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other,active:true,paused:false,transport:'esp-now'}});
+  assert.equal(cache.observeGroup(id,{deviceId:other,group:{role:2,leader:other,active:true,paused:false,transport:'udp'}}),false);
+  assert.equal(cache.observeGroup(id,{deviceId:id,checkedAt:1000,group:{role:2,leader:other,active:true,paused:false,transport:'udp'}}),false);
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,'NOW');
 });

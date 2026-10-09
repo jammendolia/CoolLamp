@@ -31,7 +31,7 @@ function fixture({role=0,power=true}={}) {
 
 test('public snapshots whitelist telemetry and classify only proven legacy no-group firmware',()=>{
   const f=fixture({role:2}),snapshot=lampPowerSnapshot(f.raw,f.lamp.catalog,123);
-  assert.equal(snapshot.id,id);assert.deepEqual(snapshot.group,group(2));assert.equal(snapshot.power,true);assert.equal(snapshot.checkedAt,123);
+  assert.equal(snapshot.id,id);assert.deepEqual(snapshot.group,{...group(2),active:true,paused:false});assert.equal(snapshot.power,true);assert.equal(snapshot.checkedAt,123);
   assert(!JSON.stringify(snapshot).includes('private'));assert(Object.isFrozen(snapshot));assert(Object.isFrozen(snapshot.group));
   assert.deepEqual(snapshot.wifi,{connected:true,rssi:-64});assert.equal(snapshot.lighting.name,'Rain');
   for(const version of ['1.0.0','1.4.1','1.6.6'])assert(legacyPowerWithoutGroups(version));
@@ -75,7 +75,7 @@ test('follower Off pauses runtime following, including already-dark unpaused fol
 test('follower On retains its runtime pause and never sends a Resume or membership mutation',async()=>{
   const f=fixture({role:2,power:false});f.raw.sync.paused=true;f.raw.sync.active=false;
   const result=await runLampPower(f.options);assert.equal(result.desired,true);assert.equal(result.changed,true);
-  assert.deepEqual(f.writes,[{action:'power',value:1}]);assert.equal(f.raw.sync.paused,true);assert.deepEqual(result.snapshot.group,group(2));
+  assert.deepEqual(f.writes,[{action:'power',value:1}]);assert.equal(f.raw.sync.paused,true);assert.deepEqual(result.snapshot.group,{...group(2),active:false,paused:true});
 });
 
 test('invalid identity, malformed role/leader and changed initial membership never write',async()=>{

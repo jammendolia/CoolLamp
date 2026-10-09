@@ -1,5 +1,24 @@
 # Bluetooth control, ESP-NOW and the Groups page
 
+## Group-card transport indicator — 2026-10-09
+
+The coordinator supports both Wi-Fi UDP and ESP-NOW in one group. It tracks
+subscriptions on each path and sends each follower's scene frames over its
+subscribed transport(s); the receive loop services both with bounded work.
+An active follower reports the path of its accepted frames in `sync.transport`.
+A coordinator reporting `hybrid` means both interfaces are available; an idle
+follower's reported available interfaces do not establish an active group link.
+
+The Lamps screen keeps the existing group icon/click target. A verified active
+ESP-NOW follower has an amber icon, radio arcs, and a **NOW** badge. Its tooltip
+and accessibility label say "Following via ESP-NOW". Wi-Fi UDP followers keep
+the purple icon and state "Following via Wi-Fi UDP". Paused/waiting/stale or
+unknown transport is neutral with respect to the path. The leader's hybrid
+tooltip states that it supports both protocols. The separate Wi-Fi icon continues
+to describe AP association and RSSI, so a lamp may show Wi-Fi connected while
+its group icon says NOW. No new firmware is required for this card change.
+
+
 ## Development checkpoint — 2026-10-08
 
 Firmware **1.10.0 is a development candidate**. Public OTA remains 1.9.6.
