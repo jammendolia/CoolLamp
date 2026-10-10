@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="lamp-artwork" data-lamp-artwork="helix" viewBox="0 0 120 200" role="img" aria-label="Helix lamp" focusable="false">
  <defs>
  <linearGradient id="asset-helix-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#c7dff4"/><stop offset=".5" stop-color="#edd6f7"/><stop offset="1" stop-color="#bce9df"/></linearGradient>
- <linearGradient id="asset-helix-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="asset-helix-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="#161a1c"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="#383d41"/><stop class="lamp-artwork-base-end" offset="1" stop-color="#171b1e"/></linearGradient>
  </defs><g fill="none" stroke-linecap="round" stroke-linejoin="round">
  <path class="lamp-artwork-frame" d="M60 177 C98 177 104 150 77 131 L43 111 C16 95 23 80 60 64 C97 47 103 19 65 13 C31 8 18 34 38 53 C52 67 77 81 88 91 C106 108 79 121 59 131 C32 146 18 169 43 176 Q51 179 60 177" stroke="#282d31" stroke-width="9.5"/>

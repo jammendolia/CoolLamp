@@ -41,10 +41,9 @@ function corkscrew(id,tones){
  const support='M88 179 C89 151 92 104 92 63 C95 31 79 15 54 13 C36 10 24 15 25 23';
  const coil='M25 23 C47 15 75 24 79 41 C69 54 36 59 25 52 C17 47 23 41 39 40 C70 37 86 52 79 68 C72 85 37 88 27 81 C18 75 25 69 42 67 C68 65 85 81 77 97 C69 113 39 120 27 113 C18 108 26 101 42 101 C67 100 80 115 74 132 C66 146 50 151 42 153';
  return `<g fill="none" stroke-linecap="round" stroke-linejoin="round">
- <path d="${support}" stroke="#b5bdbb" stroke-width="8"/>
- <path d="${support}" stroke="url(#${id}-support)" stroke-width="6.5"/>
- <path d="${coil}" stroke="#b4c7d8" stroke-width="6.7"/>
- <path d="${coil}" stroke="#ecf0ed" stroke-opacity=".45" stroke-width="1.3"/>
+ <path class="lamp-artwork-support" d="${support}" stroke="url(#${id}-base)" stroke-width="8"/>
+ <g transform="translate(1.2 0)">${ribbon(support,id,4.2)}</g>
+ <path class="lamp-artwork-coil-back" d="${coil}" stroke="url(#${id}-base)" stroke-width="8.5"/>
  ${ribbon('M25 23 C47 15 75 24 79 41 C69 54 36 59 25 52',id,8.3)}
  ${ribbon('M79 68 C72 85 37 88 27 81',id,8.3)}
  ${ribbon('M77 97 C69 113 39 120 27 113',id,8.3)}
@@ -76,7 +75,6 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  return `<svg xmlns="http://www.w3.org/2000/svg" class="${escape(className)}" data-lamp-artwork="${variant}" viewBox="0 0 120 200" role="img" aria-label="${escape(label||labels[variant])}" focusable="false">
  <defs>
  <linearGradient id="${id}-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="${colors[0]}"/><stop offset=".5" stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[2]}"/></linearGradient>
- <linearGradient id="${id}-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="${id}-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="${tones?.baseStart||'#161a1c'}"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="${tones?.baseMiddle||'#383d41'}"/><stop class="lamp-artwork-base-end" offset="1" stop-color="${tones?.baseEnd||'#171b1e'}"/></linearGradient>
  </defs>${body}</svg>`;
 }

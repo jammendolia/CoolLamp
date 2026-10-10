@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="lamp-artwork" data-lamp-artwork="knot" viewBox="0 0 120 200" role="img" aria-label="Knot lamp prototype" focusable="false">
  <defs>
  <linearGradient id="asset-knot-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#ced5d8"/><stop offset=".5" stop-color="#e9ece9"/><stop offset="1" stop-color="#c6d2cb"/></linearGradient>
- <linearGradient id="asset-knot-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="asset-knot-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="#161a1c"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="#383d41"/><stop class="lamp-artwork-base-end" offset="1" stop-color="#171b1e"/></linearGradient>
  </defs><g fill="none" stroke-linecap="round" stroke-linejoin="round">
  <path class="lamp-artwork-frame" d="M60 178 C24 178 21 157 33 139 L71 91 C82 73 80 58 68 60 C54 65 42 105 53 122 C70 145 98 99 101 68 C107 36 88 13 65 12 C32 9 18 27 22 53 C29 78 61 90 78 116 C103 153 93 178 60 178" stroke="#262c30" stroke-width="10"/>

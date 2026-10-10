@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="lamp-artwork" data-lamp-artwork="large-helix" viewBox="0 0 120 200" role="img" aria-label="Large helix lamp" focusable="false">
  <defs>
  <linearGradient id="asset-large-helix-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#c7dff4"/><stop offset=".5" stop-color="#edd6f7"/><stop offset="1" stop-color="#bce9df"/></linearGradient>
- <linearGradient id="asset-large-helix-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="asset-large-helix-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="#161a1c"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="#383d41"/><stop class="lamp-artwork-base-end" offset="1" stop-color="#171b1e"/></linearGradient>
  </defs><g fill="none" stroke-linecap="round" stroke-linejoin="round">
  <path class="lamp-artwork-frame" d="M60 177 C24 178 21 153 37 129 C52 106 76 99 102 100 C80 90 45 82 30 53 C17 27 35 10 61 12 C91 10 105 36 89 61 C72 87 42 101 16 98 C43 97 76 112 91 139 C109 169 91 179 60 177" stroke="#252a2e" stroke-width="9.5"/>
