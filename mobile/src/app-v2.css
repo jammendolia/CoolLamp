@@ -18,3 +18,42 @@ h2[tabindex="-1"]:focus-visible{outline:none}.v2-effect-art{height:62px;display:
 button{color:var(--primary-ink,#fffdf9)}html[data-app-theme=dark]{--primary-ink:#25331f}@media(prefers-color-scheme:dark){html[data-app-theme=system]{--primary-ink:#25331f}}
 .v2-home-power-row{display:flex;align-items:center;gap:8px}.v2-home-power-row>.v2-home-group{flex:1;min-width:0}.v2-home-power{width:48px;height:48px;flex:none;border-radius:50%;padding:13px;background:var(--surface);color:var(--accent);border:1px solid var(--line)}.v2-home-power[aria-pressed=true]{background:var(--accent);color:var(--primary-ink,#fffdf9)}.v2-home-power svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round}.v2-individual-list>.v2-home-power-row{border-bottom:1px solid var(--line)}.v2-individual-list>.v2-home-power-row:last-child{border:0}.v2-individual-list .v2-home-power-row>button:first-child{display:flex;gap:12px;align-items:center;background:transparent;color:var(--ink);text-align:left;border:0;min-width:0;flex:1;padding:12px 0}.v2-individual-list .v2-home-power-row>button:first-child>span{flex:1;min-width:0}
 input:not([type=range]):not([type=checkbox]):not([type=color]),select,textarea{background:var(--surface);color:var(--ink);border-color:var(--control-line);border-radius:13px;min-height:50px}input[type=checkbox]{min-height:24px}.switch-row input[type=checkbox]{min-height:30px;background:var(--surface-low);border-color:var(--control-line)}.switch-row input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}.switch-row input[type=checkbox]::before,.switch-row input[type=checkbox]:checked::before{background:var(--surface)}input[type=range]::-webkit-slider-thumb{background:var(--accent);border-color:var(--surface);box-shadow:0 2px 8px #292e2626}input[type=range]::-moz-range-thumb{background:var(--accent);border-color:var(--surface)}
+
+/* Card care actions stay in the document flow at every text size. */
+.v2-lamp-entry .v2-card-firmware{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px 12px;padding:4px 0 14px;border-bottom:1px solid var(--line)}
+.v2-lamp-entry .v2-card-firmware .lamp-firmware{flex:1 1 130px;min-width:0;line-height:1.5;font-size:.85rem;overflow-wrap:anywhere}
+.v2-lamp-entry .v2-card-update{position:static;inset:auto;display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;width:auto;min-width:96px;height:auto;min-height:46px;margin:0;padding:9px 12px;border:1px solid var(--line);border-radius:13px;background:var(--surface);color:var(--accent);line-height:1.3}
+.v2-lamp-entry .v2-card-update svg{width:19px;height:19px;flex:none}
+.v2-lamp-entry .v2-card-actions .lamp-power{width:auto}
+.v2-lamp-entry .v2-connection-actions{align-items:center;gap:8px;padding:14px 0 0}
+.v2-lamp-entry .v2-connection-actions>.lamp-connection{position:relative;inset:auto;display:grid;place-items:center;flex:none;width:46px;min-width:46px;height:46px;min-height:46px;margin:0;padding:10px;border:1px solid var(--line);border-radius:13px;background:var(--surface);color:var(--muted)}
+.v2-lamp-entry .v2-connection-actions>.lamp-connection svg{width:22px;height:22px}
+.v2-lamp-entry .v2-connection-actions>.lamp-bluetooth.is-active,.v2-lamp-entry .v2-connection-actions>.lamp-group[data-state=leader],.v2-lamp-entry .v2-connection-actions>.lamp-group[data-state=follower],.v2-lamp-entry .v2-connection-actions>.lamp-group[data-transport=esp-now]{border-color:var(--control-line);background:var(--surface-low);color:var(--accent)}
+.v2-lamp-entry .lamp-wifi .wifi-question circle{fill:var(--surface);stroke:var(--muted)}
+.v2-lamp-entry .lamp-wifi .wifi-question text{fill:var(--muted)}
+.v2-lamp-entry .lamp-wifi .wifi-slash{color:var(--muted)}
+.v2-lamp-entry .group-transport-badge{right:-3px;bottom:-3px;border-color:var(--line);background:var(--surface-low);color:var(--accent)}
+.v2-lamp-entry .v2-connection-actions>.v2-card-remove{margin-left:auto;border-color:transparent;background:transparent}
+.v2-lamp-entry .lamp-connection:hover:not(:disabled),.v2-lamp-entry .lamp-connection:focus-visible{border-color:var(--control-line);background:var(--surface-low);color:var(--accent)}
+.v2-lamp-entry .v2-card-feedback>.lamp-update-status{display:block;margin-top:5px;font-size:.84rem;line-height:1.5;overflow-wrap:anywhere}
+.v2-lamp-entry .v2-card-feedback>.lamp-update-progress{display:block;width:100%;height:6px;margin:10px 0 0;accent-color:var(--accent)}
+.v2-lamp-entry .v2-card-release-status{display:block;margin-top:10px;font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}
+#page-settings[data-connection-recovering=true]>.settings-navigation,#page-settings[data-connection-recovering=true] #settingsHint,#page-settings[data-connection-recovering=true] #settingsLighting,#page-settings[data-connection-recovering=true] [data-settings-panel],#page-settings[data-connection-recovering=true] #defaultPasswordNotice{display:none}
+@media(max-width:370px){.v2-lamp-entry .v2-card-actions .lamp-power{width:100%}}
+
+/* The rear ribbon and metal base stay legible against dark paper surfaces. */
+[data-lamp-artwork] .lamp-artwork-frame{stroke:var(--lamp-artwork-frame,#282d31)}
+[data-lamp-artwork] .lamp-artwork-generic-frame{stroke:var(--lamp-artwork-frame,#6f7975)}
+[data-lamp-artwork] [data-base=dark] .lamp-artwork-base-top{fill:var(--lamp-artwork-base-top,#363b40)}
+[data-lamp-artwork] [data-base=dark] .lamp-artwork-base-bottom{fill:var(--lamp-artwork-base-bottom,#1b1d20)}
+[data-lamp-artwork] .lamp-artwork-base-start{stop-color:var(--lamp-artwork-base-start,#161a1c)}
+[data-lamp-artwork] .lamp-artwork-base-middle{stop-color:var(--lamp-artwork-base-middle,#383d41)}
+[data-lamp-artwork] .lamp-artwork-base-end{stop-color:var(--lamp-artwork-base-end,#171b1e)}
+html[data-app-theme=dark]{--lamp-artwork-frame:#93a196;--lamp-artwork-base-start:#849187;--lamp-artwork-base-middle:#9daa9f;--lamp-artwork-base-end:#7f8d81;--lamp-artwork-base-top:#abb6a9;--lamp-artwork-base-bottom:#859287}
+html[data-app-theme=dark] .v2-welcome>.v2-lamp-drawing,html[data-app-theme=dark] .v2-hero>.v2-lamp-drawing{filter:none}
+@media(prefers-color-scheme:dark){
+ html[data-app-theme=system]{--lamp-artwork-frame:#93a196;--lamp-artwork-base-start:#849187;--lamp-artwork-base-middle:#9daa9f;--lamp-artwork-base-end:#7f8d81;--lamp-artwork-base-top:#abb6a9;--lamp-artwork-base-bottom:#859287}
+ html[data-app-theme=system] .v2-welcome>.v2-lamp-drawing,html[data-app-theme=system] .v2-hero>.v2-lamp-drawing{filter:none}
+}
+/* Home's warm hero remains a light surface in both themes. */
+.v2-hero [data-lamp-artwork]{--lamp-artwork-frame:#282d31;--lamp-artwork-base-start:#161a1c;--lamp-artwork-base-middle:#383d41;--lamp-artwork-base-end:#171b1e;--lamp-artwork-base-top:#363b40;--lamp-artwork-base-bottom:#1b1d20}

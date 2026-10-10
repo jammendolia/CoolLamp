@@ -66,6 +66,22 @@ test('single card update never confirms a different newer installed release as i
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),/different release/);
 });
 
+test('fresh diagnostics distinguish installed observation from the lamp cached release check',async()=>{
+ const {fleet,devices}=setup();devices[0].firmware={...status('1.14.0',2,'1.14.1'),checkedAt:500};
+ const row=(await fleet.refresh()).results[0];assert.equal(row.checkedAt,1000);assert.equal(row.installedObservedAt,1000);
+ assert.equal(row.latestSource,'lamp-cache');assert.equal(row.releaseCheckUptimeMs,500);assert.equal(row.latestVersion,'1.14.1');
+});
+test('bulk pinned public release never silently installs a different lamp-cached or newly offered version',async()=>{
+ for(const version of ['1.9.5','1.9.7']){
+  const {fleet,devices,calls}=setup();devices[0].polls=[status('1.9.4',2,version)];
+  const result=await fleet.updateAll('1.9.6');assert.equal(result.results[0].state,'failed');assert.match(result.results[0].message,/release changed/);
+  assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
+ }
+});
+test('invalid pinned public release cannot start single or bulk lamp requests',async()=>{
+ const {fleet,calls,entries}=setup();await assert.rejects(fleet.updateLamp(entries()[0],'invalid'));await assert.rejects(fleet.updateAll('invalid'));assert.equal(calls.length,0);
+});
+
 test('page refresh reads every lamp independently and displays installed, never offered firmware', async () => {
   const {fleet, devices, calls, changes} = setup(2);
   devices[0].firmware = status('1.9.4', 2, '1.9.5'); devices[1].firmware = status('1.9.5');

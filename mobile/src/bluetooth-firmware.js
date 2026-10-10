@@ -9,6 +9,7 @@ const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // Hold ownership until a queued native subscribe/unsubscribe has really settled.
 // A replacement connection can poll; it must not race an older listener cleanup.
 const notificationOwners=new WeakMap();
+let downloadRequestSequence=0;
 async function boundedNotification(operation,milliseconds){
  let timer;
  try{return await Promise.race([operation,new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(error('Bluetooth notification operation timed out.')),milliseconds);})]);}
@@ -42,7 +43,11 @@ function phoneRequest(http,{isCurrent=()=>true,signal}={}){
   let abort;
   const stopped=new Promise((resolve,reject)=>{abort=()=>reject(error('Firmware download cancelled.',{cancelled:true}));signal?.addEventListener('abort',abort,{once:true});});
   let response;
-  try{response=await Promise.race([http.request({url,method:'GET',responseType:'arraybuffer',connectTimeout:15000,readTimeout:90000}),stopped]);}
+  // Native URL caches and GitHub's Latest redirect can outlive a new release.
+  // Every manifest/image request is uncached; pinned tag + hash still decides
+  // which bytes may be sent to the lamp.
+  const requestUrl=new URL(url);requestUrl.searchParams.set('check',Date.now().toString(36)+'-'+(++downloadRequestSequence).toString(36));
+  try{response=await Promise.race([http.request({url:requestUrl.href,method:'GET',headers:{'Cache-Control':'no-cache, no-store, max-age=0',Pragma:'no-cache'},responseType:'arraybuffer',connectTimeout:15000,readTimeout:90000}),stopped]);}
   finally{signal?.removeEventListener('abort',abort);}
   if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
   if(response.status!==200)throw error('The phone could not download the firmware. Check cellular data or Wi-Fi.');

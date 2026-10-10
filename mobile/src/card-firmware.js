@@ -1,4 +1,20 @@
-import {compareFirmwareVersions,parsePhoneManifest} from './bluetooth-firmware.js';
+import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './bluetooth-firmware.js';
+
+// The lamp's installed-version observation is separate from a public release
+// check. A failed or expired release check must never make an old offer fresh.
+export class FirmwareReleaseCache {
+ constructor(http,{now=Date.now,maxAge=300000}={}){Object.assign(this,{http,now,maxAge});this.manifest=null;this.checkedAt=0;this.verified=false;this.error='';this.run=null;}
+ get fresh(){return this.verified&&this.now()-this.checkedAt<this.maxAge;}
+ refresh({force=false}={}){
+  if(this.run)return this.run;
+  if(!force&&this.fresh)return Promise.resolve(this.manifest);
+  this.verified=false;this.error='';
+  const run=fetchPhoneManifest(this.http).then(manifest=>{this.manifest=manifest;this.checkedAt=this.now();this.verified=true;return manifest;})
+   .catch(error=>{this.error=error.message||'Could not check the public firmware release.';throw error;})
+   .finally(()=>{if(this.run===run)this.run=null;});
+  this.run=run;return run;
+ }
+}
 
 export function availableCardRelease(installed,manifest){
  try{return compareFirmwareVersions(parsePhoneManifest(manifest?.text).version,installed)>0?manifest:null;}catch{return null;}

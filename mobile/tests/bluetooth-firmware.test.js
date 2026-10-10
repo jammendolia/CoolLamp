@@ -38,8 +38,8 @@ test('phone pins the image to the validated manifest version and verifies native
  const pkg=packageValue(),requests=[],progress=[];
  const result=await downloadPhoneFirmware({request:async row=>{requests.push(row);return {status:200,url:row.url,data:firmwareBase64(requests.length===1?new TextEncoder().encode(pkg.manifest.text):pkg.image)};}},{onProgress:row=>progress.push(row)});
  assert.deepEqual(result.image,pkg.image);assert.equal(result.manifest.version,'1.11.0');
- assert(requests[0].url.endsWith('/latest/download/coollamp-manifest.txt'));assert(requests[1].url.endsWith('/download/firmware-v1.11.0/CoolLamp.ino.bin'));
- assert(requests.every(row=>row.responseType==='arraybuffer'&&!row.headers));assert.deepEqual(progress.map(row=>row.stage),['downloading','downloaded']);
+ assert(new URL(requests[0].url).pathname.endsWith('/latest/download/coollamp-manifest.txt'));assert(new URL(requests[1].url).pathname.endsWith('/download/firmware-v1.11.0/CoolLamp.ino.bin'));
+ assert(requests.every(row=>row.responseType==='arraybuffer'&&row.headers['Cache-Control']==='no-cache, no-store, max-age=0'&&new URL(row.url).searchParams.has('check')));assert.deepEqual(progress.map(row=>row.stage),['downloading','downloaded']);
 });
 test('native digest can verify an image without browser subtle crypto',async()=>{
  const pkg=packageValue();let calls=0,native=0;

@@ -137,7 +137,11 @@ export class FirmwareFleet {
     const fw = identity.firmware;
     return this.emit(lamp, run, {state, installedVersion: fw.version, latestVersion: fw.latest,
       available: fw.available === true && newer(fw.latest, fw.version), progress: fw.progress ?? 0,
-      checkedAt: this.now(), verified: true, fresh: true, wifi:identity.wifi ?? null,
+      // This timestamp verifies the installed version. `latest` is the lamp's
+      // cached offer; reading diagnostics does not contact the public server.
+      checkedAt: this.now(), installedObservedAt: this.now(), latestSource:'lamp-cache',
+      releaseCheckUptimeMs:Number.isInteger(fw.checkedAt)&&fw.checkedAt>=0?fw.checkedAt:null,
+      verified: true, fresh: true, wifi:identity.wifi ?? null,
       wifiObservedAt:identity.wifi?identity.wifiObservedAt:null,group:identity.group ?? null,
       groupObservedAt:identity.group?identity.wifiObservedAt:null,lampStyle:identity.lampStyle ?? null,
       styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null,lighting:identity.lighting??null,
@@ -215,11 +219,12 @@ export class FirmwareFleet {
     if (this.refreshRun === run) this.refreshRun = null;
     return {results, cancelled: run.cancelled};
   }
-  updateAll() {
+  updateAll(expectedVersion) {
     if (this.bulkPromise) return this.bulkPromise;
     if(this.singleRuns.size)return Promise.reject(failure('Finish the current lamp update first.'));
+    if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))return Promise.reject(failure('Check the selected public release before updating.'));
     this.cancelRefresh();
-    const run = this.run(); this.bulkRun = run;
+    const run = this.run();run.expectedVersion=expectedVersion; this.bulkRun = run;
     const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()];
     this.bulkPromise = (async () => {
       const results = [];
@@ -339,6 +344,7 @@ export class FirmwareFleet {
   }
   async updateLamp(entry,expectedVersion){
     if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update is already running.');
+    if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))throw failure('Check the selected public release before updating.');
     this.cancelRefresh();const run=this.run();run.expectedVersion=expectedVersion;this.singleRuns.set(entry.id,run);
     try{
       let lamp;try{lamp=await this.prepare(entry,run);await this.identify(lamp,run);}catch(error){if(error.offline||error.unsupported)error.safeBluetoothFallback=true;throw error;}

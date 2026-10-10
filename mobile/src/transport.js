@@ -131,7 +131,7 @@ export class LampTransport {
       this.connectionAttempts.add(device.deviceId);
       await this.ble.connect(this.id, () => { if (epoch === this.epoch) this.disconnected(device.deviceId); });
       // Protected read triggers the phone's pairing prompt before subscriptions or commands.
-      const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: this.controlOnly?this.timeout:60000 });
+      const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: this.controlOnly||savedDevice?.automaticReconnect?this.timeout:60000 });
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       try { decodeState(initial); } // Fail visibly on incompatible firmware.
       catch(error) { error.initialStateRead=true;throw error; }

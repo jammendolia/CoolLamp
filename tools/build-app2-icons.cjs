@@ -1,4 +1,4 @@
-// Deterministic native exports of the approved CoolLamp 2 ribbon master.
+// Deterministic native exports of the photo-informed CoolLamp 2 vector mark.
 // Sharp is local tooling only; no new dependency is included in the app.
 // Usage: node tools/build-app2-icons.cjs --sharp-module /absolute/path/to/sharp
 const fs = require('node:fs/promises');
@@ -7,7 +7,8 @@ const root = path.resolve(__dirname, '..');
 const moduleIndex = process.argv.indexOf('--sharp-module');
 const sharp = require(moduleIndex >= 0 ? process.argv[moduleIndex + 1] : 'sharp');
 const source = path.join(root, 'docs/design/assets/coollamp-icon-master.png');
-const background = { r: 3, g: 11, b: 24 };
+const vectorSource = path.join(root, 'docs/design/assets/coollamp-icon-foreground.svg');
+const background = { r: 246, g: 243, b: 237 };
 const densities = [['mdpi', 48, 108], ['hdpi', 72, 162], ['xhdpi', 96, 216], ['xxhdpi', 144, 324], ['xxxhdpi', 192, 432]];
 const clamp = value => Math.max(0, Math.min(1, value));
 
@@ -18,6 +19,11 @@ async function write(relative, bytes) {
 }
 
 async function main() {
+  let cutout,crop;
+  if (await fs.access(vectorSource).then(()=>true,()=>false)) {
+    cutout=await sharp(vectorSource).resize(800,800,{fit:'inside'}).trim().png().toBuffer();
+    const size=await sharp(cutout).metadata();crop={source:'vector',width:size.width,height:size.height};
+  } else {
   const input = await sharp(source).toColourspace('srgb').removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width, height, channels } = input.info;
   if (width !== height || width < 1024 || channels !== 3) throw Error('Expected the approved opaque square RGB master.');
@@ -45,10 +51,11 @@ async function main() {
   }
   if (left >= right || top >= bottom) throw Error('Could not isolate the approved ribbon silhouette.');
   const margin = 32;
-  const crop = { left: Math.max(0, left - margin), top: Math.max(0, top - margin) };
+  crop = { left: Math.max(0, left - margin), top: Math.max(0, top - margin) };
   crop.width = Math.min(width, right + margin + 1) - crop.left;
   crop.height = Math.min(height, bottom + margin + 1) - crop.top;
-  const cutout = await sharp(matte, { raw: { width, height, channels: 4 } }).extract(crop).png().toBuffer();
+  cutout = await sharp(matte, { raw: { width, height, channels: 4 } }).extract(crop).png().toBuffer();
+  }
   const ios = await sharp(source).resize(1024, 1024).removeAlpha().png().toBuffer();
   await write('mobile/ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png', ios);
   for (const [density, legacySize, layerSize] of densities) {
@@ -71,8 +78,8 @@ async function main() {
     }
     await write(prefix + 'ic_launcher_monochrome.png', await sharp(pixels, { raw: { width: layerSize, height: layerSize, channels: 4 } }).png().toBuffer());
   }
-  await write('mobile/android/app/src/main/res/values/ic_launcher_background.xml', Buffer.from('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#030B18</color>\n</resources>\n'));
-  await write('mobile/android/app/src/main/res/drawable/ic_launcher_background.xml', Buffer.from('<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">\n    <path android:fillColor="#030B18" android:pathData="M0,0h108v108h-108z"/>\n</vector>\n'));
+  await write('mobile/android/app/src/main/res/values/ic_launcher_background.xml', Buffer.from('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#F6F3ED</color>\n</resources>\n'));
+  await write('mobile/android/app/src/main/res/drawable/ic_launcher_background.xml', Buffer.from('<?xml version="1.0" encoding="utf-8"?>\n<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">\n    <path android:fillColor="#F6F3ED" android:pathData="M0,0h108v108h-108z"/>\n</vector>\n'));
   const adaptive = '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@color/ic_launcher_background"/>\n    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n    <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>\n</adaptive-icon>\n';
   await write('mobile/android/app/src/main/res/mipmap-anydpi-v33/ic_launcher.xml', Buffer.from(adaptive));
   await write('mobile/android/app/src/main/res/mipmap-anydpi-v33/ic_launcher_round.xml', Buffer.from(adaptive));
@@ -89,7 +96,7 @@ async function main() {
     const previews = [];
     for (const filename of ['ic_launcher_foreground.png', 'ic_launcher_monochrome.png']) {
       const mark = await sharp(path.join(root, 'mobile/android/app/src/main/res/mipmap-xxxhdpi', filename)).extract({ left: 72, top: 72, width: 288, height: 288 }).png().toBuffer();
-      const painted = await sharp({ create: { width: 288, height: 288, channels: 4, background: filename.includes('monochrome') ? '#617767' : '#030b18' } }).composite([{ input: mark }]).png().toBuffer();
+      const painted = await sharp({ create: { width: 288, height: 288, channels: 4, background: filename.includes('monochrome') ? '#617767' : '#f6f3ed' } }).composite([{ input: mark }]).png().toBuffer();
       previews.push(await sharp(painted).composite([{ input: circle, blend: 'dest-in' }]).png().toBuffer());
     }
     await write('.build/app2-icon-preview.png', await sharp({ create: { width: 720, height: 340, channels: 3, background: '#161b25' } }).composite([{ input: previews[0], left: 48, top: 26 }, { input: previews[1], left: 384, top: 26 }]).png().toBuffer());
