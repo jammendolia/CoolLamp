@@ -1,6 +1,7 @@
 """GET-only verification of one already-uploaded iOS build. No secrets in output."""
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ BASE = 'https://api.appstoreconnect.apple.com'
 BUILD = os.environ['BUILD_NUMBER']
 MARKETING = json.loads(Path('package.json').read_text())['version']
 result = {'uploaded': True, 'marketingVersion': MARKETING, 'buildNumber': BUILD,
-          'processed': False, 'internalTestingAvailable': False}
+          'processed': False, 'internalTestingAvailable': None}
 
 
 def get(path, params):
@@ -24,6 +25,15 @@ def get(path, params):
     response = requests.get(BASE + path, params=params,
                             headers={'Authorization': 'Bearer ' + token}, timeout=20,
                             allow_redirects=False)
+    if response.status_code >= 400:
+        try:
+            codes = [re.sub(r'[^A-Za-z0-9._-]', '', str(item.get('code', '')))[:80]
+                     for item in response.json().get('errors', [])[:8]]
+        except Exception:
+            codes = []
+        result['verificationError'] = {
+            'method': 'GET', 'endpoint': re.sub(r'/[0-9a-f-]{8,}(?=/|$)', '/{id}', path),
+            'httpStatus': response.status_code, 'codes': codes}
     if response.status_code in (401, 403):
         raise PermissionError('Read-only Apple verification unavailable')
     response.raise_for_status()
@@ -65,11 +75,19 @@ try:
                 break
             result['processed'] = attributes['processingState'] == 'VALID' and not attributes['expired']
             if result['processed']:
-                assigned = get('/v1/betaGroups', {'filter[app]': app_id, 'filter[builds]': build['id'],
-                    'filter[isInternalGroup]': 'true', 'fields[betaGroups]': 'isInternalGroup,hasAccessToAllBuilds', 'limit': 200})
-                automatic = get('/v1/betaGroups', {'filter[app]': app_id, 'filter[isInternalGroup]': 'true',
+                assigned = get('/v1/builds/' + build['id'], {
+                    'include': 'betaGroups', 'fields[builds]': 'version,betaGroups',
+                    'fields[betaGroups]': 'isInternalGroup,hasAccessToAllBuilds', 'limit[betaGroups]': 50})
+                exact = assigned['data']
+                if exact['id'] != build['id'] or exact['attributes']['version'] != BUILD:
+                    raise ValueError('Group association returned a different build')
+                refs = exact['relationships']['betaGroups']['data']
+                groups = {(item['type'], item['id']): item for item in assigned.get('included', [])}
+                if any((item['type'], item['id']) not in groups for item in refs):
+                    raise ValueError('Group association was incomplete')
+                automatic = get('/v1/apps/' + app_id + '/betaGroups', {
                     'fields[betaGroups]': 'isInternalGroup,hasAccessToAllBuilds', 'limit': 200})
-                assigned_count = sum(item['attributes'].get('isInternalGroup') is True for item in assigned.get('data', []))
+                assigned_count = sum(groups[(item['type'], item['id'])]['attributes'].get('isInternalGroup') is True for item in refs)
                 automatic_count = sum(item['attributes'].get('isInternalGroup') is True and item['attributes'].get('hasAccessToAllBuilds') is True for item in automatic.get('data', []))
                 result.update({'assignedInternalGroupCount': assigned_count, 'automaticInternalGroupCount': automatic_count})
                 result['internalTestingAvailable'] = result['internalBuildState'] == 'IN_BETA_TESTING' and bool(assigned_count or automatic_count)
