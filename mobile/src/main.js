@@ -1181,9 +1181,13 @@ async function connectCardBluetooth(entry,{forWifiSettings=false,forCardSettings
 function completeCardSettings(intent) {
   const current=mergedLampEntries().find(entry=>entry.id===intent.id);
   if(wifiSettingsTarget!==intent||navigationSerial!==intent.navigation||!current||current.address!==intent.address||current.deviceId!==intent.deviceId||!verifiedSelectedLamp()||selected.id!==intent.id)return false;
-  if(lamp===wifiLamp&&(!intent.address||lamp.base!==lampAddress(intent.address)))return false;
+  if(lamp===wifiLamp){
+    if(intent.activeWifi){if(lamp.epoch!==intent.activeWifi.epoch||lamp.base!==intent.activeWifi.address)return false;}
+    else if(!intent.address||lamp.base!==lampAddress(intent.address))return false;
+  }
   const epoch=lamp.epoch,target=lamp;
   settingsSection(intent.section,{preserveCardSettings:true});if(lamp!==target||target.epoch!==epoch||!verifiedSelectedLamp()||selected.id!==intent.id)return false;
+  if(intent.navigate===false){wifiSettingsTarget=null;return true;}
   page('settings');$('lampTitle').focus({preventScroll:true});return true;
 }
 function cancelMeshSelection(){const task=meshSelection;if(!task)return;meshSelection=null;task.abort.abort();renderLamps();}
@@ -1353,20 +1357,24 @@ $('meshSetupForm').onsubmit=async event=>{
     $('meshSetupRecover').hidden=true;task.unconfirmed=error.uncertain===true;if(!task.unconfirmed)$('meshSetupFields').disabled=false;
   }finally{delete config.wifiPassword;$('meshSetupWifiPassword').value='';if(meshWizard===task)task.saving=false;}
 };
-async function openCardSettings(entry,{section='overview',bluetooth=false,preferWifi=false,automaticReconnect=false,signal=null,isCurrent=()=>true}={}) {
+async function openCardSettings(entry,{section='overview',bluetooth=false,preferWifi=false,automaticReconnect=false,signal=null,isCurrent=()=>true,navigate=true}={}) {
+  if(signal?.aborted||!isCurrent())return;
   if(bluetoothFirmwareOwner()){
     if(!firmwareConnectionSelectionAllowed(entry)){firmwareConnectionNotice();return;}
-    settingsView=section;page('settings');return {connected:true,id:entry.id};
+    settingsView=section;if(navigate)page('settings');return {connected:true,id:entry.id};
   }
   if(busy||connecting||fleetLampInstalling(entry.id))return;
-  if(signal?.aborted||!isCurrent())return;
   cancelMeshSelection();
   let current=mergedLampEntries().find(value=>value.id===entry.id);if(!current)return;
-  const intent={id:current.id,address:current.address,deviceId:current.deviceId,section,serial:++cardSettingsSerial,navigation:navigationSerial,firmwareSerial:bluetoothFirmwareConnectionSerial,automaticReconnect,signal,isCurrent};
+  const intent={id:current.id,address:current.address,deviceId:current.deviceId,section,serial:++cardSettingsSerial,navigation:navigationSerial,firmwareSerial:bluetoothFirmwareConnectionSerial,automaticReconnect,signal,isCurrent,navigate};
   wifiSettingsTarget=intent;
   const pending=()=>!signal?.aborted&&isCurrent()&&!bluetoothFirmwareOwner()&&intent.firmwareSerial===bluetoothFirmwareConnectionSerial&&wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===intent.id&&value.address===intent.address&&value.deviceId===intent.deviceId);
   const offline=connectivity?.get(entry.id).wifi?.state==='disconnected'||['offline','failed'].includes(fleetStatuses.get(entry.id)?.state);
-  if(!(verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp===wifiLamp||lamp?.isMesh&&offline||!current.address))){
+  const reuse=verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp===wifiLamp||lamp?.isMesh&&offline||!current.address);
+  // A verified connection can use an IP while discovery lists its mDNS alias.
+  // Keep its exact epoch and address; identity verification already matched it.
+  if(reuse&&lamp===wifiLamp)intent.activeWifi={epoch:lamp.epoch,address:lamp.base};
+  if(!reuse){
     let result,wifiResult;
     if(current.address&&!bluetooth&&(automaticReconnect||!offline))result=wifiResult=await connectCardWifiAsync(current,intent);
     if(!pending())return result;
@@ -2456,7 +2464,7 @@ appV2=mountAppV2({
  pair:()=>connect(null,{navigate:false}),discover:()=>discover(true),refreshGroups:refreshRoomGroups,
  findNewLamps:refreshNewMeshLamps,openGroup:openGroupEditor,
  power:async(id)=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer available.');return changeCardPower(entry);},
- select:async(id,section)=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');return openCardSettings(entry,{section});},
+ select:async(id,section,options={})=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');if(busy||connecting||fleetLampInstalling(id))throw Error('This lamp is finishing another task. Please try again in a moment.');return openCardSettings(entry,{section,signal:options.signal,isCurrent:options.isCurrent,navigate:false,preferWifi:section==='hardware'&&!advancedAvailable()});},
  setupDetails:async({id,name,style,room})=>{
   if(!verifiedSelectedLamp()||selected.id!==id||busy||updatingLamp())throw Error('Reconnect to the lamp you are setting up.');
   if(new TextEncoder().encode(name).length>48)throw Error('Use a shorter lamp name.');

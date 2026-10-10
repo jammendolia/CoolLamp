@@ -13,14 +13,37 @@ export function readAppPreferences(storage){
 }
 export function mountAppV2(api){
  const preferences=readAppPreferences(localStorage),home=document.getElementById('v2HomeContent'),dialog=document.getElementById('v2Dialog');
- let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null;
+ let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null;
  const persist=()=>localStorage.setItem('coollamp-app2',JSON.stringify(preferences));
  const room=(id)=>api.model().lamps?.find(l=>l.id===id)?.room||(typeof preferences.rooms[id]==='string'?preferences.rooms[id]:'My home');
  const groupName=(id,fallback)=>typeof preferences.groups[id]==='string'?preferences.groups[id]:fallback||'Lamp group';
  const applyTheme=()=>{document.documentElement.dataset.appTheme=preferences.theme;document.getElementById('v2Theme').value=preferences.theme;};applyTheme();
- const close=()=>{if(dialog.open)dialog.close();dialog.replaceChildren();};
- function sheet(title,body){dialog.innerHTML=`<div class="v2-sheet-title"><h2>${esc(title)}</h2><button type="button" data-v2="close" aria-label="Close">×</button></div><div class="v2-sheet-body">${body}<p id="v2DialogStatus" role="status" aria-live="polite"></p></div>`;if(!dialog.open)dialog.showModal();dialog.querySelector('input,button')?.focus();}
+ function cancelSelection(){const task=selectionTask;if(!task)return;selectionTask=null;task.controller.abort();dialog.removeAttribute('aria-busy');for(const button of dialog.querySelectorAll('[data-v2="select-settings"]'))button.disabled=false;task.button.removeAttribute('aria-busy');if(task.hint)task.hint.textContent=task.originalHint;}
+ const close=()=>{cancelSelection();if(dialog.open)dialog.close();dialog.replaceChildren();};
+ function sheet(title,body){cancelSelection();dialog.innerHTML=`<div class="v2-sheet-title"><h2>${esc(title)}</h2><button type="button" data-v2="close" aria-label="Close">×</button></div><div class="v2-sheet-body">${body}<p id="v2DialogStatus" role="status" aria-live="polite"></p></div>`;if(!dialog.open)dialog.showModal();dialog.querySelector('input,button')?.focus();}
  async function run(task){if(working)return;working=true;dialog.setAttribute('aria-busy','true');try{await task();}catch(error){const message=error.uncertain?'We could not confirm that change. Check the lamp before trying again.':error.message;const target=document.getElementById('v2DialogStatus');if(target)target.textContent=message;api.message(message);}finally{working=false;dialog.removeAttribute('aria-busy');refresh(true);}}
+ async function selectLight(button){
+  if(working||selectionTask)return;
+  const id=button.dataset.id,section=button.dataset.section||'lighting',name=api.model().lamps?.find(lamp=>lamp.id===id)?.name||'your lamp';
+  const hint=button.querySelector('small'),task={controller:new AbortController(),button,hint,originalHint:hint?.textContent,timedOut:false};selectionTask=task;
+  const current=()=>selectionTask===task&&dialog.open&&!task.controller.signal.aborted;
+  const feedback=document.getElementById('v2DialogStatus');if(feedback){feedback.dataset.state='opening';feedback.textContent='Opening '+name+'…';}
+  dialog.setAttribute('aria-busy','true');button.setAttribute('aria-busy','true');if(hint)hint.textContent='Opening lamp…';
+  for(const choice of dialog.querySelectorAll('[data-v2="select-settings"]'))choice.disabled=true;
+  let timer,abort;
+  try{
+   const interrupted=new Promise((_,reject)=>{abort=()=>reject(Error('Lamp selection cancelled.'));task.controller.signal.addEventListener('abort',abort,{once:true});timer=setTimeout(()=>{task.timedOut=true;task.controller.abort();},25000);});
+   const result=await Promise.race([Promise.resolve().then(()=>api.select(id,section,{signal:task.controller.signal,isCurrent:current})),interrupted]);
+   if(!current())return;
+   if(!result?.connected)throw result?.error||Error('We couldn’t open '+name+'. Please try again.');
+   if(result.id&&result.id!==id)throw Error('The connection opened a different lamp. Please choose your lamp again.');
+   close();api.navigate(section==='lighting'?'effects':'settings',section);
+  }catch(error){
+   if(selectionTask!==task)return;
+   const message=task.timedOut?'We couldn’t reach '+name+'. Check that it has power and try again.':error.uncertain?'We could not confirm the connection. Please choose your lamp again.':error.message||'We couldn’t open '+name+'. Please try again.';
+   if(feedback){feedback.dataset.state='error';feedback.textContent=message;feedback.scrollIntoView({block:'nearest'});}api.message(message);
+  }finally{clearTimeout(timer);task.controller.signal.removeEventListener('abort',abort);if(selectionTask===task)cancelSelection();}
+ }
  function refresh(force=false){
   if(document.hidden&&!force)return;
   const model=api.model(),lamps=model.lamps||[],groups=model.groups||[],independent=lamps.filter(l=>!groups.some(g=>g.id===l.id||g.followers?.some(f=>f.id===l.id)));
@@ -36,7 +59,7 @@ export function mountAppV2(api){
     const power=document.createElement('button');power.type='button';power.className='v2-home-power';power.dataset.v2='power';power.dataset.id=id;power.setAttribute('aria-pressed',String(observed.lighting.power));power.setAttribute('aria-label',(observed.lighting.power?'Turn off ':'Turn on ')+(group?groupName(id,group.name):entry.name));power.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M7 5a8 8 0 1 0 10 0"/></svg>';wrapper.append(power);
   }
   if(focused?.action){const replacement=[...home.querySelectorAll('[data-v2]')].find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id);replacement?.focus({preventScroll:true});}
-  document.getElementById('v2Version').textContent='CoolLamp 2.0.3';
+  document.getElementById('v2Version').textContent='CoolLamp 2.0.4';
  }
  function chooseLight(section='lighting'){
   const model=api.model();sheet('Choose your lights',`<p>Choose a lamp. We’ll find its best available connection.</p>${section==='lighting'?(model.groups||[]).map(g=>`<button class="v2-choice" data-v2="open-group" data-id="${esc(g.id)}"><strong>${esc(groupName(g.id,g.name))}</strong><small>Shared group lighting</small>${icon('arrow')}</button>`).join(''):''}${(model.lamps||[]).map(l=>`<button class="v2-choice" data-v2="select-settings" data-section="${section}" data-id="${esc(l.id)}"><strong>${esc(l.name)}</strong><small>${esc(room(l.id))}</small>${icon('arrow')}</button>`).join('')||'<p>Add a lamp to get started.</p>'}<button class="secondary" data-v2="add">Add a lamp</button>`);
@@ -50,7 +73,7 @@ export function mountAppV2(api){
  }
  function createGroup(){const model=api.model();sheet('Let your lamps play together',`<label for="v2GroupName">Group name</label><input id="v2GroupName" maxlength="48" placeholder="e.g. Bedroom"><p>Choose at least two lamps. We’ll choose the main lamp and confirm each connection.</p>${(model.available||[]).filter(l=>l.verified&&l.available&&l.role===0&&!l.sync?.membershipLocked).map(l=>`<label class="v2-select-row"><input type="checkbox" name="v2GroupMember" value="${esc(l.id)}"><span><strong>${esc(l.name)}</strong><small>Ready to join</small></span></label>`).join('')||'<p class="hint">Find two independent lamps first. Existing group members can be moved from group management.</p>'}<button data-v2="create-group-save">Create group</button><button class="text-button" data-v2="discover-groups">Find available lamps</button>`);}
  document.addEventListener('click',event=>{const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
-  if(working)return;if(action==='close'){close();return;}
+  if(action==='close'){if(!working)close();return;}if(working||selectionTask)return;
   if(action==='add'){setupStep=0;setupName='';setupRoom='Living room';setupStyle='helix';setupId=null;setupAutomatic=false;setup();}
   else if(action==='setup-next'){setupStep++;setup();}
   else if(action==='setup-back'){if(setupStep===2){setupName=document.getElementById('v2SetupName').value;setupRoom=document.getElementById('v2SetupRoom').value;}setupStep=Math.max(0,setupStep-1);setup();}
@@ -62,7 +85,7 @@ export function mountAppV2(api){
   else if(action==='discover-groups'){close();api.navigate('groups');void api.refreshGroups();}
   else if(action==='lamps'){close();api.navigate('lamps');}
   else if(action==='choose-light'){chooseLight();}
-  else if(action==='open-lamp'||action==='select-settings')void run(async()=>{const section=button.dataset.section||'lighting',result=await api.select(button.dataset.id,section);if(result?.connected){close();api.navigate(section==='lighting'?'effects':'settings',section);}});
+  else if(action==='open-lamp'||action==='select-settings'){if(!dialog.open)chooseLight(button.dataset.section||'lighting');const choice=[...dialog.querySelectorAll('[data-v2="select-settings"]')].find(value=>value.dataset.id===button.dataset.id)||button;void selectLight(choice);}
   else if(action==='open-group'){close();api.navigate('groups');void api.openGroup(button.dataset.id);}
   else if(action==='power')void run(()=>api.power(button.dataset.id));
   else if(action==='create-group'){sheet('Finding your lamps','<p>We’re checking which lamps are ready to play together. This can take a little time when a lamp is out of reach.</p>');void run(async()=>{await api.refreshGroups();createGroup();});}
@@ -74,10 +97,11 @@ export function mountAppV2(api){
   else if(action==='appearance'){chooseLight('design');}
   else if(action==='help')sheet('A familiar little knob',`<div class="v2-help-row"><strong>Turn</strong><p>Choose another effect.</p></div><div class="v2-help-row"><strong>Click, then turn</strong><p>Adjust brightness.</p></div><div class="v2-help-row"><strong>Double-click, then turn</strong><p>Choose a color.</p></div><div class="v2-help-row"><strong>Triple-click</strong><p>Turn off. Click once to turn back on.</p></div><div class="v2-help-row"><strong>Hold until blue, then release</strong><p>About six seconds · Pair a phone.</p></div><p class="hint">A ten-second hold until red arms reset. Release at blue when pairing.</p><button class="secondary" data-v2="close">Got it</button>`);
  });
- dialog.addEventListener('cancel',event=>{if(working)event.preventDefault();});
+ dialog.addEventListener('cancel',event=>{if(working)event.preventDefault();else cancelSelection();});
+ dialog.addEventListener('close',()=>cancelSelection());
  document.getElementById('v2Theme').addEventListener('change',event=>{preferences.theme=event.target.value;persist();applyTheme();});
  document.getElementById('v2LampSearch').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();document.querySelectorAll('#lampList .lamp-entry').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(query);});});
  const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
  refresh(true);
- return {groupName,room,refresh,chooseLight,navigate(name){route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();refresh();},destroy(){clearInterval(interval);}};
+ return {groupName,room,refresh,chooseLight,navigate(name){if(selectionTask)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();refresh();},destroy(){cancelSelection();clearInterval(interval);}};
 }
