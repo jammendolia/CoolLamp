@@ -1,5 +1,5 @@
 import { lampAddress, validFirmwareVersion } from './lamps.js';
-import { parseGroupCode } from './sync.js';
+import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 
 const identityPattern = /^[0-9a-f]{12}$/;
 const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
@@ -25,7 +25,7 @@ const parse = response => {
 function group(raw, id) {
   if (raw?.deviceId !== id) throw failure('This address belongs to a different lamp. Refresh discovery.', {identity: true});
   const sync = raw.sync;
-  if (!sync || ![1,2].includes(sync.version) || ![0,1,2].includes(sync.role)) {
+  if (!sync || ![1,2,3].includes(sync.version) || ![0,1,2].includes(sync.role) || !groupMemberLimit(sync)) {
     throw failure('This lamp does not support compatible Wi-Fi groups.');
   }
   if (sync.role === 1 && sync.leader !== id) throw failure('Lamp returned an invalid coordinator identity.');
@@ -133,10 +133,11 @@ export class GroupDiscovery {
     return {sync, token: raw.token, firmwareVersion: validFirmwareVersion(raw.firmware?.version), name: label(raw.name) || lamp.name};
   }
   eligibility(sync, target) {
-    if (target && sync.version !== target.version) return {joinable: false, message: 'Update these lamps to the same group firmware version before joining.'};
+    if (target && !supportsGroupProtocol(target.sync||{version:target.version},sync.version)) return {joinable: false, message: 'Update these lamps to the same group firmware version before joining.'};
     const order = Array.isArray(sync.order) ? sync.order.map(entry => entry.id) : [];
-    if ((order.length >= 9 || sync.members >= 8) && !order.includes(target?.id)) {
-      return {joinable: false, message: 'This group is full (nine lamps).'};
+    const limit=groupMemberLimit(sync);
+    if ((order.length >= limit || sync.members >= limit-1) && !order.includes(target?.id)) {
+      return {joinable: false, message: 'This group is full ('+limit+' lamps).'};
     }
     return {joinable: true, message: ''};
   }
@@ -153,7 +154,7 @@ export class GroupDiscovery {
     const coordinator = info.sync.role === 1;
     return this.emit(lamp, run, {state: coordinator ? 'coordinator' : 'not-coordinator', verified: coordinator,
       role: info.sync.role, name: info.name, firmwareVersion: info.firmwareVersion,
-      members: Number.isInteger(info.sync.members) && info.sync.members >= 0 && info.sync.members <= 8 ? info.sync.members : null,
+      members: Number.isInteger(info.sync.members) && info.sync.members >= 0 && info.sync.members < groupMemberLimit(info.sync) ? info.sync.members : null,
       checkedAt: this.now(), ...(coordinator ? this.eligibility(info.sync, run.target) : {message: 'This lamp is not coordinating a group.'})});
   }
   errorStatus(lamp, run, error) {

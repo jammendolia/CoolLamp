@@ -1,4 +1,5 @@
 import {SERVICE} from './protocol.js';
+import {parseSignedManifest,isVerifiedPublisherPackage,verifySignedManifest,prepareSignedPhoneFirmware} from './update-authenticity.js';
 export const OTA_WRITE='7b61000b-6e2b-4f3d-9a71-28e45c001001';
 export const OTA_STATUS='7b61000c-6e2b-4f3d-9a71-28e45c001001';
 const root='https://github.com/jammendolia/CoolLamp/releases/';
@@ -65,6 +66,16 @@ export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()
  if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
  onProgress({stage:'downloaded',progress:100,version:manifest.version});return {manifest,image};
 }
+export async function downloadSignedPhoneFirmware(http,{publisherTrust,onProgress=()=>{},isCurrent=()=>true,signal,expectedManifest}={}){
+ const request=phoneRequest(http,{isCurrent,signal});onProgress({stage:'downloading',progress:0});
+ const selected=expectedManifest?await verifySignedManifest(expectedManifest.text,publisherTrust):await verifySignedManifest(new TextDecoder().decode(await request(root+'latest/download/coollamp-manifest-v2.txt')),publisherTrust);
+ const text=new TextDecoder().decode(await request(root+'download/firmware-v'+selected.version+'/coollamp-manifest-v2.txt'));
+ if(text!==selected.text)throw error('The selected signed release changed. Refresh before updating.');
+ const image=await request(root+'download/firmware-v'+selected.version+'/CoolLamp.ino.bin');
+ const prepared=await prepareSignedPhoneFirmware(text,image,publisherTrust);
+ if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
+ onProgress({stage:'downloaded',progress:100,version:selected.version});return prepared;
+}
 export function decodeBleUpdate(data){
  if(!(data instanceof DataView)||data.byteLength!==20||data.getUint8(0)!==1||data.getUint8(1)>5||data.getUint8(2)>9)throw error('Invalid Bluetooth update status.');
  return {phase:data.getUint8(1),error:data.getUint8(2),committed:Boolean(data.getUint8(3)&1),dataWriteWithoutResponseFour:Boolean(data.getUint8(3)&2),session:data.getUint32(4,true),size:data.getUint32(8,true),offset:data.getUint32(12,true),ack:data.getUint16(16,true),maxData:data.getUint16(18,true)};
@@ -113,7 +124,7 @@ export class BluetoothFirmwareTransfer {
   const issued=this.issuedFrames.find(frame=>frame.ack===value.ack);
   if(!issued||issued.order<this.observedOrder)return false;
   if(value.phase===5){if(value.offset>issued.offset)return false;}
-  else if(value.offset!==issued.offset||issued.op===1&&(value.size!==0||value.phase!==0)||issued.op!==1&&value.size!==this.total||issued.op===2&&![1,2].includes(value.phase)||issued.op===3&&value.phase!==2||issued.op===4&&![3,4].includes(value.phase))return false;
+  else if(value.offset!==issued.offset||issued.op===1&&(value.size!==0||value.phase!==0)||issued.op!==1&&value.size!==this.total||[2,6].includes(issued.op)&&![1,2].includes(value.phase)||[3,7].includes(issued.op)&&value.phase!==2||issued.op===4&&![3,4].includes(value.phase))return false;
   const previous=this.lastStatus;
   if(previous?.phase===5||previous?.phase===4&&previous.committed)return false;
   if(previous&&(value.offset<previous.offset||previous.size===this.total&&value.size===0||issued.order===this.observedOrder&&value.phase<previous.phase))return false;
@@ -122,7 +133,7 @@ export class BluetoothFirmwareTransfer {
   this.observedOrder=issued.order;this.lastStatus={...value};return true;
  }
  noteIssued(frame){
-  const op=frame.getUint8(1),offset=op===3?frame.getUint32(8,true)+frame.byteLength-12:op===4?this.total:0;
+  const op=frame.getUint8(1),offset=op===3?frame.getUint32(8,true)+frame.byteLength-12:op===4?this.total:op===7?this.resumeOffset:0;
   this.issuedFrames.push({ack:frame.getUint16(6,true),order:++this.issuedOrder,op,offset});
   if(this.issuedFrames.length>16)this.issuedFrames.shift();
  }
@@ -200,7 +211,7 @@ export class BluetoothFirmwareTransfer {
   // status() also returns decoded reads which were rejected as stale. Only a
   // terminal state accepted by rememberStatus can confirm receiver rejection.
   if(state.phase===5){if(this.lastStatus?.phase===5&&Object.keys(state).every(key=>state[key]===this.lastStatus[key]))this.receiverRejected(state);return null;}
-  if(state.offset!==issued.offset||issued.op===1&&(state.size!==0||state.phase!==0)||issued.op!==1&&state.size!==this.total||issued.op===2&&![1,2].includes(state.phase)||issued.op===3&&state.phase!==2||issued.op===4&&![3,4].includes(state.phase))return null;
+  if(state.offset!==issued.offset||issued.op===1&&(state.size!==0||state.phase!==0)||issued.op!==1&&state.size!==this.total||[2,6].includes(issued.op)&&![1,2].includes(state.phase)||[3,7].includes(issued.op)&&state.phase!==2||issued.op===4&&![3,4].includes(state.phase))return null;
   return state.ack===ack&&(offset===undefined||state.offset===offset)&&(phase===undefined||state.phase===phase)?state:null;
  }
  async readStatus(timeout){
@@ -211,7 +222,7 @@ export class BluetoothFirmwareTransfer {
  async status(){
   this.current();let bytes;
   try{bytes=await this.readStatus(5000);}catch(failure){this.recordStop(this.isCurrent()?'native-read-failure':'connection-changed');throw Object.assign(failure,{uncertain:true,stopReason:this.firstStop.reason});}
-  this.current();const value=decodeBleUpdate(bytes);this.rememberStatus(value);return value;
+  this.current();const value=decodeBleUpdate(bytes);if(!this.session)this.initialStatusFlags=bytes.getUint8(3);this.rememberStatus(value);return value;
  }
  async captureFailureStatus(){
   if(this.failureStatusPromise)return this.failureStatusPromise;
@@ -278,8 +289,10 @@ export class BluetoothFirmwareTransfer {
   this.cancelPromise=(async()=>{await this.captureFailureStatus();if(!this.isCurrent()||this.commitAttempted)return;this.cancelSent=true;await this.ble.write(this.deviceId,SERVICE,OTA_WRITE,this.frame(5),{timeout:3000}).catch(()=>{});})();
   return this.cancelPromise;
  }
- async send({manifest,image}){
-  const parsed=parsePhoneManifest(manifest?.text);
+ getResumeLease(){return this.resumable&&!this.commitAttempted&&!this.cancelSent&&this.lastStatus?.phase!==5&&this.session?Object.freeze({session:this.session,version:this.preparedManifest.version,size:this.preparedManifest.size,sha256:this.preparedManifest.sha256}):null;}
+ async send(prepared,{enableResume=false,resumeLease=null}={}){
+  const {manifest,image}=prepared;
+  const parsed=isVerifiedPublisherPackage(prepared)?parseSignedManifest(manifest?.text):parsePhoneManifest(manifest?.text);
   if(!(image instanceof Uint8Array)||image.length!==parsed.size||parsed.version!==manifest.version||parsed.sha256!==manifest.sha256)throw error('Invalid prepared firmware package.');
   this.beganAt=this.now();this.total=image.length;
   this.current();let initial;
@@ -288,7 +301,12 @@ export class BluetoothFirmwareTransfer {
    if(missingReceiver&&this.isCurrent()&&this.firstStop?.reason==='native-read-failure')failure=error('This lamp needs firmware 1.11.0 or newer installed once over Wi-Fi before it can receive Bluetooth updates.');
    failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();throw failure;
   }
-  if(initial.phase>0&&initial.phase<5)throw error('A Bluetooth update is already active. Reconnect and check its status.');
+  const resumeSupported=Boolean(this.initialStatusFlags&4);
+  // The raw status flags are negotiated once below. A lease cannot authorize
+  // a target; callers must repeat the protected identity check on reconnect.
+  if(resumeLease){
+   if(!resumeSupported||!(this.initialStatusFlags&8)||initial.phase!==2||initial.session!==resumeLease.session||initial.size!==parsed.size||initial.offset>initial.size||resumeLease.version!==parsed.version||resumeLease.size!==parsed.size||resumeLease.sha256!==parsed.sha256)throw error('The original firmware lease is no longer resumable. Check the installed version before starting another update.');
+  }else if(initial.phase>0&&initial.phase<5)throw error('A Bluetooth update is already active. Reconnect and check its status.');
   if(!Number.isInteger(initial.maxData)||initial.maxData<1||initial.maxData>232)throw error('Unsupported Bluetooth update capability.');
   let mtu=23;try{mtu=await this.ble.getMtu(this.deviceId);}catch{this.mtuFallback='unavailable';}
   if(mtu&&typeof mtu==='object')mtu=mtu.mtu;
@@ -296,15 +314,22 @@ export class BluetoothFirmwareTransfer {
   const frameLimit=Math.min(244,mtu-3),chunk=Math.min(initial.maxData,frameLimit-12);
   this.mtu=mtu;this.chunkSize=chunk;
   try{await this.prepareDataWrites(initial);}catch(failure){failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();throw failure;}
-  this.session=crypto.getRandomValues(new Uint32Array(1))[0]||1;
+  this.session=resumeLease?resumeLease.session:crypto.getRandomValues(new Uint32Array(1))[0]||1;
+  this.preparedManifest=parsed;this.resumable=Boolean(resumeLease||enableResume&&resumeSupported);this.resumeOffset=resumeLease?initial.offset:0;
   this.total=image.length;
   try{
    await this.beginNotifications();this.current();
-   const text=new TextEncoder().encode(manifest.text);
-   for(let offset=0;offset<text.length;){const bytes=text.subarray(offset,offset+frameLimit-10),frame=this.frame(1,offset,bytes);await this.write(frame);await this.wait(this.sequence);offset+=bytes.length;}
-   const start=this.frame(2);await this.write(start);await this.wait(this.sequence,0,2);
-   this.stage='transferring';this.onProgress({stage:'transferring',progress:0,version:manifest.version});
-   for(let offset=0;offset<image.length;){
+   if(resumeLease){
+    if(frameLimit<50)throw error('Reconnect firmware resume requires Bluetooth MTU 53 or larger.');
+    const proof=new Uint8Array(42),view=new DataView(proof.buffer);view.setUint32(0,parsed.size,true);proof.set(Uint8Array.from(parsed.sha256.match(/../g),n=>parseInt(n,16)),4);parsed.version.split('.').forEach((n,i)=>view.setUint16(36+2*i,Number(n),true));
+    await this.write(this.frame(7,0,proof));await this.wait(this.sequence,this.resumeOffset,2);
+   }else{
+    const text=new TextEncoder().encode(manifest.text);
+    for(let offset=0;offset<text.length;){const bytes=text.subarray(offset,offset+frameLimit-10),frame=this.frame(1,offset,bytes);await this.write(frame);await this.wait(this.sequence);offset+=bytes.length;}
+    const start=this.frame(this.resumable?6:2);await this.write(start);await this.wait(this.sequence,0,2);
+   }
+   this.stage='transferring';this.onProgress({stage:'transferring',progress:Math.floor(this.resumeOffset*100/image.length),version:manifest.version});
+   for(let offset=this.resumeOffset;offset<image.length;){
     // Four copied frames fit the receiver queue. Progress counts written,
     // acknowledged bytes, not ATT acceptance or bytes merely sent by iOS.
     const end=Math.min(image.length,offset+chunk*4);let ack;

@@ -11,13 +11,16 @@ const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/a
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
  '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26,'/api/firmware/fleet':27,
  '/api/mesh/status':28,'/api/mesh/request':29,'/api/mesh/result':30,'/api/power':31,'/api/preview':32,'/api/defaults':33,'/api/color':34,'/api/effect-options':35,
- '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39};
+ '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39,
+ '/api/descriptor':40,'/api/effects/schema':41,'/api/state/patch':42,'/api/appearance/save':43,'/api/receipt':44,'/api/revision':45,'/api/firmware/policy':46,'/api/sync/page':47,'/api/household':48,'/api/firmware/rollout':51,'/api/group/remove':52};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
 function publicControlSync(value){
-  const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport']);
+  const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport','maxMembers','maxSupportedMembers','broadcastFrames','coordinatorMigration','peerTotal','peerCursor','peerNext','peerTruncated','slotSaved','slotSaveFailures','incompatibleSubscriptions','session','dissolutionV1','membershipLocked']);
+  if(typeof value?.incarnation==='string'&&/^[0-9a-f]{32}$/.test(value.incarnation))sync.incarnation=value.incarnation;
+  if(Array.isArray(value.protocolVersions)&&value.protocolVersions.length<=3)sync.protocolVersions=[...new Set(value.protocolVersions.filter(version=>[2,3].includes(version)))];
   for(const field of ['scenePrimary','sceneSecondary'])if(Array.isArray(value[field])&&value[field].length===3&&value[field].every(number=>Number.isInteger(number)&&number>=0&&number<=255))sync[field]=value[field].slice();
-  sync.order=(Array.isArray(value.order)?value.order:[]).slice(0,9).map(entry=>publicFields(entry,['id','name','online']));
-  sync.peers=(Array.isArray(value.peers)?value.peers:[]).slice(0,8).map(entry=>publicFields(entry,['id','name','address','role','microphone','transport','channel']));
+  sync.order=(Array.isArray(value.order)?value.order:[]).slice(0,value.version===3?32:9).map(entry=>publicFields(entry,['id','name','online']));
+  sync.peers=(Array.isArray(value.peers)?value.peers:[]).slice(0,8).map(entry=>publicFields(entry,['id','name','address','role','version','microphone','transport','channel']));
   sync.radio=publicFields(value.radio,['available','channel','seeking','security','received','receiveDropped','sent','sendFailed','sendDropped','channelChanges']);
   sync.network=publicFields(value.network,['listening','blocked','received','discoveries','authenticationFailures','subscriptions','frames','clockDrops']);
   return sync;
@@ -310,9 +313,10 @@ export class LampTransport {
     if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');
     const status=decodeFirmware(value);this.receiveFirmware(status);return status;
   }
-  async updateOverBluetooth(packageValue,onProgress=()=>{},{signal}={}) {
+  async updateOverBluetooth(packageValue,onProgress=()=>{},{signal,enableResume=false,resumeLease=null,onLease=()=>{}}={}) {
     if(this.bluetoothUpdate||!this.id||!this.deviceIdentity||!this.supportsOfflineControl)throw Error('Connect to the intended lamp over Bluetooth first.');
     const epoch=this.epoch,id=this.id,identity=this.deviceIdentity;
+    if(resumeLease&&resumeLease.identity!==identity)throw Error('The original firmware lease belongs to a different verified lamp.');
     const transfer=new BluetoothFirmwareTransfer({ble:this.ble,deviceId:id,isCurrent:()=>this.epoch===epoch&&this.id===id&&this.deviceIdentity===identity,onProgress,allowBulkWrites:this.firmwareBulkWrites});
     // Close all normal command lanes before taking ownership of the radio.
     clearTimeout(this.controlTimer);this.controlTimer=null;
@@ -327,7 +331,12 @@ export class LampTransport {
     const value=await this.ble.read(id,SERVICE,'7b610006-6e2b-4f3d-9a71-28e45c001001',{timeout:this.timeout});
     const actual=new TextDecoder().decode(new Uint8Array(value.buffer,value.byteOffset,value.byteLength));
     if(epoch!==this.epoch||id!==this.id||actual!==identity)throw Error('The Bluetooth lamp changed. No firmware was sent.');
-    return await transfer.send(packageValue);}
+    return await transfer.send(packageValue,{enableResume,resumeLease});}
+    catch(failure){
+      const lease=transfer.getResumeLease();
+      if(lease){const bounded=Object.freeze({...lease,identity});failure.firmwareResumeLease=bounded;try{onLease(bounded);}catch{}}
+      throw failure;
+    }
     finally{signal?.removeEventListener('abort',cancel);if(this.bluetoothUpdate===transfer)this.bluetoothUpdate=null;if(this.id&&this.epoch===epoch)this.scheduleControlRefresh();}
   }
   get supportsOfflineControl() { return Boolean(this.id&&this.control?.capabilities.includes('control')); }

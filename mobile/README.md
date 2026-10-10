@@ -1,5 +1,12 @@
 # CoolLamp phone app
 
+Version 2.0.0 introduces the new Home, Lamps, Effects and Settings experience,
+guided physical pairing, room names, group creation and adaptive effect controls.
+The warm paper and olive design supports light, dark and system appearance,
+native safe areas, reduced motion and large touch targets. iOS and Android use
+the same application and lamp contracts; their icons and native versions are
+updated together.
+
 Capacitor app with a bundled web interface, Wi-Fi discovery/control, and the community BLE plugin.
 No cloud or Wi-Fi is required for Bluetooth control.
 See [implementation and protocol](../docs/bluetooth-app.md).
@@ -37,7 +44,8 @@ Bluetooth is not available in the iOS simulator.
 
 The registered app ID is com.coollamp.controller and the Apple Team ID is
 P3XKA54Q3B. Both Debug and Release use automatic signing for this team.
-No signing credentials or store releases are configured.
+Signing credentials stay in the personal repository's Actions secrets. The
+application does not embed Apple credentials.
 
 ### Build from Windows using GitHub Actions
 
@@ -54,10 +62,19 @@ configured in the build service. Never commit Apple private keys or certificates
 
 ### TestFlight signing and upload
 
-The `iOS TestFlight upload` workflow runs only when manually started. It builds
+The `iOS TestFlight upload` workflow supports manual dispatch and selected release
+branches. It builds
 and validates an IPA, then uploads it to Apple for processing. It does not submit
-an App Store release or an external beta review. After processing, add the build
-to an internal testing group in App Store Connect and install it with TestFlight.
+an App Store release or an external beta review. A read-only verification step
+checks this exact marketing version and build number after upload and saves a
+sanitized `testflight-status` artifact. Successful upload, Apple processing and
+internal testing availability are reported separately. Existing internal groups
+with access to all builds receive eligible builds automatically.
+
+New firmware capabilities are discovered from the selected lamp. Rich effect
+schemas, confirmed partial commands and separately saved effect tuning are
+enabled only when advertised; older firmware retains its supported controls.
+The firmware's private update animation is never a user-selectable effect.
 
 In the personal `jammendolia/CoolLamp` repository, configure these Actions settings:
 

@@ -11,7 +11,8 @@ const endpoints=Object.freeze({'/api/state':1,'/api/sync/status':2,'/api/sync/in
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
  '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,
  '/api/style':25,'/api/effects':26,'/api/power':31,'/api/preview':32,'/api/defaults':33,'/api/color':34,'/api/effect-options':35,
- '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39});
+ '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39,
+ '/api/descriptor':40,'/api/effects/schema':41,'/api/state/patch':42,'/api/appearance/save':43,'/api/receipt':44,'/api/revision':45,'/api/firmware/policy':46,'/api/sync/page':47,'/api/household':48,'/api/firmware/rollout':51,'/api/group/remove':52});
 const cancelled=()=>Object.assign(Error('Lamp selection changed.'),{confirmed:true,cancelled:true});
 const noRoute=()=>Object.assign(Error('No mesh route to this lamp. Bring it nearby and connect directly over Bluetooth.'),{confirmed:true,noRoute:true});
 const unconfirmed=()=>Object.assign(Error('The mesh reply was not confirmed. Refresh this lamp before trying again; connect directly over Bluetooth if needed.'),{uncertain:true});
@@ -34,8 +35,8 @@ export class MeshInventorySession {
  forget(id){this.forgotten.add(id);this.lamps.delete(id);}
  remember(value,bridgeId){
   if(value?.version!==1||value.deviceId!==bridgeId||!canonical(bridgeId)||!transaction(value.fleetId)||value.available!==true||!Array.isArray(value.peers))return this.items;
-  for(const peer of value.peers.slice(0,32)){
-   if(!canonical(peer?.id)||peer.id===bridgeId||this.forgotten.has(peer.id)||typeof peer.online!=='boolean'||!Number.isInteger(peer.hops)||peer.hops<1||peer.hops>6)continue;
+  for(const peer of value.peers.slice(0,16)){
+   if(!canonical(peer?.id)||peer.id===bridgeId||this.forgotten.has(peer.id)||typeof peer.online!=='boolean'||!Number.isInteger(peer.hops)||peer.hops<1||peer.hops>4)continue;
    this.lamps.set(peer.id,{id:peer.id,name:typeof peer.name==='string'?peer.name.slice(0,64):'CoolLamp',meshBridgeId:bridgeId,meshOnline:peer.online,meshHops:peer.hops});
   }return this.items;
  }

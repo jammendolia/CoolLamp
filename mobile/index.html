@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#10141d">
+<meta name="theme-color" content="#f6f3ed">
 <title>CoolLamp</title>
 </head>
 <body>
@@ -11,15 +11,16 @@
 <div id="toast" class="toast" hidden aria-hidden="true"></div>
   <header class="app-header">
 <div class="brand">
-<span class="brand-mark" aria-hidden="true">c</span>
+<img class="brand-mark" src="/app-icon.png" alt="">
 <div>
 <h1>CoolLamp</h1>
-<p class="eyebrow">Light, composed.</p>
+<p class="eyebrow">A little light. A lovely feeling.</p>
 </div>
 </div>
 </header>
 <nav aria-label="Main navigation">
-<button data-page="lamps" aria-current="page">
+<button data-page="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-7H9v7H3z"></path></svg><span>Home</span></button>
+<button data-page="lamps">
 <svg viewBox="0 0 24 24" aria-hidden="true">
 <rect x="4" y="4" width="6" height="6" rx="2">
 </rect>
@@ -32,19 +33,23 @@
 </svg>
 <span>Lamps</span>
 </button>
-<button data-page="groups"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"></circle><circle cx="5" cy="18" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="m10 9-3 6m7-6 3 6M8 18h8"></path></svg><span>Groups</span></button>
+<button data-page="effects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3z"></path></svg><span>Effects</span></button>
+<button data-page="app-settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"></path><circle cx="9" cy="7" r="3"></circle><circle cx="15" cy="17" r="3"></circle></svg><span>Settings</span></button>
 </nav>
+<section id="page-home"><div class="v2-page-heading"><div><p id="v2HomeSubtitle" class="eyebrow">MAKE YOURSELF AT HOME</p><h2 tabindex="-1">Your home</h2></div><button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button></div><div id="v2HomeContent"></div></section>
+<section id="page-app-settings" hidden><p class="eyebrow">MAKE IT YOURS</p><h2 tabindex="-1">Settings</h2><p class="page-intro">A home that feels like you.</p><div class="v2-settings-list"><button data-v2="lamp-settings"><span><strong>Lamp details</strong><small>Name, startup light and ownership</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a lamp’s network</small></span><span>›</span></button><button data-v2="updates"><span><strong>Lamp care</strong><small>Updates and automatic update preferences</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Helix, Large helix and Corkscrew</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>A familiar little knob</strong><small>A quick guide to your lamp</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced & custom builds</strong><small>Hardware and guided calibration</small></span><span>›</span></button></div><p class="v2-private" id="v2Version">CoolLamp 2.0.0</p><p class="v2-private">Local control · No account required</p></section>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
-  <section id="page-lamps">
+  <section id="page-lamps" hidden>
 <div class="section-title">
 <div>
 <p class="eyebrow">AT HOME</p>
 <h2 tabindex="-1">Your lamps</h2>
 </div>
-<button id="discover" class="compact">Find on Wi-Fi</button>
+<button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button>
 </div>
 <p class="page-intro">A little atmosphere, in every corner.</p>
-<div class="lamp-fleet-tools">
+<label class="v2-search-label" for="v2LampSearch">Find a lamp</label><input id="v2LampSearch" type="search" placeholder="Search your lamps" autocomplete="off"><button id="discover" class="secondary compact">Find lamps on home Wi-Fi</button>
+<div class="lamp-fleet-tools" id="v2CarePanel">
 <div class="lamp-fleet-actions">
 <button id="refreshLampFirmware" class="secondary compact">Refresh versions</button>
 <button id="updateAllLamps" class="compact">Update all lamps</button>
@@ -424,6 +429,10 @@
       </div>
     </section>
     <button id="save" class="secondary">Use these settings at startup</button>
+    <button id="saveAppearance" class="secondary" hidden>Remember this effect’s tuning</button>
+    <p id="appearanceSaveStatus" class="hint" role="status" hidden></p>
+    <button id="reconcileApp2" type="button" class="secondary" hidden>Check the last unconfirmed change</button>
+    <button id="retireApp2" type="button" class="secondary" hidden>Continue from the lamp’s current state</button>
     <p class="hint save-hint">Remembers the current effect, lamp brightness and your effect customizations. Audio tuning saves separately.</p>
   </fieldset>
 <details id="rotationPane" class="panel playback-pane" hidden>
@@ -468,6 +477,7 @@
   </details>
 </section>
 <section id="page-settings" hidden>
+<button id="v2ScopeButton" data-v2="choose-light" class="v2-scope-button" hidden>Choose a lamp</button>
 <div class="section-title"><div id="settingsLampHeading"><p class="eyebrow">YOUR LAMP</p><h2 tabindex="-1">Lamp settings</h2></div><button type="button" data-goto="lamps" class="text-button compact">All lamps</button></div>
 <p class="page-intro">Lighting and settings for this lamp.</p>
 <span id="connectionBadge" class="badge">Not connected</span>
@@ -769,6 +779,7 @@
 </details>
 </section>
 </main>
+<dialog id="v2Dialog" class="v2-dialog" aria-label="Lamp setup and configuration"></dialog>
 <dialog id="factoryResetDialog" aria-labelledby="factoryResetTitle" aria-describedby="factoryResetDescription">
 <form method="dialog">
 <p class="eyebrow">START FRESH</p>

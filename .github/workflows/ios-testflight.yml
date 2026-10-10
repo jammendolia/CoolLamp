@@ -101,6 +101,21 @@ jobs:
           APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
           app-store-connect publish --path 'build/ios/ipa/*.ipa' --enable-package-validation
+      - name: Verify this exact build's TestFlight processing
+        timeout-minutes: 14
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ vars.APP_STORE_CONNECT_KEY_IDENTIFIER }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: python tools/verify-testflight.py
+      - name: Save TestFlight verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-status
+          path: mobile/testflight-status.json
+          if-no-files-found: ignore
       - name: Restore runner keychain
         if: always()
         run: keychain use-login

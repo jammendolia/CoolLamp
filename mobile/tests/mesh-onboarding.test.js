@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MeshOnboarding} from '../src/mesh-onboarding.js';
 import {MeshTransport} from '../src/mesh.js';
+import {commissionCheckSymbol} from '../src/commissioning.js';
 
 const bridgeId='112233445566',target='aabbccddeeff',broker='123456789abc',fleetId='0123456789abcdef';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,1));
@@ -22,6 +23,36 @@ function fixture(options={}){
  return {entries,calls,statuses,inventories,inventory,bridge,lease,controller,phaseList,releases:()=>releases};
 }
 async function ready(f){const result=await f.controller.discover();assert.equal(result.candidates.length,1);return result.candidates[0];}
+
+function version2(f){
+ const targetBoot='1111111111111111',brokerBoot='2222222222222222';
+ Object.assign(f.inventory.candidates[0],{comparisonVersion:2,targetBoot});
+ const request=f.bridge.request.bind(f.bridge);
+ f.bridge.request=async(...args)=>{const value=await request(...args);if(args[0]==='/api/mesh/new')return value;
+  const symbols=[1,4,7,12,8,15];return {...value,targetBoot,brokerBoot,comparison:{version:2,entropyBits:24,semanticKey:'commission.color-counts.v2',symbols,checkSymbol:commissionCheckSymbol(symbols),cycleMs:58000,pulseOnMs:350,pulsePeriodMs:700,countPeriodMs:3400,symbolPeriodMs:8000,approvalRequiresFullCycle:true}};
+ };
+ return f;
+}
+test('explicit v2 enrollment binds all identities and publishes complete frozen count comparison',async()=>{
+ const f=version2(fixture()),row=await ready(f);await f.controller.start(row,{comparisonVersion:2});
+ const confirm=f.statuses.find(value=>value.phase==='confirm');assert.equal(confirm.comparison.entropyBits,24);assert.equal(confirm.comparison.counts.length,7);
+ assert(/six pairs/.test(confirm.message));assert(Object.isFrozen(confirm.comparison));
+ assert(f.calls.filter(call=>call.fields).every(call=>call.fields.comparisonVersion===2));assert.equal(f.calls.filter(call=>call.path.endsWith('/start')).length,1);
+});
+test('v2 cannot silently downgrade, change target boot, broker boot or fleet after Start',async()=>{
+ for(const patch of [{comparison:{version:1}},{targetBoot:'3333333333333333'},{brokerBoot:'3333333333333333'},{fleetId:'3333333333333333'}]){
+  const f=version2(fixture()),row=await ready(f),request=f.bridge.request.bind(f.bridge);
+  f.bridge.request=async(...args)=>{const value=await request(...args);return args[0].endsWith('/status')?{...value,...patch}:value;};
+  await assert.rejects(f.controller.start(row,{comparisonVersion:2}),error=>error.uncertain===true);
+  assert(!f.statuses.some(value=>value.phase==='complete'));assert.equal(f.calls.filter(call=>call.path.endsWith('/start')).length,1);
+ }
+});
+test('unsupported target cannot start v2; existing UI remains explicitly legacy',async()=>{
+ const old=fixture(),row=await ready(old);await assert.rejects(old.controller.start(row,{comparisonVersion:2}),/does not support/);assert(!old.calls.some(call=>call.path.endsWith('/start')));
+ const modern=version2(fixture()),fresh=await ready(modern);const request=modern.bridge.request.bind(modern.bridge);
+ modern.bridge.request=async(...args)=>{const value=await request(...args);if(args[0]==='/api/mesh/new')return value;return {...value,comparison:{version:1}};};
+ await modern.controller.start(fresh);assert(modern.calls.filter(call=>call.fields).every(call=>!Object.hasOwn(call.fields,'comparisonVersion')));
+});
 
 test('startup discovery is read only and session-only metadata excludes secrets and pairing identifiers',async()=>{
  const f=fixture(),row=await ready(f);

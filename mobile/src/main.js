@@ -14,7 +14,7 @@ import { MeshOnboarding } from './mesh-onboarding.js';
 import { FirmwareFleet } from './firmware-fleet.js';
 import { GroupDiscovery } from './group-discovery.js';
 import { BluetoothGroups, initializeGroupRadio } from './bluetooth-groups.js';
-import { Groups } from './groups.js';
+import { Groups, groupCreationPlan } from './groups.js';
 import { GroupLightingUi } from './group-lighting-ui.js';
 import { runLampPower } from './lamp-power.js';
 import { downloadPhoneFirmware, fetchPhoneManifest, compareFirmwareVersions, firmwareBase64, bluetoothFirmwareFailureMessage } from './bluetooth-firmware.js';
@@ -26,6 +26,11 @@ import { LampConnectivity, lightingObservation, groupObservation, groupCardPrese
 import { LAMP_STYLES, styleDefinition, styleLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
 import { wifiSetupMessage, wifiCredentials } from './wifi-setup.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
+import { mountAppV2 } from './app-v2.js';
+import { adaptiveEffectModel, effectDisplayName } from './app-v2-effects.js';
+import { LampExperienceSession } from './experience-contracts.js';
+let appV2=null,app2Experience=null,app2ExperienceRun=null;
+const app2Pending=new Map();
 const native = registerPlugin('LampNetwork');
 const accessoryNative = registerPlugin('LampAccessory');
 const store = new LampStore(localStorage);
@@ -83,21 +88,24 @@ async function credential(id, value) {
 const firmwareFleetTrust=new FirmwareFleetTrust({credential,getPairedLamps:()=>store.items.filter(entry=>entry.deviceId)});
 function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
 function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
+  const route=name==='light'||name==='settings'&&settingsView==='lighting'?'effects':name;
+  if(name==='effects'||name==='light'){name='settings';settingsView='lighting';}
   cancelMeshSelection();
-  if(name==='light'){name='settings';settingsView='lighting';}
   ++navigationSerial;if(!preserveCardSettings)wifiSettingsTarget=null;
   if(name!=='groups'||!preserveGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}
   if(name!=='settings')hideWifiPassword();
   if(name!=='groups')closeGroupEditor();
   if(name==='lamps'){$('status').textContent='Choose a lamp’s gear to open its settings, or add a new lamp.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();}
   else if(meshWizard&&!meshWizard.saving)void closeMeshWizard();
-  for (const item of ['lamps','groups','settings']) $('page-'+item).hidden=item!==name;
+  for (const item of ['home','lamps','groups','settings','app-settings']) $('page-'+item).hidden=item!==name;
   scheduleLampStatusRefresh();
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===(name==='settings'?'lamps':name))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(name==='settings'){renderSettings();if(settingsView==='groups')refreshGroupCoordinators();}
   if(name==='groups'){$('status').textContent='Manage groups over Wi-Fi or authorized Bluetooth connections.';renderRoomGroups();refreshRoomGroups();}
+  if(name==='home'&&mergedLampEntries().length){refreshRoomGroups();refreshLampFirmware();}
+  appV2?.navigate(route);
   window.scrollTo(0,0);
-  $('page-'+name).querySelector('h2')?.focus({preventScroll:true});
+  $('page-'+name)?.querySelector('h2')?.focus({preventScroll:true});
 }
 
 
@@ -114,6 +122,79 @@ let effectOptions = null, editingOptions = false;
 let vuDirty = false, fountainDirty = false;
 let groupSceneDirty=false,groupAudioDirty=false,sceneChoicesKey='',groupOrderKey='';
 let audioDirty = false, effectTab = 'look', paneMode = null;
+function app2TargetMatches(record){
+  return Boolean(record&&record.target&&record.id&&selected&&record.id===selected.id&&record.target===lamp&&record.epoch===lamp?.epoch&&record.token===lamp?.raw?.token);
+}
+function assertApp2Target(record){
+  if(!app2TargetMatches(record)||!verifiedSelectedLamp())throw Error('The selected lamp changed.');
+}
+async function loadApp2Experience(){
+  if(!verifiedSelectedLamp()||!advancedAvailable()||updatingLamp()||!(/^[a-f0-9]{12}$/.test(selected.id)))return null;
+  const target=lamp,id=selected.id,epoch=target.epoch;
+  if(app2TargetMatches(app2Experience))return app2Experience;
+  if(app2TargetMatches(app2ExperienceRun))return app2ExperienceRun.promise;
+  const record={id,target,epoch,token:target.raw?.token,supported:false,schemas:new Map(),mode:null};
+  const guard=()=>assertApp2Target(record);
+  const transport={request:async(path,fields)=>{guard();const result=await target.request(path,fields,epoch,guard);guard();return result;}};
+  record.session=new LampExperienceSession(transport,id);
+  record.transport=transport;
+  const run={id,target,epoch,token:record.token,promise:target.enqueue(async()=>{guard();try{await record.session.negotiate();guard();record.supported=true;}catch(error){guard();record.error=error.message;}app2Experience=record;return record;})};
+  app2ExperienceRun=run;
+  try{return await run.promise;}finally{if(app2ExperienceRun===run)app2ExperienceRun=null;}
+}
+async function loadApp2EffectSchema(){
+  const record=await loadApp2Experience();if(!record?.supported||record.loading||!record.session.descriptor.capabilities.catalogVersions.includes(2)||record.mode===state?.mode)return;
+  const mode=state.mode,index=lamp.catalog?.findIndex(entry=>entry.id===mode);if(index<0)return;
+  record.loading=true;
+  try{const page=await record.target.enqueue(()=>record.session.schema(index,'effects',1));if(app2Experience!==record||state?.mode!==mode)return;const schema=page.entries.find(entry=>entry.localId===mode);if(schema)record.schemas.set(mode,schema);record.mode=mode;renderOptions();}
+  catch{/* The tested v1 profile remains usable when metadata is unavailable. */}
+  finally{record.loading=false;}
+}
+function app2EffectModel(entry){
+  const record=app2TargetMatches(app2Experience)?app2Experience:null;
+  return adaptiveEffectModel(entry,{state,raw:lamp?.raw,options:effectOptions,targetId:selected?.id,schema:record?.schemas.get(entry.id),schemaTarget:record?.id,descriptor:record?.supported?record.session.descriptor:null});
+}
+async function app2LightChange(operation,value,activatePalette,changedOption=null){
+  const scope={id:selected?.id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token};
+  const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported)return false;
+  assertApp2Target(record);
+  if(app2Pending.has(record.id))throw Object.assign(Error('Check the previous unconfirmed change before making another.'),{uncertain:true});
+  const patch=operation==='power'?{power:Number(value)}:operation==='brightness'?{brightness:value}:operation==='effect'?{mode:value}:operation==='color'?{mode:value.mode,r:value.r,g:value.g,b:value.b}:operation==='resetColor'?{mode:value,resetPalette:1}:operation==='effectOptions'?{mode:value.mode,speed:value.speed,intensity:value.intensity,dual:value.dual,r2:value.r,g2:value.g,b2:value.b}:null;
+  if(!patch)return false;
+  if(operation==='effectOptions'&&changedOption){for(const key of ['speed','intensity','dual','r2','g2','b2'])if(!(changedOption===key||changedOption==='secondaryColor'&&['r2','g2','b2'].includes(key)))delete patch[key];}
+  if(activatePalette&&!state.color?.enabled){const hex=$('color').value.slice(1);Object.assign(patch,{r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)});}
+  let result;try{result=await record.target.enqueue(async()=>{const snapshot=await record.session.fresh();if(['color','effectOptions','resetColor'].includes(operation)&&snapshot.mode!==patch.mode)throw Error('The effect changed while you were editing. Review its current controls.');return record.session.patch(record.session.draft(snapshot,patch));});}finally{if(record.session.pending)app2Pending.set(record.id,record.session);}
+  if(result.outcome==='uncertain')throw Object.assign(Error('The lamp did not confirm this change. Check its state before trying again.'),{uncertain:true});
+  if(result.outcome==='rejected')throw Error('The lamp rejected this change. Refresh its current settings.');
+  if(!result.executed)throw Error('This change was not applied.');
+  await record.target.enqueue(async()=>{assertApp2Target(record);await record.target.refresh(record.id);assertApp2Target(record);});status('Changes confirmed on '+selected.name+'.');return true;
+}
+async function saveApp2Appearance(){
+ if(busy||connecting||updatingLamp()||!independentLightingAllowed())return;busy=true;
+ const scope={id:selected?.id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token},mode=state?.mode;
+ try{const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported)throw Error('Update this lamp to remember tuning separately from startup.');assertApp2Target(record);if(state?.mode!==mode)throw Error('The effect changed while you were editing. Review its current controls.');if(app2Pending.has(record.id))throw Error('Check the previous unconfirmed change first.');let result;try{result=await record.target.enqueue(()=>record.session.save(mode));}finally{if(record.session.pending)app2Pending.set(record.id,record.session);}
+  assertApp2Target(record);
+  if(result.outcome==='persisted')status('Effect tuning saved. Your startup light stays as chosen.');
+  else if(result.outcome==='uncertain')throw Object.assign(Error('Saving was not confirmed. Check this lamp before trying again.'),{uncertain:true});
+  else throw Error(result.outcome==='save-failed'?'The lamp could not save this tuning. The previous saved tuning is retained.':'This tuning was not saved. Refresh the lamp and try again.');
+ }catch(error){status(error.message);}finally{busy=false;renderOptions();}
+}
+$('saveAppearance').onclick=saveApp2Appearance;
+$('reconcileApp2').onclick=async()=>{
+ const id=selected?.id,original=app2Pending.get(id);if(!original||busy)return;busy=true;
+ const scope={id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token};
+ try{const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported||original.target!==id)throw Error('Reconnect to this lamp to check the previous change.');assertApp2Target(record);const receipt=await record.target.enqueue(()=>original.reconcile(record.transport));
+  if(receipt.outcome!=='uncertain')app2Pending.delete(id);
+  await record.target.enqueue(async()=>{assertApp2Target(record);await record.target.refresh(id);assertApp2Target(record);});
+  if(receipt.outcome==='uncertain'){$('retireApp2').hidden=false;status('Current light verified. The earlier change remains unconfirmed. Review this light before continuing.');}
+  else{$('retireApp2').hidden=true;status(receipt.outcome==='persisted'?'Previous save confirmed.':receipt.executed?'Previous change confirmed.':'Previous change was rejected.');}
+ }catch(error){status(error.message);}finally{busy=false;renderOptions();}
+};
+$('retireApp2').onclick=async()=>{
+ const id=selected?.id,original=app2Pending.get(id);if(!original||busy||!confirm('Continue from this lamp’s verified current light? The earlier change will remain unconfirmed and will not be repeated.'))return;busy=true;
+ const scope={id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token};
+ try{const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported||original.target!==id)throw Error('Reconnect to this lamp to check the previous change.');assertApp2Target(record);await record.target.enqueue(()=>original.retireUncertainAfterSnapshot(record.transport));app2Pending.delete(id);assertApp2Target(record);$('retireApp2').hidden=true;status('Ready to continue from the lamp’s current light.');}catch(error){status(error.message);}finally{busy=false;renderOptions();}
+};
 function paintRanges() {
   for(const slider of document.querySelectorAll('input[type=range]')) {
     const fraction=(Number(slider.value)-Number(slider.min))/(Number(slider.max)-Number(slider.min));
@@ -124,61 +205,89 @@ function paintRanges() {
 }
 function renderEffectPane() {
   const entry=state && lamp?.catalog?.find(x=>x.id===state.mode);
-  const groupActive=groupsAvailable() && state?.sync?.scene>0;
+  const sync=state?.sync;
+  const groupActive=groupsAvailable()&&sync?.scene>0&&sync.paused!==true&&
+    (sync.role===1||sync.role===2&&sync.active===true);
   $('effectPane').hidden=!entry||groupActive;
-  if(!entry||groupActive)return;
-  const profile=effectSettings(entry);
-  if(paneMode!==entry.id){effectTab=profile.audio?'sound':'look';paneMode=entry.id;}
-  const motionAvailable=Boolean(state.capabilities&8)&&(profile.motion||profile.intensity);
+  $('saveAppearance').hidden=true;$('appearanceSaveStatus').hidden=true;
+  if(!entry||groupActive)return null;
+  const model=app2EffectModel(entry),blocked=busy||connecting||updatingLamp()||app2Pending.has(selected?.id);
+  void loadApp2EffectSchema().catch(()=>{});
+  if(paneMode!==entry.id){effectTab=model.audio.visible?'sound':'look';paneMode=entry.id;}
+  const speed=model.controls.find(control=>control.key==='speed'),intensity=model.controls.find(control=>control.key==='intensity');
+  const motionAvailable=Boolean(state.capabilities&8||model.schemaVersion===2)&&Boolean(speed||intensity);
   $('effect-tab-motion').hidden=!motionAvailable;
-  $('effect-tab-sound').hidden=!profile.audio;
-  if((effectTab==='sound'&&!profile.audio)||(effectTab==='motion'&&!motionAvailable))effectTab='look';
-  $('effectTabs').hidden=!profile.audio&&!motionAvailable;
+  $('effect-tab-sound').hidden=!model.audio.visible;
+  if((effectTab==='sound'&&!model.audio.visible)||(effectTab==='motion'&&!motionAvailable))effectTab='look';
+  $('effectTabs').hidden=!model.audio.visible&&!motionAvailable;
   for(const tab of document.querySelectorAll('[data-effect-tab]')){tab.setAttribute('aria-selected',String(tab.dataset.effectTab===effectTab));tab.tabIndex=tab.dataset.effectTab===effectTab?0:-1;}
   $('effectBody').setAttribute('aria-labelledby','effect-tab-'+effectTab);
-  $('colorControls').hidden=profile.vu||profile.fountain||!state.supportsColor||effectTab!=='look';
-  $('colorUpgrade').hidden=state.supportsColor||effectTab!=='look';
-  document.querySelector('.palette-options').hidden=profile.vu||profile.fountain||effectTab!=='look'||!state.supportsColor||!(state.capabilities&8);
-  $('effectTitle').textContent=entry.name;
-  $('effectFamily').textContent=profile.audio?'SOUND & LIGHT':(entry.category||'LIGHT').toUpperCase()+' COLLECTION';
-  $('effectDescription').textContent=profile.description;
-  $('effectPane').style.setProperty('--effect-accent',profile.audio?'#dac6fa':entry.category==='fire'?'#efc48e':'#d1eead');
-  $('motionControls').hidden=!profile.motion||effectTab!=='motion';
-  $('intensityControls').hidden=!profile.intensity||effectTab!=='motion';
-  $('speedLabel').textContent=profile.speedLabel;$('speedHint').textContent=profile.speedHint;
-  $('intensityLabel').textContent=profile.intensityLabel;$('intensityHint').textContent=profile.intensityHint;
-  $('primaryColorLabel').textContent=profile.spectrum?'Bass color':profile.colorLabel;
-  $('secondaryColorLabel').textContent=profile.spectrum?'Treble color':profile.secondaryLabel;
-  $('paletteState').textContent=state.color?.enabled?'Custom':profile.spectrum?'Frequency colors':'Original';
-  $('colorHint').textContent=profile.spectrum && !state.color?.enabled?
-    'Bass is warm, mids are green, treble is violet. Choose a color to create your own frequency palette.':
-    state.color?.enabled?'Your palette is active.':'Original colors are active. Choose a primary color or enable a two-color palette.';
-  $('effectAudio').hidden=!profile.audio||effectTab!=='sound';
-  $('resetColor').hidden=profile.vu||profile.fountain||!state.supportsColor||effectTab==='sound';
-  $('vuControls').hidden=!profile.vu||profile.fountain||effectTab!=='look';
-  const vu=advancedAvailable()?lamp.raw?.vuColors:null;
-  $('vuFields').disabled=!vu||busy;
-  if(!vu)$('vuFeedback').textContent='Connect over Wi-Fi to firmware 1.6.2 or newer to set meter colors.';
-  if(vu&&!vuDirty){['vuLow','vuMid','vuPeak'].forEach((id,i)=>$(id).value='#'+vu[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintVu();}
-
-  $('fountainControls').hidden=!profile.fountain||effectTab!=='look';
-  const fountain=advancedAvailable()?lamp.raw?.fountainColors:null;
-  $('fountainFields').disabled=!fountain||busy;
-  if(!fountain)$('fountainFeedback').textContent='Connect over Wi-Fi to firmware 1.6.6 or newer to set fountain colors.';
-  if(fountain&&!fountainDirty){['fountainLow','fountainMid','fountainPeak'].forEach((id,i)=>$(id).value='#'+fountain[i].map(v=>v.toString(16).padStart(2,'0')).join(''));paintFountain();}
-
-  const audio=advancedAvailable()?lamp.raw?.audio:null;
-  $('audioTuning').disabled=!audio || busy;
-  $('audioScale').disabled=audio?.scale===undefined;
-  $('audioConnectionHint').textContent=!audio?'Connect this lamp over Wi-Fi to adjust shared audio response.':
-    !audio.liveTuning?'This firmware restarts when audio settings are applied. Update it to tune without restarting the lamp.':'';
-  $('audioConnectionHint').hidden=Boolean(audio?.liveTuning);
-  $('applyAudio').textContent=audio?.liveTuning?'Apply to all audio effects':'Apply audio settings & restart';
-  if(!audio)for(const id of ['audioGainValue','audioGateValue','audioScaleValue'])$(id).value='—';
-  if(audio && !audioDirty) {
-    $('audioGain').value=audio.gain;$('audioGate').value=audio.gate;$('audioScale').value=audio.scale??100;audioLabels();
+  const primary=model.palette.colors.find(value=>value.adapter==='primary-color'),secondary=model.palette.colors.find(value=>value.adapter==='secondary-color');
+  const plainPalette=!model.palette.fixed&&Boolean(primary)&&state.supportsColor;
+  $('colorControls').hidden=!plainPalette||effectTab!=='look';
+  $('colorUpgrade').hidden=model.palette.fixed||!primary||state.supportsColor||effectTab!=='look';
+  const paletteOptions=document.querySelector('.palette-options');
+  paletteOptions.hidden=!plainPalette||!secondary||effectTab!=='look'||!(state.capabilities&8);
+  $('dual').closest('label').hidden=!model.palette.secondaryToggle;
+  $('color').disabled=blocked||!primary?.editable;
+  if(primary){$('primaryColorLabel').textContent=primary.label;if(primary.hex&&!editingOptions)$('color').value=primary.hex;}
+  if(secondary)$('secondaryColorLabel').textContent=secondary.label;
+  $('effectTitle').textContent=model.name;
+  $('effectFamily').textContent=model.audio.visible?'SOUND & LIGHT':(model.category||'LIGHT').toUpperCase()+' COLLECTION';
+  $('effectDescription').textContent=model.description+(model.unsupportedParameters.length?' Some adjustments need a newer app.':'');
+  $('effectPane').style.setProperty('--effect-accent',model.audio.visible?'#dac6fa':model.category==='fire'?'#efc48e':'#d1eead');
+  $('motionControls').hidden=!speed||effectTab!=='motion';
+  $('intensityControls').hidden=!intensity||effectTab!=='motion';
+  for(const [key,control] of [['speed',speed],['intensity',intensity]])if(control){
+    $(key+'Label').textContent=control.label;$(key+'Hint').textContent=control.hint;
+    $(key).min=control.min;$(key).max=control.max;$(key).step=control.step;$(key).disabled=blocked||!control.editable;
   }
+  $('paletteState').textContent=model.palette.label;$('colorHint').textContent=model.palette.hint;
+  $('effectAudio').hidden=!model.audio.visible||effectTab!=='sound';
+  $('resetColor').hidden=!plainPalette||!model.palette.canReset||effectTab==='sound';
+  $('resetColor').disabled=blocked||!primary?.editable;
+  const setFeedback=(id,message)=>{if($(id).textContent!==message)$(id).textContent=message;};
+  for(const [adapter,prefix,roles,inputs,dirty,paint] of [
+    ['vu-colors','vu',['zone-low','zone-middle','zone-high'],['vuLow','vuMid','vuPeak'],vuDirty,paintVu],
+    ['fountain-colors','fountain',['band-bass','band-mid','band-treble'],['fountainLow','fountainMid','fountainPeak'],fountainDirty,paintFountain]
+  ]){
+    const colors=roles.map(role=>model.palette.colors.find(value=>value.key===role&&value.adapter===adapter));
+    const visible=colors.some(Boolean)&&!model.palette.fixed;
+    const ready=advancedAvailable()&&colors.every(value=>value?.editable&&value.hex);
+    $(prefix+'Controls').hidden=!visible||effectTab!=='look';$(prefix+'Fields').disabled=blocked||!ready;
+    inputs.forEach((id,index)=>{
+      const choice=colors[index],label=$(id).closest('label');label.hidden=!choice;
+      if(choice){const title=label.querySelector('span');if(title?.firstChild?.nodeType===3)title.firstChild.textContent=choice.label+' ';if(choice.hex&&!dirty)$(id).value=choice.hex;}
+    });
+    if(visible&&!ready)setFeedback(prefix+'Feedback','Connect to read all three '+(prefix==='vu'?'meter':'frequency')+' colors.');
+    else if($(prefix+'Feedback').textContent.startsWith('Connect to read all three '))setFeedback(prefix+'Feedback','');
+    if(ready&&!dirty)paint();
+  }
+  const audioReady=advancedAvailable()&&model.audio.editable;
+  $('audioTuning').disabled=!audioReady||blocked;
+  const audioHint=!model.audio.editable?model.audio.hint:model.audio.restarts?'This lamp restarts when sound settings are saved.':model.audio.scope+'.';
+  setFeedback('audioConnectionHint',audioHint);$('audioConnectionHint').hidden=!model.audio.visible;
+  $('applyAudio').textContent=model.audio.restarts?'Save sound settings & restart':'Save shared sound response';
+  for(const [key,id] of [['gain','audioGain'],['gate','audioGate'],['scale','audioScale']]){
+    const control=model.audio.controls.find(value=>value.key===key),input=$(id),label=document.querySelector('label[for="'+id+'"]'),output=$(id+'Value');
+    if(key==='scale'){label.hidden=!control;input.hidden=!control;if(input.nextElementSibling?.classList.contains('micro-copy'))input.nextElementSibling.hidden=!control;}
+    input.disabled=blocked||!audioReady||!control;
+    if(control){
+      if(label.firstChild?.nodeType===3)label.firstChild.textContent=control.label+' ';
+      input.min=control.min;input.max=control.max;input.step=control.step;
+      if(!audioDirty)input.value=control.value;
+    }else output.value='—';
+  }
+  if(model.audio.controls.length&&!audioDirty){
+    audioLabels();
+    for(const [key,id] of [['gain','audioGain'],['gate','audioGate'],['scale','audioScale']])if(!model.audio.controls.some(value=>value.key===key))$(id+'Value').value='—';
+  }
+  const remember=model.persistence.separateAppearanceSave;
+  $('saveAppearance').hidden=!remember;$('appearanceSaveStatus').hidden=!remember;
+  $('saveAppearance').disabled=blocked||!independentLightingAllowed()||Boolean(state?.calibration?.active);
+  if(remember)setFeedback('appearanceSaveStatus',model.persistence.hint);
   paintRanges();
+  return model;
 }
 
 function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask); }
@@ -215,25 +324,28 @@ function renderPower() {
   $('powerHint').textContent=!state?'Connect to a lamp to control its power.':updatingLamp()?'Wait for the firmware update to finish.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Groups when you are ready.':'Turns the light off while keeping the lamp connected.';
 }
 function renderOptions() {
+  $('reconcileApp2').hidden=!app2Pending.has(selected?.id);
+  if(!app2Pending.has(selected?.id))$('retireApp2').hidden=true;
   renderPower();
   renderPlaybackTools();
   renderSync();
-  const supported = Boolean(state?.capabilities & 8);
-  renderEffectPane();
-  $('effectOptions').hidden = !supported || effectTab==='sound';
-  const ready = supported && effectOptions?.mode === state.mode;
-  $('effectOptions').disabled = !ready;
-  if (!ready || editingOptions) return;
-  $('speed').value = effectOptions.speed;
-  $('intensity').value = effectOptions.intensity;
-  $('speedValue').value = effectOptions.speed + '%';
-  $('intensityValue').value = effectOptions.intensity + '%';
-  $('speed').disabled = lamp?.catalog?.find(x=>x.id===state.mode)?.speed === false;
-  $('dual').checked = Boolean(effectOptions.dual && state.color?.enabled);
-  $('dual').disabled = !state.supportsColor;
-  $('secondaryColor').disabled = !effectOptions.dual || !state.color?.enabled;
-  $('secondaryColorRow').hidden = !effectOptions.dual || !state.color?.enabled;
-  $('secondaryColor').value = '#' + [effectOptions.r,effectOptions.g,effectOptions.b].map(v=>v.toString(16).padStart(2,'0')).join('');
+  const model=renderEffectPane(),blocked=busy||connecting||updatingLamp()||app2Pending.has(selected?.id);
+  const supported=Boolean(model&&(state?.capabilities&8||model.schemaVersion===2));
+  const ready=supported&&effectOptions?.mode===state?.mode&&model.controls.every(control=>control.value!==null);
+  $('effectOptions').hidden=!supported||!model?.controls.length||effectTab!=='motion';
+  $('effectOptions').disabled=blocked||!ready;
+  if(!model)return;
+  for(const key of ['speed','intensity']){
+    const control=model.controls.find(value=>value.key===key),input=$(key);
+    input.disabled=blocked||!ready||!control?.editable;
+    if(!control){input.min=key==='speed'?1:0;input.max=100;input.step=1;}
+    if(!editingOptions&&effectOptions?.mode===state?.mode){input.value=control?.value??effectOptions[key];$(key+'Value').value=control&&control.value===null?'—':input.value+(control?.units??'%');}
+  }
+  const secondary=model.palette.colors.find(value=>value.adapter==='secondary-color');
+  $('dual').disabled=blocked||!ready||!state.supportsColor||!model.palette.secondaryToggle;
+  $('secondaryColor').disabled=blocked||!ready||!secondary?.editable||model.palette.secondaryToggle&&!(model.appearance.dual&&model.appearance.custom);
+  $('secondaryColorRow').hidden=!secondary||model.palette.fixed||model.palette.secondaryToggle&&!(model.appearance.dual&&model.appearance.custom);
+  if(!editingOptions){$('dual').checked=Boolean(model.appearance.dual&&model.appearance.custom);if(secondary?.hex)$('secondaryColor').value=secondary.hex;}
   paintRanges();
 }
 function renderFirmwareFeedback(){
@@ -487,7 +599,8 @@ groupDiscovery=new GroupDiscovery({http:CapacitorHttp,credential,getLamps:merged
   onStatus:(id,value)=>{groupCoordinatorStatuses.set(id,value);renderGroupCoordinators();}});
 bluetoothGroups=new BluetoothGroups({ble:BleClient,getTarget:()=>lamp===bleLamp&&verifiedSelectedLamp()?bleLamp:null,
   getLamps:()=>store.items,acquire:acquireGroupLamp,onStatus:(id,value)=>{groupCoordinatorStatuses.set(id,value);renderGroupCoordinators();}});
-roomGroups=new Groups({getLamps:groupInventoryEntries,acquire:acquireGroupLamp,discover:async()=>{
+roomGroups=new Groups({getLamps:groupInventoryEntries,acquire:acquireGroupLamp,
+loadRemovalIntents:()=>store.loadGroupRemovalIntents(),saveRemovalIntents:value=>store.saveGroupRemovalIntents(value),discover:async()=>{
   if(!isNative)return [];
   const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);renderLamps();return groupInventoryEntries();
 },onStatus:snapshot=>{groupsSnapshot=snapshot;
@@ -500,11 +613,12 @@ $('page-groups').append($('groupCoordinatorPasswordDialog'));
 $('groupRecovery').ontoggle=()=>{if($('groupRecovery').open){renderSync();refreshGroupCoordinators();}};
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
-async function change(operation, value, activatePalette = false) {
+async function change(operation, value, activatePalette = false,changedOption=null) {
   if (busy||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id) return;
   if(['power','brightness','effect','saveDefaults','color','resetColor','effectOptions'].includes(operation)&&!independentLightingAllowed()){status('Use Groups for grouped lighting, or connect over Wi-Fi to verify this lamp’s membership.');return;}
   busy = true; $('controls').disabled = true; renderPower(); renderFirmware();
   try {
+    if(['power','brightness','effect','color','resetColor','effectOptions'].includes(operation)&&await app2LightChange(operation,value,activatePalette,changedOption))return;
     if(activatePalette && !state.color?.enabled){
       const hex=$('color').value.slice(1);
       await lamp.command('color',{mode:value.mode,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)});
@@ -695,7 +809,7 @@ for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange =
   if (!state || effectOptions?.mode !== state.mode) return;
   const hex = $('secondaryColor').value.slice(1);
   await change('effectOptions', {mode:state.mode, speed:Number($('speed').value), intensity:Number($('intensity').value),
-    dual:id==='dual'?Number($('dual').checked):effectOptions.dual,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)},id==='dual'&&$('dual').checked);
+    dual:id==='dual'?Number($('dual').checked):effectOptions.dual,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)},id==='dual'&&$('dual').checked,id);
   editingOptions=false;
   renderOptions();
 };
@@ -1207,55 +1321,51 @@ const openCardWifiSettings=entry=>openCardSettings(entry,{section:'network'});
 function renderLamps() {
   const focused=document.activeElement?.closest('.lamp-entry');
   const focusedId=focused?.dataset.lampId,focusedRemove=document.activeElement?.classList.contains('lamp-remove'),focusedConnection=document.activeElement?.dataset.connection;
-  $('discover').textContent=discovery.scanned?'Refresh Wi-Fi list':'Find on Wi-Fi';
+  const openConnections=new Set([...$('lampList').querySelectorAll('.v2-connection-details[open]')].map(item=>item.closest('[data-lamp-id]')?.dataset.lampId));
+  $('discover').textContent=discovery.scanned?'Refresh lamps':'Find nearby lamps';
   $('lampList').replaceChildren();
-  const entries=mergedLampEntries();
-  $('emptyLamps').hidden=entries.length>0;
+  const entries=mergedLampEntries();$('emptyLamps').hidden=entries.length>0;
   for(const entry of entries) {
-    const wrapper=document.createElement('div');wrapper.className='lamp-entry';wrapper.dataset.lampId=entry.id;
-    const button=document.createElement('button');button.className='lamp-card';
-    const title=document.createElement('strong');title.textContent=entry.name||'CoolLamp';
-    const detail=document.createElement('span');detail.textContent=[entry.room,discovered.some(x=>x.id===entry.id)?'Found on Wi-Fi':entry.address?'Saved Wi-Fi lamp':entry.meshEnrolled?'Saved mesh lamp':entry.meshBridgeId?'Found through mesh':'Saved Bluetooth lamp'].filter(Boolean).join(' · ');
-    const connected=verifiedSelectedLamp()&&entry.id===selected.id;
-    const version=document.createElement('small');version.className='lamp-firmware';
-    const observation=fleetStatuses.get(entry.id);
-    version.textContent=lampFirmwareLabel(entry,{connected,firmware,firmwareReceivedAt,observation});
-    const activeAt=connected&&validFirmwareVersion(firmware?.version)?firmwareReceivedAt:0;
-    const pingAt=observation?.verified&&observation.fresh&&validFirmwareVersion(observation.installedVersion)&&
-      Number.isFinite(observation.checkedAt)?observation.checkedAt:0;
-    const seen=Math.max(activeAt,pingAt)||observation?.checkedAt||entry.firmwareSeenAt;
-    if(seen)version.title='Last verified '+new Date(seen).toLocaleString();
-    button.append(lampStyleIllustration(resolvedStyle(entry).id),title,detail,version);button.disabled=connecting||busy||fleetLampInstalling(entry.id)||!firmwareConnectionSelectionAllowed(entry);
-    const lighting=connectivity.get(entry.id).lighting,note=document.createElement('small');note.className='lamp-current-effect';note.textContent=lighting?.label||'Effect unavailable';note.dataset.state=lighting?.state||'unknown';
-    if(lighting?.checkedAt)note.title='Last verified '+new Date(lighting.checkedAt).toLocaleString();button.append(note);
-    const updateStatus=fleetCardStatus(observation,entry);
-    if(updateStatus){const note=document.createElement('small');note.className='lamp-update-status';note.textContent=updateStatus;button.append(note);}
-    if(cardPowerMessages.has(entry.id)){const message=document.createElement('small');message.className='lamp-power-feedback';message.textContent=cardPowerMessages.get(entry.id);message.setAttribute('role','status');button.append(message);}
-    const firmwareNote=firmwareFeedback.get(entry.id)?.message||cardFirmwareMessages.get(entry.id);
-    if(firmwareNote){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=firmwareNote;message.setAttribute('role','status');button.append(message);}
-    if(meshNetworkMessages.has(entry.id)){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=meshNetworkMessages.get(entry.id);message.setAttribute('role','status');button.append(message);}
-    if(['updating','restarting'].includes(observation?.state)){
-      const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;
-      if(observation.state==='updating'&&Number.isInteger(observation.progress))progress.value=observation.progress;
-      progress.setAttribute('aria-label',(entry.name||'Lamp')+' firmware update progress');button.append(progress);
-    }
-    button.setAttribute('aria-current',String(connected));
-    if(connected)detail.textContent=(entry.room?entry.room+' · ':'')+'Connected · '+(lamp?.isMesh?'ESP-NOW mesh':lamp===wifiLamp?'Wi-Fi':entry.address?'Bluetooth · Tap to retry Wi-Fi':'Bluetooth');
-    if(meshSelection?.id===entry.id){detail.textContent=meshSelection.kind==='wifi'?'Checking Wi-Fi…':'Finding a mesh route…';button.setAttribute('aria-busy','true');}
-    button.onclick=()=>openCardSettings(entry,{section:'lighting',preferWifi:true});
-    const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove';
-    remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
-    remove.setAttribute('aria-label','Remove '+(entry.name||'CoolLamp')+' from this phone');remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;
-    remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};
-    const gear=document.createElement('button');gear.type='button';gear.className='lamp-connection lamp-settings';gear.dataset.connection='settings';gear.title='Settings for '+(entry.name||'CoolLamp');gear.setAttribute('aria-label',gear.title);
-    gear.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 3-.6 2.1-2 .9-2-.5-2 3.5 1.4 1.6v2.8L2.4 15l2 3.5 2-.5 2 .9L9 21h4l.6-2.1 2-.9 2 .5 2-3.5-1.4-1.6v-2.8l1.4-1.6-2-3.5-2 .5-2-.9L13 3Z"/><circle cx="11" cy="12" r="3.4"/></svg>';
+    const name=entry.name||'CoolLamp',connected=verifiedSelectedLamp()&&entry.id===selected.id;
+    const telemetry=connectivity?.get(entry.id),lighting=telemetry?.lighting,group=telemetry?.group,observation=fleetStatuses.get(entry.id);
+    const wrapper=document.createElement('article');wrapper.className='lamp-entry v2-lamp-entry';wrapper.dataset.lampId=entry.id;wrapper.dataset.state=connected||lighting?.fresh?'ready':lighting?.state==='stale'?'last-seen':'unknown';
+    const button=document.createElement('button');button.type='button';button.className='lamp-card v2-lamp-card';button.dataset.lampId=entry.id;button.dataset.connection='lighting';
+    button.setAttribute('aria-label','Control '+name);button.setAttribute('aria-current',String(connected));
+    button.disabled=connecting||busy||fleetLampInstalling(entry.id)||!firmwareConnectionSelectionAllowed(entry);
+    const art=lampStyleIllustration(resolvedStyle(entry).id);art.classList.add('v2-card-art');if(lighting?.fresh&&lighting.power===false)art.classList.add('is-off');
+    const copy=document.createElement('span');copy.className='v2-card-copy';const title=document.createElement('strong');title.textContent=name;
+    const location=document.createElement('span');location.className='v2-card-location';location.textContent=[entry.room,styleLabel(resolvedStyle(entry).id)].filter(Boolean).join(' · ');
+    const effect=document.createElement('span');effect.className='lamp-current-effect v2-card-effect';effect.textContent=lighting?.label||'Connect to see your light';effect.dataset.state=lighting?.state||'unknown';if(lighting?.checkedAt)effect.title='Last verified '+new Date(lighting.checkedAt).toLocaleString();
+    const scope=document.createElement('small');scope.className='v2-card-scope';
+    if(group?.fresh&&group.state==='follower'){const source=groupsSnapshot.groups.find(value=>value.id===group.leader);const groupName=source?((typeof appV2!=='undefined'?appV2?.groupName(source.id,source.name):null)||source.name):'its group';scope.textContent=group.paused?'Used separately · '+groupName:'Plays with '+groupName;}
+    else if(group?.fresh&&group.state==='leader'){const source=groupsSnapshot.groups.find(value=>value.id===entry.id);scope.textContent='Keeps '+(source?((typeof appV2!=='undefined'?appV2?.groupName(source.id,source.name):null)||source.name):'its group')+' together';}
+    else scope.textContent=group?.fresh&&group.state==='independent'?'Your own light':'Group status will be checked before changes';
+    copy.append(title,location,effect,scope);button.append(art,copy);button.onclick=()=>openCardSettings(entry,{section:'lighting',preferWifi:true});
+    const readiness=document.createElement('div');readiness.className='v2-card-status';
+    readiness.textContent=connected?lamp?.isMesh?'Connected through another lamp':lamp===wifiLamp?'Connected on home Wi-Fi':'Nearby connection':activeCardBluetooth(entry)?'Nearby connection':lighting?.fresh?'Ready':lighting?.state==='stale'?'Last seen · Tap to reconnect':'Tap to connect';
+    if(meshSelection?.id===entry.id){readiness.textContent='Finding your lamp…';button.setAttribute('aria-busy','true');}
+    const actions=document.createElement('div');actions.className='v2-card-actions';
+    const power=cardPowerButton(entry);power.classList.add('v2-card-power');
+    const gear=document.createElement('button');gear.type='button';gear.className='lamp-connection lamp-settings v2-card-settings';gear.dataset.connection='settings';gear.textContent='Settings';gear.title='Settings for '+name;gear.setAttribute('aria-label',gear.title);
     gear.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||!firmwareConnectionSelectionAllowed(entry);gear.onclick=()=>openCardSettings(entry,{section:'overview'});
-    const links=document.createElement('div');links.className='lamp-connections';links.append(wifiCardIcon(entry),bluetoothCardIcon(entry),groupCardIcon(entry));
-    const power=cardPowerButton(entry);wrapper.append(button,links,power,gear,remove);$('lampList').append(wrapper);
-    const update=cardFirmwareButton(entry);if(update)wrapper.append(update);
-    if(focusedId===entry.id){const control=focusedConnection==='power'?power:focusedConnection==='settings'?gear:focusedConnection?links.querySelector('[data-connection="'+focusedConnection+'"]'):focusedRemove?remove:button;if(control&&!control.disabled)control.focus({preventScroll:true});}
+    actions.append(power,gear);const update=cardFirmwareButton(entry);if(update){update.classList.add('v2-card-update');update.setAttribute('aria-label','Update '+name);actions.append(update);}
+    const connectionDetails=document.createElement('details');connectionDetails.className='v2-connection-details';connectionDetails.open=openConnections.has(entry.id);
+    const connectionSummary=document.createElement('summary');connectionSummary.textContent='Connection & care';connectionDetails.append(connectionSummary);
+    const version=document.createElement('small');version.className='lamp-firmware';version.textContent=lampFirmwareLabel(entry,{connected,firmware,firmwareReceivedAt,observation});
+    const activeAt=connected&&validFirmwareVersion(firmware?.version)?firmwareReceivedAt:0,pingAt=observation?.verified&&observation.fresh&&validFirmwareVersion(observation.installedVersion)&&Number.isFinite(observation.checkedAt)?observation.checkedAt:0,seen=Math.max(activeAt,pingAt)||observation?.checkedAt||entry.firmwareSeenAt;
+    if(seen)version.title='Last verified '+new Date(seen).toLocaleString();connectionDetails.append(version);
+    const links=document.createElement('div');links.className='lamp-connections v2-connection-actions';links.append(wifiCardIcon(entry),bluetoothCardIcon(entry),groupCardIcon(entry));connectionDetails.append(links);
+    const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove v2-card-remove';remove.dataset.connection='remove';remove.textContent='Remove from this phone';remove.setAttribute('aria-label','Remove '+name+' from this phone');
+    remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};connectionDetails.append(remove);
+    const feedback=document.createElement('div');feedback.className='v2-card-feedback';
+    const messages=[cardPowerMessages.get(entry.id),firmwareFeedback.get(entry.id)?.message||cardFirmwareMessages.get(entry.id),meshNetworkMessages.get(entry.id),fleetCardStatus(observation,entry)].filter(Boolean);
+    for(const messageText of [...new Set(messages)]){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=messageText;feedback.append(message);}
+    if(['updating','restarting'].includes(observation?.state)){const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;if(observation.state==='updating'&&Number.isInteger(observation.progress))progress.value=observation.progress;progress.setAttribute('aria-label',name+' firmware update progress');feedback.append(progress);}
+    wrapper.append(button,readiness,actions,feedback,connectionDetails);$('lampList').append(wrapper);
+    if(focusedId===entry.id){const control=focusedConnection==='power'?power:focusedConnection==='settings'?gear:focusedConnection==='lighting'?button:focusedConnection==='update'?update:focusedRemove||focusedConnection==='remove'?remove:focusedConnection?links.querySelector('[data-connection="'+focusedConnection+'"]'):button;if(control&&!control.disabled){if(connectionDetails.contains(control))connectionDetails.open=true;control.focus({preventScroll:true});}}
   }
   renderFleetControls();
+  const search=$('v2LampSearch').value.trim().toLowerCase(); if(search)for(const row of $('lampList').children)row.hidden=!row.textContent.toLowerCase().includes(search);
 }
 async function discover(includeForgotten=false) {
   if(!isNative){status('Automatic discovery is available in the iPhone and Android app. You can enter a lamp address here.');return;}
@@ -1311,7 +1421,8 @@ function filterEffects() {
       const heading=document.createElement('h4');heading.textContent=group;heading.className='effect-group-heading';$('effectGrid').append(heading);previousGroup=group;
     }
     const button=document.createElement('button');button.type='button';
-    const title=document.createElement('strong');title.textContent=option.text;
+    const title=document.createElement('strong');title.textContent=effectDisplayName(catalog.find(entry=>entry.id===Number(option.value)))||option.text;
+    const art=document.createElement('span');art.className='v2-effect-art';art.setAttribute('aria-hidden','true');art.innerHTML='<i></i><i></i><i></i>';button.append(art);
     const detail=document.createElement('small');const entry=catalog.find(x=>x.id===Number(option.value));detail.textContent=Number(option.value)===state?.mode?'● Active':(entry?.category||'Effect');button.append(title,detail);
     button.disabled=option.disabled;button.dataset.effect=option.value;button.dataset.family=entry?.category||'calm';
     button.setAttribute('aria-pressed',String(Number(option.value)===state?.mode));
@@ -1808,79 +1919,86 @@ async function roomGroupAction(id,action) {
   finally{groupActions.delete(id);renderRoomGroups();renderLamps();}
 }
 function groupLampRow(row,{follower=false}={}) {
-  const item=document.createElement('div');item.className='room-group-lamp';item.dataset.groupLampId=row.id;
-  const copy=document.createElement('div'),name=document.createElement('strong'),detail=document.createElement('small');
-  name.textContent=row.name||row.id;
-  detail.textContent=!row.available?(row.message||'Offline · last seen'):row.role===2?(row.sync?.paused?'Paused · local settings':row.sync?.active?'Following coordinator':'Waiting for coordinator'):row.role===1?'Coordinator':'Independent';
-  copy.append(name,detail);item.append(copy);
-  const usable=row.available&&row.verified&&!groupActions.has(row.id)&&!cardPowerTasks.has(row.id);
-  if(row.state==='needs-pairing'){
-    const pair=document.createElement('button');pair.type='button';pair.className='secondary compact';pair.textContent='Pair to manage';
-    pair.onclick=()=>{page('lamps');status('Hold '+(row.name||'this lamp')+'’s knob for six seconds until it flashes blue, then choose Add using Bluetooth.');};item.append(pair);
-  }
-  if(row.state==='needs-identity'){
-    const verify=document.createElement('button');verify.type='button';verify.className='secondary compact';verify.textContent='Connect to verify';
-    verify.onclick=()=>connect(store.items.find(entry=>entry.id===row.id));item.append(verify);
-  }
+  const item=document.createElement('div');item.className='room-group-lamp v2-member-row';item.dataset.groupLampId=row.id;item.dataset.state=row.available&&row.verified?'ready':row.state||'unknown';
+  const entry=mergedLampEntries().find(value=>value.id===row.id)||{id:row.id,name:row.name};
+  const art=lampStyleIllustration(resolvedStyle(entry).id);art.classList.add('v2-member-art');
+  const copy=document.createElement('div');copy.className='v2-member-copy';const name=document.createElement('strong');name.textContent=row.name||'Lamp';
+  const detail=document.createElement('small');detail.className='v2-member-status';
+  detail.textContent=!row.available||!row.verified?(row.message||'Not reachable · Last known membership'):row.role===2?(row.sync?.paused?'Used separately · Group is kept':row.sync?.active?'Playing with this group':'Waiting for the main lamp'):row.role===1?'Keeps this group together':'Ready for your own light';
+  copy.append(name,detail);
+  if(entry.room){const room=document.createElement('small');room.className='v2-member-room';room.textContent=entry.room;copy.append(room);}
+  if(row.available&&row.verified&&row.audio?.installed){const sound=document.createElement('small');sound.className='v2-sound-label';sound.textContent='Microphone fitted';copy.append(sound);}
+  item.append(art,copy);const actions=document.createElement('div');actions.className='v2-member-actions';
+  const usable=row.available&&row.verified&&!groupActions.has(row.id)&&!cardPowerTasks.has(row.id)&&!fleetLampInstalling(row.id)&&bluetoothFirmwareOwner()?.id!==row.id&&!row.sync?.membershipLocked;
+  if(row.state==='needs-pairing'){const pair=document.createElement('button');pair.type='button';pair.className='secondary compact';pair.dataset.groupAction='pair';pair.textContent='Connect nearby';pair.onclick=()=>{page('lamps');status('Hold '+(row.name||'this lamp')+'’s knob until it flashes blue, then release and choose Add a lamp.');};actions.append(pair);}
+  if(row.state==='needs-identity'){const verify=document.createElement('button');verify.type='button';verify.className='secondary compact';verify.dataset.groupAction='verify';verify.textContent='Verify this lamp';verify.onclick=()=>connect(store.items.find(entry=>entry.id===row.id));actions.append(verify);}
   if(row.role===2){
-    const leave=document.createElement('button');leave.type='button';leave.className='text-button';leave.textContent='Leave';leave.disabled=!usable;
-    leave.onclick=()=>roomGroupAction(row.id,()=>roomGroups.leave(row.id));item.append(leave);
-    const pause=document.createElement('button');pause.type='button';pause.className='text-button';pause.textContent=row.sync?.paused?'Resume':'Pause';pause.disabled=!usable;
-    pause.onclick=()=>roomGroupAction(row.id,()=>row.sync?.paused?roomGroups.resume(row.id):roomGroups.pause(row.id));item.append(pause);
+    const pause=document.createElement('button');pause.type='button';pause.className='secondary compact';pause.dataset.groupAction='participation';pause.textContent=row.sync?.paused?'Return to group':'Use separately';pause.disabled=!usable;pause.setAttribute('aria-label',pause.textContent+': '+(row.name||'Lamp'));pause.onclick=()=>roomGroupAction(row.id,()=>row.sync?.paused?roomGroups.resume(row.id):roomGroups.pause(row.id));actions.append(pause);
+    const leave=document.createElement('button');leave.type='button';leave.className='text-button compact';leave.dataset.groupAction='leave';leave.textContent='Remove from group';leave.disabled=!usable;leave.setAttribute('aria-label','Remove '+(row.name||'lamp')+' from this group');
+    leave.onclick=()=>roomGroupAction(row.id,async()=>{const result=await roomGroups.leave(row.id);return {...result,message:result.sourceCleanup?.pending?'This lamp is independent. Its previous group still needs a confirmed cleanup.':'This lamp is now independent.'};});actions.append(leave);
   }
-  if(row.role===0){
-    const lead=document.createElement('button');lead.type='button';lead.className='secondary compact';lead.textContent='Lead a new group';lead.disabled=!usable;
-    lead.onclick=()=>roomGroupAction(row.id,()=>roomGroups.create(row.id));item.append(lead);
-  }
+  if(row.role===0){const lead=document.createElement('button');lead.type='button';lead.className='secondary compact';lead.dataset.groupAction='create';lead.textContent='Start a group';lead.disabled=!usable;lead.onclick=()=>roomGroupAction(row.id,()=>roomGroups.create(row.id));actions.append(lead);}
   if(row.role===0||follower){
-    const destinations=groupsSnapshot.groups.filter(group=>group.id!==row.leader&&group.id!==row.id&&group.available&&group.leader.verified&&group.remaining>0);
-    const controls=document.createElement('div');controls.className='room-group-destination';
-    const select=document.createElement('select');select.setAttribute('aria-label',(follower?'Move ':'Join ')+(row.name||'lamp')+' to group');select.add(new Option(follower?'Choose another group':'Choose a group',''));
-    for(const group of destinations)select.add(new Option(group.name,group.id));
-    select.disabled=!usable||destinations.length===0;
-    const draft=groupDestinations.get(row.id);if(destinations.some(group=>group.id===draft))select.value=draft;else groupDestinations.delete(row.id);
-    const move=document.createElement('button');move.type='button';move.className='secondary compact';move.textContent=follower?'Move':'Join';move.disabled=!usable||!select.value;
+    const destinations=groupsSnapshot.groups.filter(group=>group.id!==row.leader&&group.id!==row.id&&group.available&&group.leader.verified&&group.remaining>0&&!group.leader.sync?.membershipLocked);
+    const controls=document.createElement('div');controls.className='room-group-destination v2-member-destination';
+    const select=document.createElement('select');select.setAttribute('aria-label',(follower?'Move ':'Add ')+(row.name||'lamp')+' to a group');select.add(new Option(follower?'Move to another group':'Choose a group',''));
+    for(const group of destinations)select.add(new Option((typeof appV2!=='undefined'?appV2?.groupName(group.id,group.name):null)||group.name,group.id));
+    select.disabled=!usable||!destinations.length;const draft=groupDestinations.get(row.id);if(destinations.some(group=>group.id===draft))select.value=draft;else groupDestinations.delete(row.id);
+    const move=document.createElement('button');move.type='button';move.className='secondary compact';move.dataset.groupAction='transfer';move.textContent=follower?'Move lamp':'Add to group';move.disabled=!usable||!select.value;
     select.onchange=()=>{groupDestinations.set(row.id,select.value);move.disabled=!usable||!select.value;};
-    move.onclick=()=>roomGroupAction(row.id,()=>follower?roomGroups.move(row.id,select.value):roomGroups.join(row.id,select.value));
-    controls.append(select,move);item.append(controls);
+    move.onclick=()=>{const destination=select.value;roomGroupAction(row.id,async()=>{const result=follower?await roomGroups.move(row.id,destination):await roomGroups.join(row.id,destination);return {...result,message:(result.active?'Playing with the selected group.':'Membership saved. Waiting for the main lamp.')+(result.sourceCleanup?.pending?' The previous group still needs a confirmed cleanup.':'')};});};
+    controls.append(select,move);actions.append(controls);
   }
-  return item;
+  item.append(actions);return item;
 }
 function renderRoomGroups() {
   if(!$('groupsList'))return;
-  const active=document.activeElement,focusedId=active?.closest('[data-group-lamp-id]')?.dataset.groupLampId;
-  const focusedTag=active?.tagName,focusedText=active?.textContent;
+  const active=document.activeElement,focusedId=active?.closest('[data-group-lamp-id]')?.dataset.groupLampId,focusedGroup=active?.closest('[data-group-id]')?.dataset.groupId;
+  const focusedTag=active?.tagName,focusedText=active?.textContent,focusedAction=active?.dataset.groupAction,focusedConnection=active?.dataset.connection;
+  const expanded=new Set([...$('groupsList').querySelectorAll('.v2-group-members[open]')].map(item=>item.closest('[data-group-id]')?.dataset.groupId));
   $('groupsList').replaceChildren();$('ungroupedLamps').replaceChildren();$('groupsUnavailableList').replaceChildren();
   for(const group of groupsSnapshot.groups){
-    const card=document.createElement('section');card.className='panel room-group';card.dataset.groupId=group.id;
-    const heading=document.createElement('div');heading.className='section-title';
-    const title=document.createElement('div'),kicker=document.createElement('p'),name=document.createElement('h3');kicker.className='eyebrow';kicker.textContent='COORDINATOR';name.textContent=group.name||'Lamp group';title.append(kicker,name);heading.append(title);
-    const effects=document.createElement('button');effects.type='button';effects.className='secondary compact';effects.textContent='Effects';effects.disabled=!group.available||!group.leader.verified||groupActions.has(group.id)||cardPowerTasks.has(group.id);
-    effects.onclick=()=>openGroupEditor(group.id);heading.append(effects);card.append(heading);
-    const stop=document.createElement('button');stop.type='button';stop.className='text-button compact';stop.textContent='Stop coordinating';
-    stop.disabled=!group.available||!group.leader.verified||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;
-    stop.onclick=()=>{
-      if(!confirm('Stop coordinating '+(group.name||'this group')+'? This lamp will become independent and can join another group. Its followers keep their saved membership; move or release them separately.'))return;
-      roomGroupAction(group.id,()=>roomGroups.stopCoordinating(group.id));
-    };card.append(stop);
-    const detail=document.createElement('p');detail.className='hint';detail.textContent=group.available?group.followers.length+' following · '+group.remaining+' spaces available':group.placeholder?'Coordinator unavailable. Its followers keep their saved membership.':'Coordinator offline · last seen';card.append(detail);
-    const members=document.createElement('div');members.className='group-lamp-list';
-    for(const row of group.followers)members.append(groupLampRow(row,{follower:true}));
-    if(!group.followers.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Ready for lamps. Choose this group beside an independent lamp below.';members.append(empty);}card.append(members);$('groupsList').append(card);
+    const name=(typeof appV2!=='undefined'?appV2?.groupName(group.id,group.name):null)||group.name||'Lamp group',rows=[group.leader,...group.followers];
+    const total=Math.max(rows.length,group.leader.sync?.order?.length||0,(group.usedSlots||0)+1);
+    const ready=group.available&&group.leader.verified,locked=group.leader.sync?.membershipLocked===true;
+    const reachable=rows.filter(row=>row.available&&row.verified).length,paused=group.followers.filter(row=>row.available&&row.verified&&row.sync?.paused).length;
+    const card=document.createElement('section');card.className='panel room-group v2-group-card';card.dataset.groupId=group.id;card.dataset.state=ready?'ready':'waiting';
+    const heading=document.createElement('div');heading.className='section-title v2-group-heading';
+    const title=document.createElement('div'),kicker=document.createElement('p'),label=document.createElement('h3');kicker.className='eyebrow';kicker.textContent='YOUR GROUP · '+total+' '+(total===1?'LAMP':'LAMPS');label.textContent=name;title.append(kicker,label);heading.append(title);
+    const entry=mergedLampEntries().find(item=>item.id===group.id)||{id:group.id,name:group.leader.name||name};const power=cardPowerButton(entry);power.classList.add('v2-group-power');heading.append(power);card.append(heading);
+    const illustrations=document.createElement('div');illustrations.className='v2-group-art';illustrations.setAttribute('aria-hidden','true');
+    for(const row of rows.slice(0,3)){const member=mergedLampEntries().find(entry=>entry.id===row.id)||{id:row.id};illustrations.append(lampStyleIllustration(resolvedStyle(member).id));}card.append(illustrations);
+    const detail=document.createElement('p');detail.className='v2-group-status';detail.textContent=locked?'The group is updating · Membership is protected':ready?reachable+' of '+total+' lamps reachable'+(paused?' · '+paused+' used separately':''):group.placeholder?'Waiting for the main lamp · Saved membership is kept':'Not reachable now · Last known group';card.append(detail);
+    const sync=group.leader.sync,scene=Number.isInteger(sync?.scene)?sync.scene:null;
+    const live=groupEditor?.id===group.id&&groupEditor.lamp?.epoch===groupEditor.epoch&&groupEditor.lamp?.identity===group.id?groupEditor.lamp:verifiedSelectedLamp()&&selected.id===group.id?lamp:null;
+    const light=connectivity?.get(group.id).lighting,raw=live?.raw?.deviceId===group.id&&live.raw.sync?.role===1?live.raw:null;
+    const effectName=scene>0?availableGroupScenes(sync).find(entry=>entry.id===scene)?.name:raw?live.catalog?.find(entry=>entry.id===raw.mode)?.name:light?.name;
+    const summary=document.createElement('div');summary.className='v2-group-summary';const mode=document.createElement('strong'),effect=document.createElement('span'),brightness=document.createElement('small');
+    mode.textContent=scene===0?'Together':scene>0?'Across the room':'Shared light';effect.textContent=effectName||'Open controls to see the current effect';
+    brightness.textContent=raw&&Number.isInteger(raw.brightness)&&raw.brightness>=1&&raw.brightness<=255?'Group brightness · '+Math.round(raw.brightness*100/255)+'%':'Group power, brightness & effects';summary.append(mode,effect,brightness);card.append(summary);
+    const controls=document.createElement('button');controls.type='button';controls.className='primary v2-group-controls';controls.dataset.groupAction='controls';controls.textContent='Control '+name;controls.disabled=!ready||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;controls.onclick=()=>openGroupEditor(group.id);card.append(controls);
+    const sound=document.createElement('small');sound.className='v2-sound-label';sound.textContent=ready?group.leader.audio?.installed?'Sound listens at '+(group.leader.name||'the main lamp'):'Choose light effects · The main lamp has no microphone':'Sound source will be checked on reconnect';card.append(sound);
+    const members=document.createElement('details');members.className='v2-group-members';members.open=expanded.has(group.id);const memberSummary=document.createElement('summary');memberSummary.textContent='Lamps in this group · '+total;members.append(memberSummary);
+    const main=document.createElement('div');main.className='v2-group-main-lamp';const mainName=document.createElement('strong'),mainHint=document.createElement('small');mainName.textContent=group.leader.name||'Main lamp';mainHint.textContent='Keeps this group in time';main.append(mainName,mainHint);members.append(main);
+    const list=document.createElement('div');list.className='group-lamp-list v2-group-member-list';for(const row of group.followers)list.append(groupLampRow(row,{follower:true}));
+    if(!group.followers.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Add another lamp below to bring this group to life.';list.append(empty);}members.append(list);
+    const capacity=document.createElement('p');capacity.className='hint v2-group-capacity';capacity.textContent=ready?group.remaining+' '+(group.remaining===1?'place':'places')+' available · '+(group.capacity+1)+' lamps supported by this group':'Capacity will be checked when the main lamp returns';members.append(capacity);
+    if(group.removalPending){const pending=document.createElement('p');pending.className='inline-notice v2-group-removal-pending';pending.textContent=group.removalNeedsReconfirmation?'This group changed since removal began. Review its current lamps before continuing.':group.pendingRemovalIds.length?group.pendingRemovalIds.length+' '+(group.pendingRemovalIds.length===1?'lamp still needs':'lamps still need')+' confirmed departure.'+(group.dissolutionPending?' The main lamp is kept until every departure is confirmed.':' Remaining group members stay together.'):'The group removal still needs its final confirmation.';members.append(pending);members.open=true;}
+    const reconfirmRemoval=group.dissolutionPending&&group.removalNeedsReconfirmation&&ready&&/^[0-9a-f]{32}$/.test(sync?.incarnation||'');
+    const remove=document.createElement('button');remove.type='button';remove.className='text-button compact v2-group-remove';remove.dataset.groupAction='remove';const fullRemoval=sync?.dissolutionV1===true;remove.textContent=reconfirmRemoval?'Review current group removal':group.removalPending?'Confirm pending removals':fullRemoval?'Remove group':'Stop sharing from the main lamp';
+    const removalReady=group.removalPending?store.items.some(item=>item.id===group.id):ready;
+    remove.disabled=!removalReady||locked||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;
+    remove.onclick=()=>{const currentNames=rows.map(row=>row.name||row.id).join(', ');const message=reconfirmRemoval?'This group changed. Remove '+name+' and its current lamps ('+currentNames+')? Previously unconfirmed lamps will stay pending.':group.removalPending?'Check the saved removals for '+name+'? Unconfirmed lamps will remain pending.':fullRemoval?'Remove '+name+'? Each lamp will return to its own light. Every lamp stays in your home. Unreachable departures will remain pending.':'Stop sharing '+name+'? Followers keep their saved membership. Move or release them separately.';if(!confirm(message))return;roomGroupAction(group.id,async()=>{const result=reconfirmRemoval?await roomGroups.dissolve(group.id,{reconfirm:true,expectedIncarnation:sync.incarnation}):group.removalPending?await roomGroups.reconcileRemovals(group.id):fullRemoval?await roomGroups.dissolve(group.id):await roomGroups.stopCoordinating(group.id);if(result.phase==='dissolution-pending'||result.phase==='removal-pending')return {...result,message:result.pending.length?result.pending.length+' lamps still need confirmed removal.':'The final group removal is still awaiting confirmation.'};if(result.coordinatorStopped||result.phase==='dissolved'){if(groupEditor?.id===group.id)await closeGroupEditor();return {...result,message:name+' removed. Its lamps are ready individually.'};}if(result.phase==='removal-reconciled')return {...result,message:'The saved departures are confirmed. Remaining group members stay together.'};return {...result,message:'The main lamp is independent. Former followers keep their saved membership.'};});};members.append(remove);card.append(members);$('groupsList').append(card);
   }
   for(const row of groupsSnapshot.ungrouped)$('ungroupedLamps').append(groupLampRow(row));
-  const legacy=store.items.filter(entry=>entry.deviceId&&!/^[0-9a-f]{12}$/.test(entry.id)).map(entry=>({...entry,verified:false,available:false,role:null,
-    state:'needs-identity',message:'Connect once by Bluetooth to verify this lamp’s identity before managing its groups.'}));
-  const unavailable=[...groupsSnapshot.unavailable,...legacy];
-  for(const row of unavailable)$('groupsUnavailableList').append(groupLampRow(row));
-  $('ungroupedEmpty').hidden=groupsSnapshot.ungrouped.length>0;
-  $('groupsUnavailable').hidden=unavailable.length===0;$('groupsUnavailableCount').textContent=unavailable.length;
-  $('refreshAllGroups').disabled=Boolean(roomGroupsRun)||groupsSnapshot.scanning;$('refreshAllGroups').textContent=roomGroupsRun||groupsSnapshot.scanning?'Refreshing…':'Refresh';
-  $('groupsInventoryStatus').textContent=groupsSnapshot.scanning?'Checking lamps in the background. You can keep using the app.':
-    groupsSnapshot.groups.length?groupsSnapshot.groups.length+' '+(groupsSnapshot.groups.length===1?'group':'groups')+' · '+groupsSnapshot.ungrouped.length+' independent lamps.':'Create a group from an independent lamp below. Pair nearby lamps or find lamps on Wi-Fi to add them here.';
-  if(focusedId){const row=$('page-groups').querySelector('[data-group-lamp-id="'+focusedId+'"]');
-    const control=focusedTag==='SELECT'?row?.querySelector('select'):[...row?.querySelectorAll('button')||[]].find(button=>button.textContent===focusedText);
-    if(control&&!control.disabled)control.focus({preventScroll:true});}
+  const legacy=store.items.filter(entry=>entry.deviceId&&!/^[0-9a-f]{12}$/.test(entry.id)).map(entry=>({...entry,verified:false,available:false,role:null,state:'needs-identity',message:'Connect nearby once to verify this lamp before arranging groups.'}));
+  const unavailable=[...groupsSnapshot.unavailable,...legacy];for(const row of unavailable)$('groupsUnavailableList').append(groupLampRow(row));
+  $('ungroupedEmpty').hidden=groupsSnapshot.ungrouped.length>0;$('groupsUnavailable').hidden=!unavailable.length;$('groupsUnavailableCount').textContent=unavailable.length;
+  $('refreshAllGroups').disabled=Boolean(roomGroupsRun)||groupsSnapshot.scanning;$('refreshAllGroups').textContent=roomGroupsRun||groupsSnapshot.scanning?'Finding your groups…':'Refresh groups';
+  $('groupsInventoryStatus').textContent=groupsSnapshot.scanning?'Checking your lamps. You can keep using the app.':groupsSnapshot.groups.length?groupsSnapshot.groups.length+' '+(groupsSnapshot.groups.length===1?'group':'groups')+' · '+groupsSnapshot.ungrouped.length+' independent lamps':'Your lamps can work individually. Start a group from a lamp below whenever you want shared light.';
+  if(focusedId){const row=$('page-groups').querySelector('[data-group-lamp-id="'+focusedId+'"]');const control=focusedTag==='SELECT'?row?.querySelector('select'):focusedAction?row?.querySelector('[data-group-action="'+focusedAction+'"]'):[...row?.querySelectorAll('button')||[]].find(button=>button.textContent===focusedText);if(control&&!control.disabled){const details=control.closest('details');if(details)details.open=true;control.focus({preventScroll:true});}}
+  else if(focusedGroup){const card=$('groupsList').querySelector('[data-group-id="'+focusedGroup+'"]');const control=focusedConnection?card?.querySelector('[data-connection="'+focusedConnection+'"]'):focusedAction?card?.querySelector('[data-group-action="'+focusedAction+'"]'):null;if(control&&!control.disabled){const details=control.closest('details');if(details)details.open=true;control.focus({preventScroll:true});}}
+  if(pendingGroupFocus){const target=$('groupsList').querySelector('[data-group-lamp-id="'+pendingGroupFocus.id+'"]');const details=target?.closest('details');if(details)details.open=true;}
   focusPendingCardGroup();
 }
 async function closeGroupEditor() {
@@ -1931,7 +2049,7 @@ function invalidateGroupTasks() {
 function groupJoinReason() {
   const target=getGroupTarget();
   if(!target)return lamp===bleLamp&&state?'Update this lamp to firmware 1.10.0 for offline groups, or connect over Wi-Fi.':'Connect to this lamp to join a coordinator.';
-  if(![1,2].includes(target.sync?.version))return 'Update this lamp’s firmware to use lamp groups.';
+  if(![1,2,3].includes(target.sync?.version))return 'Update this lamp’s firmware to use lamp groups.';
   if(target.sync.role!==0)return 'Leave this lamp’s current group before joining a different coordinator.';
   if(groupJoinForCurrent())return 'Joining this lamp. You can keep using other pages and lamps.';
   if(cardPowerTasks.has(target.id))return 'Wait for this lamp’s power request to finish before joining a group.';
@@ -2053,7 +2171,7 @@ function renderGroupScenes() {
   const lamp=groupEditor?.lamp,state=lamp?.state||lamp?.raw,busy=Boolean(groupEditor?.busy);
   const updatingLamp=()=>Boolean(state?.firmware&&[1,3,4].includes(state.firmware.phase));
   const sync=state?.sync;
-  const ready=sync?.version===2 && sync.role>0,controller=ready&&sync.role===1;
+  const ready=[2,3].includes(sync?.version) && sync.role>0,controller=ready&&sync.role===1;
   $('groupScenePane').hidden=!ready;
   $('groupOrderPane').hidden=!controller;
   if(!ready)return;
@@ -2259,6 +2377,33 @@ function filterScenes() {
   $('sceneSearchEmpty').hidden=count>0;
 }
 $('sceneSearch').oninput=filterScenes;
+appV2=mountAppV2({
+ model:()=>({lamps:mergedLampEntries(),statuses:Object.fromEntries(mergedLampEntries().map(entry=>[entry.id,connectivity?.get(entry.id)])),groups:groupsSnapshot.groups,available:groupsSnapshot.lamps,selected,connecting,connected:verifiedSelectedLamp(),state}),
+ message:status,navigate:(name,section)=>{if(section)settingsView=section;page(name);},
+ pair:()=>connect(null,{navigate:false}),discover:()=>discover(true),refreshGroups:refreshRoomGroups,
+ findNewLamps:refreshNewMeshLamps,openGroup:openGroupEditor,
+ power:async(id)=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer available.');return changeCardPower(entry);},
+ select:async(id,section)=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');return openCardSettings(entry,{section});},
+ setupDetails:async({id,name,style,room})=>{
+  if(!verifiedSelectedLamp()||selected.id!==id||busy||updatingLamp())throw Error('Reconnect to the lamp you are setting up.');
+  if(new TextEncoder().encode(name).length>48)throw Error('Use a shorter lamp name.');
+  const target=lamp,epoch=target.epoch;const guard=()=>{if(lamp!==target||target.epoch!==epoch||selected?.id!==id||!verifiedSelectedLamp())throw Error('The setup lamp changed. Reconnect before saving.');};busy=true;
+  try{if(advancedAvailable()&&target.raw.apiVersion)await target.enqueue(async()=>{guard();await target.request('/api/name',{name},epoch,guard);guard();});
+   if(styleDefinition(style)&&target.raw?.lampStyle)await target.enqueue(async()=>{guard();await target.configureLampStyle(style);guard();});
+   else if(styleDefinition(style))store.setLampStyle(id,style,{source:'phone'});
+   guard();selected=store.upsert({...selected,name,room});$('lampName').value=name;$('room').value=room||'';$('lampTitle').textContent=name;renderLamps();
+  }finally{busy=false;renderSettings();}
+ },
+ setAutomatic:async(value,id)=>{if(!verifiedSelectedLamp()||selected.id!==id||busy||updatingLamp())throw Error('Reconnect to your setup lamp to save this preference.');const target=lamp,epoch=target.epoch,guard=()=>{if(target!==lamp||target.epoch!==epoch||selected?.id!==id||!verifiedSelectedLamp())throw Error('The setup connection changed. Check the update preference on this lamp.');};busy=true;try{await target.command('autoUpdate',Number(value),null,guard);guard();}finally{busy=false;renderFirmware();}},
+ createGroup:async(ids)=>{await refreshRoomGroups();const plan=groupCreationPlan(ids.map(id=>groupsSnapshot.lamps.find(row=>row.id===id))),leader=plan.leader;
+  await roomGroups.create(leader.id,{protocol:plan.protocol});for(const follower of plan.followers){try{await roomGroups.join(follower.id,leader.id);}catch(error){throw Object.assign(Error('The main lamp is ready, but '+follower.name+' has not confirmed joining. Open the group to finish setup.'),{uncertain:error.uncertain});}}
+  await refreshRoomGroups();return {id:leader.id};
+ }
+});
+$('page-lamps').append($('v2CarePanel'));
+$('addLamp').querySelector('summary').textContent='Advanced connection & recovery';
+page('home');
+setInterval(()=>{if(!document.hidden&&!busy&&!connecting&&!updatingLamp())void loadApp2EffectSchema().catch(()=>{});},3000);
 renderPower();renderSettings();renderFirmware();
 meshOnboarding=new MeshOnboarding({getBridges:()=>mergedLampEntries().filter(entry=>/^[a-f0-9]{12}$/.test(entry.id)&&(entry.deviceId||entry.meshEnrolled)&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.13.0')>=0),
  acquireBridge:acquireOnboardingBridge,onCandidates:rows=>{newMeshCandidates=rows;renderNewMeshLamps();},onStatus:meshSetupStatus});

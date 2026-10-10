@@ -11,7 +11,7 @@ const publicFields=(value,keys)=>value&&typeof value==='object'?Object.fromEntri
 export function coordinatorLightingContext(editor) {
   const lamp=editor?.lamp,raw=lamp?.raw,state=lamp?.state || raw,id=editor?.id;
   if(!/^[0-9a-f]{12}$/.test(id||'')||!lamp||lamp.identity!==id||lamp.epoch!==editor.epoch||raw?.deviceId!==id||
-    ![1,2].includes(raw.sync?.version)||raw.sync.role!==1||raw.sync.leader!==id)return null;
+    ![1,2,3].includes(raw.sync?.version)||raw.sync.role!==1||raw.sync.leader!==id)return null;
   const catalog=lamp.catalog;
   if(!Array.isArray(catalog)||!catalog.length||!catalog.every(entry=>integer(entry?.id,1,255)&&typeof entry.name==='string')||
     !catalog.some(entry=>entry.id===raw.mode)||!integer(raw.brightness,1,255)||typeof raw.power!=='boolean')return null;

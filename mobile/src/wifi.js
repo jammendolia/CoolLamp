@@ -1,6 +1,6 @@
 import { legacyCatalog, validateCatalog } from './catalog.js';
 import { lampAddress } from './lamps.js';
-import { parseGroupCode } from './sync.js';
+import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
 import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
@@ -83,7 +83,7 @@ export class WifiTransport {
     return this.enqueue(async()=>{const message=await this.request('/api/factory-reset',{confirm:'RESET'});clearTimeout(this.timer);return message;});
   }
   async configureGroupScene(patch) {
-    if(this.raw?.sync?.version!==2||this.raw.sync.role!==1)throw Error('Connect to the coordinator running firmware 1.8.0 or newer.');
+    if(![2,3].includes(this.raw?.sync?.version)||this.raw.sync.role!==1)throw Error('Connect to the coordinator running firmware 1.8.0 or newer.');
     const v=groupSceneSettings(this.raw.sync,patch);
     if(!availableGroupScenes(this.raw.sync).some(scene=>scene.id===v.scene))throw Error('Update every lamp to firmware '+(v.scene>26?'1.9.6':v.scene>18?'1.9.5':'1.8.1')+' or newer to use this group scene.');
     const message=await this.request('/api/sync/scene',{scene:v.scene,speed:v.speed,intensity:v.intensity,
@@ -92,20 +92,22 @@ export class WifiTransport {
   }
   async configureGroupOrder(ids) {
     const order=this.raw?.sync?.order;
-    if(this.raw?.sync?.version!==2||this.raw.sync.role!==1||!Array.isArray(order))throw Error('Connect to the coordinator to arrange lamps.');
-    if(!Array.isArray(ids)||ids.length<1||ids.length>9||new Set(ids).size!==ids.length||
+    if(![2,3].includes(this.raw?.sync?.version)||this.raw.sync.role!==1||!Array.isArray(order))throw Error('Connect to the coordinator to arrange lamps.');
+    if(!groupMemberLimit(this.raw.sync)||!Array.isArray(ids)||ids.length<1||ids.length>groupMemberLimit(this.raw.sync)||new Set(ids).size!==ids.length||
        !ids.includes(this.identity)||ids.some(id=>!order.some(x=>x.id===id))||
        order.some(x=>x.online&&!ids.includes(x.id)))throw Error('Keep every connected lamp in the order.');
     const message=await this.request('/api/sync/order',{order:ids.join(',')});
     await this.refresh();return message;
   }
-  async configureSync(role,code='') {
-    if(![1,2].includes(this.raw?.sync?.version))throw new Error('Update lamp firmware to use Wi-Fi groups.');
+  async configureSync(role,code='',expectedIncarnation='') {
+    if(![1,2,3].includes(this.raw?.sync?.version))throw new Error('Update lamp firmware to use Wi-Fi groups.');
     if(![0,1,2].includes(role))throw new Error('Choose a valid group role.');
     const fields=role?parseGroupCode(code):{};
+    if(fields.protocol===3&&!supportsGroupProtocol(this.raw.sync,3))throw Error('Update this lamp to support expanded groups.');
     if(role===1&&fields.leader!==this.identity)throw new Error('Create the group on its coordinator.');
     if(role===2&&fields.leader===this.identity)throw new Error('A lamp cannot follow itself.');
-    const message=await this.request('/api/sync',{role,...fields});
+    if(typeof expectedIncarnation!=='string'||expectedIncarnation!==''&&!/^[0-9a-f]{32}$/.test(expectedIncarnation))throw Error('Choose a valid group identity fence.');
+    const message=await this.request('/api/sync',{role,...fields,...(expectedIncarnation?{expectedIncarnation}:{})});
     await this.refresh();return message;
   }
   joinCoordinator(code, expected) {
@@ -118,7 +120,7 @@ export class WifiTransport {
     return this.enqueue(async()=>{
       guard();
       await this.refresh(expected.id);guard();
-      if(![1,2].includes(this.raw?.sync?.version))throw Error('Update this lamp’s firmware to join a group.');
+      if(![1,2,3].includes(this.raw?.sync?.version))throw Error('Update this lamp’s firmware to join a group.');
       if(this.raw.sync.version!==expected.wireVersion)throw Error('This lamp’s group protocol changed. Refresh coordinators before joining.');
       if(this.raw.sync.role!==0)throw Error('Leave this lamp’s current group before joining another.');
       if(this.raw.calibration?.active||[1,3,4].includes(this.raw.firmware?.phase))
@@ -142,7 +144,7 @@ export class WifiTransport {
     });
   }
   async syncAction(action) {
-    if(!['pause','resume'].includes(action)||![1,2].includes(this.raw?.sync?.version))throw new Error('Group control is unavailable.');
+    if(!['pause','resume'].includes(action)||![1,2,3].includes(this.raw?.sync?.version))throw new Error('Group control is unavailable.');
     const message=await this.request('/api/sync',{action});await this.refresh();return message;
   }
   async syncInvite() {

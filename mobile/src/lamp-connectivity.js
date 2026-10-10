@@ -16,7 +16,8 @@ export function wifiObservation(raw) {
 }
 export function groupObservation(raw) {
   const group=raw?.sync,id=raw?.deviceId,canonical=/^[0-9a-f]{12}$/;
-  if(![1,2].includes(group?.version)||![0,1,2].includes(group.role))return null;
+  if(![1,2,3].includes(group?.version)||![0,1,2].includes(group.role))return null;
+  if(group.version===3&&(!Number.isInteger(group.maxMembers)||group.maxMembers<1||group.maxMembers>32))return null;
   if(group.role===0)return {role:0,leader:null};
   if(!canonical.test(id)||!canonical.test(group.leader)||group.role===1&&group.leader!==id||group.role===2&&group.leader===id)return null;
   const value={role:group.role,leader:group.leader};
@@ -89,7 +90,7 @@ export class LampConnectivity {
   observeGroup(id,{deviceId,group,checkedAt=this.now()}={}) {
     const entry=this.entry(id),now=this.now();
     if(!entry||deviceId!==id||!Number.isFinite(checkedAt)||checkedAt<0||checkedAt>now+1000)return false;
-    const value=groupObservation({deviceId:id,sync:{...group,version:2}});
+    const value=groupObservation({deviceId:id,sync:{...group,version:group?.version??2}});
     if(!value)return false;
     const previous=this.groups.get(id),location=locator(entry);
     if(previous?.location===location&&checkedAt<previous.checkedAt)return false;

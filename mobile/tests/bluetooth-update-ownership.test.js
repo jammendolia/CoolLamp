@@ -3,17 +3,17 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {LampTransport} from '../src/transport.js';
 import {parsePhoneManifest,OTA_STATUS,OTA_WRITE} from '../src/bluetooth-firmware.js';
-function setup(){
+function setup(lease=false){
  const image=new Uint8Array(2048),sha=createHash('sha256').update(image).digest('hex'),manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.13.0\nesp32c3\ndual-ota-2031616\n2048\n'+sha+'\n');
  let dataFrames=0,release,held;
  const paused=new Promise(resolve=>held=resolve),state={phase:0,error:0,session:0,size:0,offset:0,ack:0},writes=[],disconnects=[];
  const ble={getMtu:async()=>247,disconnect:async id=>disconnects.push(id),read:async(id,service,char)=>{
   if(char.startsWith('7b610006'))return new DataView(new TextEncoder().encode('aabbccddeeff').buffer);
-  assert.equal(char,OTA_STATUS);const data=new DataView(new ArrayBuffer(20));data.setUint8(0,1);data.setUint8(1,state.phase);data.setUint8(2,state.error);data.setUint8(3,state.phase===4?1:0);
+  assert.equal(char,OTA_STATUS);const data=new DataView(new ArrayBuffer(20));data.setUint8(0,1);data.setUint8(1,state.phase);data.setUint8(2,state.error);data.setUint8(3,(state.phase===4?1:0)|(lease?4:0)|(state.detached?8:0));
   for(const [offset,key]of[[4,'session'],[8,'size'],[12,'offset']])data.setUint32(offset,state[key],true);data.setUint16(16,state.ack,true);data.setUint16(18,232,true);return data;
  },write:async(id,service,char,data)=>{
   assert.equal(char,OTA_WRITE);const op=data.getUint8(1);writes.push(op);state.session=data.getUint32(2,true);state.ack=data.getUint16(6,true);
-  if(op===2){state.phase=2;state.size=image.length;}if(op===3){assert.equal(data.getUint32(8,true),state.offset);state.offset+=data.byteLength-12;if(++dataFrames===5){held();await new Promise(resolve=>release=resolve);}}
+  if(op===2||op===6){state.phase=2;state.size=image.length;}if(op===7){assert.equal(data.byteLength,50);assert.equal(data.getUint32(8,true),image.length);state.detached=false;}if(op===3){assert.equal(data.getUint32(8,true),state.offset);state.offset+=data.byteLength-12;if(++dataFrames===5){held();await new Promise(resolve=>release=resolve);}}
   if(op===4)state.phase=4;if(op===5){state.phase=5;state.error=8;}
  }};
  const lamp=new LampTransport(ble);lamp.id='target';lamp.deviceIdentity='aabbccddeeff';lamp.control={capabilities:['control']};
@@ -38,4 +38,12 @@ test('app-hidden AbortSignal keeps its first stop cause and bounded receiver-con
 test('a user Cancel keeps that reason if the native disconnect callback follows it',async t=>{
  const f=setup(),abort=new AbortController();t.after(()=>clearTimeout(f.lamp.controlTimer));const work=f.lamp.updateOverBluetooth(f.packageValue,()=>{},{signal:abort.signal});await f.paused;abort.abort('user');await f.lamp.bluetoothUpdate.cancel('user');f.lamp.disconnected('target');f.release();
  await assert.rejects(work,error=>error.updateDiagnostic?.stopReason==='user');assert(!f.writes.includes(4));
+});
+test('owned transport forwards opt-in resume and binds retained lease to freshly verified lamp identity',async t=>{
+ const f=setup(true);t.after(()=>clearTimeout(f.lamp.controlTimer));let lease;
+ const first=f.lamp.updateOverBluetooth(f.packageValue,()=>{},{enableResume:true,onLease:value=>{lease=value;}});await f.paused;
+ f.lamp.disconnected('target');f.state.detached=true;f.release();await assert.rejects(first,error=>error.firmwareResumeLease?.identity==='aabbccddeeff');assert(lease);assert(f.writes.includes(6));
+ f.lamp.id='target';f.lamp.deviceIdentity='aabbccddeeff';f.lamp.control={capabilities:['control']};
+ const before=f.writes.length;await assert.rejects(f.lamp.updateOverBluetooth(f.packageValue,()=>{},{resumeLease:{...lease,identity:'001122334455'}}),/different verified lamp/);assert.equal(f.writes.length,before);
+ const result=await f.lamp.updateOverBluetooth(f.packageValue,()=>{},{resumeLease:lease});assert(result.committed);assert.equal(f.writes[before],7);assert(!f.writes.slice(before).some(op=>op===1||op===2||op===6));assert.equal(f.writes.filter(op=>op===4).length,1);
 });
