@@ -27,6 +27,7 @@ input:not([type=range]):not([type=checkbox]):not([type=color]),select,textarea{b
 /* Power and Settings share one stretched row, including wrapped status text. */
 .v2-lamp-entry .v2-card-actions{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:stretch;gap:9px;--lamp-action-icon-size:20px}
 .v2-lamp-entry .v2-card-actions>.lamp-power{flex:1 1 auto;width:auto;min-width:0;max-width:none;height:auto;min-height:52px}
+.v2-lamp-entry .v2-card-actions>.lamp-power small{color:currentColor}
 .v2-lamp-entry .v2-card-actions>.lamp-settings{display:grid;place-items:center;align-self:stretch;flex:0 0 52px;width:52px;min-width:52px;height:auto;min-height:52px;padding:10px;border-radius:14px}
 .v2-lamp-entry .v2-card-actions>.lamp-power svg,.v2-lamp-entry .v2-card-actions>.lamp-settings svg{width:var(--lamp-action-icon-size);height:var(--lamp-action-icon-size);flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .v2-lamp-entry .v2-connection-actions{align-items:center;gap:8px;padding:14px 0 0}
