@@ -1,7 +1,8 @@
 # Firmware updates across paired lamps
 
-The 1.12.0 candidate adds an ESP-NOW firmware relay alongside Wi-Fi OTA and
-phone-to-lamp Bluetooth updates. It is not yet published or physically validated.
+The ESP-NOW firmware relay introduced in the 1.12.0 draft is included in public
+firmware 1.13.0 alongside Wi-Fi OTA and phone-to-lamp Bluetooth updates. Physical
+relay acceptance remains pending; the separate 1.12.0 draft is preserved.
 
 The app checks the public release manifest asynchronously when Lamps opens.
 An up-arrow appears only for a known installed version older than that release.

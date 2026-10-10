@@ -1,8 +1,8 @@
 # Lamp control and newcomer setup through ESP-NOW
 
-The 1.13.0 candidate adds control forwarding and new-lamp enrollment to the
-existing owner-fleet firmware relay. This candidate is unpublished and has not
-yet been installed or physically validated. Wi-Fi control, Bluetooth control,
+Firmware 1.13.0 adds control forwarding and new-lamp enrollment to the
+existing owner-fleet firmware relay. It is published as public Latest for OTA.
+Installation and physical mesh acceptance are not yet verified. Wi-Fi control, Bluetooth control,
 Wi-Fi OTA and Bluetooth firmware transfer remain available.
 
 ## Controlling an owned lamp
@@ -97,7 +97,7 @@ The Windows public build and firmware CI **37971580203** passed on source
 mesh, 21 enrollment and 11 real adapter scenarios. Mobile has 411 passing tests,
 seven mesh/setup UI scenarios, thirteen card-power regressions and six startup
 checks. App **1.0 (41.1)** was uploaded through macOS CI **37971361480**.
-The verified 1.13.0 CI image and manifest remain an unpublished draft; see the
+The verified 1.13.0 CI image and manifest are published for OTA; see the
 current [development handoff](development-handoff.md) for exact hashes and
 private evidence paths. Neither test lamps nor a newcomer were flashed here.
 
@@ -111,7 +111,7 @@ startup selection, cancellation and missing acknowledgment. They do not prove
 RF range, heap/stack margins under real coexistence, enclosure performance or
 phone-to-hardware behavior.
 
-Before public OTA publication, install the verified candidate on the chosen test
+For physical acceptance, install the verified release on the chosen test
 lamps using an existing update path and retain settings snapshots. Confirm
 direct Wi-Fi and Bluetooth regression behavior, a genuinely three-lamp control
 path with no direct origin-to-target reach, an offline target, group continuity,

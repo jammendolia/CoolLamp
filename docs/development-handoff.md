@@ -1,6 +1,39 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Firmware 1.13.0 published for OTA — 2026-10-09
+
+The user explicitly requested publication. **Firmware 1.13.0 is public Latest**,
+published at `2026-10-10T00:17:05Z` (**October 9, 7:17:05 PM CDT**), tag
+`firmware-v1.13.0`, source `238c9dd616eb2cce0b13167551374298cbfd7a11`,
+successful firmware CI **37971580203**.
+Release: https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.13.0.
+This supersedes the unpublished status in the historical candidate checkpoint
+below. The separate 1.12.0 draft remains preserved.
+
+Anonymous downloads of the Latest manifest, pinned manifest and firmware all
+returned HTTP 200. Both manifests matched exactly; manifest regeneration and
+published GitHub asset digests matched the verified CI image: **1,920,432 bytes**,
+SHA-256 `eede1a3970737173fd78e231451b30a5419c33ff50956f42bebc293a82b1cd58`.
+Manifest SHA-256:
+`2e820317c1de6c2e5744d7b4e28210dc78e460b47e977c95ce1ab130a8941bcb`.
+C3/public markers, OTA partition limit and local-credential exclusion passed.
+Evidence: `.build/firmware-1.13.0-publication-check.json`,
+`.build/firmware-1.13.0-published-metadata.json`,
+`.build/firmware-1.13.0-public-verification.json`, and
+`.build/firmware-1.13.0-public-assets/`.
+
+Publication used only personal **jammendolia**, with identity and the personal
+remote verified. HiFin was not used. Existing GPIO assignments, saved settings,
+automatic-update preferences and the original working tree were preserved.
+No direct hardware command, flash or forced reboot was issued. Lamps with
+Automatic Updates enabled can now install through their available update path;
+publication does not establish installation on any lamp. Physical mesh and
+newcomer setup acceptance remains pending. App **1.0 (41.1)** is already uploaded
+to TestFlight; no additional app build was needed for this publication.
+
 ## ESP-NOW control mesh and new-lamp setup candidate — 2026-10-09
+
+Historical checkpoint before the publication recorded above.
 
 The current source candidate is **1.13.0**, unpublished and not installed on a
 test lamp. The separate 1.12.0 firmware-relay draft is preserved. Public Latest
