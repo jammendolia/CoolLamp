@@ -25,8 +25,13 @@ cannot overwrite it. Validation: **425 mobile tests**, Vite production build,
 three new production UI failure scenarios and ten existing update UI scenarios
 passed. Full-size 1,920,432-byte modeled transfers at MTU 23 and 185 pass,
 including all three sequence-number rollovers at minimum MTU. These tests do not
-prove physical Bluetooth reliability. App publication evidence is recorded after
-the existing macOS CI upload completes.
+prove physical Bluetooth reliability. App **1.0 (42.1)** was accepted by Apple
+at `2026-10-10T01:20:48.3612820Z` (October 9, 8:20:48 PM CDT), successful
+macOS CI **38012482232**, source `315af35ba9ce3d5e83c7145af34585f47c5182e4`.
+Tester availability remains unverified. Evidence:
+`.build/update-feedback-app42.1-record.json` and
+`.build/update-feedback-ios-ci.log`. Only personal `jammendolia` was used.
+No firmware source or published OTA asset was changed for this app update.
 
 The user was asked to restart CoolLamp 2, wait 35 seconds, reconnect by Bluetooth
 and report ready before another attempt. That coordinated test is pending.
