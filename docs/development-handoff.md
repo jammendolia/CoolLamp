@@ -1,5 +1,60 @@
 # CoolLamp development handoff — 2026-10-06
 
+## CoolLamp 2 Bluetooth upgrade verified — 2026-10-09
+
+The user completed an explicit phone-to-lamp Bluetooth update using installed
+app **1.0 (42.1)**, kept foregrounded and unlocked. The lamp received the full
+image, reported **100% / restarting / no error**, then booted
+**COOLLAMP-PUBLIC-1.13.0**. A read-only identity check verified CoolLamp 2
+(`f0b950b2f180`, `192.168.1.222`) on the new image at uptime **39,442 ms**,
+past the 35-second healthy-boot check. The user separately confirmed success.
+Observed receiving-to-restart time was about **16 minutes**; slow Bluetooth
+throughput remains a usability limitation. This one successful physical transfer
+does not establish the cause of previous Wi-Fi or Bluetooth failures, or prove
+the post-upgrade HTTPS update path.
+
+After boot: Wi-Fi connected, Automatic Updates still enabled, name CoolLamp 2,
+134 LEDs, midpoint 0, startup effect 46 / brightness 55, coordinator role 1,
+group scene 19, and microphone enabled. No agent settings mutation, forced
+reboot, USB flash or direct LAN upload occurred; the prepared direct installer
+was not needed. A full pre-transfer settings snapshot was not captured, so
+the evidence confirms these known settings and the resulting configuration,
+not a complete before/after equality claim. GPIO assignments were unchanged.
+Free heap was about 16 KiB, largest block about 8 KiB, minimum since boot
+3,268 bytes; die temperature was 74.7 C, new-boot peak 77.7 C. No receiver error
+was observed during the transfer. Stored HTTPS diagnostics on the old boot
+were unchanged during Bluetooth reception and were not current Bluetooth errors.
+
+Evidence: `.build/lamp2-controlled-update-1791596126906004300.jsonl`,
+`.build/lamp2-controlled-update-1791596791048289100.jsonl` and
+`.build/lamp2-bluetooth-1.13.0-installed.json`. No other lamp installation or
+physical mesh acceptance was established by this test.
+
+## Direct Bluetooth connection from Updates — 2026-10-09
+
+App **1.0 (43.1)** adds **Connect over Bluetooth** directly to the selected lamp's
+Updates page, outside its disabled transfer fieldset. The action verifies that
+exact lamp and stays on Updates. Active firmware operations block transport
+switching. Connection completion and failure now refresh update controls after
+the connecting flag clears; a background refresh is no longer needed to enable
+them. The default status reflects a verified Bluetooth connection, while retained
+failure messages and transfer progress remain intact.
+
+Validation: **425 mobile tests**, production build, **five new production UI
+scenarios** and **13 existing update/failure UI scenarios** passed. Wrong identity,
+failed connection, stale navigation, cancellation and uncertain final commit
+were covered with mocked radios/downloads. Apple accepted the upload at
+`2026-10-10T01:46:37.2867460Z` (**October 9, 8:46:37 PM CDT**), successful macOS
+CI **38014182883**, source `d4faeadcb0641cdc066a1b81268088335561f108`.
+Tester availability remains unconfirmed. Evidence:
+`.build/bluetooth-connect-app43.1-record.json`,
+`.build/bluetooth-connect-ios-ci.log`,
+`.build/bluetooth-connect-updates-ui-result.json` and
+`.build/update-connection-final-ui-validation.json`.
+Only personal **jammendolia** was used. The original working tree was preserved;
+only the two app files were committed in the isolated release checkout. No
+firmware asset, GPIO assignment or lamp setting was changed for this app update.
+
 ## CoolLamp 2 update failures and retained app feedback — 2026-10-09
 
 The user reports Wi-Fi and explicit phone-to-lamp Bluetooth transfers stopping
@@ -28,19 +83,29 @@ including all three sequence-number rollovers at minimum MTU. These tests do not
 prove physical Bluetooth reliability. App **1.0 (42.1)** was accepted by Apple
 at `2026-10-10T01:20:48.3612820Z` (October 9, 8:20:48 PM CDT), successful
 macOS CI **38012482232**, source `315af35ba9ce3d5e83c7145af34585f47c5182e4`.
-Tester availability remains unverified. Evidence:
+The user confirmed build 42.1 installed. Evidence:
 `.build/update-feedback-app42.1-record.json` and
 `.build/update-feedback-ios-ci.log`. Only personal `jammendolia` was used.
 No firmware source or published OTA asset was changed for this app update.
 
-The user was asked to restart CoolLamp 2, wait 35 seconds, reconnect by Bluetooth
-and report ready before another attempt. That coordinated test is pending.
-A bounded read-only observer and one-shot direct LAN installer of the exact
-published CI image are prepared privately under `.build/`; neither has started
-an update. The direct installer preserves a settings snapshot, journals before
-upload, never replays an uncertain transfer, and verifies a stable new boot and
-saved settings. Confirm readiness before using it because the user may be
-disconnecting power. Current Wi-Fi/Bluetooth transfer root cause is unresolved.
+The next Bluetooth attempt was blocked by a disabled Updates button. Its page
+was connected by Wi-Fi; a read-only `/api/bluetooth` check confirmed no phone
+connected or secure. The user was directed to Lamps, CoolLamp 2's Bluetooth
+icon, then its gear and Updates. Tapping the card body prefers Wi-Fi. A six-minute
+read-only observer captured no active transfer and no reboot; the lamp remains
+on 1.11.0. Evidence: `.build/lamp2-bluetooth-disabled-button.json` and
+`.build/lamp2-controlled-update-1791595645479614000.jsonl`. The requested restart
+was not confirmed; this observation stayed on the existing boot.
+
+A one-shot direct LAN installer of the exact published CI image remains prepared
+privately under `.build/`, not executed. It preserves a settings snapshot,
+checks target identity/version/boot continuity, takes an exclusive invocation
+lock, journals before upload, never replays an uncertain transfer, and verifies
+the installed image on a boot at least 35 seconds old and saved settings. A
+process timeout continues through read-only reconciliation. Live power/effect/
+brightness/group pause are recorded separately from saved settings. Do not run
+concurrently with a phone transfer. Current Wi-Fi/Bluetooth transfer root cause
+is unresolved; no direct update, forced reboot or settings command was sent.
 
 Evidence: `.build/lamp2-update-readonly-*.json`,
 `.build/lamp2-update-observation-*.jsonl`,
