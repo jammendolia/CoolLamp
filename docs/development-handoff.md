@@ -20,8 +20,14 @@ switching still cancels with a clear first-stop reason. Connection-changing card
 actions and late Wi-Fi/mesh selection results can no longer tear down an active
 Bluetooth update. Fresh verified installed versions reconcile pending success
 receipts; cached versions and failed receipts never do. Native iOS ownership
-tests are added to the existing macOS TestFlight workflow. Candidate publication
-and physical screen-lock acceptance are pending.
+tests run in the existing macOS TestFlight workflow. App **1.0 (44.1)** was
+accepted by Apple at `2026-10-10T04:14:44.1927150Z` (**October 9, 11:14:44 PM
+CDT**), successful CI **38023170740**, source
+`6071b17bb098d4b2933804801d796062c6fc193f`. CI repeated all 479 mobile tests,
+passed the production native Swift screen-lease tests and built/exported the
+signed iPhone app. TestFlight tester availability, physical screen-awake/speed
+acceptance and Android compilation remain unverified. No new firmware was
+published for this app-only change; public Latest remains **1.13.0**.
 
 For speed, existing 1.11.0/1.13.0 receivers already provide OTA-status
 notifications. The app-only candidate uses authenticated written-offset
@@ -45,6 +51,11 @@ not physical Bluetooth throughput evidence. Evidence:
 `.build/bluetooth-speed-mobile-tests.log`,
 `.build/bluetooth-speed-mobile-build.log` and
 `.build/bluetooth-update-final-validation.json`.
+Publication evidence: `.build/bluetooth-speed-app44.1-record.json`,
+`.build/bluetooth-speed-ios-ci-metadata.json` and
+`.build/bluetooth-speed-ios-ci.log`. Only personal **jammendolia** was used;
+the original working tree was preserved and the scoped app release was
+committed/pushed through `.build/release-1.9.5`.
 
 A one-shot local LAN upload of the exact published 1.13.0 image was attempted
 to avoid Bluetooth/remote HTTPS. Preflight first aborted without any upload on
