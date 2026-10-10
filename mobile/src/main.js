@@ -228,9 +228,23 @@ function renderOptions() {
 }
 function renderFirmwareFeedback(){
   const feedback=firmwareFeedback.get(selected?.id);
-  $('bluetoothFirmwareStatus').textContent=feedback?.message||'Connect to this lamp over Bluetooth to use phone updates.';
+  $('bluetoothFirmwareStatus').textContent=feedback?.message||(lamp===bleLamp&&verifiedSelectedLamp()?'Ready to update this lamp over Bluetooth.':'Connect to this lamp over Bluetooth to use phone updates.');
   $('bluetoothFirmwareProgress').hidden=!Number.isInteger(feedback?.progress);
   $('bluetoothFirmwareProgress').value=feedback?.progress??0;
+}
+function firmwareConnectionBusy(){return Boolean(bluetoothFirmwareTask||cardFirmwareTasks.size||fleetUpdating||firmware&&[1,3,4].includes(firmware.phase)||[...fleetStatuses.values()].some(value=>['updating','restarting'].includes(value.state)));}
+function renderBluetoothFirmwareControls(){
+  const btCurrent=bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask);
+  const direct=lamp===bleLamp&&verifiedSelectedLamp();
+  const connect=$('connectBluetoothFirmware');connect.disabled=!selected||busy||connecting||firmwareConnectionBusy()||direct;
+  connect.textContent=connecting?'Connecting over Bluetooth…':direct?'Bluetooth connected':'Connect over Bluetooth';
+  connect.setAttribute('aria-label',(direct?'Bluetooth connected to ':connecting?'Connecting to ':'Connect by Bluetooth to ')+(selected?.name||'the selected lamp'));
+  $('bluetoothFirmwareControls').disabled=!state||!direct||busy||!btCurrent&&updatingLamp();
+  const btSupported=validFirmwareVersion(firmware?.version)&&compareFirmwareVersions(firmware.version,'1.11.0')>=0;
+  $('installBluetoothFirmware').disabled=Boolean(bluetoothFirmwareTask)||!btSupported;
+  $('bluetoothFirmwareHint').textContent=!state?'Connect over Bluetooth above to update this lamp through your phone.':!btSupported?'Install firmware 1.11.0 or newer once using Wi-Fi to enable Bluetooth updates.':!direct?'Connect over Bluetooth above. The phone can use cellular data or Wi-Fi to download firmware.':'Your phone downloads the official firmware, verifies it, then sends it to this lamp over Bluetooth. Keep the app open and stay nearby. The lamp can be offline.';
+  $('cancelBluetoothFirmware').hidden=!btCurrent;
+  $('reinstallBluetoothFirmware').disabled=Boolean(bluetoothFirmwareTask);
 }
 function renderFirmware() {
   const updating = updatingLamp();
@@ -244,18 +258,13 @@ function renderFirmware() {
   $('installFirmware').textContent=firmware?.available?'Install '+firmware.latest:'Update now';
   $('firmwareProgress').hidden=!firmware||![3,4].includes(firmware.phase);
   $('firmwareProgress').value=firmware?.progress??0;
-  const btCurrent=bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask);
   renderFirmwareFeedback();
-  $('bluetoothFirmwareControls').disabled=!state||lamp!==bleLamp||!verifiedSelectedLamp()||busy||!btCurrent&&updating;
-  const btSupported=validFirmwareVersion(firmware?.version)&&compareFirmwareVersions(firmware.version,'1.11.0')>=0;
-  $('installBluetoothFirmware').disabled=Boolean(bluetoothFirmwareTask)||!btSupported;
-  $('bluetoothFirmwareHint').textContent=!state?'Connect to a lamp over Bluetooth to update through your phone.':!btSupported?'Install firmware 1.11.0 or newer once using Wi-Fi to enable Bluetooth updates.':lamp!==bleLamp?'Tap this lamp’s Bluetooth icon first. The phone can use cellular data or Wi-Fi to download firmware.':'Your phone downloads the official firmware, verifies it, then sends it to this lamp over Bluetooth. Keep the app open and stay nearby. The lamp can be offline.';
-  $('cancelBluetoothFirmware').hidden=!btCurrent;
-  $('reinstallBluetoothFirmware').disabled=Boolean(bluetoothFirmwareTask);
+  renderBluetoothFirmwareControls();
   renderPlaybackTools();
 }
 function renderSettings() {
   renderFirmwareFeedback();
+  renderBluetoothFirmwareControls();
   for(const panel of document.querySelectorAll('[data-settings-panel]')) {
     const unsupported=panel.id==='hardwareForm'||panel.id==='bluetoothManagement'?!advancedAvailable():
       panel.id==='wifiSetupActions'?!bluetoothWifiAvailable():
@@ -524,7 +533,7 @@ async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,na
     return {connected:false,error:e};
   }
   finally {bleLamp.expectedDeviceIdentity=previousExpected;connecting=false; $('connect').disabled=false;
-    if(verifiedSelectedLamp())observeLampWifi(selected.id,firmware?.wifi,'firmware');renderLamps();renderPower();}
+    if(verifiedSelectedLamp())observeLampWifi(selected.id,firmware?.wifi,'firmware');renderLamps();renderPower();renderFirmware();}
 }
 function connected(kind,{navigate=true}={}) {
   $('addLamp').open=false;
@@ -589,7 +598,7 @@ async function connectWifi(entry,password,{navigate=true,settingsIntent=null}={}
     $('password').value='';connected('Wi-Fi',{navigate:navigate&&navigationSerial===startedNavigation});if(warning)status('Connected. '+warning);
     return {connected:true};
   } catch(e) { if(e.needsPassword&&navigationSerial===(settingsIntent?.navigation??startedNavigation)&&(!settingsIntent||wifiSettingsTarget===settingsIntent))promptWifiPassword(entry);status(e.message);return {connected:false,error:e}; }
-  finally { connecting=false;if(verifiedSelectedLamp())observeLampWifi(selected.id,wifiLamp.raw?.connected??firmware?.wifi,'state');renderLamps();renderPower(); }
+  finally { connecting=false;if(verifiedSelectedLamp())observeLampWifi(selected.id,wifiLamp.raw?.connected??firmware?.wifi,'state');renderLamps();renderPower();renderFirmware(); }
 }
 function promptWifiPassword(entry) {
   const intent=wifiSettingsTarget;
@@ -616,6 +625,11 @@ $('resetColor').onclick = () => change('resetColor', state.mode);
 $('checkFirmware').onclick = () => change('checkFirmware');
 $('installFirmware').onclick = () => {if(verifiedSelectedLamp()&&!busy&&!updatingLamp()&&firmware?.wifi&&firmware?.available){firmwareFeedback.remove(selected.id);cardFirmwareMessages.delete(selected.id);}return change('installFirmware');};
 $('autoUpdate').onchange = () => change('autoUpdate', Number($('autoUpdate').checked));
+$('connectBluetoothFirmware').onclick=async()=>{
+  if(!selected||busy||connecting||firmwareConnectionBusy()||lamp===bleLamp&&verifiedSelectedLamp())return;
+  const entry=mergedLampEntries().find(value=>value.id===selected.id);if(!entry)return;
+  await openCardSettings(entry,{section:'updates',bluetooth:true});
+};
 async function cancelBluetoothFirmware(){
   const task=bluetoothFirmwareTask;if(!task)return;
   if(bleLamp.bluetoothUpdate?.commitAttempted){status('The lamp is verifying its new firmware. Wait for the result, then reconnect.');return;}
@@ -1015,7 +1029,7 @@ async function connectMeshCard(entry,intent){
     const options=transport.raw.effectOptions?.[transport.raw.mode-1];callbacks.onOptions(options?{mode:transport.raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);
     transport.schedule();lease=null;connected('ESP-NOW mesh',{navigate:false});return {connected:true,id:entry.id};
   }catch(error){if(current()&&!error.cancelled)status(error.message);return {connected:false,error};}
-  finally{await lease?.release?.();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();}
+  finally{await lease?.release?.();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();renderFirmware();}
 }
 async function connectCardWifiAsync(entry,intent){
   cancelMeshSelection();const task={id:entry.id,kind:'wifi',abort:new AbortController()},probe=new WifiTransport(CapacitorHttp);meshSelection=task;renderLamps();status('Checking this lamp over Wi-Fi…');
@@ -1036,7 +1050,7 @@ async function connectCardWifiAsync(entry,intent){
     const options=raw.effectOptions?.[raw.mode-1];callbacks.onOptions(options?{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);
     wifiLamp.schedule();connected('Wi-Fi',{navigate:false});return {connected:true,id:selected.id};
   }catch(error){return {connected:false,error};}
-  finally{clearTimeout(timer);task.abort.signal.removeEventListener('abort',abort);await probe.disconnect();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();}
+  finally{clearTimeout(timer);task.abort.signal.removeEventListener('abort',abort);await probe.disconnect();if(meshSelection===task)meshSelection=null;renderLamps();renderPower();renderFirmware();}
 }
 function renderNewMeshLamps(){
   $('newMeshLampList').replaceChildren();const rows=newMeshCandidates.filter(row=>!store.items.some(entry=>entry.id===row.id)&&row.online);
