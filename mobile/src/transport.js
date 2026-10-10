@@ -27,7 +27,7 @@ function publicControlSync(value){
 export class LampTransport {
   constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
     selectDevice = null, onRadioReady = () => {}, onDeviceSelected = () => {}, sharedInitialization = null,
-    expectedDeviceIdentity = null, controlOnly = false } = {}) {
+    expectedDeviceIdentity = null, controlOnly = false, firmwareBulkWrites = false } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
     this.onFirmware = onFirmware;
     this.onOptions = onOptions;
@@ -37,6 +37,7 @@ export class LampTransport {
     this.initialization = sharedInitialization;
     this.expectedDeviceIdentity=expectedDeviceIdentity;
     this.controlOnly=controlOnly;
+    this.firmwareBulkWrites=firmwareBulkWrites===true;
     this.control=null;this.raw=null;this.controlSequence=0;this.controlTail=Promise.resolve();this.actionTail=Promise.resolve();
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
@@ -312,7 +313,7 @@ export class LampTransport {
   async updateOverBluetooth(packageValue,onProgress=()=>{},{signal}={}) {
     if(this.bluetoothUpdate||!this.id||!this.deviceIdentity||!this.supportsOfflineControl)throw Error('Connect to the intended lamp over Bluetooth first.');
     const epoch=this.epoch,id=this.id,identity=this.deviceIdentity;
-    const transfer=new BluetoothFirmwareTransfer({ble:this.ble,deviceId:id,isCurrent:()=>this.epoch===epoch&&this.id===id&&this.deviceIdentity===identity,onProgress});
+    const transfer=new BluetoothFirmwareTransfer({ble:this.ble,deviceId:id,isCurrent:()=>this.epoch===epoch&&this.id===id&&this.deviceIdentity===identity,onProgress,allowBulkWrites:this.firmwareBulkWrites});
     // Close all normal command lanes before taking ownership of the radio.
     clearTimeout(this.controlTimer);this.controlTimer=null;
     await Promise.all([this.actionTail,this.controlTail,this.tail]);

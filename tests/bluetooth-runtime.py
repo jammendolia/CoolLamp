@@ -13,6 +13,7 @@ class BluetoothTests(unittest.TestCase):
         source = (ROOT/'LampBluetooth.cpp').read_text()
         helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
         callbacks = source[source.index('class OtaWrites final'):source.index('OtaWrites otaWriteCallbacks;')]
+        characteristic_setup = source[source.index('  auto* otaWrite='):source.index('  otaStatusCharacteristic=')]
         stub = r'''
 #include <atomic>
 #include <cstdint>
@@ -22,32 +23,56 @@ class BluetoothTests(unittest.TestCase):
 #include "LampBleUpdateWire.h"
 using String=std::string;
 struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
-struct BLECharacteristic {String value;String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
+struct BLECharacteristicCallbacks;
+struct BLECharacteristic {
+ static constexpr unsigned PROPERTY_WRITE=1,PROPERTY_WRITE_NR=2,PROPERTY_WRITE_ENC=4;
+ String value;unsigned properties=0;BLECharacteristicCallbacks* callbacks=nullptr;
+ String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}
+ void setCallbacks(BLECharacteristicCallbacks* value){callbacks=value;}
+};
+struct BLEService {BLECharacteristic ota;BLECharacteristic* createCharacteristic(const char*,unsigned properties){ota.properties=properties;return &ota;}};
+constexpr char OTA_WRITE[]="receiver";
 struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){};virtual void onRead(BLECharacteristic*,ble_gap_conn_desc*){};};
 std::atomic<uint16_t> connection{1};std::atomic<uint32_t> generation{7};
 std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
 struct {unsigned disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
 auto* server=&instance;
 unsigned copied=0;bool room=true;
-bool enqueueLampBleUpdate(const uint8_t* p,size_t size,uint32_t owner){assert(owner==7);if(!room||!LampBleUpdateWire::valid(p,size))return false;++copied;return true;}
+LampBleUpdateWire::Queue queue;
+bool enqueueLampBleUpdate(const uint8_t* p,size_t size,uint32_t owner){
+ assert(owner==7);if(!room||!LampBleUpdateWire::valid(p,size))return false;
+ LampBleUpdateWire::Frame frame;frame.generation=owner;frame.length=size;memcpy(frame.bytes,p,size);
+ if(!queue.push(frame))return false;
+ ++copied;return true;
+}
 '''
         main = r'''
 int main(){
- OtaWrites writes;OtaReads reads;BLECharacteristicCallbacks& write=writes;BLECharacteristicCallbacks& read=reads;
- BLECharacteristic characteristic;ble_gap_conn_desc peer;
+ OtaReads reads;BLECharacteristicCallbacks& read=reads;
+ BLEService service;initializeOtaWrite(&service);
+ assert(service.ota.properties==(BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR|BLECharacteristic::PROPERTY_WRITE_ENC));
+ BLECharacteristic& characteristic=service.ota;BLECharacteristicCallbacks& write=*characteristic.callbacks;ble_gap_conn_desc peer;
  uint8_t frame[8]={1,2,11,0,0,0,1,0};characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==1&&secure);
  peer.sec_state.bonded=false;write.onWrite(&characteristic,&peer);assert(copied==1);peer.sec_state.bonded=true;
  peer.sec_state.encrypted=false;write.onWrite(&characteristic,&peer);assert(copied==1);peer.sec_state.encrypted=true;
  peer.conn_handle=2;write.onWrite(&characteristic,&peer);assert(copied==1);peer.conn_handle=1;
  write.onWrite(&characteristic,nullptr);assert(copied==1);
+ secure=false;knownPeer=false;write.onWrite(&characteristic,&peer);assert(copied==1);knownPeer=true;
+ LampBleUpdateWire::Frame saved;assert(queue.pop(saved)&&saved.generation==7&&saved.length==8&&!memcmp(saved.bytes,frame,8));assert(!queue.pop(saved));
+ // WRITE and WRITE_NR enter the same real callback. Four native command
+ // payloads are copied before the characteristic backing storage is changed.
+ uint8_t data[20]={1,LampBleUpdateWire::Data,11,0,0,0,1,0};
+ for(unsigned i=0;i<LampBleUpdateWire::DataWriteWithoutResponseWindow;++i){data[6]=i+2;data[12]=i+40;characteristic.setValue(data,sizeof(data));write.onWrite(&characteristic,&peer);}
+ characteristic.value.assign(20,'x');assert(copied==5);
+ for(unsigned i=0;i<LampBleUpdateWire::DataWriteWithoutResponseWindow;++i){assert(queue.pop(saved)&&saved.generation==7&&saved.length==20&&saved.bytes[6]==i+2&&saved.bytes[12]==i+40);}assert(!queue.pop(saved));
  characteristic.value="status";read.onRead(&characteristic,&peer);assert(characteristic.value=="status");
  peer.sec_state.bonded=false;read.onRead(&characteristic,&peer);assert(characteristic.value.size()==20&&characteristic.value[2]==LampBleUpdateWire::Denied);peer.sec_state.bonded=true;
- room=false;characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==1&&instance.disconnects==1&&disconnectRequested);
+ room=false;characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==5&&instance.disconnects==1&&disconnectRequested);
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-ota-auth-') as folder:
             cpp, binary = pathlib.Path(folder)/'test.cpp', pathlib.Path(folder)/'test'
-            cpp.write_text(stub+helper+callbacks+main)
+            cpp.write_text(stub+helper+callbacks+'\nOtaWrites otaWriteCallbacks;\nvoid initializeOtaWrite(BLEService* service){\n'+characteristic_setup+'}\n'+main)
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
 

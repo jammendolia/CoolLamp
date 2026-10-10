@@ -6,6 +6,10 @@
 
 namespace LampBleUpdateWire {
 constexpr size_t MaxFrame=244, Header=8, DataHeader=12, MaxData=MaxFrame-DataHeader, ManifestCapacity=192;
+// Status byte 3 keeps its legacy committed bit. Fast data uses at most four
+// copied frames before a written-offset ACK; the receiver queue stays at eight.
+constexpr uint8_t CommittedFlag=0x01, DataWriteWithoutResponseFourFlag=0x02;
+constexpr unsigned DataWriteWithoutResponseWindow=4;
 enum Operation:uint8_t { Manifest=1,Start=2,Data=3,Finish=4,Cancel=5 };
 enum Phase:uint8_t { Idle=0,Preparing=1,Receiving=2,Verifying=3,Restarting=4,Error=5 };
 enum Result:uint8_t { Ok=0,Denied=1,Busy=2,Invalid=3,Offset=4,Image=5,Flash=6,Expired=7,Cancelled=8,Partition=9 };

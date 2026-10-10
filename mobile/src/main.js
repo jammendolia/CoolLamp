@@ -450,7 +450,7 @@ async function rememberAuthorizedAccessories() {
   renderLamps();renderSettings();
 }
 function transportCallbacks(target){return Object.fromEntries(Object.entries(callbacks).map(([name,callback])=>[name,(...args)=>{if(lamp===target())return callback(...args);} ]));}
-const bleLamp = new LampTransport(BleClient, {...transportCallbacks(()=>bleLamp),
+const bleLamp = new LampTransport(BleClient, {firmwareBulkWrites:isNative&&phonePlatform==='ios',...transportCallbacks(()=>bleLamp),
   ...(phonePlatform==='ios'?{selectDevice:device=>pairing.select(device),onRadioReady:()=>{pairing.radioStarted=true;},
     onDeviceSelected:device=>{
       if(!device.accessoryManaged)return;
@@ -740,7 +740,7 @@ async function acquireCardFirmwareBluetooth(entry){
  if(verifiedSelectedLamp()&&selected.id===entry.id&&lamp===bleLamp){const task=cardFirmwareTasks.get(entry.id);task.transport=bleLamp;bluetoothFirmwareTask=task;return {lamp:bleLamp,release:async()=>{if(bluetoothFirmwareTask===task)bluetoothFirmwareTask=null;await bleLamp.disconnect();}};}
  if(!entry.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged)throw Error('Pair this lamp using its Bluetooth icon before updating without Wi-Fi.');
  await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
- const transport=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
+ const transport=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
  try{await transport.connect({...entry,lampId:entry.id});if(isNative)await firmwareFleetTrust.provision(transport);const task=cardFirmwareTasks.get(entry.id);if(task)task.transport=transport;liveGroupBluetooth.set(entry.id,{transport,epoch:transport.epoch});renderLamps();
   return {lamp:transport,release:async()=>{if(liveGroupBluetooth.get(entry.id)?.transport===transport)liveGroupBluetooth.delete(entry.id);await transport.disconnect();renderLamps();}};
  }catch(error){await transport.disconnect();throw error;}
@@ -1027,7 +1027,7 @@ const entries=mergedLampEntries().filter(entry=>entry.id!==id&&!groupRemovedIds.
       catch(error){await bridge.disconnect();throw error;}
     }
     await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
-    const bridge=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
+    const bridge=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
     try{await bridge.connect({...entry,lampId:entry.id});clearTimeout(bridge.controlTimer);if(isNative)await firmwareFleetTrust.provision(bridge);return {lamp:bridge,release:()=>bridge.disconnect()};}
     catch(error){await bridge.disconnect();throw error;}
   }});
@@ -1094,7 +1094,7 @@ async function acquireOnboardingBridge(id,options={}){
   if(selectedBridge)bridge=bleLamp;
   else{
     await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[entry],onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
-    bridge=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true});
+    bridge=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true});
   }
   try{
     if(!selectedBridge){await bridge.connect({...entry,lampId:id});clearTimeout(bridge.controlTimer);}
@@ -1775,7 +1775,7 @@ async function createGroupLampLease(id,{entry}={}) {
     knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
   let transport;
   const clearLink=()=>{if(liveGroupBluetooth.get(id)?.transport===transport){liveGroupBluetooth.delete(id);renderLamps();}};
-  transport=new LampTransport(BleClient,{sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true,onDisconnect:clearLink});
+  transport=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:id,controlOnly:true,onDisconnect:clearLink});
   try{
     await transport.connect({...entry,lampId:id});
     if(isNative)await firmwareFleetTrust.provision(transport);
@@ -1802,6 +1802,7 @@ async function roomGroupAction(id,action) {
     const result=await action();
     $('groupsFeedback').textContent=result?.message||(result?.phase==='joined'||result?.phase==='already-member'?
       result.active?'Following coordinator.':'Group settings saved. Waiting for coordinator.':result?.phase==='left'?'Lamp left its group.':result?.phase==='created'?'Coordinator ready. Add lamps below.':'Group settings saved.');
+    if(result?.phase==='stopped-coordinating'&&groupEditor?.id===id)closeGroupEditor();
     if(groupEditor)renderGroupScenes();
   }catch(error){$('groupsFeedback').textContent=error.leftPrevious?error.message:error.uncertain?'Change was not confirmed. Refresh this lamp before trying again.':error.message;}
   finally{groupActions.delete(id);renderRoomGroups();renderLamps();}
@@ -1856,6 +1857,12 @@ function renderRoomGroups() {
     const title=document.createElement('div'),kicker=document.createElement('p'),name=document.createElement('h3');kicker.className='eyebrow';kicker.textContent='COORDINATOR';name.textContent=group.name||'Lamp group';title.append(kicker,name);heading.append(title);
     const effects=document.createElement('button');effects.type='button';effects.className='secondary compact';effects.textContent='Effects';effects.disabled=!group.available||!group.leader.verified||groupActions.has(group.id)||cardPowerTasks.has(group.id);
     effects.onclick=()=>openGroupEditor(group.id);heading.append(effects);card.append(heading);
+    const stop=document.createElement('button');stop.type='button';stop.className='text-button compact';stop.textContent='Stop coordinating';
+    stop.disabled=!group.available||!group.leader.verified||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;
+    stop.onclick=()=>{
+      if(!confirm('Stop coordinating '+(group.name||'this group')+'? This lamp will become independent and can join another group. Its followers keep their saved membership; move or release them separately.'))return;
+      roomGroupAction(group.id,()=>roomGroups.stopCoordinating(group.id));
+    };card.append(stop);
     const detail=document.createElement('p');detail.className='hint';detail.textContent=group.available?group.followers.length+' following · '+group.remaining+' spaces available':group.placeholder?'Coordinator unavailable. Its followers keep their saved membership.':'Coordinator offline · last seen';card.append(detail);
     const members=document.createElement('div');members.className='group-lamp-list';
     for(const row of group.followers)members.append(groupLampRow(row,{follower:true}));

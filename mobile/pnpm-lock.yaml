@@ -4,13 +4,16 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@capacitor-community/bluetooth-le@8.3.0': 3d40e054dac956917dc8424191bb589b5fc690024e0692a811e9863eef319a3f
+
 importers:
 
   .:
     dependencies:
       '@capacitor-community/bluetooth-le':
-        specifier: ^8.0.0
-        version: 8.3.0(@capacitor/core@8.5.2)
+        specifier: 8.3.0
+        version: 8.3.0(patch_hash=3d40e054dac956917dc8424191bb589b5fc690024e0692a811e9863eef319a3f)(@capacitor/core@8.5.2)
       '@capacitor/android':
         specifier: ^8.0.0
         version: 8.5.2(@capacitor/core@8.5.2)
@@ -818,7 +821,7 @@ packages:
 
 snapshots:
 
-  '@capacitor-community/bluetooth-le@8.3.0(@capacitor/core@8.5.2)':
+  '@capacitor-community/bluetooth-le@8.3.0(patch_hash=3d40e054dac956917dc8424191bb589b5fc690024e0692a811e9863eef319a3f)(@capacitor/core@8.5.2)':
     dependencies:
       '@capacitor/core': 8.5.2
       '@types/web-bluetooth': 0.0.20

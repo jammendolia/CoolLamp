@@ -361,7 +361,9 @@ void beginLampBluetooth(const String& name)
   controlCharacteristic=service->createCharacteristic(CONTROL_RPC,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC);
   controlCharacteristic->setCallbacks(&controlReadCallbacks);
   cacheControlMetadata();
-  auto* otaWrite=service->createCharacteristic(OTA_WRITE,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_ENC);
+  // Only capability-aware phones use unacknowledged writes for four Data
+  // frames. Metadata, Start, Finish and Cancel keep their acknowledged writes.
+  auto* otaWrite=service->createCharacteristic(OTA_WRITE,BLECharacteristic::PROPERTY_WRITE|BLECharacteristic::PROPERTY_WRITE_NR|BLECharacteristic::PROPERTY_WRITE_ENC);
   otaWrite->setCallbacks(&otaWriteCallbacks);
   otaStatusCharacteristic=service->createCharacteristic(OTA_STATUS,BLECharacteristic::PROPERTY_READ|BLECharacteristic::PROPERTY_READ_ENC|BLECharacteristic::PROPERTY_NOTIFY);
   otaStatusCharacteristic->setCallbacks(&otaReadCallbacks);

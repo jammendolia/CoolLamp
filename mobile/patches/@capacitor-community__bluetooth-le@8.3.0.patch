@@ -1,0 +1,276 @@
+diff --git a/ios/Sources/BluetoothLe/Device.swift b/ios/Sources/BluetoothLe/Device.swift
+index c189c03e8188ae0dbae4120b16eb41031b47ef45..e6c4142c9517b853470a83fd901f60bc99c18bfd 100644
+--- a/ios/Sources/BluetoothLe/Device.swift
++++ b/ios/Sources/BluetoothLe/Device.swift
+@@ -8,6 +8,8 @@ class Device: NSObject, CBPeripheralDelegate {
+     private var peripheral: CBPeripheral!
+     private var callbackMap = [String: Callback]()
+     private var timeoutMap = [String: DispatchWorkItem]()
++    private let withoutResponseGate = WriteWithoutResponseGate()
++    private var connectionGeneration: UInt64 = 0
+     private var servicesCount = 0
+     private var servicesDiscovered = 0
+     private var characteristicsCount = 0
+@@ -22,6 +24,15 @@ class Device: NSObject, CBPeripheralDelegate {
+         self.peripheral.delegate = self
+     }
+ 
++    deinit {
++        self.withoutResponseGate.cancel("Device released.")
++    }
++
++    func cancelPendingWrites(_ message: String = "Peripheral disconnected.") {
++        self.connectionGeneration &+= 1
++        self.withoutResponseGate.cancel(message)
++    }
++
+     func getName() -> String? {
+         return self.peripheral.name
+     }
+@@ -43,8 +54,12 @@ class Device: NSObject, CBPeripheralDelegate {
+             log("Warning: Attempted to update peripheral with different UUID")
+             return
+         }
++        let replaced = self.peripheral !== newPeripheral
+         self.peripheral = newPeripheral
+         self.peripheral.delegate = self
++        if replaced {
++            self.cancelPendingWrites("Peripheral replaced.")
++        }
+     }
+ 
+     func setOnConnected(
+@@ -52,6 +67,7 @@ class Device: NSObject, CBPeripheralDelegate {
+         _ skipDescriptorDiscovery: Bool,
+         _ callback: @escaping Callback
+     ) {
++        self.cancelPendingWrites("Connection replaced.")
+         let key = "connect"
+         self.skipDescriptorDiscovery = skipDescriptorDiscovery
+         self.callbackMap[key] = callback
+@@ -295,6 +311,14 @@ class Device: NSObject, CBPeripheralDelegate {
+         _ callback: @escaping Callback
+     ) {
+         let key = "write|\(serviceUUID.uuidString)|\(characteristicUUID.uuidString)"
++        if writeType == CBCharacteristicWriteType.withoutResponse {
++            self.writeWithoutResponse(serviceUUID, characteristicUUID, value, timeout, callback)
++            return
++        }
++        guard !self.withoutResponseGate.hasPendingWrite else {
++            callback(false, "A write without response is still pending.")
++            return
++        }
+         self.callbackMap[key] = callback
+         guard let characteristic = self.getCharacteristic(serviceUUID, characteristicUUID) else {
+             self.reject(key, "Characteristic not found.")
+@@ -309,6 +333,51 @@ class Device: NSObject, CBPeripheralDelegate {
+         }
+     }
+ 
++    private func writeWithoutResponse(
++        _ serviceUUID: CBUUID,
++        _ characteristicUUID: CBUUID,
++        _ value: String,
++        _ timeout: Double,
++        _ callback: @escaping Callback
++    ) {
++        let key = "write|\(serviceUUID.uuidString)|\(characteristicUUID.uuidString)"
++        guard self.callbackMap[key] == nil else {
++            callback(false, "A write with response is still pending.")
++            return
++        }
++        guard let characteristic = self.getCharacteristic(serviceUUID, characteristicUUID) else {
++            callback(false, "Characteristic not found.")
++            return
++        }
++        guard characteristic.properties.contains(.writeWithoutResponse) else {
++            callback(false, "Characteristic does not support writes without response.")
++            return
++        }
++        let data = stringToData(value)
++        let target = self.peripheral!
++        let generation = self.connectionGeneration
++        guard data.count <= target.maximumWriteValueLength(for: .withoutResponse) else {
++            callback(false, "Write without response exceeds the negotiated maximum length.")
++            return
++        }
++        self.withoutResponseGate.write(
++            timeout: timeout,
++            isCurrent: { [weak self] in
++                guard let self = self else { return false }
++                return self.connectionGeneration == generation &&
++                    self.peripheral === target && target.state == .connected
++            },
++            canSend: { target.canSendWriteWithoutResponse },
++            submit: { target.writeValue(data, for: characteristic, type: .withoutResponse) },
++            completion: callback
++        )
++    }
++
++    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
++        guard peripheral === self.peripheral else { return }
++        self.withoutResponseGate.ready()
++    }
++
+     func peripheral(
+         _ peripheral: CBPeripheral,
+         didWriteValueFor characteristic: CBCharacteristic,
+diff --git a/ios/Sources/BluetoothLe/DeviceManager.swift b/ios/Sources/BluetoothLe/DeviceManager.swift
+index f3023395170ccedb31340267d928bfcf5ff4495f..377797c98b7050ca1fe25867d6a40ef7e64b9f5e 100644
+--- a/ios/Sources/BluetoothLe/DeviceManager.swift
++++ b/ios/Sources/BluetoothLe/DeviceManager.swift
+@@ -17,6 +17,7 @@ class DeviceManager: NSObject, CBCentralManagerDelegate {
+     private let viewController: UIViewController?
+     private var displayStrings: [String: String]!
+     private var callbackMap = [String: Callback]()
++    private var disconnectDevices = [String: Device]()
+     private var scanResultCallback: ScanResultCallback?
+     private var stateReceiver: StateReceiver?
+     private var timeoutMap = [String: DispatchWorkItem]()
+@@ -306,12 +307,14 @@ class DeviceManager: NSObject, CBCentralManagerDelegate {
+         _ callback: @escaping Callback
+     ) {
+         let key = "onDisconnected|\(device.getId())"
++        self.disconnectDevices[device.getId()] = device
+         self.callbackMap[key] = callback
+     }
+     
+     func cancelConnect(
+         _ device: Device
+     ) {
++        device.cancelPendingWrites("Connection cancelled.")
+         // do not call onDisconnnected, which is triggered by cancelPeripheralConnection
+         let onDisconnectedKey = "onDisconnected|\(device.getId())"
+         self.callbackMap[onDisconnectedKey] = nil
+@@ -323,9 +326,12 @@ class DeviceManager: NSObject, CBCentralManagerDelegate {
+         _ timeout: Double,
+         _ callback: @escaping Callback
+     ) {
++        self.disconnectDevices[device.getId()] = device
++        device.cancelPendingWrites("Peripheral disconnect requested.")
+         let key = "disconnect|\(device.getId())"
+         self.callbackMap[key] = callback
+         if device.isConnected() == false {
++            self.disconnectDevices.removeValue(forKey: device.getId())
+             self.resolve(key, "Disconnected.")
+             return
+         }
+@@ -340,6 +346,15 @@ class DeviceManager: NSObject, CBCentralManagerDelegate {
+         didDisconnectPeripheral peripheral: CBPeripheral,
+         error: Error?
+     ) {
++        // A delayed disconnect for a replaced peripheral must not reject a write
++        // or consume callbacks belonging to the replacement connection.
++        let deviceId = peripheral.identifier.uuidString
++        guard let device = self.disconnectDevices[deviceId],
++              device.getPeripheral() === peripheral, peripheral.state != .connected else {
++            return
++        }
++        self.disconnectDevices.removeValue(forKey: deviceId)
++        device.cancelPendingWrites("Peripheral disconnected.")
+         let key = "disconnect|\(peripheral.identifier.uuidString)"
+         let keyOnDisconnected = "onDisconnected|\(peripheral.identifier.uuidString)"
+         self.resolve(keyOnDisconnected, "Disconnected.")
+diff --git a/ios/Sources/BluetoothLe/WriteWithoutResponseGate.swift b/ios/Sources/BluetoothLe/WriteWithoutResponseGate.swift
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd4cf2748b6f911d264494d114db8452e262cce0
+--- /dev/null
++++ b/ios/Sources/BluetoothLe/WriteWithoutResponseGate.swift
+@@ -0,0 +1,97 @@
++import Foundation
++import Dispatch
++
++// All calls run on the SDK's existing main queue. Native completion means that
++// CoreBluetooth accepted a submission; the firmware still confirms written bytes.
++final class WriteWithoutResponseGate {
++    typealias Completion = (_ success: Bool, _ message: String) -> Void
++    typealias CancelTimeout = () -> Void
++    typealias ScheduleTimeout = (_ delay: Double, _ action: @escaping () -> Void) -> CancelTimeout
++
++    private struct Pending {
++        let owner: UInt64
++        let isCurrent: () -> Bool
++        let canSend: () -> Bool
++        let submit: () -> Void
++        let completion: Completion
++        var cancelTimeout: CancelTimeout = {}
++    }
++
++    private var nextOwner: UInt64 = 0
++    private var pending: Pending?
++    private let scheduleTimeout: ScheduleTimeout
++
++    init(scheduleTimeout: @escaping ScheduleTimeout = { delay, action in
++        let work = DispatchWorkItem(block: action)
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
++        return { work.cancel() }
++    }) {
++        self.scheduleTimeout = scheduleTimeout
++    }
++
++    var hasPendingWrite: Bool { pending != nil }
++
++    func write(
++        timeout: Double,
++        isCurrent: @escaping () -> Bool,
++        canSend: @escaping () -> Bool,
++        submit: @escaping () -> Void,
++        completion: @escaping Completion
++    ) {
++        guard pending == nil else {
++            completion(false, "Another write without response is pending.")
++            return
++        }
++        guard timeout.isFinite && timeout > 0 else {
++            completion(false, "Invalid write without response timeout.")
++            return
++        }
++        guard isCurrent() else {
++            completion(false, "Peripheral disconnected or replaced.")
++            return
++        }
++        nextOwner &+= 1
++        let owner = nextOwner
++        pending = Pending(owner: owner, isCurrent: isCurrent, canSend: canSend,
++                          submit: submit, completion: completion)
++        ready()
++        guard pending?.owner == owner else { return }
++        // Keep readiness waits bounded even when a caller supplies an excessive timeout.
++        let cancelTimeout = scheduleTimeout(min(timeout, 60)) { [weak self] in
++            self?.finish(owner: owner, success: false, message: "Write without response readiness timeout.")
++        }
++        if pending?.owner == owner {
++            pending?.cancelTimeout = cancelTimeout
++        } else {
++            cancelTimeout()
++        }
++    }
++
++    func ready() {
++        guard let request = pending else { return }
++        guard request.isCurrent() else {
++            finish(owner: request.owner, success: false, message: "Peripheral disconnected or replaced.")
++            return
++        }
++        guard pending?.owner == request.owner, request.canSend(),
++              pending?.owner == request.owner else { return }
++        // Clear ownership before submission/completion; neither a late timer nor
++        // a callback that starts a new request may remove that newer request.
++        pending = nil
++        request.cancelTimeout()
++        request.submit()
++        request.completion(true, "Successfully queued value without response.")
++    }
++
++    func cancel(_ message: String = "Write without response cancelled.") {
++        guard let owner = pending?.owner else { return }
++        finish(owner: owner, success: false, message: message)
++    }
++
++    private func finish(owner: UInt64, success: Bool, message: String) {
++        guard let request = pending, request.owner == owner else { return }
++        pending = nil
++        request.cancelTimeout()
++        request.completion(success, message)
++    }
++}

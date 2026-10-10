@@ -54,6 +54,10 @@ jobs:
         run: |
           swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareScreenAwake.swift ios/tests/firmware-screen-awake/main.swift -o "$RUNNER_TEMP/coollamp-firmware-screen-awake"
           "$RUNNER_TEMP/coollamp-firmware-screen-awake"
+      - name: Test patched Bluetooth write backpressure
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" node_modules/@capacitor-community/bluetooth-le/ios/Sources/BluetoothLe/WriteWithoutResponseGate.swift ios/tests/bluetooth-write-gate/main.swift -o "$RUNNER_TEMP/coollamp-bluetooth-write-gate"
+          "$RUNNER_TEMP/coollamp-bluetooth-write-gate"
       - name: Set unique build number
         env:
           BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}

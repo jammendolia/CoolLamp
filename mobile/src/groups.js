@@ -250,6 +250,14 @@ export class Groups {
       return {id,saved:true,phase:'left',leader:null};
     }));
   }
+  stopCoordinating(id) {
+    return this.action([id],()=>this.leased(id,false,async context=>{
+      const raw=await this.fresh(context);this.expect(raw,1,id);
+      await this.mutation(context,membership(raw),lamp=>lamp.configureSync(0),next=>next.sync.role===0,'stop-coordinating-unconfirmed');
+      return {id,saved:true,phase:'stopped-coordinating',leader:null,
+        message:'This lamp is now independent. Choose a group below to make it a follower. Former followers keep their saved membership; move them separately.'};
+    }));
+  }
   join(id,leaderId) {return this.transfer(id,leaderId,false);}
   move(id,leaderId) {return this.transfer(id,leaderId,true);}
   transfer(id,leaderId,moving) {

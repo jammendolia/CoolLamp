@@ -104,7 +104,7 @@ static void serviceReceiver(uint32_t generation,bool bonded){
   if(!target||target->size<2031616||esp_ota_begin(target,OTA_WITH_SEQUENTIAL_WRITES,&ota)!=ESP_OK){fail(Partition);}
   else{mbedtls_sha256_init(&hash);hashing=true;if(mbedtls_sha256_starts(&hash,0))fail(Image);else phase=Receiving;}
  }
- Frame frame;for(unsigned i=0;i<4&&queue.pop(frame);++i)if(bonded&&frame.generation==generation)consume(frame);
+ Frame frame;for(unsigned i=0;i<DataWriteWithoutResponseWindow&&queue.pop(frame);++i)if(bonded&&frame.generation==generation)consume(frame);
 }
 void serviceLampBleUpdate(uint32_t generation,bool bonded){if(!radioOwner)serviceReceiver(generation,bonded);}
 bool beginLampRadioFirmwareReceiver(uint32_t generation){
@@ -115,6 +115,7 @@ bool enqueueLampRadioFirmwareFrame(const uint8_t* bytes,size_t size){return radi
 void serviceLampRadioFirmwareReceiver(){if(radioOwner)serviceReceiver(radioOwner,true);}
 void abortLampRadioFirmwareReceiver(){if(radioOwner&&phase!=LampBleUpdateWire::Restarting){reset();radioOwner=0;}}
 void getLampBleUpdateStatus(uint8_t* out){
- using namespace LampBleUpdateWire;memset(out,0,20);out[0]=1;out[1]=phase;out[2]=error;out[3]=phase==Restarting?1:0;
+ using namespace LampBleUpdateWire;memset(out,0,20);out[0]=1;out[1]=phase;out[2]=error;
+ out[3]=DataWriteWithoutResponseFourFlag|(phase==Restarting?CommittedFlag:0);
  put32(out+4,session);put32(out+8,manifest.size);put32(out+12,offset);put16(out+16,ack);put16(out+18,MaxData);
 }

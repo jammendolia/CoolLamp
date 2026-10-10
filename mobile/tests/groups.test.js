@@ -119,6 +119,45 @@ test('create only changes an independent lamp and never rotates an existing coor
   assert.equal(f.models.get(ids[3]).leds,205);assert.equal(f.models.get(ids[3]).brightness,55);
 });
 
+test('stop coordinating changes only the verified leader and retains every follower setting',async()=>{
+  const f=fixture();await f.groups.refresh();
+  const follower=structuredClone(f.models.get(ids[1])),leader=structuredClone(f.models.get(ids[0]));
+  const result=await f.groups.stopCoordinating(ids[0]);
+  assert.equal(result.phase,'stopped-coordinating');assert.equal(result.saved,true);
+  assert.deepEqual(writes(f).map(({id,role})=>({id,role})),[{id:ids[0],role:0}]);
+  assert.deepEqual(f.models.get(ids[1]),follower);
+  for(const field of ['leds','midpoint','brightness','mode','power','audio','firmware','name'])assert.deepEqual(f.models.get(ids[0])[field],leader[field]);
+  assert(f.groups.snapshot().ungrouped.some(row=>row.id===ids[0]));
+  const retained=f.groups.snapshot().groups.find(group=>group.id===ids[0]);
+  assert(retained.placeholder);assert.deepEqual(retained.followers.map(row=>row.id),[ids[1]]);
+  assert.equal(f.active(),0);assert(f.leases.every(lease=>lease.released));
+});
+
+test('stop coordinating rejects followers, independent lamps, active updates and repeated demotion',async()=>{
+  const f=fixture();
+  for(const id of [ids[1],ids[3]])await assert.rejects(f.groups.stopCoordinating(id),/membership changed/);
+  f.models.get(ids[0]).firmware.phase=3;
+  await assert.rejects(f.groups.stopCoordinating(ids[0]),/Finish setup or updating/);
+  assert.equal(writes(f).length,0);f.models.get(ids[0]).firmware.phase=0;
+  await f.groups.stopCoordinating(ids[0]);
+  await assert.rejects(f.groups.stopCoordinating(ids[0]),/membership changed/);
+  assert.equal(writes(f).length,1);assert.equal(f.active(),0);
+});
+
+test('lost stop reply is confirmed by a fresh membership read without replaying the mutation',async()=>{
+  const f=fixture();f.hooks.set(ids[0],{afterSync:()=>{throw Object.assign(Error('lost reply'),{uncertain:true});}});
+  assert.equal((await f.groups.stopCoordinating(ids[0])).phase,'stopped-coordinating');
+  assert.equal(writes(f).length,1);assert.equal(f.models.get(ids[0]).sync.role,0);assert.equal(f.active(),0);
+});
+
+test('unconfirmed stop does not move followers or repeat the attempted change',async()=>{
+  const f=fixture(),follower=structuredClone(f.models.get(ids[1]));
+  f.hooks.set(ids[0],{afterSync:()=>{throw Object.assign(Error('lost reply'),{uncertain:true});},
+    beforeRead:(_lamp,_model,count)=>{if(count===2)throw Error('lost connection');}});
+  await assert.rejects(f.groups.stopCoordinating(ids[0]),error=>error.uncertain===true&&error.phase==='stop-coordinating-unconfirmed');
+  assert.equal(writes(f).length,1);assert.deepEqual(f.models.get(ids[1]),follower);assert.equal(f.active(),0);
+});
+
 test('join targets only the independent lamp and reports saved waiting separately from active',async()=>{
   const f=fixture(),result=await f.groups.join(ids[3],ids[2]);
   assert.equal(result.saved,true);assert.equal(result.active,false);assert.equal(result.phase,'joined');

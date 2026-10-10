@@ -67,7 +67,7 @@ export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()
 }
 export function decodeBleUpdate(data){
  if(!(data instanceof DataView)||data.byteLength!==20||data.getUint8(0)!==1||data.getUint8(1)>5||data.getUint8(2)>9)throw error('Invalid Bluetooth update status.');
- return {phase:data.getUint8(1),error:data.getUint8(2),committed:Boolean(data.getUint8(3)&1),session:data.getUint32(4,true),size:data.getUint32(8,true),offset:data.getUint32(12,true),ack:data.getUint16(16,true),maxData:data.getUint16(18,true)};
+ return {phase:data.getUint8(1),error:data.getUint8(2),committed:Boolean(data.getUint8(3)&1),dataWriteWithoutResponseFour:Boolean(data.getUint8(3)&2),session:data.getUint32(4,true),size:data.getUint32(8,true),offset:data.getUint32(12,true),ack:data.getUint16(16,true),maxData:data.getUint16(18,true)};
 }
 const receiverErrors=['','secure connection required','another update is active','invalid update metadata','unexpected data offset','image verification failed','flash or boot selection failed','receiver timed out','transfer cancelled','update partition unavailable'];
 const stopReasons=new Set(['user','app-hidden','transport-disconnect','native-disconnect','target-changed','cancelled','connection-changed','receiver-rejected','ack-timeout','native-read-failure','native-write-failure','transfer-failed']);
@@ -88,7 +88,7 @@ export function bluetoothFirmwareFailureMessage(failure){
  return (failure.message||'Bluetooth update failed.')+cause+bytes+reason+check;
 }
 export class BluetoothFirmwareTransfer {
- constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now});this.session=0;this.sequence=0;this.cancelled=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;}
+ constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now,allowBulkWrites=false}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now,allowBulkWrites});this.session=0;this.sequence=0;this.cancelled=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;this.dataWriteMode='with-response';this.receiverBulkWrites=false;this.bulkWriteFallback=null;this.bulkWriteCalls=0;}
  elapsed(start=this.beganAt){return start===null?0:Math.max(0,Math.floor(this.now()-start));}
  recordStop(reason){
   if(!this.firstStop)this.firstStop=Object.freeze({reason:stopReasons.has(reason)?reason:'cancelled',elapsedMs:this.elapsed()});
@@ -125,6 +125,32 @@ export class BluetoothFirmwareTransfer {
   const op=frame.getUint8(1),offset=op===3?frame.getUint32(8,true)+frame.byteLength-12:op===4?this.total:0;
   this.issuedFrames.push({ack:frame.getUint16(6,true),order:++this.issuedOrder,op,offset});
   if(this.issuedFrames.length>16)this.issuedFrames.shift();
+ }
+ async prepareDataWrites(initial){
+  this.current();this.receiverBulkWrites=initial.dataWriteWithoutResponseFour===true;
+  if(this.allowBulkWrites!==true){this.bulkWriteFallback='platform-disabled';return;}
+  if(!this.receiverBulkWrites){this.bulkWriteFallback='receiver-unsupported';return;}
+  if(typeof this.ble.writeWithoutResponse!=='function'||typeof this.ble.getServices!=='function'){this.bulkWriteFallback='sdk-unavailable';return;}
+  let services,settled=false;
+  const discovery=Promise.resolve().then(()=>this.ble.getServices(this.deviceId));
+  discovery.then(()=>{settled=true;},()=>{settled=true;});
+  try{services=await boundedNotification(discovery,1500);}
+  catch{
+   this.current();this.bulkWriteFallback=settled?'service-discovery-failed':'service-discovery-pending';
+   // A pending SDK discovery still owns its command queue. Never enqueue a
+   // mutation behind it: the native write timeout has not started there.
+   if(!settled){this.recordStop('native-read-failure');throw error('Bluetooth capability discovery did not finish. No firmware was sent. Reconnect before trying again.');}
+   return;
+  }
+  this.current();
+  const matches=(value,uuid)=>typeof value==='string'&&value.toLowerCase()===uuid.toLowerCase();
+  const service=Array.isArray(services)?services.find(value=>matches(value?.uuid,SERVICE)):null;
+  const characteristic=Array.isArray(service?.characteristics)?service.characteristics.find(value=>matches(value?.uuid,OTA_WRITE)):null;
+  if(!characteristic){this.bulkWriteFallback='characteristic-unavailable';return;}
+  // iOS may retain old GATT properties after a firmware upgrade. Decide once,
+  // before any mutative frame; an ambiguous fast write never gets replayed.
+  if(characteristic.properties?.writeWithoutResponse!==true){this.bulkWriteFallback='property-unavailable';return;}
+  this.dataWriteMode='without-response-four';
  }
  async beginNotifications(){
   if(typeof this.ble.startNotifications!=='function'||typeof this.ble.stopNotifications!=='function'){this.notificationFallback='unsupported';return;}
@@ -207,7 +233,8 @@ export class BluetoothFirmwareTransfer {
    stopReason:this.firstStop?.reason??null,stopElapsedMs:this.firstStop?.elapsedMs??null,elapsedMs:this.elapsed(),connectionCurrent:Boolean(this.isCurrent()),cancelRequested:this.cancelled,
    mtu:this.mtu,chunkSize:this.chunkSize,mtuFallback:this.mtuFallback,dataFrames:this.dataFrames,dataBytesAttempted:this.dataBytesAttempted,
    writeCalls:this.writeCalls,writeTimeMs:this.writeTimeMs,maxWriteMs:this.maxWriteMs,statusReads:this.statusReads,statusTimeMs:this.statusTimeMs,maxStatusMs:this.maxStatusMs,
-   notificationMode:this.notificationMode,notificationFallback:this.notificationFallback,notificationAcks:this.notificationAcks});
+   notificationMode:this.notificationMode,notificationFallback:this.notificationFallback,notificationAcks:this.notificationAcks,
+   dataWriteMode:this.dataWriteMode,receiverBulkWrites:this.receiverBulkWrites,bulkWriteFallback:this.bulkWriteFallback,bulkWriteCalls:this.bulkWriteCalls});
  }
  async wait(ack,offset,phase){
   if(this.notificationMode==='notifications'){
@@ -233,7 +260,11 @@ export class BluetoothFirmwareTransfer {
   this.current();if(this.notificationStatus?.phase===5)this.receiverRejected(this.notificationStatus);
   this.noteIssued(frame);const started=this.now();++this.writeCalls;
   if(frame.getUint8(1)===3){++this.dataFrames;this.dataBytesAttempted+=frame.byteLength-12;}
-  try{await this.ble.write(this.deviceId,SERVICE,OTA_WRITE,frame,{timeout:8000});}
+  try{
+   if(frame.getUint8(1)===3&&this.dataWriteMode==='without-response-four'){
+    ++this.bulkWriteCalls;await this.ble.writeWithoutResponse(this.deviceId,SERVICE,OTA_WRITE,frame,{timeout:8000});
+   }else await this.ble.write(this.deviceId,SERVICE,OTA_WRITE,frame,{timeout:8000});
+  }
   catch(failure){this.recordStop(this.isCurrent()?'native-write-failure':'connection-changed');throw Object.assign(failure,{uncertain:true,stopReason:this.firstStop.reason});}
   finally{const elapsed=this.elapsed(started);this.writeTimeMs+=elapsed;this.maxWriteMs=Math.max(this.maxWriteMs,elapsed);}
   this.current();
@@ -264,6 +295,7 @@ export class BluetoothFirmwareTransfer {
   if(!Number.isInteger(mtu)||mtu<23){mtu=23;this.mtuFallback='invalid';}
   const frameLimit=Math.min(244,mtu-3),chunk=Math.min(initial.maxData,frameLimit-12);
   this.mtu=mtu;this.chunkSize=chunk;
+  try{await this.prepareDataWrites(initial);}catch(failure){failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();throw failure;}
   this.session=crypto.getRandomValues(new Uint32Array(1))[0]||1;
   this.total=image.length;
   try{

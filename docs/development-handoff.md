@@ -1,5 +1,61 @@
 # CoolLamp development handoff — 2026-10-06
 
+## Bluetooth bulk-transfer receiver and controller demotion — 2026-10-10
+
+The user confirmed the app 44.1 Bluetooth update completed, but remained very
+slow. GET-only identity checks at `2026-10-10T05:10:38.300017Z` verify both
+CoolLamp 1 (`acb950b2f180`, `192.168.1.154`) and CoolLamp 2
+(`f0b950b2f180`, `192.168.1.222`) running **COOLLAMP-PUBLIC-1.13.0**, past
+healthy-boot timing. Both are currently **leaders**, not followers. This
+supersedes the previous CoolLamp 1 1.11.0 checkpoint; do not repeat that
+completed bootstrap. Their stored HTTPS-check phase/error still report 5/3,
+which is separate from the successful Bluetooth installation. No settings,
+group roles, trust, GPIO, router changes or forced reboot were sent in this check.
+Evidence: `.build/fast-bluetooth-installed-check.json`.
+
+The 1.14.0 candidate keeps the existing encrypted OTA write characteristic and
+adds Write Without Response. Status byte 3 bit `0x02` advertises Data-only
+four-frame bursts; bit 0 still means committed, and status remains 20 bytes.
+Queue capacity eight, at most four consumed per loop, incremental flash,
+SHA/image/boot checks, inactivity deadline and radio firmware relay are unchanged.
+Metadata, Start, Finish and Cancel still use response writes. Older apps retain
+their existing response path. Older lamps need one installation of this new
+receiver using their existing path before future transfers can be faster.
+
+The phone uses the fast path only for native iOS, a fresh receiver capability,
+and a verified GATT writeWithoutResponse property. Missing/stale capability or
+properties choose the old path before any frame. A genuinely unsettled service
+discovery fails before mutation rather than blocking behind the SDK queue.
+Native SDK 8.3.0 is now pinned and reproducibly patched to wait for
+CoreBluetooth readiness, with one pending owner, finite timeout, and peripheral/
+connection-generation/disconnect fences. Native success only means submitted;
+exact written-offset/session/size/sequence ACKs still gate progress and the next
+four-frame burst. No uncertain frame or final commit is replayed.
+
+Groups now offers **Stop coordinating** on each verified leader, with clear
+confirmation that followers keep their memberships. Only that leader is set
+independent; it can then choose another group and **Join** as a follower.
+Fresh role/identity/update guards and one mutation plus read-only reconciliation
+apply. No automatic reassignment of former followers occurs. Current app 44.1
+workaround: select the leader's gear, open Groups → Advanced · selected lamp
+recovery → Leave group, then choose a group under Ungrouped lamps and Join.
+
+Windows validation: **516 mobile tests**, production build, **45 focused firmware
+checks**, **107 focused sender cases**, and the new controller-demotion UI cases
+passed. Public Windows image is **1,920,816 bytes**, SHA-256
+`0b7244603a68d81f05297f7e0c58726a7dce936968c69d5d12e6d8aa930c19d9`;
+packaging/credential/partition checks passed. SDK fresh frozen installation using
+CI pnpm 11.19.0 verified the real patched SwiftPM dependency. Full production UI,
+macOS native compilation/tests and Linux firmware CI/publication remain pending.
+Physical fast-mode throughput and bootstrap installation remain unmeasured.
+No new firmware/app release is published at this checkpoint. Evidence:
+`.build/bluetooth-bulk-mobile-tests.log`, `.build/bluetooth-bulk-mobile-build.log`,
+`.build/bluetooth-firmware-bulk-validation.json`,
+`.build/bluetooth-native-patch-validation.json`,
+`.build/stop-coordinating-model-tests.log`, `.build/stop-coordinating-ui-result.json`,
+`.build/firmware-1.14.0-windows-build.log` and
+`.build/firmware-1.14.0-packaging-tests.log`.
+
 ## CoolLamp 1 screen-lock interruption and update-speed work — 2026-10-09
 
 The user reported a Bluetooth stop at **23%**, with **453,096 of 1,920,432

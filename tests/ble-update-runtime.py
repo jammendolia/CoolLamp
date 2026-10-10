@@ -95,7 +95,13 @@ std::vector<uint8_t> packet(unsigned op,unsigned at=0,const uint8_t* bytes=nullp
 }
 void enqueue(const std::vector<uint8_t>& p){assert(enqueueLampBleUpdate(p.data(),p.size(),generation));}
 void send(unsigned op,unsigned at=0,const uint8_t* bytes=nullptr,size_t size=0){enqueue(packet(op,at,bytes,size));tick();}
-std::vector<uint8_t> status(){std::vector<uint8_t> p(20);getLampBleUpdateStatus(p.data());return p;}
+std::vector<uint8_t> status(){
+ // The real packet keeps the legacy size/version and committed mask in all
+ // phases. ESP-NOW firmware relaying continues to consume phase/offset only.
+ std::vector<uint8_t> p(21,0xa5);getLampBleUpdateStatus(p.data());assert(p[20]==0xa5);p.resize(20);
+ assert(p[0]==1&&(p[3]&DataWriteWithoutResponseFourFlag)&&DataWriteWithoutResponseWindow==4);
+ assert(bool(p[3]&CommittedFlag)==(p[1]==Restarting));return p;
+}
 void start(const std::string& text=manifestText){
  for(size_t at=0;at<text.size();){const auto count=std::min(size_t(13),text.size()-at);send(Manifest,at,reinterpret_cast<const uint8_t*>(text.data()+at),count);at+=count;}
  send(Start);assert(status()[1]==Preparing&&begins==0&&reserved);tick();assert(begins==0);tick();
@@ -120,6 +126,18 @@ int main(int argc,char** argv){
  start(test=="marker"?noMarkerManifest:manifestText);
  if(test=="partition"||test=="begin-error"){assert(status()[2]==Partition&&!reserved&&!boots);return 0;}
  assert(status()[1]==Receiving&&begins==1);
+ if(test=="copied-four"){
+  for(size_t at=0;at<sizeof(image);at+=128){auto p=packet(Data,at,image+at,128);enqueue(p);memset(p.data(),0,p.size());}
+  assert(u32(status().data()+12)==0&&flash.empty()&&!boots);tick();const auto written=status();
+  assert(u32(written.data()+12)==sizeof(image)&&u16(written.data()+16)==request&&flash==std::vector<uint8_t>(image,image+sizeof(image))&&!boots);
+  send(Finish);assert(boots==1&&verified&&ends==1&&status()[1]==Restarting);return 0;
+ }
+ if(test=="queue-limit"){
+  for(unsigned i=0;i<8;++i)enqueue(packet(Data,i*16,image+i*16,16));
+  const auto excess=packet(Data,128,image+128,16);assert(!enqueueLampBleUpdate(excess.data(),excess.size(),generation));
+  tick();assert(u32(status().data()+12)==64&&!boots);tick();assert(u32(status().data()+12)==128&&!boots);
+  send(Cancel);assert(status()[2]==Cancelled&&aborts==1&&!ends&&!boots);return 0;
+ }
  if(test=="bond"||test=="generation"){
   enqueue(packet(Data,0,image,120));if(test=="generation")++generation;tick(test!="bond");assert(!reserved&&aborts==1&&!boots&&flash.empty()&&status()[1]==Idle&&u32(status().data()+8)==0);return 0;
  }
@@ -139,7 +157,7 @@ int main(int argc,char** argv){
  if(test=="boot-error")allowBoot=false;
  if(test=="success"){
   enqueue(packet(Finish));enqueue(packet(Cancel));enqueue(packet(Data,0,image,1));tick();
-  assert(boots==1&&verified&&!reserved&&status()[1]==Restarting&&status()[3]==1&&aborts==0);
+  assert(boots==1&&verified&&!reserved&&status()[1]==Restarting&&(status()[3]&CommittedFlag)==1&&aborts==0);
   ++generation;tick(false);clockMs+=40000;tick(false);assert(boots==1&&status()[1]==Restarting);return 0;
  }
  send(Finish);assert(!boots&&!verified&&!reserved&&status()[1]==Error);
@@ -177,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix='coollamp-ble-update-') as folder:
     binary = folder/'test.exe'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, *include, *defines,
                     str(folder/'test.cpp'), str(ROOT/'LampBleUpdate.cpp'), *objects, '-o', str(binary)], check=True)
-    scenarios = ['wire', 'commission', 'success', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
+    scenarios = ['wire', 'commission', 'success', 'copied-four', 'queue-limit', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
                  'begin-error', 'bond', 'generation', 'timeout', 'cancel', 'offset', 'truncated', 'write-error', 'end-error', 'boot-error']
     for scenario in scenarios:
         subprocess.run([str(binary), scenario], check=True)

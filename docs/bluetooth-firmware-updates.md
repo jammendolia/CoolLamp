@@ -1,5 +1,24 @@
 # Firmware updates through a phone
 
+## Faster transfer candidate — 2026-10-10
+
+Firmware 1.14.0 and the new app candidate add native iOS bulk data writes.
+They retain a four-frame limit and wait for the lamp's exact written-byte
+acknowledgment before another burst. Metadata and final verification retain
+response writes and full SHA checking. The pinned SDK patch waits for
+CoreBluetooth readiness instead of submitting while its queue is full.
+Older firmware, Android and unsupported/cached GATT properties use the existing
+path. Each older lamp needs one installation of 1.14.0 using that path;
+subsequent transfers can use fast mode. Actual speed is not yet measured.
+Both test lamps are now verified on 1.13.0; CoolLamp 1's prior bootstrap is done.
+This candidate is not yet published. See development-handoff.md for build evidence.
+
+To turn a controller into a follower in the new app: Groups → **Stop coordinating**,
+then under Ungrouped lamps choose the destination group and **Join**. Former
+followers keep their memberships; move or release them individually. On app 44.1,
+select that lamp using its gear, open Groups → **Advanced · selected lamp recovery**
+→ **Leave group**, then Join from Ungrouped lamps.
+
 Public Latest is **1.13.0**, published on 2026-10-09 at 19:17:05 CDT. Its
 manifest and image downloads were verified against the successful CI build.
 Firmware **1.11.0 or newer** is required to receive updates over Bluetooth;
