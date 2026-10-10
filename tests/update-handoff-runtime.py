@@ -23,6 +23,9 @@ FIXTURE = r'''
 #include <iostream>
 #include "LampUpdate.h"
 #include "LampUpdateHandoff.h"
+#include "LampUpdateHealth.h"
+#include "UpdateManifest.h"
+#include "LampControl.h"
 size_t responseBytes=0;unsigned responseFrees=0;
 void* trackedMalloc(size_t size){assert(!responseBytes);responseBytes=size;return std::malloc(size);}
 void trackedFree(void* pointer){
@@ -32,11 +35,24 @@ void trackedFree(void* pointer){
 #include "LampBleControlWire.h"
 LampBleControlWire::Transfer rpc;
 LampUpdateStatus status{};
+bool cuePower=true;uint8_t cueBrightness=100;
+LampControlState getLampControlState(){return {4,cueBrightness,cuePower};}
+void setLampUpdateRoute(uint8_t route){status.route=route;}
 LampUpdateHandoff handoff;
 void* worker=reinterpret_cast<void*>(1);int mux=0;
 bool manual=false;
+bool explicitRepair=false,attemptAllowed=true,measuredReady=false,attemptConfirmWorks=true;unsigned attemptConfirmCalls=0;
+namespace LampUpdateAttempt {bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}bool confirmHealthy(const FirmwareManifest&){++attemptConfirmCalls;return attemptConfirmWorks;}}
+namespace LampFirmwareRelay {bool runningManifest(FirmwareManifest& out){out.size=512;return measuredReady;}}
+bool automaticAdmission=true;
+bool lampAutomaticUpdateAllowed(){return status.automatic&&automaticAdmission;}
+FirmwareManifest candidate{};
+bool rolloutAllowed=true,rolloutStorage=true;unsigned rolloutStarts=0;
+bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest&){return rolloutAllowed;}
+bool lampRolloutAutomaticUpdateStarted(const FirmwareManifest&){assert(status.phase==UPDATE_CHECKING);++rolloutStarts;return rolloutStorage;}
 uint8_t job=0;
 std::atomic<bool> healthy{true};
+LampUpdateHealth bootHealth;
 uint32_t nextCheck=0,restartAt=0;
 char attemptedVersion[24]{};
 #define portENTER_CRITICAL(pointer) ((void)(pointer))
@@ -52,6 +68,7 @@ struct {unsigned restarts=0;void restart(){++restarts;}} ESP;
 bool wifiBusy=false,resetPending=false,resetArmed=false,audioStopWorks=true,audioActive=true;
 bool commissionBusy=false;
 namespace LampCommission {bool working(){return commissionBusy;}}
+namespace LampRollout {void service(uint32_t){}}
 bool radioActive=true,callerLive=false;
 size_t udpBytes=1460;
 unsigned audioStops=0,notifications=0;
@@ -135,14 +152,38 @@ int main(int argc,char** argv){
   assert(reserveLampManualUpdate()&&manual&&audioStops==1);releaseLampManualUpdate();
   assert(requestLampUpdateCheck()&&job==1);tick();tick();assert(notifications==1);
  }else if(origin=="health"){
-  trigger=false;nextCheck=clockMs+60000;healthy=false;clockMs=29999;imageState=ESP_OTA_IMG_PENDING_VERIFY;
-  serviceLampUpdater();assert(!healthy&&!confirmations&&!notifications);
+  trigger=false;nextCheck=clockMs+60000;healthy=false;clockMs=0;bootHealth.begin(clockMs);imageState=ESP_OTA_IMG_PENDING_VERIFY;
+  for(clockMs=0;clockMs<30000;clockMs+=100){serviceLampUpdater();}assert(!healthy&&!confirmations&&!notifications);
   clockMs=30000;confirmWorks=false;serviceLampUpdater();assert(!healthy&&confirmations==1);
   confirmWorks=true;serviceLampUpdater();assert(healthy&&confirmations==2);assert(requestLampUpdateCheck());tick();tick();assert(notifications==1);
  }else if(origin=="automatic-install"){
   trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;
   status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;
   tick();assert(job==2&&!notifications);tick();assert(!notifications);tick();assert(notifications==1);
+ }else if(origin=="attempt-health"){
+  trigger=false;nextCheck=clockMs+1000000;measuredReady=true;attemptConfirmWorks=false;
+  tick();assert(attemptConfirmCalls==1);
+  for(unsigned i=0;i<100;++i){clockMs+=100;tick();}assert(attemptConfirmCalls==1);
+  clockMs=159999;tick();assert(attemptConfirmCalls==1);clockMs=160000;tick();assert(attemptConfirmCalls==2);
+  imageState=ESP_OTA_IMG_PENDING_VERIFY;clockMs=220000;tick();assert(attemptConfirmCalls==2);
+ }else if(origin=="attempt-quarantine"){
+  trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;attemptAllowed=false;
+  status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;
+  tick();tick();assert(!notifications&&!job&&!audioStops&&!rolloutStarts);
+  assert(requestLampUpdateInstall()&&job==2&&explicitRepair);tick();tick();assert(notifications==1);
+ }else if(origin=="group-unassigned"||origin=="group-legacy"){
+  trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;automaticAdmission=false;
+  status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;
+  tick();tick();assert(!notifications&&!job&&!audioStops&&!rolloutStarts);
+  // An explicit Update now remains possible outside an armed ticket. It still
+  // must pass the exact-artifact and durable Started fences when one exists.
+  assert(requestLampUpdateInstall()&&job==2&&rolloutStarts==1);tick();tick();assert(notifications==1);
+ }else if(origin=="rollout-denied"||origin=="rollout-storage"){
+  trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;
+  status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;
+  if(origin=="rollout-denied")rolloutAllowed=false;else rolloutStorage=false;
+  tick();tick();assert(!notifications&&!job);
+  if(origin=="rollout-denied")assert(!audioStops&&!rolloutStarts);else assert(audioStops==1&&rolloutStarts==1&&status.error==UPDATE_STORAGE);
  }else if(origin=="same-version-no-retry"){
   trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;
   status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;strcpy(attemptedVersion,"1.10.2");
@@ -162,7 +203,8 @@ int main(int argc,char** argv){
 class UpdateHandoffTests(unittest.TestCase):
     def test_actual_request_and_service_order(self):
         source = (ROOT/'LampUpdate.cpp').read_text()
-        request = source[source.index('bool request(uint8_t operation)'):source.index('} // namespace')]
+        request = source[source.index('bool request(uint8_t operation'):source.index('} // namespace')]
+        cue=source[source.index('void startReceiverCue()'):source.index('void fail(uint8_t error)')]
         public = source[source.index('LampUpdateStatus getLampUpdateStatus()'):source.index('bool setLampAutoUpdate')]
         ownership = source[source.index('bool lampRemoteUpdateBusy()'):source.index('void serviceLampUpdater()')]
         service = source[source.index('void serviceLampUpdater()'):source.index('void getLampUpdatePacket(')]
@@ -171,7 +213,7 @@ class UpdateHandoffTests(unittest.TestCase):
         # must fail this regression rather than silently weaken the guarantee.
         loop = (ROOT/'CoolLamp.ino').read_text()
         sequence = loop[loop.index('  serviceLampNetwork();',loop.index('void loop()')):loop.index('  serviceLampFactoryReset();',loop.index('void loop()'))]
-        self.assertEqual(sequence.split(), ['serviceLampNetwork();','serviceLampBluetooth();','serviceLampUpdater();'])
+        self.assertEqual(sequence.split(), ['serviceLampNetwork();','serviceLampBluetooth();','LampRollout::service(millis());','serviceLampUpdater();'])
         with tempfile.TemporaryDirectory(prefix='lamp-update-handoff-') as directory:
             directory = Path(directory)
             (directory/'Arduino.h').write_text(ARDUINO)
@@ -185,11 +227,11 @@ class UpdateHandoffTests(unittest.TestCase):
             (directory/'LampBleControlWire.h').write_text(
                 wire.replace('malloc(size)','trackedMalloc(size)').replace('free(response)','trackedFree(response)'))
             cpp, binary = directory/'test.cpp', directory/'test'
-            cpp.write_text(FIXTURE+request+public+ownership+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
+            cpp.write_text(FIXTURE+cue+request+public+ownership+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             for scenario in ('http','ble','automatic','install','guards','audio-failure',
-                             'manual-exclusion','commission-exclusion','health','automatic-install','same-version-no-retry',
+                             'manual-exclusion','commission-exclusion','health','automatic-install','attempt-quarantine','attempt-health','group-unassigned','group-legacy','rollout-denied','rollout-storage','same-version-no-retry',
                              'error-backoff','restart'):
                 subprocess.run([str(binary),scenario],check=True)
 

@@ -1,5 +1,6 @@
 #include "LampCommission.h"
 #include "LampCommissionCrypto.h"
+#include "LampCommissionCue.h"
 #include "LampFirmwareRelay.h"
 #include "LampMeshAdapter.h"
 #include "LampMeshWire.h"
@@ -20,18 +21,19 @@ constexpr size_t AdvertHeader=52,OfferSize=112,RevealSize=193;
 enum Role:uint8_t {NoRole,BrokerRole,TargetRole};
 enum Phase:uint8_t {Idle,Exchange,Confirm,Approved,Complete,Failed};
 enum Error:uint8_t {CancelledBeforeApproval=1,StorageFailure=2,TrustConflict=3,EligibilityLost=4};
-struct Candidate {uint8_t mac[6]{},commitment[32]{};uint64_t boot=0;uint32_t observed=0;char name[49]{},version[25]{};};
+struct Candidate {uint8_t mac[6]{},commitment[32]{};uint64_t boot=0;uint32_t observed=0;uint8_t comparisonVersion=1;char name[49]{},version[25]{};};
 struct Session {
  Role role=NoRole;Phase phase=Idle;Transcript transcript{};Keys keys{};
  uint8_t fleet[16]{},wire[250]{},kind=0;size_t wireSize=0;
- uint32_t started=0,nextSend=0,sequence=0,received=0;
+ uint32_t started=0,nextSend=0,sequence=0,received=0,cueStarted=0,lastCueAt=0;
  bool approved=false,commitSent=false,uncertain=false,confirmedAbsent=false,terminalSent=false,revealed=false;
- uint8_t pattern[4]{};
+ uint8_t pattern[4]{},comparison[6]{};
+ bool cueRendered=false,cueComplete=false;
  char reason[49]{};
 } session;
 Candidate candidates[8]{};uint8_t self[6]{};uint64_t boot=0,advertBoot=0;
 uint8_t advertNonce[16]{},advertCommit[32]{};
-uint32_t nextAdvert=0,cooldownUntil=0;bool radioHeld=false,blocked=false;
+uint32_t nextAdvert=0,cooldownUntil=0;bool radioHeld=false,blocked=false,advertiseV2=false;
 LampCommissionCrypto::Exchange exchange;
 const uint8_t broadcast[6]{255,255,255,255,255,255};
 bool due(uint32_t now,uint32_t at){return int32_t(now-at)>=0;}
@@ -48,7 +50,13 @@ String json(){
  String out="{\"version\":1,\"target\":"+quote(id(session.transcript.target).c_str())+",\"requestId\":"+quote(hex(session.transcript.requestId).c_str())+",\"broker\":"+quote(id(session.transcript.broker).c_str())+",\"targetBoot\":"+quote(hex(session.transcript.targetBoot).c_str())+",\"phase\":"+quote(phaseName())+",\"pattern\":[";
  for(unsigned i=0;i<4;++i){if(i)out+=',';out+=String(session.pattern[i]);}
  uint64_t fleet=0;for(unsigned i=0;i<8;++i)fleet=fleet<<8|session.transcript.fleetId[i];
- out+="],\"fleetId\":"+quote(hex(fleet).c_str())+",\"approved\":"+(session.approved?"true":"false")+",\"uncertain\":"+(session.uncertain?"true":"false")+",\"confirmedAbsent\":"+(session.confirmedAbsent?"true":"false")+",\"reason\":"+quote(session.reason)+",\"expiresAt\":"+String(session.started+Lifetime)+"}";return out;
+ out+="],\"fleetId\":"+quote(hex(fleet).c_str())+",\"approved\":"+(session.approved?"true":"false")+",\"uncertain\":"+(session.uncertain?"true":"false")+",\"confirmedAbsent\":"+(session.confirmedAbsent?"true":"false")+",\"reason\":"+quote(session.reason)+",\"expiresAt\":"+String(session.started+Lifetime)+",\"brokerBoot\":"+quote(hex(session.transcript.brokerBoot).c_str())+",\"comparison\":{\"version\":"+String(session.transcript.version)+",\"entropyBits\":"+String(session.transcript.version==2?24:16);
+ if(session.transcript.version==2){
+  out+=",\"semanticKey\":\"commission.color-counts.v2\",\"symbols\":[";
+  for(unsigned i=0;i<LampCommissionCue::Symbols;++i){if(i)out+=',';out+=String(session.comparison[i]);}
+  out+="],\"checkSymbol\":"+String(LampCommissionCue::check(session.comparison))+",\"cycleMs\":"+String(LampCommissionCue::Cycle)+",\"pulseOnMs\":"+String(LampCommissionCue::PulseOn)+",\"pulsePeriodMs\":"+String(LampCommissionCue::PulsePeriod)+",\"countPeriodMs\":"+String(LampCommissionCue::CountPeriod)+",\"symbolPeriodMs\":"+String(LampCommissionCue::SymbolPeriod)+",\"approvalRequiresFullCycle\":true";
+ }
+ return out+"}}";
 }
 void releaseRadio(){if(radioHeld){finishLampBluetoothUpdateRadio(false);radioHeld=false;}}
 void erasePrivateTranscript(){
@@ -81,11 +89,11 @@ void reject(uint8_t error,const char* reason,bool absent){
  exchange.clear();erasePrivateTranscript();LampCommissionCrypto::erase(&session.keys,sizeof(session.keys));LampCommissionCrypto::erase(session.fleet,sizeof(session.fleet));
 }
 void offer(uint32_t now){
- uint8_t bytes[OfferSize];const Transcript& t=session.transcript;memcpy(bytes,"CCO\1",4);memcpy(bytes+4,t.broker,6);memcpy(bytes+10,t.target,6);put64(bytes+16,t.brokerBoot);put64(bytes+24,t.targetBoot);put64(bytes+32,t.requestId);
+ uint8_t bytes[OfferSize];const Transcript& t=session.transcript;memcpy(bytes,"CCO",3);bytes[3]=t.version;memcpy(bytes+4,t.broker,6);memcpy(bytes+10,t.target,6);put64(bytes+16,t.brokerBoot);put64(bytes+24,t.targetBoot);put64(bytes+32,t.requestId);
  memcpy(bytes+40,t.fleetId,8);memcpy(bytes+48,t.brokerCommit,32);memcpy(bytes+80,t.targetCommit,32);
  if(LampEspNow::enqueue(bytes,sizeof(bytes),t.target,true))session.nextSend=now+RetryPeriod;
 }
-void base(const Transcript& t,const char* magic,uint8_t* bytes){memcpy(bytes,magic,4);memcpy(bytes+4,t.broker,6);memcpy(bytes+10,t.target,6);put64(bytes+16,t.brokerBoot);put64(bytes+24,t.targetBoot);put64(bytes+32,t.requestId);memcpy(bytes+40,t.fleetId,8);memcpy(bytes+48,t.brokerCommit,32);memcpy(bytes+80,t.targetCommit,32);}
+void base(const Transcript& t,const char* magic,uint8_t* bytes){memcpy(bytes,magic,3);bytes[3]=t.version;memcpy(bytes+4,t.broker,6);memcpy(bytes+10,t.target,6);put64(bytes+16,t.brokerBoot);put64(bytes+24,t.targetBoot);put64(bytes+32,t.requestId);memcpy(bytes+40,t.fleetId,8);memcpy(bytes+48,t.brokerCommit,32);memcpy(bytes+80,t.targetCommit,32);}
 void reveal(bool broker){
  const uint8_t kind=broker?101:102;if(session.kind==kind&&session.wireSize)return;
  base(session.transcript,broker?"CCB\1":"CCT\1",session.wire);memcpy(session.wire+OfferSize,broker?session.transcript.brokerPublic:session.transcript.targetPublic,65);memcpy(session.wire+OfferSize+65,broker?session.transcript.brokerNonce:session.transcript.targetNonce,16);
@@ -98,8 +106,8 @@ void advertise(uint32_t now){
   if(!LampCommissionCrypto::commitment(self,advertBoot,exchange.publicKey(),advertNonce,advertCommit)){exchange.clear();nextAdvert=now+5000;return;}
  }
  char name[49],version[25];text(name,lampName.c_str(),sizeof(name));text(version,LAMP_FIRMWARE_VERSION,sizeof(version));const size_t n=strlen(name),v=strlen(version);
- uint8_t bytes[AdvertHeader+48+24];memcpy(bytes,"CCA\1",4);memcpy(bytes+4,self,6);put64(bytes+10,advertBoot);memcpy(bytes+18,advertCommit,32);bytes[50]=uint8_t(n);bytes[51]=uint8_t(v);memcpy(bytes+52,name,n);memcpy(bytes+52+n,version,v);
- if(LampEspNow::enqueue(bytes,AdvertHeader+n+v,broadcast,true))nextAdvert=now+AdvertPeriod;
+ uint8_t bytes[AdvertHeader+48+24];memcpy(bytes,"CCA",3);bytes[3]=advertiseV2?2:1;memcpy(bytes+4,self,6);put64(bytes+10,advertBoot);memcpy(bytes+18,advertCommit,32);bytes[50]=uint8_t(n);bytes[51]=uint8_t(v);memcpy(bytes+52,name,n);memcpy(bytes+52+n,version,v);
+ if(LampEspNow::enqueue(bytes,AdvertHeader+n+v,broadcast,true)){nextAdvert=now+AdvertPeriod;advertiseV2=!advertiseV2;}
 }
 bool advert(const LampEspNow::Received& message,uint32_t now){
  if(message.length<AdvertHeader||message.length>AdvertHeader+72||!mac(message.source)||same(message.source,self)||memcmp(message.data+4,message.source,6)||!u64(message.data+10))return true;
@@ -109,6 +117,7 @@ bool advert(const LampEspNow::Received& message,uint32_t now){
  Candidate* candidate=nullptr;for(auto& c:candidates)if(same(c.mac,message.source)){candidate=&c;break;}
  if(!candidate)for(auto& c:candidates)if(zeroMac(c.mac)||uint32_t(now-c.observed)>=CandidateTimeout){candidate=&c;break;}
  if(!candidate)return true;
+ const uint8_t supported=message.data[3];if(candidate->boot!=u64(message.data+10))candidate->comparisonVersion=supported;else if(supported>candidate->comparisonVersion)candidate->comparisonVersion=supported;
  memcpy(candidate->mac,message.source,6);candidate->boot=u64(message.data+10);candidate->observed=now;memcpy(candidate->commitment,message.data+18,32);memset(candidate->name,0,sizeof(candidate->name));memset(candidate->version,0,sizeof(candidate->version));memcpy(candidate->name,message.data+52,n);memcpy(candidate->version,message.data+52+n,v);return true;
 }
 bool receiveOffer(const LampEspNow::Received& message,uint32_t now){
@@ -120,7 +129,7 @@ bool receiveOffer(const LampEspNow::Received& message,uint32_t now){
   return true;
  }
  if(blocked||!lampMeshEnrollmentEligible()||!due(now,cooldownUntil)||!exchange.active()||u64(message.data+24)!=advertBoot||memcmp(message.data+80,advertCommit,32))return true;
- Transcript t;memcpy(t.broker,message.source,6);memcpy(t.target,self,6);t.brokerBoot=u64(message.data+16);t.targetBoot=advertBoot;t.requestId=u64(message.data+32);memcpy(t.targetPublic,exchange.publicKey(),65);memcpy(t.targetNonce,advertNonce,16);memcpy(t.fleetId,message.data+40,8);memcpy(t.brokerCommit,message.data+48,32);memcpy(t.targetCommit,advertCommit,32);
+ Transcript t;t.version=message.data[3];memcpy(t.broker,message.source,6);memcpy(t.target,self,6);t.brokerBoot=u64(message.data+16);t.targetBoot=advertBoot;t.requestId=u64(message.data+32);memcpy(t.targetPublic,exchange.publicKey(),65);memcpy(t.targetNonce,advertNonce,16);memcpy(t.fleetId,message.data+40,8);memcpy(t.brokerCommit,message.data+48,32);memcpy(t.targetCommit,advertCommit,32);
  session=Session{};session.role=TargetRole;session.phase=Exchange;session.transcript=t;session.started=now;cooldownUntil=now+Lifetime;
  if(!beginLampBluetoothUpdateRadio()){fail("Radio is busy",true);clearSecrets();return true;}radioHeld=true;reveal(false);return true;
 }
@@ -134,20 +143,26 @@ bool receiveReveal(const LampEspNow::Received& message,uint32_t now,bool brokerR
  if(session.phase!=Exchange||!exchange.active())return true;
  memcpy(brokerReveal?session.transcript.brokerPublic:session.transcript.targetPublic,publicKey,65);memcpy(brokerReveal?session.transcript.brokerNonce:session.transcript.targetNonce,publicNonce,16);
  if(!exchange.derive(publicKey,session.transcript,session.keys)){fail("Invalid committed public key");clearSecrets();return true;}
- session.revealed=true;memcpy(session.pattern,session.keys.pattern,4);exchange.clear();
- if(brokerReveal){session.phase=Confirm;prepare(LampCommissionCrypto::Ready);}else reveal(true);
+ session.revealed=true;memcpy(session.pattern,session.keys.pattern,4);memcpy(session.comparison,session.keys.comparison,6);exchange.clear();
+ if(brokerReveal){session.phase=Confirm;session.cueStarted=now;prepare(LampCommissionCrypto::Ready);}else reveal(true);
  return true;
 }
 }
 bool working(){return session.phase==Exchange||session.phase==Confirm||session.phase==Approved;}
-void begin(){clearSecrets();releaseRadio();session=Session{};for(auto& c:candidates)c=Candidate{};esp_read_mac(self,ESP_MAC_WIFI_STA);boot=nonce();advertBoot=0;nextAdvert=cooldownUntil=0;blocked=false;}
+void begin(){clearSecrets();releaseRadio();session=Session{};for(auto& c:candidates)c=Candidate{};esp_read_mac(self,ESP_MAC_WIFI_STA);boot=nonce();advertBoot=0;nextAdvert=cooldownUntil=millis();blocked=false;advertiseV2=false;}
 bool physicalPending(){return session.role==TargetRole&&session.phase==Confirm&&!blocked&&uint32_t(millis()-session.started)<Lifetime;}
 void approvePhysical(){
- if(!physicalPending()||!lampMeshEnrollmentEligible())return;
+ if(!physicalPending()||!lampMeshEnrollmentEligible()||(session.transcript.version==2&&!session.cueComplete))return;
  session.approved=true;session.phase=Approved;prepare(LampCommissionCrypto::Approved);
 }
 bool cue(uint32_t now,uint8_t& red,uint8_t& green,uint8_t& blue){
  if(!physicalPending())return false;
+ if(session.transcript.version==2){
+  if(!session.cueRendered||uint32_t(now-session.lastCueAt)>LampCommissionCue::MaximumRenderGap){session.cueRendered=true;session.cueStarted=now;session.cueComplete=false;}
+  session.lastCueAt=now;
+  const uint32_t elapsed=now-session.cueStarted;if(elapsed>=LampCommissionCue::Cycle)session.cueComplete=true;
+  LampCommissionCue::render(session.comparison,elapsed,red,green,blue);return true;
+ }
  static const uint8_t colors[16][3]={{255,0,0},{255,96,0},{255,220,0},{128,255,0},{0,255,0},{0,255,96},{0,220,255},{0,96,255},{0,0,255},{96,0,255},{180,0,255},{255,0,220},{255,0,96},{255,170,96},{128,180,255},{255,255,255}};
  const uint32_t at=(now-session.started)%6000;red=green=blue=0;if(at>=5000||at%1250>=1000)return true;
  const uint8_t* color=colors[session.keys.pattern[at/1250]];red=color[0];green=color[1];blue=color[2];return true;
@@ -156,22 +171,24 @@ String candidatesJson(){
  String out="{\"version\":1,\"broker\":"+quote(id(self).c_str())+",\"candidates\":[";bool comma=false;const uint32_t now=millis();
  for(const auto& c:candidates)if(mac(c.mac)&&uint32_t(now-c.observed)<CandidateTimeout&&!LampMeshAdapter::online(c.mac)){
   if(comma)out+=',';
-  comma=true;out+="{\"id\":"+quote(id(c.mac).c_str())+",\"name\":"+quote(c.name)+",\"firmwareVersion\":"+quote(c.version)+",\"broker\":"+quote(id(self).c_str())+",\"online\":true,\"claimed\":false,\"observedAt\":"+String(c.observed)+"}";
+  comma=true;out+="{\"id\":"+quote(id(c.mac).c_str())+",\"name\":"+quote(c.name)+",\"firmwareVersion\":"+quote(c.version)+",\"broker\":"+quote(id(self).c_str())+",\"online\":true,\"claimed\":false,\"observedAt\":"+String(c.observed)+",\"comparisonVersion\":"+String(c.comparisonVersion)+",\"targetBoot\":"+quote(hex(c.boot).c_str())+"}";
  }
  return out+"]}";
 }
-LampControlReply start(const String& target,const String& requestId,const String& broker){
+LampControlReply start(const String& target,const String& requestId,const String& broker,uint8_t comparisonVersion){
  uint8_t address[6],brokerAddress[6],fleet[16]{};uint64_t request=0;const uint32_t now=millis();
  if(!parseId(target,address)||!parseId(broker,brokerAddress)||!same(brokerAddress,self)||!parseHex(requestId,request)||same(address,self))return {400,"Invalid commissioning target, broker or request"};
- if(matches(target,requestId,broker))return {200,json()};
+ if(comparisonVersion!=1&&comparisonVersion!=2)return {400,"Unsupported physical comparison version"};
+ if(matches(target,requestId,broker))return comparisonVersion==session.transcript.version?LampControlReply{200,json()}:LampControlReply{409,"Original comparison version is locked"};
  if(session.role==BrokerRole&&same(address,session.transcript.target)&&uint32_t(now-session.started)<Lifetime)return {409,"This physical attempt is still locked"};
  if(blocked||working()||lampUpdateOwnsResources()||LampFirmwareRelay::ownsRadio())return {409,"Commissioning or updater is busy"};
  if(!LampFirmwareRelay::copyFleetKey(fleet))return {409,"Broker has no paired owner fleet"};
  Candidate* candidate=nullptr;for(auto& c:candidates)if(same(c.mac,address)&&uint32_t(now-c.observed)<CandidateTimeout){candidate=&c;break;}
  if(!candidate||LampMeshAdapter::online(address)){LampCommissionCrypto::erase(fleet,sizeof(fleet));return {404,"New lamp is no longer available"};}
+ if(comparisonVersion>candidate->comparisonVersion){LampCommissionCrypto::erase(fleet,sizeof(fleet));return {409,"Target does not support requested physical comparison"};}
  clearSecrets();session=Session{};
  if(!exchange.generate()){LampCommissionCrypto::erase(fleet,sizeof(fleet));return {503,"Could not allocate commissioning exchange"};}
- session.role=BrokerRole;session.phase=Exchange;session.started=now;Transcript& t=session.transcript;memcpy(t.broker,self,6);memcpy(t.target,address,6);t.brokerBoot=boot;t.targetBoot=candidate->boot;t.requestId=request;memcpy(t.brokerPublic,exchange.publicKey(),65);randomBytes(t.brokerNonce);memcpy(t.targetCommit,candidate->commitment,32);memcpy(session.fleet,fleet,16);LampCommissionCrypto::erase(fleet,sizeof(fleet));
+ session.role=BrokerRole;session.phase=Exchange;session.started=now;Transcript& t=session.transcript;t.version=comparisonVersion;memcpy(t.broker,self,6);memcpy(t.target,address,6);t.brokerBoot=boot;t.targetBoot=candidate->boot;t.requestId=request;memcpy(t.brokerPublic,exchange.publicKey(),65);randomBytes(t.brokerNonce);memcpy(t.targetCommit,candidate->commitment,32);memcpy(session.fleet,fleet,16);LampCommissionCrypto::erase(fleet,sizeof(fleet));
  if(!LampCommissionCrypto::fleetIdentifier(session.fleet,t.fleetId)||!LampCommissionCrypto::commitment(self,boot,t.brokerPublic,t.brokerNonce,t.brokerCommit)){clearSecrets();fail("Could not commit commissioning key",true);return {400,json()};}
  if(!beginLampBluetoothUpdateRadio()){clearSecrets();fail("Radio is busy",true);return {409,json()};}radioHeld=true;session.nextSend=now;return {202,json()};
 }
@@ -185,7 +202,8 @@ LampControlReply cancel(const String& target,const String& requestId,const Strin
 }
 bool receive(const LampEspNow::Received& message){
  if(message.length<4)return false;
- const bool advertisement=!memcmp(message.data,"CCA\1",4),offered=!memcmp(message.data,"CCO\1",4),encrypted=!memcmp(message.data,"CCE\1",4),brokerReveal=!memcmp(message.data,"CCB\1",4),targetReveal=!memcmp(message.data,"CCT\1",4);if(!advertisement&&!offered&&!encrypted&&!brokerReveal&&!targetReveal)return false;
+ if(message.data[3]!=1&&message.data[3]!=2)return false;
+ const bool advertisement=!memcmp(message.data,"CCA",3),offered=!memcmp(message.data,"CCO",3),encrypted=!memcmp(message.data,"CCE",3),brokerReveal=!memcmp(message.data,"CCB",3),targetReveal=!memcmp(message.data,"CCT",3);if(!advertisement&&!offered&&!encrypted&&!brokerReveal&&!targetReveal)return false;
  const uint32_t now=millis();if(blocked||uint32_t(now-message.receivedAt)>1500)return true;if(advertisement)return advert(message,now);if(offered)return receiveOffer(message,now);if(brokerReveal||targetReveal)return receiveReveal(message,now,brokerReveal);
  if(session.role==NoRole||uint32_t(now-session.started)>=Lifetime)return true;
  uint8_t kind=0,body[32]{};uint32_t sequence=0;size_t size=0;if(!LampCommissionCrypto::open(session.transcript,session.keys,message.source,message.data,message.length,kind,sequence,body,size))return true;

@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='coollamp-mesh-adapter-',dir=ROOT/'.buil
                     '-Wno-misleading-indentation','-Wno-parentheses',*SANITIZERS,*includes,*defines,
                     str(ROOT/'tests/mesh-adapter-runtime.cpp'),str(ROOT/'LampMeshCore.cpp'),
                     str(ROOT/'LampMeshCrypto.cpp'),str(ROOT/'LampSyncRadioCrypto.cpp'),*objects,'-o',str(binary)],check=True)
-    scenarios=['http400','pagination','retention','no-route','same-id-content',
+    scenarios=['confidential','http400','pagination','retention','no-route','same-id-content',
                'wrong-result','lost-receipts','updater-pause','direct-only','remote-direct-only',
                'idle-auth-hold']
     for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)

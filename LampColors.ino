@@ -6,6 +6,77 @@ static LampColor effectColors[LAMP_EFFECT_COUNT];
 static bool colorsDirty = false;
 static LampEffectOptions effectOptions[LAMP_EFFECT_COUNT];
 static bool optionsDirty = false;
+static bool appearanceV2[LAMP_EFFECT_COUNT]{};
+static bool appearanceSaveReady=false;
+static uint32_t appearanceSavedAt=0;
+LampColor defaultLampColor(uint8_t mode);
+LampEffectOptions defaultEffectOptions(uint8_t mode);
+static constexpr size_t AppearanceBytes=24;
+static bool appearanceMigrationPending=false;
+bool lampAppearanceMigrationPending(){return appearanceMigrationPending;}
+
+// One atomic NVS item per effect; never writes the startup settings item.
+// V1 stays readable and serves as lazy migration input. Existing v2 items are
+// also refreshed by legacy saves, so an older API cannot leave a stale overlay.
+static void appearanceKey(uint8_t mode,char* key){snprintf(key,9,"look%02u",unsigned(mode));}
+static void appearanceBytes(uint8_t mode,uint8_t* data){
+  const auto c=effectColors[mode-1];const auto o=effectOptions[mode-1];
+  const uint8_t value[12]={2,mode,c.enabled,c.r,c.g,c.b,o.speed,o.intensity,o.dual,o.r,o.g,o.b};memcpy(data,value,sizeof(value));
+}
+// Exact baseline bytes detect edits made by firmware that only knows catalog
+// v1. An old firmware save wins for that effect on the next upgrade, without
+// discarding unrelated v2 memories or relying on a collision-prone hash.
+static void legacyAppearanceBytes(Preferences& prefs,uint8_t mode,uint8_t* out){
+  auto c=defaultLampColor(mode);auto o=defaultEffectOptions(mode);uint8_t blob[229]{};
+  if(mode<=LAMP_BASE_EFFECT_COUNT){
+    size_t length=prefs.getBytesLength("colors");
+    if((length==117||length==149||length==153)&&prefs.getBytes("colors",blob,length)==length&&blob[0]==1){bool valid=true;for(size_t i=1;i<length;i+=4)if(blob[i]>1)valid=false;if(valid&&mode<=(length-1)/4){const auto* p=blob+1+(mode-1)*4;c={p[0],p[1],p[2],p[3]};}}
+    length=prefs.getBytesLength("effectOptions");
+    if((length==223||length==229)&&prefs.getBytes("effectOptions",blob,length)==length&&blob[0]==1&&mode<=(length-1)/6){const auto* p=blob+1+(mode-1)*6;if(p[0]>=1&&p[0]<=100&&p[1]<=100&&p[2]<=1)o={p[0],p[1],p[2],p[3],p[4],p[5]};}
+  }else{
+    const size_t length=prefs.getBytesLength("audioEffectsV1");
+    if((length==21||length==71||length==81||length==91)&&prefs.getBytes("audioEffectsV1",blob,length)==length&&blob[0]==1&&mode<=LAMP_BASE_EFFECT_COUNT+(length-1)/10){const auto* p=blob+1+(mode-LAMP_BASE_EFFECT_COUNT-1)*10;if(p[0]<=1)c={p[0],p[1],p[2],p[3]};if(p[4]>=1&&p[4]<=100&&p[5]<=100&&p[6]<=1)o={p[4],p[5],p[6],p[7],p[8],p[9]};}
+  }
+  if(mode==LAMP_CUSTOM_SOLID)c.enabled=1;
+  const uint8_t bytes[12]={1,mode,c.enabled,c.r,c.g,c.b,o.speed,o.intensity,o.dual,o.r,o.g,o.b};memcpy(out,bytes,sizeof(bytes));
+}
+static bool validAppearance(const uint8_t* data,uint8_t mode){return data[0]==2&&data[1]==mode&&data[2]<=1&&data[6]>=1&&data[6]<=100&&data[7]<=100&&data[8]<=1&&(mode!=LAMP_CUSTOM_SOLID||data[2]==1);}
+void loadLampAppearanceV2(){
+  memset(appearanceV2,0,sizeof(appearanceV2));appearanceSaveReady=false;appearanceMigrationPending=false;uint64_t rebases=0;
+  Preferences prefs;if(!prefs.begin("coollamp",true))return;
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode){char key[9];appearanceKey(mode,key);uint8_t data[AppearanceBytes]{},legacy[12]{};legacyAppearanceBytes(prefs,mode,legacy);
+    if(prefs.getBytesLength(key)!=sizeof(data)||prefs.getBytes(key,data,sizeof(data))!=sizeof(data)||!validAppearance(data,mode))continue;
+    appearanceV2[mode-1]=true;
+    if(memcmp(data+12,legacy,sizeof(legacy))){rebases|=uint64_t(1)<<(mode-1);continue;}
+    effectColors[mode-1]={data[2],data[3],data[4],data[5]};effectOptions[mode-1]={data[6],data[7],data[8],data[9],data[10],data[11]};appearanceV2[mode-1]=true;
+  }prefs.end();
+  if(!rebases)return;
+  // Record the newer legacy save durably. Without this rebase, a subsequent
+  // downgrade returning to the original v1 color could resurrect stale v2 data.
+  Preferences migration;if(!migration.begin("coollamp",false)){appearanceMigrationPending=true;return;}
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode)if(rebases&(uint64_t(1)<<(mode-1))){char key[9];appearanceKey(mode,key);uint8_t record[AppearanceBytes]{},readback[AppearanceBytes]{};appearanceBytes(mode,record);legacyAppearanceBytes(migration,mode,record+12);
+    const bool saved=migration.putBytes(key,record,sizeof(record))==sizeof(record);
+    const bool reconciled=saved||(migration.getBytesLength(key)==sizeof(readback)&&migration.getBytes(key,readback,sizeof(readback))==sizeof(readback)&&memcmp(record,readback,sizeof(record))==0);
+    if(!reconciled)appearanceMigrationPending=true;
+  }migration.end();
+}
+LampAppearanceResult saveLampAppearanceAccepted(uint8_t mode,uint32_t now){
+  if(lampSyncFollowing()||mode<1||mode>lampAvailableEffectCount())return LampAppearanceResult::Failed;
+  uint8_t data[AppearanceBytes]{},old[AppearanceBytes]{};appearanceBytes(mode,data);char key[9];appearanceKey(mode,key);
+  Preferences prefs;if(!prefs.begin("coollamp",false))return LampAppearanceResult::Failed;
+  legacyAppearanceBytes(prefs,mode,data+12);
+  const bool hadOld=prefs.getBytesLength(key)==sizeof(old)&&prefs.getBytes(key,old,sizeof(old))==sizeof(old);
+  const bool same=hadOld&&memcmp(data,old,sizeof(data))==0;
+  if(!same&&appearanceSaveReady&&uint32_t(now-appearanceSavedAt)<2000){prefs.end();return LampAppearanceResult::Busy;}
+  bool ok=same||prefs.putBytes(key,data,sizeof(data))==sizeof(data);
+  LampAppearanceResult result=ok?LampAppearanceResult::Persisted:LampAppearanceResult::Uncertain;
+  if(!ok){uint8_t readback[AppearanceBytes]{};const bool read=prefs.getBytesLength(key)==sizeof(readback)&&prefs.getBytes(key,readback,sizeof(readback))==sizeof(readback);
+    if(read&&memcmp(readback,data,sizeof(data))==0){ok=true;result=LampAppearanceResult::Persisted;}
+    else if(read&&hadOld&&memcmp(readback,old,sizeof(old))==0)result=LampAppearanceResult::Failed;
+  }prefs.end();
+  if(ok){appearanceV2[mode-1]=true;if(!same){appearanceSavedAt=now;appearanceSaveReady=true;}}return result;
+}
+bool saveLampAppearanceV2(uint8_t mode,uint32_t now){return saveLampAppearanceAccepted(mode,now)==LampAppearanceResult::Persisted;}
 
 LampColor defaultLampColor(uint8_t mode)
 {
@@ -123,8 +194,14 @@ bool saveLampColors()
     p[4]=o.speed;p[5]=o.intensity;p[6]=o.dual;p[7]=o.r;p[8]=o.g;p[9]=o.b;
   }
   const bool savedAudio = prefs.putBytes("audioEffectsV1", audio, sizeof(audio)) == sizeof(audio);
+  bool savedV2=true;
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode)if(appearanceV2[mode-1]){
+    char key[9];appearanceKey(mode,key);uint8_t current[AppearanceBytes]{},old[AppearanceBytes]{};appearanceBytes(mode,current);legacyAppearanceBytes(prefs,mode,current+12);
+    const bool same=prefs.getBytesLength(key)==sizeof(old)&&prefs.getBytes(key,old,sizeof(old))==sizeof(old)&&memcmp(old,current,sizeof(old))==0;
+    if(!same)savedV2=(prefs.putBytes(key,current,sizeof(current))==sizeof(current))&&savedV2;
+  }
   prefs.end();
-  if (!savedAudio) return false;
+  if (!savedAudio||!savedV2) return false;
   if (saved) colorsDirty = false;
   if (savedOptions) optionsDirty = false;
   return saved && savedOptions;

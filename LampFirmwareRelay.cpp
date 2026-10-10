@@ -2,7 +2,11 @@
 #include "LampFirmwareRelayCrypto.h"
 #include "LampBleUpdate.h"
 #include "LampUpdate.h"
+#include "LampUpdateAttempt.h"
 #include "LampCommission.h"
+#include "UpdatePublisher.h"
+#include "LampRollout.h"
+#include "LampSync.h"
 #include <Preferences.h>
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
@@ -21,15 +25,20 @@ enum State:uint8_t {Idle,AwaitDonor,Receiving,Sending};
 State state=Idle;
 uint8_t fleet[16]{},self[6]{},peer[6]{},ownHash[32]{},offeredHash[32]{},body[BodyLimit]{},wire[250]{},readBuffer[512]{},bleFrame[244]{};
 bool paired=false,described=false,hashing=false,donorReserved=false,senderReady=false,ownMarker=false;
+bool offeredSigned=false,ownSigned=false;
+UpdatePublisher::Manifest ownPublisher{},offeredPublisher{};
 size_t ownMarkerAt=0;
 const esp_partition_t* running=nullptr;
 uint64_t boot=0,session=0,offerToken=0,expectedPeerBoot=0;
 uint32_t sequence=0,lastPeerSequence=0,imageSize=0,hashOffset=0,offeredSize=0,offset=0,touched=0,started=0,lastSent=0,lastOffer=0,retryAt=0;
+uint32_t describeRetryAt=0,lastSignedVerification=0;
+bool signedVerificationSeen=false;
 uint16_t offeredVersion[3]{},bleSequence=0;
 mbedtls_sha256_context hash;
 void erase(void* data,size_t size){volatile uint8_t* p=static_cast<volatile uint8_t*>(data);while(size--)*p++=0;}
 uint64_t randomSession(){return (uint64_t(esp_random())<<32|esp_random())|1;}
 bool newer(const uint16_t* a,const uint16_t* b){for(unsigned i=0;i<3;++i)if(a[i]!=b[i])return a[i]>b[i];return false;}
+bool donationAllowedByRollout(){return lampSyncRole()!=1||!lampRolloutPinsMembership();}
 bool send(const uint8_t* bytes,size_t size,const uint8_t* destination){
  if(!paired||!boot||sequence==UINT32_MAX)return false;
  if(!LampFirmwareRelayCrypto::seal(bytes,size,self,destination,fleet,boot,++sequence,wire))return false;
@@ -58,15 +67,23 @@ bool describe(){
 #endif
 }
 bool startReceiver(){
- if(!getLampUpdateStatus().automatic||!beginLampRadioFirmwareReceiver(uint32_t(session)))return false;
- char digest[65],manifest[192];for(unsigned i=0;i<32;++i)snprintf(digest+i*2,3,"%02x",offeredHash[i]);
- const int length=snprintf(manifest,sizeof(manifest),"COOLLAMP-OTA-1\n%u.%u.%u\nesp32c3\ndual-ota-2031616\n%lu\n%s\n",offeredVersion[0],offeredVersion[1],offeredVersion[2],static_cast<unsigned long>(offeredSize),digest);
- if(length<=0||length>=192){abortLampRadioFirmwareReceiver();return false;}
- memset(bleFrame,0,sizeof(bleFrame));bleFrame[0]=1;bleFrame[1]=LampBleUpdateWire::Manifest;put32(bleFrame+2,uint32_t(session));LampBleUpdateWire::put16(bleFrame+6,++bleSequence);memcpy(bleFrame+10,manifest,size_t(length));
- if(!enqueueLampRadioFirmwareFrame(bleFrame,10+size_t(length))){abortLampRadioFirmwareReceiver();return false;}
+ if(!lampAutomaticUpdateAllowed()||!beginLampRadioFirmwareReceiver(uint32_t(session)))return false;
+ char digest[65],manifest[UpdatePublisher::ManifestCapacity];for(unsigned i=0;i<32;++i)snprintf(digest+i*2,3,"%02x",offeredHash[i]);
+ size_t length=0;
+ if(offeredSigned){if(!UpdatePublisher::format(offeredPublisher,manifest,sizeof(manifest),length)){abortLampRadioFirmwareReceiver();return false;}}
+ else{const int used=snprintf(manifest,sizeof(manifest),"COOLLAMP-OTA-1\n%u.%u.%u\nesp32c3\ndual-ota-2031616\n%lu\n%s\n",offeredVersion[0],offeredVersion[1],offeredVersion[2],static_cast<unsigned long>(offeredSize),digest);if(used<=0||used>=192){abortLampRadioFirmwareReceiver();return false;}length=size_t(used);}
+ for(size_t at=0;at<length;){
+  const size_t count=min(size_t(LampBleUpdateWire::MaxFrame-10),length-at);
+  memset(bleFrame,0,10);bleFrame[0]=1;bleFrame[1]=LampBleUpdateWire::Manifest;put32(bleFrame+2,uint32_t(session));LampBleUpdateWire::put16(bleFrame+6,++bleSequence);LampBleUpdateWire::put16(bleFrame+8,uint16_t(at));memcpy(bleFrame+10,manifest+at,count);
+  if(!enqueueLampRadioFirmwareFrame(bleFrame,10+count)){abortLampRadioFirmwareReceiver();return false;}at+=count;
+ }
  bleFrame[1]=LampBleUpdateWire::Start;LampBleUpdateWire::put16(bleFrame+6,++bleSequence);
  if(!enqueueLampRadioFirmwareFrame(bleFrame,8)){abortLampRadioFirmwareReceiver();return false;}
- state=Receiving;serviceLampRadioFirmwareReceiver();return true;
+ state=Receiving;serviceLampRadioFirmwareReceiver();
+ uint8_t receiverState[20];getLampBleUpdateStatus(receiverState);
+ if(receiverState[1]!=LampBleUpdateWire::Preparing&&receiverState[1]!=LampBleUpdateWire::Receiving){abortLampRadioFirmwareReceiver();return false;}
+ setLampUpdateRoute(UPDATE_ROUTE_DONATION);
+ return true;
 }
 bool receiverStatus(uint8_t* status){getLampBleUpdateStatus(status);return status[1]==LampBleUpdateWire::Receiving;}
 }
@@ -83,19 +100,32 @@ bool receive(const LampEspNow::Received& message){
  // Offers use a separate broadcast-derived key. Every other packet is bound
  // to the exact sender and recipient MAC, with its boot nonce in the AEAD AAD.
  bool opened=LampFirmwareRelayCrypto::open(message.data,message.length,message.source,self,fleet,body,count);
- if(!opened)opened=LampFirmwareRelayCrypto::open(message.data,message.length,message.source,broadcast,fleet,body,count)&&body[0]==Offer;
+ if(!opened)opened=LampFirmwareRelayCrypto::open(message.data,message.length,message.source,broadcast,fleet,body,count)&&(body[0]==Offer||body[0]==SignedOffer);
  if(!opened)return true;
  const uint32_t now=millis(),incomingSequence=u32(message.data+12);const uint64_t incomingBoot=u64(message.data+4);
- if(body[0]==Offer){
-  if(state!=Idle||int32_t(now-retryAt)<0||!getLampUpdateStatus().automatic||LampCommission::working()||lampUpdateOwnsResources()||now<35000)return true;
+ if(body[0]==Offer||body[0]==SignedOffer){
+  if((UpdatePublisher::enforced()&&body[0]!=SignedOffer)||state!=Idle||int32_t(now-retryAt)<0||!lampAutomaticUpdateAllowed()||LampCommission::working()||lampUpdateOwnsResources()||now<35000)return true;
   uint16_t version[3];for(unsigned i=0;i<3;++i)version[i]=LampBleUpdateWire::u16(body+1+2*i);
   if(!newer(version,current))return true;
+  offeredSigned=body[0]==SignedOffer;
+  if(offeredSigned){
+   // A compromised fleet member cannot turn authenticated offers into an
+   // unbounded P256 loop workload. Radio callbacks still only copy frames.
+   if(signedVerificationSeen&&uint32_t(now-lastSignedVerification)<1000)return true;
+   signedVerificationSeen=true;lastSignedVerification=now;
+   UpdatePublisher::Manifest next{};memcpy(next.image.version,version,sizeof(version));next.image.size=u32(body+7);memcpy(next.image.sha256,body+11,32);next.epoch=u32(body+51);next.keyId=u32(body+55);memcpy(next.signature,body+59,64);
+   char original[UpdatePublisher::ManifestCapacity];size_t length=0;
+   if(!UpdatePublisher::format(next,original,sizeof(original),length)||!UpdatePublisher::verifyProvisioned(original,length,offeredPublisher))return true;
+  }
+  FirmwareManifest artifact{};memcpy(artifact.version,version,sizeof(version));artifact.size=u32(body+7);memcpy(artifact.sha256,body+11,32);
+  if(!LampUpdateAttempt::automaticAllowed(artifact))return true;
+  if(!lampRolloutAllowsAutomaticUpdate(artifact))return true;
   memcpy(offeredVersion,version,sizeof(version));offeredSize=u32(body+7);memcpy(offeredHash,body+11,32);offerToken=u64(body+43);
   if(!offerToken)return true;
   memcpy(peer,message.source,6);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;session=randomSession();while(!uint32_t(session))session=randomSession();state=AwaitDonor;started=touched=now;lastSent=0;offset=0;return true;
  }
  if(body[0]==Request){
-  if(state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||now<35000||lampUpdateOwnsResources())return true;
+  if(state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||now<35000||lampUpdateOwnsResources()||!donationAllowedByRollout())return true;
   if(!reserveLampManualUpdate())return true;
   if(!beginLampBluetoothUpdateRadio()){releaseLampManualUpdate();return true;}
   donorReserved=true;state=Sending;memcpy(peer,message.source,6);session=u64(body+1);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;offerToken=0;offset=0;senderReady=false;started=touched=now;lastSent=0;return true;
@@ -132,7 +162,6 @@ bool receive(const LampEspNow::Received& message){
  return true;
 }
 void service(uint32_t now){
- if(!paired)return;
  const auto radio=LampEspNow::status();
  if(state!=Idle){
   if(state==Receiving){uint8_t status[20];serviceLampRadioFirmwareReceiver();getLampBleUpdateStatus(status);if(status[1]==LampBleUpdateWire::Restarting){LampEspNow::holdChannel(now+5000);return;}if(!getLampUpdateStatus().automatic||status[1]==LampBleUpdateWire::Error){stop(now);return;}}
@@ -147,19 +176,31 @@ void service(uint32_t now){
   uint8_t p[13+DataLimit]{Data};put64(p+1,session);put32(p+9,offset);const size_t n=min(uint32_t(DataLimit),imageSize-offset);
   if(esp_partition_read(running,offset,p+13,n)!=ESP_OK){stop(now);return;}send(p,13+n,peer);return;
  }
- if(lampUpdateOwnsResources()||now<35000||!radio.active||radio.suspended)return;
+ // Installed-artifact measurement also serves postboot health/quarantine.
+ // It must not depend on enrollment or donor-radio viability on one lamp.
+ if(lampUpdateOwnsResources()||LampCommission::working()||now<35000)return;
  if(!described){
-  if(!hashing){if(!describe())return;}
+  if(int32_t(now-describeRetryAt)<0)return;
+  if(!hashing){if(!describe()){describeRetryAt=now+60000;return;}}
   const size_t n=min(uint32_t(sizeof(readBuffer)),imageSize-hashOffset);
-  if(esp_partition_read(running,hashOffset,readBuffer,n)!=ESP_OK||mbedtls_sha256_update(&hash,readBuffer,n)){mbedtls_sha256_free(&hash);hashing=false;return;}
+  if(esp_partition_read(running,hashOffset,readBuffer,n)!=ESP_OK||mbedtls_sha256_update(&hash,readBuffer,n)){mbedtls_sha256_free(&hash);hashing=false;describeRetryAt=now+60000;return;}
   constexpr char marker[]="COOLLAMP-PUBLIC-" LAMP_FIRMWARE_VERSION;
   for(size_t i=0;i<n;++i){if(readBuffer[i]==uint8_t(marker[ownMarkerAt])){if(++ownMarkerAt==sizeof(marker)){ownMarker=true;ownMarkerAt=0;}}else ownMarkerAt=readBuffer[i]==uint8_t(marker[0])?1:0;}
   hashOffset+=n;if(hashOffset<imageSize)return;
-  const bool okay=mbedtls_sha256_finish(&hash,ownHash)==0&&ownMarker;mbedtls_sha256_free(&hash);hashing=false;described=okay;if(!okay)return;
+  bool okay=mbedtls_sha256_finish(&hash,ownHash)==0&&ownMarker;mbedtls_sha256_free(&hash);hashing=false;
+  if(okay&&UpdatePublisher::enforced()){
+   char original[UpdatePublisher::ManifestCapacity];size_t length=0;
+   okay=UpdatePublisher::copyRetainedManifest(original,sizeof(original),length)&&UpdatePublisher::verifyProvisioned(original,length,ownPublisher)&&
+     ownPublisher.image.size==imageSize&&!memcmp(ownPublisher.image.sha256,ownHash,32)&&!memcmp(ownPublisher.image.version,current,sizeof(current));
+   ownSigned=okay;
+  }
+  described=okay;if(!okay){describeRetryAt=now+60000;return;}
  }
- if(now-lastOffer>=10000){lastOffer=now;offerToken=randomSession();uint8_t p[51]{Offer};for(unsigned i=0;i<3;++i)LampBleUpdateWire::put16(p+1+2*i,current[i]);put32(p+7,imageSize);memcpy(p+11,ownHash,32);put64(p+43,offerToken);send(p,sizeof(p),broadcast);}
+ if(!paired||!radio.active||radio.suspended||!donationAllowedByRollout())return;
+ if(now-lastOffer>=10000){lastOffer=now;offerToken=randomSession();uint8_t p[123]{};p[0]=ownSigned?SignedOffer:Offer;for(unsigned i=0;i<3;++i)LampBleUpdateWire::put16(p+1+2*i,current[i]);put32(p+7,imageSize);memcpy(p+11,ownHash,32);put64(p+43,offerToken);if(ownSigned){put32(p+51,ownPublisher.epoch);put32(p+55,ownPublisher.keyId);memcpy(p+59,ownPublisher.signature,64);}send(p,ownSigned?sizeof(p):51,broadcast);}
 }
 bool copyFleetKey(uint8_t* out){if(!out||!paired)return false;memcpy(out,fleet,16);return true;}
+bool runningManifest(FirmwareManifest& out){if(!described)return false;memcpy(out.version,current,sizeof(current));out.size=imageSize;memcpy(out.sha256,ownHash,32);return true;}
 bool provisionFleetKey(const uint8_t* next){
  if(!next||ownsRadio()||lampUpdateOwnsResources())return false;
  uint8_t any=0;for(unsigned i=0;i<16;++i)any|=next[i];if(!any)return false;
@@ -184,6 +225,7 @@ LampControlReply control(bool mutation,const String& form){
   if(!provisionFleetKey(next)){erase(next,sizeof(next));return {507,"Could not save fleet trust."};}
   erase(next,sizeof(next));
  }
- return {200,String("{\"version\":1,\"paired\":")+(paired?"true":"false")+",\"fleetId\":\""+fleetId()+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")+"}"};
+ const auto radio=LampEspNow::status();const bool eligible=paired&&described&&state==Idle&&!lampUpdateOwnsResources()&&!LampCommission::working()&&radio.active&&!radio.suspended&&donationAllowedByRollout();
+ return {200,String("{\"version\":1,\"signedOfferVersion\":2,\"publisherEnforced\":")+(UpdatePublisher::enforced()?"true":"false")+",\"signedImageReady\":"+(ownSigned?"true":"false")+",\"donorEligible\":"+(eligible?"true":"false")+",\"coordinatorDonationHeld\":"+(donationAllowedByRollout()?"false":"true")+",\"paired\":"+(paired?"true":"false")+",\"fleetId\":\""+fleetId()+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")+"}"};
 }
 }

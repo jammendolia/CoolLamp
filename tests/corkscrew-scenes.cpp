@@ -266,7 +266,7 @@ void boundariesAndRollover() {
                         }
     for (unsigned id = FirstScene; id <= LastScene; ++id) {
         auto v = scene(id); signal(v, Input::Maximum, 1000);
-        for (unsigned count : {0U, 1U, 10U}) {
+        for (unsigned count : {0U, 1U, unsigned(LampSyncWire::MaxMembers)+1U}) {
             v.count = count; require(!energy(LampGroupScenes::pixel(v, 32768, 2000)), "invalid group count remains lit");
         }
         v.count = 3; v.position = 3;

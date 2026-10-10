@@ -149,7 +149,7 @@ bool serviceLampKnob() {
     } else if (knobMode == KnobMode::Color) {
       knobColorIndex = (int(knobColorIndex) + delta % knobPaletteSize + knobPaletteSize) % knobPaletteSize;
       const auto* c = knobPalette[knobColorIndex];
-      if (delta) { setLampColor(knobEffect,c[0],c[1],c[2]); knobDirty = true; }
+      if (delta) { setLampColor(knobEffect,c[0],c[1],c[2]); noteLampUpdateUse(); knobDirty = true; }
     } else {
       const int next = (int(Mode)-1 + delta % lampAvailableEffectCount() + lampAvailableEffectCount()) % lampAvailableEffectCount() + 1;
       setLampControl(next, Brightness, PowerOn);

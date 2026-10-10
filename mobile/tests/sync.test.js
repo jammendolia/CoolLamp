@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseGroupCode,createGroupCode,groupStatus} from '../src/sync.js';
+import {parseGroupCode,createGroupCode,groupStatus,groupMemberLimit,supportsGroupProtocol} from '../src/sync.js';
 import {WifiTransport} from '../src/wifi.js';
 const id='aabbccddeeff',other='112233445566',key='0123456789abcdef0123456789abcdef';
 const code=`CL1-${id}-${key}`;
@@ -10,6 +10,15 @@ test('group credentials are strict, case insensitive, and created with secure ra
  let called=false;const generated=createGroupCode(id,{getRandomValues:a=>{called=true;return a.fill(171);}});
  assert(called);assert.equal(generated,`CL1-${id}-${'ab'.repeat(16)}`);
  assert.throws(()=>createGroupCode('not-an-id'),/identity/);
+});
+test('versioned expanded group codes and advertised bounds negotiate without inventing legacy capacity',()=>{
+ assert.deepEqual(parseGroupCode(`CL3-${id}-${key}`),{leader:id,key,protocol:3});
+ assert.equal(createGroupCode(id,{getRandomValues:bytes=>bytes.fill(171)},3),`CL3-${id}-${'ab'.repeat(16)}`);
+ assert.equal(groupMemberLimit({version:2,maxMembers:32}),9);
+ assert.equal(groupMemberLimit({version:3,maxMembers:32}),32);
+ for(const maxMembers of [0,33,1.5,'32',undefined])assert.equal(groupMemberLimit({version:3,maxMembers}),0);
+ assert(supportsGroupProtocol({version:2,protocolVersions:[2,3]},3));
+ assert(!supportsGroupProtocol({version:2},3));assert(!supportsGroupProtocol({version:3,protocolVersions:[2,3]},4));
 });
 test('group status explains local fallback and pause',()=>{
  assert.match(groupStatus({role:2}),/Waiting.*local/);
@@ -56,6 +65,16 @@ test('a mic-free follower reloads its audio catalog on join and loss, without re
 test('older firmware rejects group operations locally',async()=>{
  const {lamp,raw,requests}=fixture();delete raw.sync;await lamp.connect('192.168.1.5','password');
  try{const before=requests.length;await assert.rejects(lamp.configureSync(2,code),/Update lamp firmware/);assert.equal(requests.length,before);}finally{await lamp.disconnect();}
+});
+test('optional incarnation CAS is forwarded by the production HTTP and protected BLE shared method',async()=>{
+ const f=fixture();await f.lamp.connect('192.168.1.5','password');const expected='ab'.repeat(16);
+ try{
+  await f.lamp.configureSync(0,'',expected);assert.equal(f.requests.filter(row=>row.method==='POST').at(-1).data,'role=0&expectedIncarnation='+expected);
+  for(const bad of ['aa','AB'.repeat(16),null,4])await assert.rejects(f.lamp.configureSync(0,'',bad),/identity fence/);
+  const {LampTransport}=await import('../src/transport.js');const requests=[];
+  const protectedLink=Object.create(LampTransport.prototype);Object.assign(protectedLink,{raw:{deviceId:other,sync:{version:3}},request:async(path,body)=>{requests.push({path,body});return 'Saved';},refresh:async()=>{}});
+  await protectedLink.configureSync(0,'',expected);assert.deepEqual(requests,[{path:'/api/sync',body:{role:0,expectedIncarnation:expected}}]);
+ }finally{await f.lamp.disconnect();}
 });
 
 function guardedFixture({active=false,loseReply=false,accept=true,leader=id}={}){

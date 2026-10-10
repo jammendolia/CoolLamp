@@ -22,22 +22,22 @@ uint32_t millis(){return now;}
 uint32_t esp_random(){static uint32_t value=17;value=value*1664525+1013904223;return value;}
 int esp_read_mac(uint8_t* out,int){memcpy(out,addresses[side],6);return 0;}
 bool lampUpdateOwnsResources(){return updater;}
-LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::Power);assert((endpoint==LampControlEndpoint::Power)==mutation);assert(form=="power=1"||form.empty());++calls;return {replyStatus,replyBody};}
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint!=LampControlEndpoint::State)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));++calls;return {replyStatus,replyBody};}
 namespace LampFirmwareRelay {bool copyFleetKey(uint8_t* out){memcpy(out,fleet,16);return true;}String fleetId(){return "1122334455667788";}}
 namespace LampEspNow {
 bool enqueue(const uint8_t* bytes,size_t size,const uint8_t*,bool){assert(size<=250);frames.push_back({side,{bytes,bytes+size}});return true;}
 void holdChannel(uint32_t until){++channelHolds[side];channelUntil[side]=until;}
 Status status(){Status value;value.active=true;value.channel=11;return value;}
 }
-namespace Origin {LampControlReply result(const String&,const String&,const String&);}
+namespace Origin {LampControlReply result(const String&,const String&,const String&,bool);}
 #define LampMeshAdapter Origin
 #include "LampMeshAdapter.cpp"
 #undef LampMeshAdapter
-namespace Bridge {LampControlReply result(const String&,const String&,const String&);}
+namespace Bridge {LampControlReply result(const String&,const String&,const String&,bool=false);}
 #define LampMeshAdapter Bridge
 #include "LampMeshAdapter.cpp"
 #undef LampMeshAdapter
-namespace Target {LampControlReply result(const String&,const String&,const String&);}
+namespace Target {LampControlReply result(const String&,const String&,const String&,bool=false);}
 #define LampMeshAdapter Target
 #include "LampMeshAdapter.cpp"
 #undef LampMeshAdapter
@@ -80,7 +80,12 @@ int main(int argc,char** argv){
   std::cout<<"PASS actual mesh adapter idle-auth-hold unknown/off-fleet ignored, idle proof extends hold, expiry releases seeking\n";return 0;
  }
  setup();
- if(scenario=="http400"){
+ if(scenario=="confidential"){
+  assert(!Origin::allowed(LampControlEndpoint::State,0x81)&&!Origin::allowed(LampControlEndpoint::Config,0x82));
+  side=0;assert(Origin::request(targetId,requestId,"48","2","action=status",false).status==403);
+  assert(Origin::request(targetId,requestId,"48","2","action=status",true).status==202);complete();assert(calls==1&&result().status==403);side=0;assert(decode(Origin::result(targetId,requestId,"0",true).body)==replyBody);assert(Origin::request(targetId,requestId,"48","2","action=status",false).status==403);
+ }
+ else if(scenario=="http400"){
   replyStatus=400;replyBody="{\"error\":\"Use an effect supported by this lamp.\"}";assert(start().status==202);complete();auto value=result();assert(value.status==200&&stringField(value.body,"status")=="ok"&&numberField(value.body,"httpStatus")==400);assert(decode(value.body)==replyBody&&calls==1);assert(value.body.find("\"uncertain\":false")!=std::string::npos);
  }
  else if(scenario=="pagination"){

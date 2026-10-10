@@ -1,6 +1,7 @@
 #pragma once
 #include "LampEspNow.h"
 #include "LampControlEndpoint.h"
+#include "UpdateManifest.h"
 namespace LampFirmwareRelay {
 void begin();
 bool ownsRadio();
@@ -13,4 +14,5 @@ LampControlReply control(bool mutation,const String& form);
 bool copyFleetKey(uint8_t* out);
 bool provisionFleetKey(const uint8_t* key);
 String fleetId();
+bool runningManifest(FirmwareManifest& out); // False until incrementally measured and validated.
 }

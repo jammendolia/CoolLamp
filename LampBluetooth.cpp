@@ -56,6 +56,9 @@ uint8_t lastFirmware[20] = {};
 std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0};
 std::atomic<bool> secure{false}, knownPeer{false}, pairing{false};
+std::atomic<bool> enrollmentCapacity{false};
+std::atomic<bool> bondDisconnectRequested{false};
+std::atomic<uint32_t> bondStorageFailures{0};
 std::atomic<bool> disconnectRequested{false};
 uint32_t pairingStarted = 0;
 String bluetoothName;
@@ -78,9 +81,18 @@ uint8_t lastState[16] = {};
 int bondedPeers(ble_addr_t* peers)
 {
   int count = 0;
-  if (ble_store_util_bonded_peers(peers, &count, CONFIG_BT_NIMBLE_MAX_BONDS) != 0) return 0;
+  if (ble_store_util_bonded_peers(peers, &count, CONFIG_BT_NIMBLE_MAX_BONDS) != 0 || count<0 || count>CONFIG_BT_NIMBLE_MAX_BONDS) return -1;
   return count;
 }
+
+class BondStorage final : public BLEDeviceCallbacks {
+  int onStoreStatus(ble_store_status_event*,void*) override {
+    // The Arduino wrapper's default rotates out the oldest bond on capacity.
+    // A fourth phone must never silently revoke a household phone. Reject the
+    // store request, preserve every existing bond, and report the failure.
+    ++bondStorageFailures;enrollmentCapacity=false;secure=false;disconnectRequested=true;bondDisconnectRequested=true;return BLE_HS_ESTORE_CAP;
+  }
+} bondStorageCallbacks;
 
 bool bonded(const ble_addr_t& address)
 {
@@ -95,7 +107,7 @@ bool authorizeEncryptedPeer(const ble_gap_conn_desc& peer)
   // Bonded reconnections can serve encrypted ATT requests without delivering
   // the wrapper's authentication-complete callback. Use the live descriptor;
   // encryption alone never admits a phone outside the owner/enrollment policy.
-  if(disconnectRequested || connection!=peer.conn_handle || !peer.sec_state.encrypted || !(knownPeer || pairing || secure))return false;
+  if(disconnectRequested || connection!=peer.conn_handle || !peer.sec_state.encrypted || !(knownPeer || (pairing&&enrollmentCapacity) || secure))return false;
   secure=true;
   if(peer.sec_state.bonded)knownPeer=true;
   return true;
@@ -114,7 +126,7 @@ class Connections final : public BLEServerCallbacks {
     knownPeer = bonded(event->peer_id_addr);
     ++generation;
     extendedControls = false;
-    if (!knownPeer && !pairing) { disconnectRequested=true;s->disconnect(event->conn_handle); }
+    if (!knownPeer && (!pairing||!enrollmentCapacity)) { disconnectRequested=true;s->disconnect(event->conn_handle); }
     // Reading the protected state characteristic starts OS-managed pairing.
   }
   void onDisconnect(BLEServer*, ble_gap_conn_desc* event) override {
@@ -132,7 +144,7 @@ class Connections final : public BLEServerCallbacks {
 };
 
 class Security final : public BLESecurityCallbacks {
-  bool onSecurityRequest() override { return knownPeer || pairing; }
+  bool onSecurityRequest() override { return knownPeer || (pairing&&enrollmentCapacity); }
   uint32_t onPassKeyRequest() override { return 0; }
   void onPassKeyNotify(uint32_t) override {}
   bool onConfirmPIN(uint32_t) override { return false; }
@@ -323,6 +335,7 @@ void beginLampBluetooth(const String& name)
   commands = xQueueCreate(8, sizeof(Command));
   if (!commands) return;
   BLEDevice::init(name);
+  BLEDevice::setDeviceCallbacks(&bondStorageCallbacks);
   BLEDevice::setMTU(247);
   if(lampFactoryResetNeedsBondErase()) {
     if(ble_store_clear()!=0 || !completeLampFactoryReset()) {
@@ -376,6 +389,8 @@ void beginLampBluetooth(const String& name)
 
 void setLampPairingWindow(bool open)
 {
+  ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];const int count=bondedPeers(peers);
+  enrollmentCapacity=count>=0&&count<CONFIG_BT_NIMBLE_MAX_BONDS;
   pairing = open && server;
   pairingStarted = millis();
   // Make room for a new phone if the owner opens pairing while one is connected.
@@ -397,13 +412,19 @@ bool lampPairingCueActive() { return pairing && connection == NO_CONNECTION; }
 bool lampBluetoothReady() { return BLEDevice::getInitialized() && server; }
 String lampBluetoothStatusJson() {
   ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
+  const int count=bondedPeers(peers);
   return String("{\"enabled\":") + (lampBluetoothReady()?"true":"false") +
     ",\"pairing\":" + (lampPairingOpen()?"true":"false") +
     ",\"cue\":" + (lampPairingCueActive()?"true":"false") +
     ",\"connected\":" + (connection!=NO_CONNECTION?"true":"false") +
     ",\"secure\":" + (secure?"true":"false") +
     ",\"knownPeer\":" + (knownPeer?"true":"false") +
-    ",\"bonds\":" + bondedPeers(peers) +
+    ",\"bonds\":" + (count>=0?String(count):String("null")) +
+    ",\"bondCapacity\":" + CONFIG_BT_NIMBLE_MAX_BONDS + ",\"connectionCapacity\":1" +
+    ",\"bondStorageHealthy\":" + (count>=0?"true":"false") +
+    ",\"enrollmentCapacity\":" + (enrollmentCapacity?"true":"false") +
+    ",\"bondStorageFailures\":" + bondStorageFailures.load() +
+    ",\"nativePhoneInvitations\":false,\"nativeIndividualBondRevocation\":false,\"householdAuthorityVersion\":1" +
     ",\"connects\":" + connects.load() + ",\"authentications\":" + authentications.load() +
     ",\"lastEncrypted\":" + (lastEncrypted?"true":"false") + ",\"lastBonded\":" + (lastBonded?"true":"false") +
     ",\"writes\":" + writes.load() + ",\"rejectedWrites\":" + rejectedWrites.load() +
@@ -417,9 +438,9 @@ String lampBluetoothStatusJson() {
     "],\"lastAuthAt\":" + lastAuthAt.load() + ",\"lastWriteAt\":" + lastWriteAt.load() + ",\"lastDisconnectAt\":" + lastDisconnectAt.load() + "}";
 }
 
-void forgetLampPhones()
+bool forgetLampPhones()
 {
-  if (!pairing || !server) return;
+  if (!pairing || !server) return false;
   disconnectRequested=true;
   secure = false;
   knownPeer = false;
@@ -427,14 +448,20 @@ void forgetLampPhones()
   if (connection != NO_CONNECTION) server->disconnect(connection);
   ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];
   const int count = bondedPeers(peers);
-  for (int i = 0; i < count; ++i) ble_store_util_delete_peer(&peers[i]);
+  if(count<0){++bondStorageFailures;enrollmentCapacity=false;return false;}
+  bool deleted=true;
+  for (int i = 0; i < count; ++i) if(ble_store_util_delete_peer(&peers[i])!=0)deleted=false;
+  const bool verified=deleted&&bondedPeers(peers)==0;
+  enrollmentCapacity=verified;if(!verified)++bondStorageFailures;
   advertisingDirty = true;
+  return verified;
 }
-bool lampBluetoothHasBonds(){if(!server)return false;ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];return bondedPeers(peers)>0;}
+bool lampBluetoothHasBonds(){if(!server)return false;ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];return bondedPeers(peers)!=0;}
 
 void serviceLampBluetooth()
 {
   if (!server) return;
+  if(bondDisconnectRequested.exchange(false)&&connection!=NO_CONNECTION)server->disconnect(connection);
   static uint32_t transferGeneration = 0;
   const uint32_t currentGeneration = generation;
   if (transferGeneration != currentGeneration) {
@@ -558,5 +585,5 @@ bool lampPairingCueActive() { return false; }
 String lampBluetoothStatusJson() { return "{\"enabled\":false,\"pairing\":false,\"cue\":false,\"connected\":false,\"secure\":false,\"knownPeer\":false,\"bonds\":0}"; }
 bool lampBluetoothReady() { return false; }
 bool lampBluetoothHasBonds() { return false; }
-void forgetLampPhones() {}
+bool forgetLampPhones() {return false;}
 #endif

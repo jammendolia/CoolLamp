@@ -14,16 +14,17 @@ void erase(void* p,size_t n){volatile uint8_t* b=static_cast<volatile uint8_t*>(
 namespace {
 int random(void*,unsigned char* out,size_t n){while(n){const uint32_t value=esp_random();const size_t take=n<4?n:4;memcpy(out,&value,take);out+=take;n-=take;}return 0;}
 bool transcriptHash(const Transcript& t,uint8_t* digest){
- if(!mac(t.broker)||!mac(t.target)||same(t.broker,t.target)||!t.brokerBoot||!t.targetBoot||!t.requestId||t.brokerPublic[0]!=4||t.targetPublic[0]!=4)return false;
+ if((t.version!=1&&t.version!=2)||!mac(t.broker)||!mac(t.target)||same(t.broker,t.target)||!t.brokerBoot||!t.targetBoot||!t.requestId||t.brokerPublic[0]!=4||t.targetPublic[0]!=4)return false;
  constexpr char domain[]="CoolLamp physical commissioning P256 v1";
  uint8_t expected[32]{};
  if(!commitment(t.broker,t.brokerBoot,t.brokerPublic,t.brokerNonce,expected)||memcmp(expected,t.brokerCommit,32)||!commitment(t.target,t.targetBoot,t.targetPublic,t.targetNonce,expected)||memcmp(expected,t.targetCommit,32))return false;
- uint8_t bytes[sizeof(domain)-1+12+24+2*PublicKeySize+8+96];size_t at=0;
+ uint8_t bytes[sizeof(domain)-1+12+24+2*PublicKeySize+8+96+1];size_t at=0;
  memcpy(bytes,domain,sizeof(domain)-1);at+=sizeof(domain)-1;memcpy(bytes+at,t.broker,6);at+=6;memcpy(bytes+at,t.target,6);at+=6;
  put64(bytes+at,t.brokerBoot);at+=8;put64(bytes+at,t.targetBoot);at+=8;put64(bytes+at,t.requestId);at+=8;
  memcpy(bytes+at,t.brokerPublic,PublicKeySize);at+=PublicKeySize;memcpy(bytes+at,t.targetPublic,PublicKeySize);at+=PublicKeySize;memcpy(bytes+at,t.fleetId,8);at+=8;
  memcpy(bytes+at,t.brokerNonce,16);at+=16;memcpy(bytes+at,t.targetNonce,16);at+=16;memcpy(bytes+at,t.brokerCommit,32);at+=32;memcpy(bytes+at,t.targetCommit,32);
- return mbedtls_sha256(bytes,sizeof(bytes),digest,0)==0;
+ at+=32;if(t.version==2)bytes[at++]=2;
+ const bool okay=mbedtls_sha256(bytes,at,digest,0)==0;erase(bytes,sizeof(bytes));return okay;
 }
 bool bodyValid(uint8_t direction,uint8_t kind,size_t n){
  if(direction>1||kind<Ready||kind>Cancel)return false;
@@ -33,7 +34,7 @@ bool bodyValid(uint8_t direction,uint8_t kind,size_t n){
  return direction==1&&n==0;
 }
 void header(const Transcript& t,uint8_t direction,uint8_t kind,uint32_t sequence,size_t size,uint8_t* out){
- memcpy(out,"CCE\1",4);memcpy(out+4,t.broker,6);memcpy(out+10,t.target,6);put64(out+16,t.brokerBoot);put64(out+24,t.targetBoot);put64(out+32,t.requestId);
+ memcpy(out,"CCE",3);out[3]=t.version;memcpy(out+4,t.broker,6);memcpy(out+10,t.target,6);put64(out+16,t.brokerBoot);put64(out+24,t.targetBoot);put64(out+32,t.requestId);
  out[40]=kind;out[41]=direction;out[42]=uint8_t(size);out[43]=0;put32(out+44,sequence);
 }
 }
@@ -53,12 +54,12 @@ bool Exchange::generate(){
 }
 bool Exchange::derive(const uint8_t* peer,const Transcript& t,Keys& out){
  if(!context_||!peer||peer[0]!=4)return false;
- Keys next{};uint8_t encoded[66]{65},secret[32]{},derived[34]{};memcpy(encoded+1,peer,PublicKeySize);size_t size=0;
+ Keys next{};uint8_t encoded[66]{65},secret[32]{},derived[35]{};memcpy(encoded+1,peer,PublicKeySize);size_t size=0;
  auto* context=static_cast<mbedtls_ecdh_context*>(context_);
  bool okay=!mbedtls_ecdh_read_public(context,encoded,sizeof(encoded))&&!mbedtls_ecdh_calc_secret(context,&size,secret,sizeof(secret),random,nullptr)&&size==32&&transcriptHash(t,next.digest);
  constexpr char domain[]="CoolLamp commission traffic and physical colors v1";
  if(okay)okay=mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),next.digest,sizeof(next.digest),secret,sizeof(secret),reinterpret_cast<const uint8_t*>(domain),sizeof(domain)-1,derived,sizeof(derived))==0;
- if(okay){memcpy(next.brokerToTarget,derived,16);memcpy(next.targetToBroker,derived+16,16);for(unsigned i=0;i<4;++i)next.pattern[i]=uint8_t(derived[32+i/2]>>(i%2?0:4))&15;out=next;}
+ if(okay){memcpy(next.brokerToTarget,derived,16);memcpy(next.targetToBroker,derived+16,16);for(unsigned i=0;i<6;++i){next.comparison[i]=uint8_t(derived[32+i/2]>>(i%2?0:4))&15;if(i<4)next.pattern[i]=next.comparison[i];}out=next;}
  erase(secret,sizeof(secret));erase(derived,sizeof(derived));erase(encoded,sizeof(encoded));erase(&next,sizeof(next));return okay;
 }
 bool fleetIdentifier(const uint8_t* fleet,uint8_t* id){
@@ -77,7 +78,7 @@ bool seal(const Transcript& t,const Keys& keys,uint8_t direction,uint8_t kind,ui
  mbedtls_gcm_free(&context);erase(aad,sizeof(aad));erase(digest,sizeof(digest));if(result)return false;size=HeaderSize+length+TagSize;return true;
 }
 bool open(const Transcript& t,const Keys& keys,const uint8_t* source,const uint8_t* in,size_t size,uint8_t& kind,uint32_t& sequence,uint8_t* body,size_t& length){
- length=0;if(!in||!source||!body||size<HeaderSize+TagSize||size>HeaderSize+BodyLimit+TagSize||memcmp(in,"CCE\1",4))return false;
+ length=0;if(!in||!source||!body||size<HeaderSize+TagSize||size>HeaderSize+BodyLimit+TagSize||memcmp(in,"CCE",3)||in[3]!=t.version)return false;
  const uint8_t direction=in[41],type=in[40],n=in[42];const uint32_t seq=u32(in+44);
  if(!seq||in[43]||!bodyValid(direction,type,n)||size!=HeaderSize+n+TagSize||!same(source,direction?t.target:t.broker))return false;
  uint8_t expected[HeaderSize];header(t,direction,type,seq,n,expected);if(memcmp(in,expected,HeaderSize))return false;

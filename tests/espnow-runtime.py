@@ -88,6 +88,8 @@ with tempfile.TemporaryDirectory(prefix='coollamp-espnow-') as folder:
         ('espnow-crypto.cpp', ['LampSyncRadioCrypto.cpp']),
         ('sync-radio-runtime.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp']),
         ('sync-radio-capacity.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp']),
+        ('sync-expanded-runtime.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp']),
+        ('rollout-runtime.cpp', []),
         ('sync-runtime.cpp', ['LampEspNow.cpp', 'LampSyncRadioCrypto.cpp'])
     ]:
         # The included Sync source links inert mesh/commissioning loop hooks

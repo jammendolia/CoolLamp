@@ -9,6 +9,46 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class BluetoothTests(unittest.TestCase):
+    def test_bond_capacity_and_revocation_storage_outcomes(self):
+        source=(ROOT/'LampBluetooth.cpp').read_text()
+        helpers=source[source.index('int bondedPeers('):source.index('bool authorizeEncryptedPeer')]
+        window=source[source.index('void setLampPairingWindow('):source.index('bool lampPairingOpen()')]
+        revoke=source[source.index('bool forgetLampPhones()'):source.index('void serviceLampBluetooth()')]
+        stub=r'''
+#include <atomic>
+#include <cstdint>
+#include <cassert>
+constexpr int CONFIG_BT_NIMBLE_MAX_BONDS=3,BLE_HS_ESTORE_CAP=27;
+struct ble_addr_t {int value=0;};struct ble_store_status_event {};
+struct BLEDeviceCallbacks {virtual int onStoreStatus(ble_store_status_event*,void*){return 0;}};
+int ble_addr_cmp(const ble_addr_t* a,const ble_addr_t* b){return a->value-b->value;}
+int stored=3;bool listFailure=false,deleteFailure=false;
+int ble_store_util_bonded_peers(ble_addr_t* out,int* count,int){if(listFailure)return 1;*count=stored;for(int i=0;i<stored;++i)out[i].value=i;return 0;}
+int ble_store_util_delete_peer(const ble_addr_t* peer){if(deleteFailure&&peer->value==1)return 1;--stored;return 0;}
+constexpr uint16_t NO_CONNECTION=0xffff;
+std::atomic<bool> enrollmentCapacity{false},pairing{false},disconnectRequested{false},secure{false},knownPeer{false},advertisingDirty{false},bondDisconnectRequested{false};
+std::atomic<uint32_t> bondStorageFailures{0},generation{0};std::atomic<uint16_t> connection{NO_CONNECTION};std::atomic<uint8_t> extendedControls{0};
+uint32_t pairingStarted=0;uint32_t millis(){return 1;}
+struct {void disconnect(uint16_t){}} instance;auto* server=&instance;
+'''
+        main=r'''
+int main(){
+ setLampPairingWindow(true);assert(pairing&&!enrollmentCapacity&&stored==3);
+ deleteFailure=true;assert(!forgetLampPhones()&&stored==1&&!enrollmentCapacity&&bondStorageFailures==1);
+ deleteFailure=false;assert(forgetLampPhones()&&stored==0&&enrollmentCapacity);
+ listFailure=true;assert(lampBluetoothHasBonds());setLampPairingWindow(true);assert(!enrollmentCapacity);
+ assert(!forgetLampPhones()&&stored==0&&bondStorageFailures==2);
+ listFailure=false;BLEDeviceCallbacks& callbacks=bondStorageCallbacks;
+ secure=true;assert(callbacks.onStoreStatus(nullptr,nullptr)==BLE_HS_ESTORE_CAP&&bondStorageFailures==3&&!enrollmentCapacity&&!secure&&disconnectRequested&&bondDisconnectRequested);
+ setLampPairingWindow(false);assert(!forgetLampPhones());
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='lamp-ble-bonds-') as directory:
+            cpp,binary=pathlib.Path(directory)/'test.cpp',pathlib.Path(directory)/'test'
+            cpp.write_text(stub+helpers+window+revoke+main)
+            subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,str(cpp),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
     def test_ota_callbacks_only_copy_from_live_encrypted_bonded_peer(self):
         source = (ROOT/'LampBluetooth.cpp').read_text()
         helper = source[source.index('bool authorizeEncryptedPeer'):source.index('class Connections final')]
@@ -34,7 +74,7 @@ struct BLEService {BLECharacteristic ota;BLECharacteristic* createCharacteristic
 constexpr char OTA_WRITE[]="receiver";
 struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){};virtual void onRead(BLECharacteristic*,ble_gap_conn_desc*){};};
 std::atomic<uint16_t> connection{1};std::atomic<uint32_t> generation{7};
-std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false},enrollmentCapacity{true};
 struct {unsigned disconnects=0;void disconnect(uint16_t){++disconnects;}} instance;
 auto* server=&instance;
 unsigned copied=0;bool room=true;
@@ -92,7 +132,7 @@ using String=std::string;
 struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
 struct BLECharacteristic {String value;String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
 struct BLECharacteristicCallbacks {virtual void onWrite(BLECharacteristic*,ble_gap_conn_desc*){}};
-std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false},enrollmentCapacity{true};
 std::atomic<uint32_t> writes{0},rejectedWrites{0},generation{7},lastWriteAt{0};
 std::atomic<uint8_t> lastCommandId{0},lastOperation{0};
 std::atomic<bool> rejectedSecure{false},rejectedSameConnection{false},rejectedEncrypted{false};
@@ -202,7 +242,7 @@ struct BLESecurityCallbacks {virtual bool onSecurityRequest(){return false;}virt
 constexpr uint16_t NO_CONNECTION=0xffff;
 std::atomic<uint16_t> connection{NO_CONNECTION};
 std::atomic<uint32_t> generation{0},connects{0},authentications{0},serviceRefreshes{0};
-std::atomic<bool> secure{false},knownPeer{false},pairing{false},advertisingDirty{false},lastEncrypted{false},lastBonded{false},lastAuthAccepted{false},disconnectRequested{false};
+std::atomic<bool> secure{false},knownPeer{false},pairing{false},advertisingDirty{false},lastEncrypted{false},lastBonded{false},lastAuthAccepted{false},disconnectRequested{false},enrollmentCapacity{true};
 std::atomic<uint32_t> lastDisconnectAt{0},lastAuthAt{0};
 std::atomic<uint8_t> extendedControls{0};
 std::atomic<bool> controlPageReady{true};constexpr uint32_t currentGeneration=0;
@@ -239,6 +279,12 @@ int main(){
  assert(instance.disconnects==2&&!security.onSecurityRequest()&&!authorizeEncryptedPeer(actual));cb.onDisconnect(server,&actual);
  pairing=true;clockMs=120000;closeEnrollment();assert(!pairing&&!lampPairingCueActive());
  assert(connects==5&&authentications==3&&lastEncrypted&&lastBonded&&serviceRefreshes==2);
+ // A fourth/unverified phone cannot start authentication or evict a bond.
+ pairing=true;enrollmentCapacity=false;actual.peer_id_addr.value=0;
+ cb.onConnect(server,&actual);assert(!security.onSecurityRequest()&&instance.disconnects==3);
+ actual.sec_state.encrypted=true;actual.sec_state.bonded=true;assert(!authorizeEncryptedPeer(actual));
+ cb.onDisconnect(server,&actual);actual.peer_id_addr.value=1;
+ cb.onConnect(server,&actual);assert(security.onSecurityRequest()&&authorizeEncryptedPeer(actual));
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-bluetooth-') as directory:
@@ -262,7 +308,7 @@ using String=std::string;
 struct ble_gap_conn_desc {uint16_t conn_handle=1;struct {bool encrypted=true,bonded=true;}sec_state;};
 struct BLECharacteristic {String value;void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}};
 struct BLECharacteristicCallbacks {virtual void onRead(BLECharacteristic*,ble_gap_conn_desc*){}};
-std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false};
+std::atomic<uint16_t> connection{1};std::atomic<bool> secure{false},knownPeer{true},pairing{false},disconnectRequested{false},enrollmentCapacity{true};
 std::atomic<uint32_t> generation{7},controlPageGeneration{7};
 std::atomic<uint16_t> controlPageTransaction{42};std::atomic<bool> controlPageReady{true};
 '''

@@ -6,7 +6,8 @@
 
 namespace {
 LampBleControlWire::Transfer transfer;
-constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
+constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\",\"descriptor-v2\",\"effect-schema-v2\",\"partial-state-v1\",\"appearance-v2\",\"receipts-v1\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"maxEndpoint\":52,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
+static_assert(sizeof(metadata)-1<=LampBleControlWire::PageBytes,"BLE capabilities must fit one metadata page");
 void clearText(String& text){
   if(text.length())LampBleControlWire::zero(const_cast<char*>(text.c_str()),text.length());
   text=String();
@@ -43,7 +44,7 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
     if(!form.reserve(transfer.bodySize())||!form.concat(reinterpret_cast<const char*>(transfer.body()),transfer.bodySize())){
       clearText(form);transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
     }
-    LampControlReply response=transfer.endpointId()==LampControlEndpoint::FirmwareFleet?LampFirmwareRelay::control(transfer.mutation(),form):lampControlRequest(transfer.endpointId(),transfer.mutation(),form);
+    LampControlReply response=transfer.endpointId()==LampControlEndpoint::FirmwareFleet?LampFirmwareRelay::control(transfer.mutation(),form):lampControlRequest(transfer.endpointId(),transfer.mutation(),form,true);
     clearText(form);
     const bool sizeOkay=response.body.length()<=MaxResponse&&(!updating||response.body.length()<=PageBytes);
     if(!sizeOkay){clearText(response.body);response.status=507;response.body="Control response exceeds the bounded Bluetooth transfer.";}

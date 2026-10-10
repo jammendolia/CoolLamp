@@ -2,6 +2,8 @@
 #include "../LampFirmwareRelay.h"
 #include "../LampMeshAdapter.h"
 #include "../LampCommission.h"
+inline bool fixtureRolloutPins=false;
+inline bool lampRolloutPinsMembership(){return fixtureRolloutPins;}
 namespace LampFirmwareRelay {
 inline bool ownsRadio(){return false;}
 inline bool receive(const LampEspNow::Received&){return false;}

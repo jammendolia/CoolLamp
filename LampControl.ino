@@ -29,5 +29,6 @@ bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
   PowerOn = power;
   syncLampKnob();
   FastLED.setBrightness(PowerOn ? Brightness : 0);
+  noteLampUpdateUse();
   return true;
 }

@@ -13,7 +13,10 @@ enum Id : uint8_t {
   OfflineJoin=23, Bluetooth=24, Style=25, Effects=26, FirmwareFleet=27,
   MeshStatus=28, MeshRequest=29, MeshResult=30,
   Power=31, Preview=32, Defaults=33, Color=34, EffectOptions=35,
-  MeshNew=36, EnrollStart=37, EnrollStatus=38, EnrollCancel=39
+  MeshNew=36, EnrollStart=37, EnrollStatus=38, EnrollCancel=39,
+  Descriptor=40, SchemaPage=41, StatePatch=42, AppearanceSave=43,
+  Receipt=44, Revision=45, UpdatePolicy=46, GroupPage=47,
+  Household=48, HouseholdChallenge=49, HouseholdControl=50, Rollout=51, GroupRemove=52
 };
 }
 struct LampControlReply {
@@ -22,4 +25,4 @@ struct LampControlReply {
 };
 // Implemented by the network/config adapter; called on the Arduino loop only.
 String lampControlSnapshotJson();
-LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form);
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential=false);

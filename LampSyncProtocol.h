@@ -3,11 +3,16 @@
 #include <stddef.h>
 #include <string.h>
 
-// Version 2 adds ordered group scenes; all members must update. It is a fixed-size little-endian wire format, independent of LED geometry.
+// Version 2 retains nine ordered positions. Negotiated version 3 uses the same
+// bounded little-endian frame, 32 durable positions and an admitted broadcast
+// stream. Geometry/physical style never alter the packet or position semantics.
 // No IP credentials, access passwords, PCM audio or per-pixel data go on the wire.
 namespace LampSyncWire {
 constexpr uint16_t Port = 49732;
-constexpr unsigned MaxPeers = 8;
+constexpr uint8_t LegacyVersion=2, ExpandedVersion=3, LegacyMembers=9, MaxMembers=32, BroadcastPosition=255;
+constexpr unsigned MaxPeers = MaxMembers-1;
+inline bool supportedVersion(uint8_t version){return version==LegacyVersion||version==ExpandedVersion;}
+inline uint8_t memberLimit(uint8_t version){return version==ExpandedVersion?MaxMembers:LegacyMembers;}
 constexpr uint8_t SceneCount = 32;
 inline bool sceneNeedsAudio(uint8_t scene){return scene==3||scene==4||scene==7||scene==16||scene==17||(scene>=19&&scene<=26)||(scene>=29&&scene<=32);}
 constexpr uint32_t Timeout = 3000, AudioTimeout = 200, PeerTimeout = 7000;
@@ -38,13 +43,13 @@ inline bool id(const char* s) {
 }
 inline bool newer(uint32_t a,uint32_t b) { return int32_t(a-b)>0; }
 inline uint32_t rate(uint8_t speed) { return speed<=50?32+uint32_t(speed)*224/50:256+uint32_t(speed-50)*768/50; }
-inline bool validVisual(const Visual& v) {
-  return v.scene<=SceneCount&&v.count<=9&&v.position<(v.count?v.count:1)&&(!v.scene||(v.count&&v.sceneSpeed>=1&&v.sceneSpeed<=100&&v.sceneIntensity<=100))&&v.mode>=1&&v.mode<=47&&v.brightness&&v.power<=1&&v.audioValid<=1&&v.speed>=1&&v.speed<=100&&v.intensity<=100&&v.dual<=1&&v.primary[0]<=1;
+inline bool validVisual(const Visual& v,uint8_t limit=LegacyMembers,bool broadcast=false) {
+  return v.scene<=SceneCount&&v.count<=limit&&(v.position<(v.count?v.count:1)||(broadcast&&v.position==BroadcastPosition))&&(!v.scene||(v.count&&v.sceneSpeed>=1&&v.sceneSpeed<=100&&v.sceneIntensity<=100))&&v.mode>=1&&v.mode<=47&&v.brightness&&v.power<=1&&v.audioValid<=1&&v.speed>=1&&v.speed<=100&&v.intensity<=100&&v.dual<=1&&v.primary[0]<=1;
 }
 inline bool valid(const Packet& p,size_t length) {
-  return length==sizeof(Packet)&&memcmp(p.magic,"CLSY",4)==0&&p.version==2&&p.kind>=Discover&&p.kind<=ClockReply&&
+  return length==sizeof(Packet)&&memcmp(p.magic,"CLSY",4)==0&&supportedVersion(p.version)&&p.kind>=Discover&&p.kind<=ClockReply&&
     p.role<=2&&p.microphone<=1&&id(p.sender)&&p.name[48]==0&&
-    (p.kind==Discover||(id(p.leader)&&p.session&&p.target&&(p.kind==Subscribe||validVisual(p.visual))));
+    (p.kind==Discover||(id(p.leader)&&p.session&&p.target&&(p.kind==Subscribe||validVisual(p.visual,memberLimit(p.version),p.version==ExpandedVersion&&p.kind==Frame&&p.target==p.session))));
 }
 // Tracks a single authenticated subscription. A new nonce is required on reconnect.
 struct Receiver {
@@ -55,6 +60,12 @@ struct Receiver {
   bool accept(const Packet& p,uint32_t now,uint64_t nonce) {
     if(p.target!=nonce || (locked&&(p.session!=session||!newer(p.sequence,sequence))))return false;
     session=p.session;sequence=p.sequence;last=now;locked=true;return true;
+  }
+  // A broadcast cannot establish ownership/subscription. Admission first needs
+  // a nonce-addressed authenticated ClockReply from this boot of the leader.
+  bool acceptBroadcast(const Packet& p,uint32_t now) {
+    if(!locked||p.version!=ExpandedVersion||p.kind!=Frame||p.target!=session||p.session!=session||!newer(p.sequence,sequence))return false;
+    sequence=p.sequence;last=now;return true;
   }
   void clock(uint32_t remote,uint32_t sent,uint32_t now) {
     const uint32_t rtt=now-sent;

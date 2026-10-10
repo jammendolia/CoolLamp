@@ -4,16 +4,20 @@
 #define FASTLED_ALLOW_INTERRUPTS 0
 #include <ESP32RotaryEncoder.h>
 #include <FastLED.h>
+#include <Preferences.h>
 #include "LampConfig.h"
 #include "LampGeometry.h"
 #include "LampStyle.h"
 #include "LampControl.h"
 #include "LampControlEndpoint.h"
+#include "LampExperience.h"
+#include "LampRollout.h"
 #include "LampPlayback.h"
 #include "LampSync.h"
 #include "LampGroupScenes.h"
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
+#include "LampUpdateCue.h"
 #include "LampFirmwareRelay.h"
 #include "LampMeshAdapter.h"
 #include "LampCommission.h"
@@ -127,6 +131,7 @@ void setup() {
   beginLampStyle();
   loadLampRotation();
   loadLampColors();
+  loadLampAppearanceV2();
   loadLampVuColors();
   loadLampFountainColors();
   beginLampSync();
@@ -156,6 +161,7 @@ void setup() {
   rotaryEncoder.setEncoderValue(Mode);
   beginLampTemperature();
   beginLampUpdater();
+  beginLampExperience();
   beginLampNetwork();
   LampFirmwareRelay::begin();
   LampMeshAdapter::begin();LampCommission::begin();
@@ -165,6 +171,7 @@ void loop() {
   if (!lampUpdateOwnsResources() && !lampFactoryResetPending()) serviceLampTemperature();
   serviceLampNetwork();
   serviceLampBluetooth();
+  LampRollout::service(millis());
   serviceLampUpdater();
   serviceLampFactoryReset();
   serviceLampRotation();
@@ -173,6 +180,7 @@ void loop() {
   serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing() || lampFactoryResetPending());
   bool renderNow = serviceLampKnob();
   if (renderLampCalibration()) return;
+  if (renderLampUpdateCue()) { delay(1); return; }
   if (lampIsUpdating()) { delay(1); return; }
 
   // No serial writes here: USB backpressure must never delay lamp controls.

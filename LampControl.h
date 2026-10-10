@@ -17,6 +17,11 @@ bool setLampColor(uint8_t mode, uint8_t r, uint8_t g, uint8_t b);
 bool resetLampColor(uint8_t mode);
 void loadLampColors();
 bool saveLampColors();
+void loadLampAppearanceV2();
+bool saveLampAppearanceV2(uint8_t mode,uint32_t now);
+enum class LampAppearanceResult:uint8_t {Persisted,Failed,Uncertain,Busy};
+LampAppearanceResult saveLampAppearanceAccepted(uint8_t mode,uint32_t now);
+bool lampAppearanceMigrationPending();
 
 struct LampControlState {
   uint8_t mode;

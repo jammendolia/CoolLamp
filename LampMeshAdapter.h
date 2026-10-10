@@ -10,6 +10,6 @@ bool working();
 bool enabled();
 bool online(const uint8_t* address);
 String statusJson();
-LampControlReply request(const String& target,const String& requestId,const String& endpoint,const String& method,const String& form);
-LampControlReply result(const String& target,const String& requestId,const String& offset);
+LampControlReply request(const String& target,const String& requestId,const String& endpoint,const String& method,const String& form,bool confidential=false);
+LampControlReply result(const String& target,const String& requestId,const String& offset,bool confidential=false);
 }

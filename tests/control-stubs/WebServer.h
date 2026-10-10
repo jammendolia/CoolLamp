@@ -18,6 +18,8 @@ public:
   RequestHandler& on(const char* path,HTTPMethod method,THandlerFunction handler){handlers[{path,method}]=std::move(handler);return registered;}
   String arg(const String& key)const{auto found=arguments.find(key);return found==arguments.end()?String():found->second;}
   bool hasArg(const String& key)const{return arguments.count(key);}
+  size_t args()const{return arguments.size();}
+  String argName(size_t index)const{auto item=arguments.begin();std::advance(item,index);return item->first;}
   String uri()const{return requestUri;}
   String header(const String& key)const{auto found=headers.find(key);return found==headers.end()?String():found->second;}
   bool authenticate(const char*,const char*){++authCalls;return httpAuthorized;}

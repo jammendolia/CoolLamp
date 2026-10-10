@@ -96,6 +96,7 @@ jobs:
           python3 tests/mesh-runtime.py
           python3 tests/commission-runtime.py
           python3 tests/mesh-adapter-runtime.py
+          python3 tools/test-experience-contracts.py
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
         env:

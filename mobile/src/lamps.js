@@ -80,6 +80,10 @@ export class LampStore {
     this.save();return entry;
   }
   remove(id) { this.items = this.items.filter(x=>x.id!==id); this.save(); }
+  // Only canonical IDs and removal intent live beside the saved lamp inventory.
+  // Groups validates its bounded record; read/write errors must reach that model.
+  loadGroupRemovalIntents() { const value=this.storage.getItem('coollamp-group-removals-v1');return value==null?null:JSON.parse(value); }
+  saveGroupRemovalIntents(value) { this.storage.setItem('coollamp-group-removals-v1',JSON.stringify(value));return true; }
   save() { this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }
 }
 

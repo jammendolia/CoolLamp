@@ -197,7 +197,7 @@ inline RGB corkscrewPixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t elap
  return c;
 }
 inline RGB pixel(const LampSyncWire::Visual& v,uint16_t h,uint32_t now){
- if(!v.scene||v.count<2||v.count>9||v.position>=v.count||int32_t(now-v.groupStart)<0)return {};
+ if(!v.scene||v.count<2||v.count>LampSyncWire::MaxMembers||v.position>=v.count||int32_t(now-v.groupStart)<0)return {};
  const uint32_t elapsed=now-v.groupStart;
  if(v.scene>=19&&v.scene<=26)return roomAudioPixel(v,h,elapsed,now);
  if(v.scene>=27&&v.scene<=32)return corkscrewPixel(v,h,elapsed,now);

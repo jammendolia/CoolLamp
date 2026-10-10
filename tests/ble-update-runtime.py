@@ -63,6 +63,7 @@ FIXTURE = r'''
 #include <vector>
 #include <string>
 #include "LampBleUpdate.h"
+#include "UpdatePublisher.h"
 #include "esp_ota_ops.h"
 #include "fixture.h"
 using namespace LampBleUpdateWire;
@@ -71,7 +72,21 @@ unsigned begins=0,aborts=0,ends=0,boots=0,releases=0;bool reserved=false,verifie
 bool allowReserve=true,allowBegin=true,allowWrite=true,allowEnd=true,allowBoot=true;
 bool commissionBusy=false;
 namespace LampCommission {bool working(){return commissionBusy;}}
+bool attemptAllowed=true,attemptStorage=true,attemptRepair=false;unsigned attempts=0;
+namespace LampUpdateAttempt {
+ bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}
+ bool prepare(const FirmwareManifest&,bool repair){++attempts;attemptRepair=repair;return attemptStorage;}
+}
+namespace UpdatePublisher {
+ bool enforced(){return false;}
+ bool verifyProvisioned(const char*,size_t,Manifest&){return false;}
+ bool recordEpoch(uint32_t){return false;}
+ bool retainManifest(const char*,size_t){return false;}
+}
 bool lampUpdateOwnsResources(){return reserved;}
+bool rolloutAllowed=true,rolloutStorage=true;unsigned rolloutStarts=0;
+bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest&){return rolloutAllowed;}
+bool lampRolloutAutomaticUpdateStarted(const FirmwareManifest&){assert(reserved);++rolloutStarts;return rolloutStorage;}
 bool partitionPresent=true;esp_partition_t partition;
 std::vector<uint8_t> flash;
 bool beginLampBluetoothUpdate(){if(!allowReserve||reserved)return false;reserved=true;return true;}
@@ -83,7 +98,7 @@ int esp_ota_write(esp_ota_handle_t handle,const void* bytes,size_t size){assert(
 int esp_ota_abort(esp_ota_handle_t handle){assert(handle==1);++aborts;return 0;}
 int esp_ota_end(esp_ota_handle_t handle){assert(handle==1&&reserved);++ends;return allowEnd?0:-1;}
 int esp_ota_set_boot_partition(const esp_partition_t* p){assert(p==&partition&&ends==1&&reserved);if(!allowBoot)return -1;++boots;return 0;}
-uint32_t generation=7,session=11;uint16_t request=0;
+uint32_t generation=7,session=11;uint16_t request=0;bool leaseRequested=false;
 void tick(bool bond=true){serviceLampBleUpdate(generation,bond);}
 std::vector<uint8_t> packet(unsigned op,unsigned at=0,const uint8_t* bytes=nullptr,size_t size=0){
  const size_t header=op==Manifest?10:op==Data?12:8;std::vector<uint8_t> p(header+size);
@@ -104,14 +119,14 @@ std::vector<uint8_t> status(){
 }
 void start(const std::string& text=manifestText){
  for(size_t at=0;at<text.size();){const auto count=std::min(size_t(13),text.size()-at);send(Manifest,at,reinterpret_cast<const uint8_t*>(text.data()+at),count);at+=count;}
- send(Start);assert(status()[1]==Preparing&&begins==0&&reserved);tick();assert(begins==0);tick();
+ send(leaseRequested?StartWithLease:Start);assert(status()[1]==Preparing&&begins==0&&reserved);tick();assert(begins==0);tick();
 }
 void upload(const uint8_t* bytes=image){for(size_t at=0;at<sizeof(image);){const auto count=std::min(size_t(121),sizeof(image)-at);send(Data,at,bytes+at,count);at+=count;}assert(u32(status().data()+12)==sizeof(image));}
 int main(int argc,char** argv){
  assert(argc==2);const std::string test=argv[1];
  if(test=="wire"){
   Queue q;Frame f;for(unsigned i=0;i<8;++i){f.generation=i;assert(q.push(f));}assert(!q.push(f));for(unsigned i=0;i<8;++i){assert(q.pop(f)&&f.generation==i);}assert(!q.pop(f));
-  auto p=packet(Data,0,image,232);assert(valid(p.data(),p.size()));p.push_back(0);assert(!valid(p.data(),p.size()));p=packet(Start);assert(valid(p.data(),p.size()));p[0]=2;assert(!valid(p.data(),p.size()));p=packet(Manifest,191,image,1);assert(!valid(p.data(),p.size()));return 0;
+  auto p=packet(Data,0,image,232);assert(valid(p.data(),p.size()));p.push_back(0);assert(!valid(p.data(),p.size()));p=packet(Start);assert(valid(p.data(),p.size()));p[0]=2;assert(!valid(p.data(),p.size()));p=packet(Manifest,ManifestCapacity-1,image,1);assert(!valid(p.data(),p.size()));return 0;
  }
  if(test=="commission"){
   commissionBusy=true;assert(!beginLampRadioFirmwareReceiver(9));
@@ -121,11 +136,32 @@ int main(int argc,char** argv){
  }
  if(test=="downgrade"){std::string old=manifestText;old.replace(old.find(fixtureVersion),strlen(fixtureVersion),"0.0.0");send(Manifest,0,reinterpret_cast<const uint8_t*>(old.data()),old.size());send(Start);assert(status()[1]==Error&&status()[2]==Invalid&&!begins&&!reserved);return 0;}
  if(test=="busy"){allowReserve=false;send(Manifest,0,reinterpret_cast<const uint8_t*>(manifestText),strlen(manifestText));send(Start);assert(status()[2]==Busy&&!begins);return 0;}
+ if(test=="rollout-denied"||test=="rollout-storage"){
+  if(test=="rollout-denied")rolloutAllowed=false;else rolloutStorage=false;
+  send(Manifest,0,reinterpret_cast<const uint8_t*>(manifestText),strlen(manifestText));send(Start);
+  assert(status()[1]==Error&&!begins&&!boots&&!reserved);
+  if(test=="rollout-denied")assert(status()[2]==Busy&&!rolloutStarts);else assert(status()[2]==Flash&&rolloutStarts==1);
+  return 0;
+ }
+ leaseRequested=test.rfind("resume-",0)==0;
  if(test=="partition")partition.size=1024;
  if(test=="begin-error")allowBegin=false;
  start(test=="marker"?noMarkerManifest:manifestText);
  if(test=="partition"||test=="begin-error"){assert(status()[2]==Partition&&!reserved&&!boots);return 0;}
  assert(status()[1]==Receiving&&begins==1);
+ if(leaseRequested){
+  send(Data,0,image,200);const auto before=status();assert(u32(before.data()+12)==200);
+  ++generation;tick(false);assert(reserved&&aborts==0&&(status()[3]&DetachedFlag));
+  if(test=="resume-expiry"){clockMs+=120000;tick();assert(status()[2]==Expired&&!reserved&&aborts==1&&!boots);return 0;}
+  std::string text=manifestText;FirmwareManifest parsed;assert(parseFirmwareManifest(text.data(),parsed));
+  uint8_t proof[42]{};put32(proof,parsed.size);memcpy(proof+4,parsed.sha256,32);for(unsigned i=0;i<3;++i)put16(proof+36+2*i,parsed.version[i]);
+  if(test=="resume-wrong-artifact"){proof[4]^=1;send(Resume,0,proof,sizeof(proof));assert((status()[3]&DetachedFlag)&&reserved&&aborts==0&&u32(status().data()+12)==200);proof[4]^=1;}
+  if(test=="resume-wrong-session"){++session;send(Resume,0,proof,sizeof(proof));assert(status()[3]&DetachedFlag);--session;}
+  send(Resume,0,proof,sizeof(proof));assert(!(status()[3]&DetachedFlag)&&reserved&&begins==1&&u32(status().data()+12)==200);
+  for(size_t at=200;at<sizeof(image);){const size_t n=std::min(size_t(120),sizeof(image)-at);send(Data,at,image+at,n);at+=n;}
+  send(Finish);assert(boots==1&&ends==1&&verified&&flash==std::vector<uint8_t>(image,image+sizeof(image)));
+  send(Finish);assert(boots==1&&ends==1);return 0;
+ }
  if(test=="copied-four"){
   for(size_t at=0;at<sizeof(image);at+=128){auto p=packet(Data,at,image+at,128);enqueue(p);memset(p.data(),0,p.size());}
   assert(u32(status().data()+12)==0&&flash.empty()&&!boots);tick();const auto written=status();
@@ -142,6 +178,7 @@ int main(int argc,char** argv){
   enqueue(packet(Data,0,image,120));if(test=="generation")++generation;tick(test!="bond");assert(!reserved&&aborts==1&&!boots&&flash.empty()&&status()[1]==Idle&&u32(status().data()+8)==0);return 0;
  }
  if(test=="timeout"){clockMs+=30001;tick();assert(status()[2]==Expired&&!reserved&&aborts==1&&!boots);return 0;}
+ if(test=="total-lifetime"){for(unsigned i=0;i<120;++i){clockMs+=29999;send(Data,i,image+i,1);assert(status()[1]==Receiving);}clockMs+=120;tick();assert(status()[2]==Expired&&!reserved&&aborts==1&&!boots);return 0;}
  if(test=="cancel"){send(Data,0,image,200);send(Cancel);assert(status()[2]==Cancelled&&!reserved&&cancelled&&aborts==1&&!boots);return 0;}
  if(test=="offset"){send(Data,1,image,100);assert(status()[2]==Offset&&aborts==1&&!boots);return 0;}
  if(test=="truncated"){send(Data,0,image,200);send(Finish);assert(status()[2]==Image&&aborts==1&&!ends&&!boots);return 0;}
@@ -155,14 +192,17 @@ int main(int argc,char** argv){
  upload(altered.data());assert(!boots&&flash.size()==sizeof(image));
  if(test=="end-error")allowEnd=false;
  if(test=="boot-error")allowBoot=false;
- if(test=="success"){
+ if(test=="attempt-storage")attemptStorage=false;
+ if(test=="success"||test=="manual-repair"){
+  if(test=="manual-repair")attemptAllowed=false;
   enqueue(packet(Finish));enqueue(packet(Cancel));enqueue(packet(Data,0,image,1));tick();
-  assert(boots==1&&verified&&!reserved&&status()[1]==Restarting&&(status()[3]&CommittedFlag)==1&&aborts==0);
+  assert(boots==1&&verified&&!reserved&&status()[1]==Restarting&&(status()[3]&CommittedFlag)==1&&aborts==0&&attempts==1&&attemptRepair);
   ++generation;tick(false);clockMs+=40000;tick(false);assert(boots==1&&status()[1]==Restarting);return 0;
  }
  send(Finish);assert(!boots&&!verified&&!reserved&&status()[1]==Error);
  if(test=="sha"||test=="marker")assert(!ends&&aborts==1);
  if(test=="end-error"||test=="boot-error")assert(ends==1);
+ if(test=="attempt-storage")assert(ends==1&&attempts==1&&status()[2]==Flash);
  puts(test.c_str());
 }
 '''
@@ -196,7 +236,8 @@ with tempfile.TemporaryDirectory(prefix='coollamp-ble-update-') as folder:
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, *include, *defines,
                     str(folder/'test.cpp'), str(ROOT/'LampBleUpdate.cpp'), *objects, '-o', str(binary)], check=True)
     scenarios = ['wire', 'commission', 'success', 'copied-four', 'queue-limit', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
-                 'begin-error', 'bond', 'generation', 'timeout', 'cancel', 'offset', 'truncated', 'write-error', 'end-error', 'boot-error']
+                 'begin-error', 'bond', 'generation', 'timeout', 'total-lifetime', 'cancel', 'offset', 'truncated', 'write-error', 'end-error', 'boot-error',
+                 'resume-success','resume-wrong-artifact','resume-wrong-session','resume-expiry','rollout-denied','rollout-storage','attempt-storage','manual-repair']
     for scenario in scenarios:
         subprocess.run([str(binary), scenario], check=True)
     print(f'PASS: {len(scenarios)} production BLE receiver scenarios with pinned real SHA-256')

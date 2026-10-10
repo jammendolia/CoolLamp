@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Groups } from '../src/groups.js';
+import { Groups, groupCreationPlan } from '../src/groups.js';
 import { parseGroupCode } from '../src/sync.js';
 
 const ids=['aabbccddeeff','112233445566','223344556677','334455667788','445566778899','5566778899aa'];
 const key='0123456789abcdef0123456789abcdef';
+const groupIncarnation=id=>id+id+'12345678';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const defer=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
-function fixture({scanTimeout=45000}={}) {
+function fixture({scanTimeout=45000,removalPersistence={}}={}) {
   let entries=ids.map((id,index)=>({id,name:'Lamp '+index,address:'192.168.1.'+(40+index),deviceId:'saved-'+index}));
   const models=new Map(ids.map((id,index)=>[id,{deviceId:id,name:'Lamp '+index,token:'private-token-'+index,
     leds:205,midpoint:102,brightness:55,mode:4,power:true,firmware:{version:'1.10.0',phase:0},audio:{installed:true,gain:8,gate:8,scale:100,liveTuning:true},
@@ -31,9 +32,11 @@ function fixture({scanTimeout=45000}={}) {
         if(hook.afterRead)await hook.afterRead(this,model,this.refreshCount);
         return this.raw;
       },
-      async syncInvite(){calls.push({id,op:'invite'});if(hook.invite)await hook.invite(this,model);return 'CL1-'+id+'-'+key;},
-      async configureSync(role,code){calls.push({id,op:'sync',role});if(hook.beforeSync)await hook.beforeSync(this,model,role);
+      async syncInvite(){calls.push({id,op:'invite'});if(hook.invite)await hook.invite(this,model);return (model.sync.version===3?'CL3-':'CL1-')+id+'-'+key;},
+      async configureSync(role,code,expectedIncarnation=''){calls.push({id,op:'sync',role,expectedIncarnation});if(hook.beforeSync)await hook.beforeSync(this,model,role);
+        if(expectedIncarnation&&expectedIncarnation!==model.sync.incarnation)throw Object.assign(Error('Group incarnation changed'),{groupPublic:true,stale:true});
         const fields=role?parseGroupCode(code):{};
+        if(fields.protocol===3){model.sync.version=3;model.sync.maxMembers=32;}
         model.sync.role=role;model.sync.leader=role?fields.leader:'';model.sync.active=false;model.sync.paused=false;
         if(role===1)model.sync.order=[{id,name:model.name,online:true}];
         this.raw=structuredClone(model);
@@ -43,17 +46,183 @@ function fixture({scanTimeout=45000}={}) {
       async configureGroupScene(value){calls.push({id,op:'scene',value});model.sync.scene=value.scene;model.sync.sceneSpeed=value.speed;this.raw=structuredClone(model);},
       async configureGroupOrder(order){calls.push({id,op:'order',order});model.sync.order=order.map(id=>({id,online:true}));this.raw=structuredClone(model);},
       async syncAction(action){calls.push({id,op:action});model.sync.paused=action==='pause';this.raw=structuredClone(model);},
-      async request(path,data){calls.push({id,op:'request',path,data});Object.assign(model.audio,data);this.raw=structuredClone(model);return 'Saved';}
+      async request(path,data){calls.push({id,op:'request',path,data});
+        if(path==='/api/group/remove'){
+          if(hook.beforePrune)await hook.beforePrune(this,model,data);
+          assert.equal(data.order,model.sync.order.map(row=>row.id).join(','));assert.equal(data.session,model.sync.session);
+          model.sync.order=model.sync.order.filter(row=>row.id!==data.target);model.sync.session=(BigInt('0x'+model.sync.session)+1n).toString(16).padStart(16,'0');
+          if(hook.afterPrune)await hook.afterPrune(this,model,data);
+        }else Object.assign(model.audio,data);
+        this.raw=structuredClone(model);return 'Saved';}
     };
     const lease={id,lamp,borrowed:id===selected,released:false,entry:structuredClone(options.entry)};leases.push(lease);
     return {lamp,release:async()=>{assert.equal(lease.released,false);lease.released=true;active--;}};
   };
-  const groups=new Groups({getLamps:()=>entries,discover:()=>discover(),acquire:factory,onStatus:value=>changes.push(value),now:()=>1234,scanTimeout,
-    random:{getRandomValues(bytes){bytes.fill(42);return bytes;}}});
+  const createGroups=()=>new Groups({getLamps:()=>entries,discover:()=>discover(),acquire:factory,onStatus:value=>changes.push(value),now:()=>1234,scanTimeout,
+    random:{getRandomValues(bytes){bytes.fill(42);return bytes;}},...removalPersistence});
+  const groups=createGroups();
   return {groups,models,hooks,calls,leases,changes,setEntries:value=>{entries=value;},entries:()=>entries,setDiscover:value=>{discover=value;},
-    selected:()=>selected,peak:()=>peak,active:()=>active};
+    selected:()=>selected,peak:()=>peak,active:()=>active,restart:createGroups};
 }
 const writes=f=>f.calls.filter(call=>!['read','invite'].includes(call.op));
+function expanded(f,members=[ids[0],ids[1]]){
+  const leader=f.models.get(members[0]);Object.assign(leader.sync,{version:3,maxMembers:32,protocolVersions:[2,3],dissolutionV1:true,incarnation:groupIncarnation(members[0]),session:'0000000000000001',order:members.map(id=>({id,online:true}))});
+  for(const id of members.slice(1))Object.assign(f.models.get(id).sync,{version:3,maxMembers:32,protocolVersions:[2,3],role:2,leader:members[0],dissolutionV1:true,incarnation:groupIncarnation(members[0])});
+}
+function removalStorage(initial=null){
+  let value=initial,writes=0,fail=false;
+  return {callbacks:{loadRemovalIntents:()=>structuredClone(value),saveRemovalIntents:next=>{if(fail)throw Error('storage full');value=structuredClone(next);++writes;}},
+    read:()=>structuredClone(value),writes:()=>writes,setFailure:value=>{fail=value;}};
+}
+
+test('durable dissolution survives app restart with offline positions and never repeats confirmed departures',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.hooks.set(ids[1],{readError:Error('offline')});assert.equal((await f.groups.dissolve(ids[0])).phase,'dissolution-pending');
+  assert.deepEqual(storage.read(),{version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:true,incarnation:groupIncarnation(ids[0])}]});
+  const restarted=f.restart();await restarted.refresh();const group=restarted.snapshot().groups.find(row=>row.id===ids[0]);
+  assert.equal(group.removalPending,true);assert.equal(group.dissolutionPending,true);assert.equal(restarted.snapshot().removalIntentStorage,'ready');
+  const before=writes(f).length;await restarted.refresh();assert.equal(writes(f).length,before); // Reconnect only reads.
+  f.hooks.delete(ids[1]);assert.equal((await restarted.reconcileRemovals(ids[0])).phase,'dissolved');
+  assert.equal(writes(f).filter(call=>call.op==='sync'&&call.id===ids[3]).length,1);
+  assert.deepEqual(storage.read(),{version:2,sources:[]});
+  const persisted=JSON.stringify(storage.read());assert(!persisted.includes(key));assert(!persisted.includes('private-'));
+});
+test('last-follower move keeps durable source cleanup pending across restart and failed destination',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);f.models.get(ids[2]).sync.protocolVersions=[2,3];
+  f.hooks.set(ids[0],{acquireError:Error('source offline')});
+  f.hooks.set(ids[1],{beforeSync:(_,__,role)=>{if(role===2)throw Object.assign(Error('lost join'),{uncertain:true});}});
+  await assert.rejects(f.groups.move(ids[1],ids[2]),error=>error.leftPrevious&&error.sourceCleanup.pending);
+  assert.deepEqual(storage.read(),{version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:false,incarnation:groupIncarnation(ids[0])}]});
+  const restarted=f.restart();await restarted.refresh();assert(restarted.snapshot().groups.find(row=>row.id===ids[0]).removalPending);
+  f.hooks.delete(ids[0]);const result=await restarted.reconcileRemovals(ids[0]);assert.equal(result.phase,'removal-reconciled');
+  assert.equal(f.models.get(ids[0]).sync.role,0);assert.equal(f.models.get(ids[1]).sync.role,0);
+  assert.equal(writes(f).filter(call=>call.op==='sync'&&call.id===ids[1]&&call.role===0).length,1);assert.deepEqual(storage.read(),{version:2,sources:[]});
+});
+test('unconfirmed departure after app restart is read-only and remains durably pending',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  f.hooks.set(ids[1],{beforeSync:()=>{throw Object.assign(Error('lost before execution'),{uncertain:true});}});
+  await assert.rejects(f.groups.leave(ids[1]));const restarted=f.restart(),before=writes(f).length;
+  const result=await restarted.reconcileRemovals(ids[0]);assert.equal(result.phase,'removal-pending');assert.equal(writes(f).length,before);
+  assert.equal(f.models.get(ids[0]).sync.order.length,2);assert.equal(storage.read().sources.length,1);
+});
+test('removal intent write failure prevents mutation and post-prune storage failure preserves pending until reconciliation',async()=>{
+  for(const action of ['leave','dissolve','move']){
+    const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);f.models.get(ids[2]).sync.protocolVersions=[2,3];storage.setFailure(true);
+    await assert.rejects(action==='dissolve'?f.groups.dissolve(ids[0]):action==='move'?f.groups.move(ids[1],ids[2]):f.groups.leave(ids[1]),error=>error.storageFailed===true);
+    assert.equal(writes(f).length,0);assert.equal(storage.read(),null);
+  }
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  f.hooks.set(ids[0],{afterPrune:()=>storage.setFailure(true)});
+  const result=await f.groups.dissolve(ids[0]);assert.equal(result.phase,'dissolution-pending');assert.equal(result.pending[0].storageFailed,true);
+  assert.equal(f.models.get(ids[0]).sync.role,1);assert.deepEqual(storage.read().sources[0].targets,[ids[1]]);
+  f.hooks.delete(ids[0]);storage.setFailure(false);const restarted=f.restart();assert.equal((await restarted.reconcileRemovals(ids[0])).phase,'dissolved');
+  assert.equal(writes(f).filter(call=>call.path==='/api/group/remove').length,1);
+});
+test('lost final phone storage write reconciles an already independent coordinator without replay',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  f.hooks.set(ids[0],{afterSync:()=>storage.setFailure(true)});
+  await assert.rejects(f.groups.dissolve(ids[0]),error=>error.storageFailed);
+  assert.equal(f.models.get(ids[0]).sync.role,0);assert.equal(storage.read().sources[0].dissolve,true);assert.deepEqual(storage.read().sources[0].targets,[]);
+  storage.setFailure(false);const restarted=f.restart();assert.equal((await restarted.reconcileRemovals(ids[0])).phase,'dissolved');
+  assert.equal(writes(f).filter(call=>call.op==='sync'&&call.id===ids[0]).length,1);
+});
+test('an already stopped coordinator cannot erase pending unreachable follower confirmation',async()=>{
+  const storage=removalStorage({version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:true,incarnation:groupIncarnation(ids[0])}]}),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  Object.assign(f.models.get(ids[0]).sync,{role:0,leader:''});f.hooks.set(ids[1],{readError:Error('offline')});
+  assert.equal((await f.groups.reconcileRemovals(ids[0])).phase,'dissolution-pending');assert.equal(storage.read().sources.length,1);assert.equal(writes(f).length,0);
+  f.hooks.delete(ids[1]);assert.equal((await f.groups.reconcileRemovals(ids[0])).phase,'dissolved');assert.equal(f.models.get(ids[1]).sync.role,0);assert.equal(writes(f).filter(call=>call.id===ids[0]).length,0);
+});
+test('persisted dissolution cannot act on a recreated group and explicit reconfirmation pins the reviewed incarnation',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);f.hooks.set(ids[1],{readError:Error('offline')});
+  assert.equal((await f.groups.dissolve(ids[0])).phase,'dissolution-pending');const retained=storage.read(),next='f'.repeat(32);
+  Object.assign(f.models.get(ids[0]).sync,{incarnation:next,order:[{id:ids[0],online:true},{id:ids[3],online:true}]});
+  Object.assign(f.models.get(ids[3]).sync,{version:3,maxMembers:32,role:2,leader:ids[0],incarnation:next});
+  const restarted=f.restart(),before=writes(f).length;await restarted.refresh();assert(restarted.snapshot().groups.find(row=>row.id===ids[0]).removalNeedsReconfirmation);
+  await assert.rejects(restarted.reconcileRemovals(ids[0]),error=>error.needsReconfirmation);assert.equal(writes(f).length,before);assert.deepEqual(storage.read(),retained);
+  for(const expectedIncarnation of [undefined,groupIncarnation(ids[0])])await assert.rejects(restarted.dissolve(ids[0],{reconfirm:true,expectedIncarnation}),error=>error.needsReconfirmation);
+  assert.equal(writes(f).length,before);
+  const result=await restarted.dissolve(ids[0],{reconfirm:true,expectedIncarnation:next});assert.equal(result.phase,'dissolution-pending');assert.equal(f.models.get(ids[3]).sync.role,0);
+  assert.equal(f.models.get(ids[0]).sync.role,1);assert(storage.read().sources[0].targets.includes(ids[1])); // Old unreachable intent is not evicted.
+  f.hooks.delete(ids[1]);assert.equal((await restarted.leave(ids[1])).phase,'left'); // Explicit fresh target action can resolve the old incarnation.
+  assert.equal((await restarted.reconcileRemovals(ids[0])).phase,'dissolved');
+});
+test('legacy removal intent migrates as unknown and cannot mutate a current group without new reviewed approval',async()=>{
+  const legacy={version:1,sources:[{source:ids[0],targets:[ids[1]],dissolve:true}]},storage=removalStorage(legacy),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  await assert.rejects(f.groups.reconcileRemovals(ids[0]),error=>error.needsReconfirmation);assert.equal(writes(f).length,0);assert.deepEqual(storage.read(),legacy);
+  assert.equal((await f.groups.dissolve(ids[0],{reconfirm:true,expectedIncarnation:groupIncarnation(ids[0])})).phase,'dissolved');assert.deepEqual(storage.read(),{version:2,sources:[]});
+});
+test('dissolution recovery never authorizes a concurrently added member until a reviewed reconfirmation',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  f.hooks.set(ids[0],{afterPrune:(_,model)=>{model.sync.order.push({id:ids[3],online:true});Object.assign(f.models.get(ids[3]).sync,{version:3,maxMembers:32,role:2,leader:ids[0],incarnation:groupIncarnation(ids[0])});}});
+  assert.equal((await f.groups.dissolve(ids[0])).phase,'dissolution-pending');assert.deepEqual(storage.read().sources[0].targets,[]);
+  f.hooks.delete(ids[0]);const restarted=f.restart(),before=writes(f).length;
+  const pending=await restarted.reconcileRemovals(ids[0]);assert.equal(pending.pending[0].needsReconfirmation,true);assert.equal(writes(f).length,before);assert.equal(f.models.get(ids[3]).sync.role,2);
+  assert.equal((await restarted.dissolve(ids[0],{reconfirm:true,expectedIncarnation:groupIncarnation(ids[0])})).phase,'dissolved');
+});
+test('execution fence rejects target/coordinator recreation after the final read before departure command',async()=>{
+  for(const coordinator of [false,true]){
+    const f=fixture();expanded(f,coordinator?[ids[0]]:[ids[0],ids[1]]);const target=coordinator?ids[0]:ids[1],next='d'.repeat(32);
+    f.hooks.set(target,{beforeSync:(_,model)=>{model.sync.incarnation=next;}});
+    const result=await f.groups.dissolve(ids[0]).catch(error=>error);
+    assert.equal(f.models.get(target).sync.role,coordinator?1:2);assert.equal(f.models.get(target).sync.incarnation,next);
+    assert.equal(writes(f).filter(call=>call.path==='/api/group/remove').length,0);
+    assert(writes(f).every(call=>call.op!=='sync'||call.expectedIncarnation===groupIncarnation(ids[0])));
+    assert(coordinator?result.stale:result.phase==='dissolution-pending');
+  }
+  const moved=fixture();expanded(moved);moved.models.get(ids[2]).sync.protocolVersions=[2,3];moved.hooks.set(ids[1],{beforeSync:(_,model)=>{model.sync.incarnation='e'.repeat(32);}});
+  await assert.rejects(moved.groups.move(ids[1],ids[2]));assert.equal(moved.models.get(ids[1]).sync.role,2);assert.equal(moved.models.get(ids[0]).sync.role,1);
+});
+test('malformed, duplicate, over-limit and secret-bearing removal storage fails closed without inventory eviction',async()=>{
+  const valid={source:ids[0],targets:[ids[1]],dissolve:true};
+  for(const initial of [{version:3,sources:[]},{version:1,sources:[valid,valid]},{version:1,sources:[{...valid,key}]},
+    {version:1,sources:[{...valid,targets:Array.from({length:32},(_,i)=>i.toString(16).padStart(12,'0'))}]},
+    {version:1,sources:Array.from({length:65},(_,i)=>({source:i.toString(16).padStart(12,'0'),targets:[],dissolve:true}))}]){
+    const f=fixture({removalPersistence:removalStorage(initial).callbacks});expanded(f);await f.groups.refresh();
+    assert.equal(f.groups.snapshot().removalIntentStorage,'failed');await assert.rejects(f.groups.dissolve(ids[0]),error=>error.storageFailed);assert.equal(writes(f).length,0);assert.equal(f.entries().length,ids.length);
+  }
+  const initial={version:1,sources:Array.from({length:64},(_,i)=>({source:i.toString(16).padStart(12,'0'),targets:[],dissolve:true}))};
+  const storage=removalStorage(initial),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  await assert.rejects(f.groups.leave(ids[1]),error=>error.storageFailed);assert.equal(writes(f).length,0);assert.deepEqual(storage.read(),initial);
+});
+
+test('confirmed direct dissolution leaves followers first and stops coordinator last preserving individual state',async()=>{
+  const f=fixture();expanded(f,[ids[0],ids[1],ids[3]]);const before=new Map([...f.models].map(([id,model])=>[id,structuredClone(model)]));
+  const result=await f.groups.dissolve(ids[0]);assert.equal(result.phase,'dissolved');assert.equal(result.coordinatorStopped,true);
+  assert.deepEqual(writes(f).filter(call=>call.op==='sync').map(({id,role})=>({id,role})),[{id:ids[1],role:0},{id:ids[3],role:0},{id:ids[0],role:0}]);
+  for(const id of [ids[0],ids[1],ids[3]])for(const field of ['leds','midpoint','brightness','mode','power','audio','firmware','name'])assert.deepEqual(f.models.get(id)[field],before.get(id)[field]);
+  assert.equal(f.peak(),2);assert.equal(f.active(),0);assert(f.leases.every(lease=>lease.released));
+});
+test('unreachable dissolution members remain visibly pending and prevent coordinator stop',async()=>{
+  const f=fixture();expanded(f,[ids[0],ids[1],ids[3]]);f.hooks.set(ids[1],{readError:Error('offline')});
+  const result=await f.groups.dissolve(ids[0]);assert.equal(result.phase,'dissolution-pending');assert.deepEqual(result.pending.map(row=>row.id),[ids[1]]);
+  assert.equal(f.models.get(ids[0]).sync.role,1);assert.deepEqual(f.models.get(ids[0]).sync.order.map(row=>row.id),[ids[0],ids[1]]);
+  assert.equal(f.models.get(ids[3]).sync.role,0);const group=f.groups.snapshot().groups.find(row=>row.id===ids[0]);assert.equal(group.removalPending,true);assert.deepEqual(group.pendingRemovalIds,[ids[1]]);
+  f.hooks.delete(ids[1]);assert.equal((await f.groups.dissolve(ids[0])).phase,'dissolved');
+});
+test('last-follower leave dissolves source and one-member removal bypasses any creation minimum',async()=>{
+  const f=fixture();expanded(f);const left=await f.groups.leave(ids[1]);assert.equal(left.sourceCleanup.phase,'dissolved');assert.equal(f.models.get(ids[0]).sync.role,0);
+  assert.deepEqual(writes(f).filter(call=>call.op==='sync').map(call=>call.id),[ids[1],ids[0]]);
+  const single=fixture();expanded(single,[ids[2]]);assert.equal((await single.groups.dissolve(ids[2])).phase,'dissolved');
+});
+test('moving last follower cleans source after success and after a failed destination join',async()=>{
+  for(const failed of [false,true]){
+    const f=fixture();expanded(f);f.models.get(ids[2]).sync.protocolVersions=[2,3];
+    if(failed)f.hooks.set(ids[1],{beforeSync:(_,__,role)=>{if(role===2)throw Object.assign(Error('lost join'),{uncertain:true});}});
+    if(failed)await assert.rejects(f.groups.move(ids[1],ids[2]),error=>error.leftPrevious&&error.sourceCleanup.phase==='dissolved');
+    else assert.equal((await f.groups.move(ids[1],ids[2])).sourceCleanup.phase,'dissolved');
+    assert.equal(f.models.get(ids[0]).sync.role,0);assert.equal(f.models.get(ids[1]).sync.role,failed?0:2);assert(f.peak()<=2);
+  }
+});
+test('lost prune and stop replies reconcile state once without route replay',async()=>{
+  const f=fixture();expanded(f);f.hooks.set(ids[0],{afterPrune:()=>{throw Object.assign(Error('lost prune'),{uncertain:true});},afterSync:()=>{throw Object.assign(Error('lost stop'),{uncertain:true});}});
+  const result=await f.groups.dissolve(ids[0]);assert.equal(result.phase,'dissolved');assert.equal(writes(f).filter(call=>call.path==='/api/group/remove').length,1);assert.equal(writes(f).filter(call=>call.op==='sync'&&call.id===ids[0]).length,1);
+});
+test('lost target readback cannot prune membership and concurrent addition leaves explicit pending position',async()=>{
+  const f=fixture();expanded(f);f.hooks.set(ids[1],{afterSync:()=>{throw Object.assign(Error('lost reply'),{uncertain:true});},beforeRead:(_,__,count)=>{if(count===2)throw Error('offline');}});
+  const result=await f.groups.dissolve(ids[0]);assert.equal(result.phase,'dissolution-pending');assert.equal(writes(f).filter(call=>call.path==='/api/group/remove').length,0);assert.equal(f.models.get(ids[0]).sync.role,1);
+  const concurrent=fixture();expanded(concurrent);concurrent.hooks.set(ids[0],{afterPrune:(_,model)=>{model.sync.order.push({id:ids[3],online:true});}});
+  const pending=await concurrent.groups.dissolve(ids[0]);assert.equal(pending.phase,'dissolution-pending');assert.deepEqual(pending.pending.map(row=>row.id),[ids[3]]);assert.equal(concurrent.models.get(ids[0]).sync.role,1);
+});
 
 test('global inventory partitions multiple groups and independent lamps without selection or secrets',async()=>{
   const f=fixture(),snapshot=await f.groups.refresh();
@@ -63,6 +232,104 @@ test('global inventory partitions multiple groups and independent lamps without 
   const publicData=JSON.stringify([snapshot,...f.changes]);assert(!publicData.includes(key));assert(!publicData.includes('private-token'));assert(!publicData.includes('private-access-password'));assert(!publicData.includes('CL1-'));
   const all=snapshot.groups.flatMap(group=>[group.leader.id,...group.followers.map(row=>row.id)]).concat(snapshot.ungrouped.map(row=>row.id));
   assert.equal(new Set(all).size,ids.length);assert.equal(all.length,ids.length);
+});
+
+test('expanded groups preserve all32 offline positions and negotiate limits independently from radio hints',async()=>{
+  const f=fixture(),model=f.models.get(ids[2]);
+  model.sync.version=3;model.sync.maxMembers=32;model.sync.protocolVersions=[2,3];
+  model.sync.order=Array.from({length:32},(_,index)=>({id:index===0?ids[2]:index.toString(16).padStart(12,'0'),name:'Position '+index,online:index===0}));
+  model.sync.peerTotal=31;model.sync.peerNext=8;model.sync.peerTruncated=true;
+  await f.groups.refresh();const group=f.groups.snapshot().groups.find(group=>group.id===ids[2]);
+  assert.equal(group.capacity,31);assert.equal(group.usedSlots,31);assert.equal(group.remaining,0);
+  assert.equal(group.leader.sync.order.length,32);assert.equal(group.leader.sync.peerTotal,31);assert.equal(group.leader.sync.peerTruncated,true);
+  await assert.rejects(f.groups.join(ids[3],ids[2]),/matching group/);assert.equal(writes(f).length,0);
+  f.models.get(ids[3]).sync.protocolVersions=[2,3];await assert.rejects(f.groups.join(ids[3],ids[2]),/full \(32 lamps\)/);assert.equal(writes(f).length,0);
+  await assert.rejects(f.groups.stopCoordinating(ids[2]),/migration is not supported/);assert.equal(writes(f).length,0);
+});
+
+test('expanded invitation upgrades a capable independent member and old members cannot join silently',async()=>{
+  const f=fixture(),destination=f.models.get(ids[2]),target=f.models.get(ids[3]);
+  Object.assign(destination.sync,{version:3,maxMembers:32,protocolVersions:[2,3],members:19});
+  await assert.rejects(f.groups.join(ids[3],ids[2]),/matching group/);assert.equal(writes(f).length,0);
+  target.sync.protocolVersions=[2,3];const result=await f.groups.join(ids[3],ids[2]);
+  assert.equal(result.phase,'joined');assert.equal(target.sync.version,3);assert.equal(target.sync.leader,ids[2]);
+  assert.equal(writes(f).filter(write=>write.op==='sync').length,1);
+  assert(!JSON.stringify(f.groups.snapshot()).includes(key));
+});
+
+test('expanded group creation requires fresh capability and refuses malformed capacity',async()=>{
+  const f=fixture(),target=f.models.get(ids[3]);target.sync.protocolVersions=[2,3];
+  const result=await f.groups.create(ids[3]);assert.equal(result.saved,true);assert.equal(target.sync.version,3);
+  target.sync.maxMembers=33;f.groups.rows.clear();await f.groups.refresh();
+  assert.equal(f.groups.snapshot().lamps.find(row=>row.id===ids[3]).verified,false);
+});
+
+test('explicit common v2 group creation keeps a capable main compatible with older members',async()=>{
+  const f=fixture(),target=f.models.get(ids[3]);target.sync.protocolVersions=[2,3];target.sync.maxSupportedMembers=32;
+  const result=await f.groups.create(ids[3],{protocol:2});
+  assert.equal(result.protocol,2);assert.equal(target.sync.version,2);assert.equal(target.sync.role,1);
+  await f.groups.join(ids[4],ids[3]);assert.equal(f.models.get(ids[4]).sync.version,2);
+  assert.equal(writes(f).filter(call=>call.op==='sync').length,2);
+});
+
+test('requested group protocol is checked against fresh capabilities before a write',async()=>{
+  for(const protocol of [1,3,4,'2']){
+    const f=fixture();await assert.rejects(f.groups.create(ids[3],{protocol}),error=>error.incompatible===true);
+    assert.equal(writes(f).length,0);assert.equal(f.models.get(ids[3]).sync.role,0);
+  }
+  const old=fixture();old.models.get(ids[3]).sync.version=1;
+  await assert.rejects(old.groups.create(ids[3],{protocol:2}),error=>error.incompatible===true);assert.equal(writes(old).length,0);
+  const advertised=fixture();Object.assign(advertised.models.get(ids[3]).sync,{version:1,protocolVersions:[2]});
+  advertised.hooks.set(ids[3],{beforeSync:(_,model)=>{model.sync.version=2;}});
+  assert.equal((await advertised.groups.create(ids[3],{protocol:2})).protocol,2);
+});
+
+test('a locked or stale-capability main cannot create a group',async()=>{
+  const locked=fixture();locked.models.get(ids[3]).sync.membershipLocked=true;
+  await assert.rejects(locked.groups.create(ids[3]),/staged update/);assert.equal(writes(locked).length,0);
+  const stale=fixture();await stale.groups.refresh();stale.models.get(ids[3]).sync.protocolVersions=[2];
+  await assert.rejects(stale.groups.create(ids[3],{protocol:3}),error=>error.incompatible===true);assert.equal(writes(stale).length,0);
+});
+
+test('public snapshots preserve validated upgrade capacity separately from current v2 membership limit',async()=>{
+  const f=fixture(),target=f.models.get(ids[3]);Object.assign(target.sync,{maxSupportedMembers:32,protocolVersions:[2,3]});
+  await f.groups.refresh();const row=f.groups.snapshot().lamps.find(row=>row.id===ids[3]);
+  assert.equal(row.sync.maxMembers,9);assert.equal(row.sync.maxSupportedMembers,32);
+  for(const invalid of [0,8,33,'32']){
+    target.sync.maxSupportedMembers=invalid;f.groups.rows.clear();await f.groups.refresh();
+    const invalidRow=f.groups.snapshot().lamps.find(row=>row.id===ids[3]);assert.equal(invalidRow.verified,false);assert.equal(invalidRow.sync,null);
+  }
+});
+
+function creationRows(count=2){return Array.from({length:count},(_,index)=>({id:index.toString(16).padStart(12,'0'),name:'Selected lamp '+index,
+  available:true,verified:true,role:0,audio:{installed:index===1},sync:{version:2,role:0,maxMembers:9,maxSupportedMembers:32,protocolVersions:[2,3],membershipLocked:false}}));}
+
+test('group builder prefers an installed microphone and chooses a common protocol before mutating anything',()=>{
+  const rows=creationRows(),before=structuredClone(rows);rows[0].sync.protocolVersions=[2];
+  const plan=groupCreationPlan(rows);assert.equal(plan.protocol,2);assert.equal(plan.capacity,9);assert.equal(plan.leader.id,rows[1].id);
+  assert.deepEqual(plan.followers.map(row=>row.id),[rows[0].id]);
+  plan.leader.name='Changed output';assert.equal(rows[1].name,before[1].name);
+  assert.equal(rows[0].role,0);assert.equal(rows[1].role,0);
+});
+
+test('expanded builder uses advertised capability despite independent lamps reporting current v2 limits',()=>{
+  const rows=creationRows(20),plan=groupCreationPlan(rows);
+  assert.equal(plan.protocol,3);assert.equal(plan.capacity,32);assert.equal(plan.followers.length,19);
+  assert.equal(plan.leader.id,rows[1].id);assert(rows.every(row=>row.sync.version===2&&row.role===0));
+  delete rows[19].sync.maxSupportedMembers;
+  assert.throws(()=>groupCreationPlan(rows),/up to 9/);
+  rows[19].sync={...rows[19].sync,version:3,maxMembers:32};
+  assert.equal(groupCreationPlan(rows).capacity,32);
+});
+
+test('group builder checks every member capacity, shared protocol, role, lock and identity',()=>{
+  const tooMany=creationRows(10);tooMany[9].sync.protocolVersions=[2];assert.throws(()=>groupCreationPlan(tooMany),/up to 9/);
+  const reduced=creationRows(20);reduced[19].sync.maxSupportedMembers=16;assert.throws(()=>groupCreationPlan(reduced),/up to 16/);
+  for(const change of [row=>{row.sync.maxSupportedMembers=33;},row=>{row.sync.maxSupportedMembers='32';},row=>{row.available=false;},row=>{row.verified=false;},row=>{row.role=2;},row=>{row.sync.role=1;},row=>{row.sync.membershipLocked=true;},row=>{row.id='wrong';},row=>{row.sync={version:1,role:0};}]){
+    const rows=creationRows();change(rows[1]);assert.throws(()=>groupCreationPlan(rows));
+  }
+  const duplicate=creationRows();duplicate[1].id=duplicate[0].id;assert.throws(()=>groupCreationPlan(duplicate));
+  assert.throws(()=>groupCreationPlan(creationRows(1)));assert.throws(()=>groupCreationPlan(creationRows(33)));
 });
 
 test('known lamps are read before slow native discovery and fresh radio hints join the same bounded scan',async()=>{

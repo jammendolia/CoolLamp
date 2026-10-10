@@ -9,4 +9,8 @@ bool macFromIdentity(const char* identity,uint8_t* address);
 bool seal(const LampSyncWire::Packet& packet,const char* destination,const uint8_t* groupKey,
   uint8_t* output,size_t capacity,SendNonce& previous);
 bool open(const uint8_t* input,size_t length,const uint8_t* source,const char* destination,const uint8_t* groupKey,LampSyncWire::Packet& packet);
+// Expanded frames use a separate group-broadcast key domain; never a per-peer
+// key/nonce. Only already nonce-admitted followers may consume these frames.
+bool sealBroadcast(const LampSyncWire::Packet& packet,const uint8_t* groupKey,uint8_t* output,size_t capacity,SendNonce& previous);
+bool openBroadcast(const uint8_t* input,size_t length,const uint8_t* source,const uint8_t* groupKey,LampSyncWire::Packet& packet);
 }

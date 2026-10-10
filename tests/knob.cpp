@@ -17,6 +17,7 @@ uint16_t lampMidpoint=0;
 uint32_t clockMs=0;
 uint32_t millis(){return clockMs;}
 bool button=false,updating=false,pairing=false;
+unsigned updateUseNotes=0;void noteLampUpdateUse(){++updateUseNotes;}
 bool factoryArmed=false,factoryPending=false;
 int factoryResets=0;
 void armLampFactoryReset(bool armed){factoryArmed=armed&&!updating;}
@@ -78,7 +79,7 @@ int main(){
   tick(101);assert(knobMode==KnobMode::Effects&&Brightness==110&&brightnessSaves==1);
   tick(6000);assert(brightnessSaves==1);turn(1);assert(Mode==6);
   clicks(2);assert(knobMode==KnobMode::Color);const int index=knobColorIndex;
-  turn(1);assert(knobColorIndex==(index+1)%knobPaletteSize&&Mode==6&&colors[6].enabled);
+  const auto priorUseNotes=updateUseNotes;turn(1);assert(knobColorIndex==(index+1)%knobPaletteSize&&Mode==6&&colors[6].enabled&&updateUseNotes==priorUseNotes+1);
   assert(colorSaves==0);clicks(1);assert(colorSaves==1&&knobMode==KnobMode::Effects);
   clicks(3);assert(!PowerOn&&knobMode==KnobMode::Effects);clicks(1);assert(PowerOn&&knobMode==KnobMode::Effects);
   // Immediate click-and-turn adjusts brightness, not the effect.

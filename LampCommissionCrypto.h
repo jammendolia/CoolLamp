@@ -8,8 +8,9 @@ struct Transcript {
  uint8_t broker[6]{},target[6]{},brokerPublic[PublicKeySize]{},targetPublic[PublicKeySize]{},fleetId[8]{};
  uint8_t brokerNonce[16]{},targetNonce[16]{},brokerCommit[32]{},targetCommit[32]{};
  uint64_t brokerBoot=0,targetBoot=0,requestId=0;
+ uint8_t version=1;
 };
-struct Keys {uint8_t brokerToTarget[16]{},targetToBroker[16]{},digest[32]{},pattern[4]{};};
+struct Keys {uint8_t brokerToTarget[16]{},targetToBroker[16]{},digest[32]{},pattern[4]{},comparison[6]{};};
 class Exchange {
  public:
  Exchange()=default;~Exchange();Exchange(const Exchange&)=delete;Exchange& operator=(const Exchange&)=delete;

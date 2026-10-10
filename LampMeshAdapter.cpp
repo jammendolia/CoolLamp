@@ -40,15 +40,19 @@ bool send(void*,const uint8_t* data,size_t size){
 }
 bool allowed(uint8_t endpoint,uint8_t method){
  using namespace LampControlEndpoint;
- if(method==1)return endpoint==State||endpoint==Sync||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew;
+ const bool confidential=method&0x80;method&=0x7f;
+ if(confidential&&endpoint!=Household)return false;
+ if(endpoint==Household)return confidential&&method==2;
+ if(method==1)return endpoint==State||endpoint==Sync||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew||endpoint==Descriptor||endpoint==Revision;
  if(method!=2)return false;
- return (endpoint>=SyncInvite&&endpoint<=AudioTest)||endpoint==FirmwareAutomatic||endpoint==Style||(endpoint>=Power&&endpoint<=EffectOptions)||(endpoint>=EnrollStart&&endpoint<=EnrollCancel);
+ return (endpoint>=SyncInvite&&endpoint<=AudioTest)||endpoint==FirmwareAutomatic||endpoint==Style||(endpoint>=Power&&endpoint<=EffectOptions)||(endpoint>=EnrollStart&&endpoint<=EnrollCancel)||(endpoint>=SchemaPage&&endpoint<=LampControlEndpoint::Receipt)||endpoint==UpdatePolicy||endpoint==GroupPage||endpoint==Rollout||endpoint==GroupRemove;
 }
+bool privateResult=false;
 uint16_t execute(void*,const uint8_t*,uint64_t,const uint8_t* bytes,size_t size,uint8_t* response,size_t capacity,size_t& used){
  used=0;if(size<2||!allowed(bytes[0],bytes[1])){constexpr char message[]="This action requires a direct Bluetooth or Wi-Fi connection.";used=min(capacity,sizeof(message)-1);memcpy(response,message,used);return 403;}
  if(lampUpdateOwnsResources())return 409;
  String form;if(size>2&&(!form.reserve(size-2)||!form.concat(reinterpret_cast<const char*>(bytes+2),size-2)))return 507;
- auto reply=lampControlRequest(bytes[0],bytes[1]==2,form);if(form.length())erase(const_cast<char*>(form.c_str()),form.length());form=static_cast<const char*>(nullptr);
+ auto reply=lampControlRequest(bytes[0],(bytes[1]&0x7f)==2,form,bytes[1]&0x80);if(form.length())erase(const_cast<char*>(form.c_str()),form.length());form=static_cast<const char*>(nullptr);
  if(reply.body.length()>capacity){if(reply.body.length())erase(const_cast<char*>(reply.body.c_str()),reply.body.length());return 507;}
  used=reply.body.length();if(used)memcpy(response,reply.body.c_str(),used);if(used)erase(const_cast<char*>(reply.body.c_str()),used);return reply.status;
 }
@@ -84,19 +88,22 @@ bool online(const uint8_t* mac){return !paused&&core.online(mac,millis());}
 String statusJson(){
  String out="{\"version\":1,\"deviceId\":"+quote(id(self).c_str())+",\"fleetId\":"+quote(LampFirmwareRelay::fleetId().c_str())+",\"available\":"+(!paused&&core.active()?"true":"false")+",\"peers\":[";bool comma=false;
  const auto* peers=core.peers();for(unsigned i=0;i<LampMesh::MaxPeers;++i){const auto& p=peers[i];if(!p.boot||!p.active)continue;if(comma)out+=',';comma=true;out+="{\"id\":"+quote(id(p.mac).c_str())+",\"name\":"+quote(p.name)+",\"firmwareVersion\":"+quote(p.version)+",\"online\":"+(core.online(p.mac,millis())?"true":"false")+",\"hops\":"+String(p.hops)+",\"connected\":"+(p.wifiConnected?"true":"false")+",\"boot\":\""+hex(p.boot)+"\"}";}
- return out+"]}";
+ return out+"],\"limits\":{\"localPresence\":16,\"forwardingHops\":4},\"snapshotUptimeMs\":"+String(millis())+",\"boot\":\""+hex(boot)+"\",\"inventoryScope\":\"local-neighborhood\",\"globalFleetCeiling\":null}";
 }
-LampControlReply request(const String& target,const String& requestId,const String& endpoint,const String& method,const String& form){
+LampControlReply request(const String& target,const String& requestId,const String& endpoint,const String& method,const String& form,bool confidential){
  uint8_t mac[6]{};uint64_t tx=0;uint32_t ep=0,op=0;
- if(!LampSyncRadioCrypto::macFromIdentity(target.c_str(),mac)||!transaction(requestId,tx)||!number(endpoint,39,ep)||!number(method,2,op)||!allowed(ep,op)||form.length()>1022)return {400,"Invalid or direct-only mesh request."};
+ if(!LampSyncRadioCrypto::macFromIdentity(target.c_str(),mac)||!transaction(requestId,tx)||!number(endpoint,52,ep)||!number(method,2,op)||form.length()>1022)return {400,"Invalid or direct-only mesh request."};
+ if(ep==LampControlEndpoint::Household&&confidential)op|=0x80;
+ if(!allowed(ep,op))return ep==LampControlEndpoint::Household?LampControlReply{403,"This action requires a protected Bluetooth origin."}:LampControlReply{400,"Invalid or direct-only mesh request."};
  if(paused||!core.active()||lampUpdateOwnsResources())return {409,"Lamp mesh bridge is unavailable or busy."};
  uint8_t payload[1024]{},digest[32]{};payload[0]=ep;payload[1]=op;memcpy(payload+2,form.c_str(),form.length());mbedtls_sha256_context h;mbedtls_sha256_init(&h);mbedtls_sha256_starts(&h,0);mbedtls_sha256_update(&h,mac,6);mbedtls_sha256_update(&h,payload,form.length()+2);mbedtls_sha256_finish(&h,digest);mbedtls_sha256_free(&h);
- const auto& old=core.result();if(old.requestId==tx){erase(payload,sizeof(payload));if(!LampMeshWire::same(old.target,mac)||memcmp(fingerprint,digest,32)){erase(digest,sizeof(digest));return {409,"A request identifier was reused with different content."};}erase(digest,sizeof(digest));return result(target,requestId,"0");}
+ const auto& old=core.result();if(old.requestId==tx){erase(payload,sizeof(payload));if(!LampMeshWire::same(old.target,mac)||memcmp(fingerprint,digest,32)){erase(digest,sizeof(digest));return {409,"A request identifier was reused with different content."};}erase(digest,sizeof(digest));return result(target,requestId,"0",confidential);}
  if(old.state==LampMesh::State::Pending||old.state==LampMesh::State::Executed||(old.state==LampMesh::State::Complete&&!consumed&&(!terminalObserved||millis()-completedAt<15000))){erase(payload,sizeof(payload));erase(digest,sizeof(digest));return {409,"Another mesh request is still active."};}
  if(!core.online(mac,millis())){erase(payload,sizeof(payload));erase(digest,sizeof(digest));return {200,prefix(mac,tx,"no-route",false)+",\"httpStatus\":503,\"total\":0,\"offset\":0,\"data\":\"\"}"};}
- core.clearResult();const bool started=core.startRequest(mac,tx,payload,form.length()+2,millis());erase(payload,sizeof(payload));if(!started){erase(digest,sizeof(digest));return {409,"Mesh request could not start."};}memcpy(fingerprint,digest,32);erase(digest,sizeof(digest));consumed=false;terminalObserved=false;completedAt=0;return {202,prefix(mac,tx,"pending",false)+"}"};
+ core.clearResult();const bool started=core.startRequest(mac,tx,payload,form.length()+2,millis());erase(payload,sizeof(payload));if(!started){erase(digest,sizeof(digest));return {409,"Mesh request could not start."};}privateResult=ep==LampControlEndpoint::Household;memcpy(fingerprint,digest,32);erase(digest,sizeof(digest));consumed=false;terminalObserved=false;completedAt=0;return {202,prefix(mac,tx,"pending",false)+"}"};
 }
-LampControlReply result(const String& target,const String& requestId,const String& page){
+LampControlReply result(const String& target,const String& requestId,const String& page,bool confidential){
+ if(privateResult&&!confidential)return {403,"Use the original protected Bluetooth route to reconcile this private result."};
  uint8_t mac[6]{};uint64_t tx=0;uint32_t at=0;if(!LampSyncRadioCrypto::macFromIdentity(target.c_str(),mac)||!transaction(requestId,tx)||!number(page,8192,at))return {400,"Invalid mesh result request."};
  const auto& value=core.result();if(value.requestId!=tx||!LampMeshWire::same(value.target,mac))return {404,"Mesh request result is unavailable. A missing result does not prove the command was not applied."};
  if(value.state==LampMesh::State::Pending||value.state==LampMesh::State::Executed)return {200,prefix(mac,tx,"pending",value.executed)+",\"targetBoot\":\""+hex(value.targetBoot)+"\"}"};

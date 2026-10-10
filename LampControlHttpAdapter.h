@@ -9,11 +9,12 @@
 // context with a URL, header or form field. No handler executes on a callback.
 extern String lampToken;
 class LampControlHttpAdapter : public WebServer {
-  static constexpr unsigned Slots=40, Fields=16;
+  static constexpr unsigned Slots=64, Fields=24;
   THandlerFunction controls[Slots][2];
   struct Entry { String key,value; } fields[Fields];
   unsigned fieldCount=0;
   bool control=false;
+  bool privateTransport=false;
   String controlUri;
   LampControlReply reply;
   static void erase(String& text){
@@ -62,6 +63,17 @@ class LampControlHttpAdapter : public WebServer {
   }
   static uint8_t endpoint(const char* path,HTTPMethod method){
     using namespace LampControlEndpoint;
+    if(method==HTTP_GET&&!strcmp(path,"/api/descriptor"))return Descriptor;
+    if(method==HTTP_GET&&!strcmp(path,"/api/revision"))return Revision;
+    if(method==HTTP_POST&&!strcmp(path,"/api/effects/schema"))return SchemaPage;
+    if(method==HTTP_POST&&!strcmp(path,"/api/state/patch"))return StatePatch;
+    if(method==HTTP_POST&&!strcmp(path,"/api/appearance/save"))return AppearanceSave;
+    if(method==HTTP_POST&&!strcmp(path,"/api/receipt"))return Receipt;
+    if(method==HTTP_POST&&!strcmp(path,"/api/firmware/policy"))return UpdatePolicy;
+    if(method==HTTP_POST&&!strcmp(path,"/api/sync/page"))return GroupPage;
+    if(method==HTTP_POST&&!strcmp(path,"/api/household"))return Household;
+    if(method==HTTP_POST&&!strcmp(path,"/api/firmware/rollout"))return Rollout;
+    if(method==HTTP_POST&&!strcmp(path,"/api/group/remove"))return GroupRemove;
     if(method==HTTP_GET){if(!strcmp(path,"/api/state"))return State;if(!strcmp(path,"/api/firmware"))return Firmware;if(!strcmp(path,"/api/bluetooth"))return Bluetooth;if(!strcmp(path,"/api/effects"))return Effects;if(!strcmp(path,"/api/mesh/status"))return MeshStatus;if(!strcmp(path,"/api/mesh/new"))return MeshNew;return 0;}
     if(method!=HTTP_POST)return 0;
     const char* paths[]={"/api/sync/invite","/api/sync","/api/sync/scene","/api/sync/order","/api/config","/api/audio","/api/audio/tuning","/api/rotation","/api/geometry","/api/calibration","/api/name","/api/identify","/api/vu-colors","/api/fountain-colors","/api/audio/test"};
@@ -86,6 +98,17 @@ class LampControlHttpAdapter : public WebServer {
   }
   static const char* route(uint8_t id,bool mutation){
     using namespace LampControlEndpoint;
+    if(id==Descriptor&&!mutation)return "/api/descriptor";
+    if(id==Revision&&!mutation)return "/api/revision";
+    if(id==SchemaPage&&mutation)return "/api/effects/schema";
+    if(id==StatePatch&&mutation)return "/api/state/patch";
+    if(id==AppearanceSave&&mutation)return "/api/appearance/save";
+    if(id==Receipt&&mutation)return "/api/receipt";
+    if(id==UpdatePolicy&&mutation)return "/api/firmware/policy";
+    if(id==GroupPage&&mutation)return "/api/sync/page";
+    if(id==Household&&mutation)return "/api/household";
+    if(id==Rollout&&mutation)return "/api/firmware/rollout";
+    if(id==GroupRemove&&mutation)return "/api/group/remove";
     if(!mutation){if(id==State)return "/api/state";if(id==Sync)return "/api/sync";if(id==Firmware)return "/api/firmware";if(id==Bluetooth)return "/api/bluetooth";if(id==Effects)return "/api/effects";if(id==MeshStatus)return "/api/mesh/status";if(id==MeshNew)return "/api/mesh/new";return "";}
     const char* paths[]={"/api/sync/invite","/api/sync","/api/sync/scene","/api/sync/order","/api/config","/api/audio","/api/audio/tuning","/api/rotation","/api/geometry","/api/calibration","/api/name","/api/identify","/api/vu-colors","/api/fountain-colors","/api/audio/test"};
     if(id>=SyncInvite&&id<=AudioTest)return paths[id-SyncInvite];
@@ -117,6 +140,19 @@ public:
   }
   void setControlRead(uint8_t id,THandlerFunction handler){if(id&&id<Slots)controls[id][0]=std::move(handler);}
   bool controlActive()const{return control;}
+  bool controlConfidential()const{return control&&privateTransport;}
+  bool fieldsAllowed(const char* const* names,size_t count,size_t maximum=1024)const{
+    const size_t total=control?fieldCount:WebServer::args();
+    if(total>Fields||(!control&&WebServer::arg("plain").length()>maximum))return false;
+    size_t bytes=0;
+    for(size_t i=0;i<total;++i){const String key=control?fields[i].key:WebServer::argName(i);bool found=false;
+      if(key=="plain")continue;
+      const String value=control?fields[i].value:WebServer::arg(key);bytes+=key.length()+value.length()+2;if(bytes>maximum)return false;
+      for(size_t n=0;n<i;++n)if(key==(control?fields[n].key:WebServer::argName(n)))return false;
+      for(size_t n=0;n<count;++n)if(key==names[n]){found=true;break;}
+      if(!found)return false;
+    }return true;
+  }
   String arg(const String& name)const{if(!control)return WebServer::arg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return fields[i].value;return String();}
   bool hasArg(const String& name)const{if(!control)return WebServer::hasArg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return true;return false;}
   String uri()const{return control?controlUri:WebServer::uri();}
@@ -125,15 +161,15 @@ public:
   void sendHeader(const String& name,const String& value,bool first=false){if(!control)WebServer::sendHeader(name,value,first);}
   void send(int status,const char* type,const String& body){if(!control){WebServer::send(status,type,body);return;}reply.status=status;if(body.length()>8192){reply.status=507;reply.body="Control response too large.";}else reply.body=body;}
   void send(int status,const char* type,const char* body){send(status,type,String(body));}
-  LampControlReply executeControl(uint8_t id,bool mutation,const String& body){
+  LampControlReply executeControl(uint8_t id,bool mutation,const String& body,bool confidential=false){
     if(control)return {409,"Another control request is active."};
     if(!id||id>=Slots||!controls[id][mutation?1:0])return {404,"This control endpoint is unavailable."};
     clearFields();
     if((!mutation&&!body.isEmpty())||!parse(body)){clearFields();return {400,"Invalid control request form."};}
     if(id==LampControlEndpoint::Bluetooth&&mutation){bool forget=false;for(unsigned i=0;i<fieldCount;++i)if(fields[i].key=="action"&&fields[i].value=="forget")forget=true;if(!forget){clearFields();return {400,"Choose a supported Bluetooth action."};}}
-    reply.status=500;erase(reply.body);controlUri=route(id,mutation);control=true;
+    reply.status=500;erase(reply.body);controlUri=route(id,mutation);control=true;privateTransport=confidential;
     controls[id][mutation?1:0]();
-    control=false;controlUri=String();clearFields();
+    control=false;privateTransport=false;controlUri=String();clearFields();
     LampControlReply result{reply.status,std::move(reply.body)};reply.status=500;return result;
   }
 };

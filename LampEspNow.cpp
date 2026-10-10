@@ -45,8 +45,9 @@ void deactivate() {
 }
 bool addPeer(const uint8_t* mac) {
   for(unsigned i=0;i<driverPeerCount;++i)if(!memcmp(driverPeers[i],mac,6))return true;
-  // Broadcast plus eight followers fits the unencrypted SDK peer table. Payload
-  // confidentiality/authentication are supplied by the group AEAD envelope.
+  // Broadcast plus eight cached destinations keeps the SDK table bounded.
+  // Expanded groups broadcast their frames; targeted clock/control destinations
+  // rotate through this cache. Application AEAD supplies payload protection.
   if(driverPeerCount>=9){esp_now_del_peer(driverPeers[1]);memmove(driverPeers[1],driverPeers[2],7*6);driverPeerCount=8;}
   esp_now_peer_info_t peer{};memcpy(peer.peer_addr,mac,6);peer.ifidx=WIFI_IF_STA;peer.channel=0;peer.encrypt=false;
   const auto result=esp_now_add_peer(&peer);

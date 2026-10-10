@@ -12,7 +12,9 @@ bool physicalPending();
 void approvePhysical();
 bool cue(uint32_t now,uint8_t& red,uint8_t& green,uint8_t& blue);
 String candidatesJson();
-LampControlReply start(const String& target,const String& requestId,const String& broker);
+// comparisonVersion=2 is opt-in and must be supported by the discovered target.
+// No downgrade is performed; v1 retains its existing four-color behavior.
+LampControlReply start(const String& target,const String& requestId,const String& broker,uint8_t comparisonVersion=1);
 LampControlReply status(const String& target,const String& requestId,const String& broker);
 LampControlReply cancel(const String& target,const String& requestId,const String& broker);
 }

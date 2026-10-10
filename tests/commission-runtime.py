@@ -37,6 +37,8 @@ with tempfile.TemporaryDirectory(prefix='coollamp-commission-',dir=ROOT/'.build'
                'cancel','expiry','no-overwrite','nvs-failure','lost-finish','lost-finish-proof',
                'replayed-offer','approval-preserves-state','blocked','backpressure','fresh-only',
                'commitment-hidden','wrong-target-reveal','wrong-broker-reveal',
-               'lost-broker-reveal','commit-before-physical']
+               'lost-broker-reveal','commit-before-physical','cue-counts',
+               'legacy-negotiation','cue-v2','cue-v2-rollover','cue-v2-downgrade',
+               'cue-v2-unrendered','cue-v2-lost-finish','resource-bounds','cue-v2-stalled']
     for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
     print(f'PASS: {len(scenarios)} commissioning scenarios; actual verified P256/HKDF/AES-GCM; no network')

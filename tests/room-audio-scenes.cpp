@@ -223,7 +223,7 @@ void boundariesAndRollover() {
                         "beat counter extremes violate visibility/intensity bounds");
             }
         }
-        for (unsigned count : {0U, 1U, 10U}) {
+        for (unsigned count : {0U, 1U, unsigned(LampSyncWire::MaxMembers)+1U}) {
             v.count = count; require(!energy(LampGroupScenes::pixel(v, 32768, 2000)), "invalid group count is lit");
         }
         v.count = 3; v.position = 3;

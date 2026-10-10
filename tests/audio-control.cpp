@@ -21,6 +21,7 @@ struct CRGB { static constexpr int Black=0; };
 int leds[1];constexpr int NUM_LEDS=1;
 void fill_solid(int*,int,int){}
 void syncLampKnob(){}
+void noteLampUpdateUse(){}
 struct { void setBrightness(int){} } FastLED;
 #include "../LampControl.ino"
 int main(){

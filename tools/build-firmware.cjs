@@ -4,6 +4,11 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const wifiOnly = process.argv.includes('--wifi-only');
 const publicRelease = process.argv.includes('--public');
+const stackUsage=process.argv.includes('--stack-usage');
+const trustOptions=process.argv.filter(arg=>arg.startsWith('--publisher-trust='));
+if(process.argv.includes('--publisher-trust'))throw new Error('Use --publisher-trust=<public-only JSON path>.');
+if(trustOptions.length>1||trustOptions.some(arg=>arg==='--publisher-trust='))throw new Error('Specify one public publisher-trust JSON file.');
+const publisherTrust=trustOptions.length?require('./publisher-trust.cjs').load(trustOptions[0].slice('--publisher-trust='.length)):null;
 if (publicRelease && wifiOnly) throw new Error('Public releases require Bluetooth and the dual OTA layout.');
 const bundledCli = path.join(process.env.LOCALAPPDATA || '', 'Programs/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe');
 const cli = process.env.ARDUINO_CLI || (process.platform === 'win32' && fs.existsSync(bundledCli) ? bundledCli : 'arduino-cli');
@@ -21,13 +26,23 @@ for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
   const target = path.join(sketch, entry.name);
   if (!fs.existsSync(target) || !source.equals(fs.readFileSync(target))) fs.writeFileSync(target, source);
 }
+if(publisherTrust){
+  fs.writeFileSync(path.join(sketch,'LampPublisherTrust.generated.h'),publisherTrust.header);
+  console.log('Publisher public trust configuration SHA-256: '+publisherTrust.provenance.sha256);
+}
 const flavor = publicRelease ? 'public' : wifiOnly ? 'wifi' : 'ble';
 const board = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs';
 const jobs = Math.max(1, Math.min(8, Math.floor(require('node:os').availableParallelism() / 2)));
 const args = ['compile', '--fqbn', board, '--jobs', String(jobs), '--build-path', path.join(root, '.build/cache-' + flavor),
   '--output-dir', path.join(root, 'firmware', flavor)];
-if (wifiOnly) args.push('--build-property', 'compiler.cpp.extra_flags=-DCOOL_LAMP_BLE=0');
-if (publicRelease) args.push('--build-property', 'compiler.cpp.extra_flags=-DCOOL_LAMP_PUBLIC_RELEASE=1');
+const cppFlags=[];
+if (wifiOnly) cppFlags.push('-DCOOL_LAMP_BLE=0');
+if (publicRelease) cppFlags.push('-DCOOL_LAMP_PUBLIC_RELEASE=1');
+if (publisherTrust)cppFlags.push('-DCOOL_LAMP_PUBLISHER_TRUST_PROVISIONED=1');
+if(stackUsage)cppFlags.push('-fstack-usage');
+if(cppFlags.length)args.push('--build-property','compiler.cpp.extra_flags='+cppFlags.join(' '));
+if(stackUsage)args.push('--build-property','compiler.c.extra_flags=-fstack-usage');
+if(publisherTrust)fs.writeFileSync(path.join(root,'.build','publisher-trust-'+flavor+'.json'),JSON.stringify(publisherTrust.provenance,null,2)+'\n');
 args.push(sketch);
 (async()=>{
   const library=await require('./build-tls-library.cjs').ensureTlsLibrary({cli,board,sketch,root});
