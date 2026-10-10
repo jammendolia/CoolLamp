@@ -40,21 +40,40 @@ apply. No automatic reassignment of former followers occurs. Current app 44.1
 workaround: select the leader's gear, open Groups → Advanced · selected lamp
 recovery → Leave group, then choose a group under Ungrouped lamps and Join.
 
-Windows validation: **516 mobile tests**, production build, **45 focused firmware
-checks**, **107 focused sender cases**, and the new controller-demotion UI cases
+Validation: **516 mobile tests**, production build, **45 focused firmware
+checks**, **107 focused sender cases**, and **33 production UI scenarios**
 passed. Public Windows image is **1,920,816 bytes**, SHA-256
 `0b7244603a68d81f05297f7e0c58726a7dce936968c69d5d12e6d8aa930c19d9`;
 packaging/credential/partition checks passed. SDK fresh frozen installation using
-CI pnpm 11.19.0 verified the real patched SwiftPM dependency. Full production UI,
-macOS native compilation/tests and Linux firmware CI/publication remain pending.
-Physical fast-mode throughput and bootstrap installation remain unmeasured.
-No new firmware/app release is published at this checkpoint. Evidence:
+CI pnpm 11.19.0 verified the real patched SwiftPM dependency. macOS CI
+**38027260969** passed the actual installed SDK's Swift gate tests and signed
+arm64 CoreBluetooth compilation/archive/export. Apple accepted app **1.0 (45.1)**
+at `2026-10-10T05:27:44.8148520Z` (**October 10, 12:27:44 AM CDT**).
+Tester availability remains unverified. Linux firmware CI **38027217705** passed
+all release checks. Public Latest **1.14.0** was published at
+`2026-10-10T05:32:15Z` (**October 10, 12:32:15 AM CDT**), tag/source
+`3b0b85893626463dfca225bb1a2613d4d93e1f59`. Its exact **CI** image is
+**1,920,432 bytes**, SHA-256
+`295a615acd70d9c2957d94f3b1704210f194bb5d362377eb96d6598058b71161`;
+manifest SHA-256
+`1e5dedcd9a2273153e86391fdf8c228b0ebc989dac7b79183a9551aeceea85e9`.
+Anonymous Latest and pinned downloads were verified against those CI assets,
+as was the published source tag. The Windows image is validation evidence and
+was not uploaded. Only personal **jammendolia** was used. No lamp install,
+reboot, GPIO, role, saved setting or router mutation was forced. Physical fast-mode
+throughput and installed 1.14.0 remain unverified; the last device check was 1.13.0.
+The original working tree and private evidence were preserved; only scoped paths
+were committed/pushed through `.build/release-1.9.5`. Evidence:
 `.build/bluetooth-bulk-mobile-tests.log`, `.build/bluetooth-bulk-mobile-build.log`,
 `.build/bluetooth-firmware-bulk-validation.json`,
 `.build/bluetooth-native-patch-validation.json`,
 `.build/stop-coordinating-model-tests.log`, `.build/stop-coordinating-ui-result.json`,
 `.build/firmware-1.14.0-windows-build.log` and
 `.build/firmware-1.14.0-packaging-tests.log`.
+Publication evidence: `.build/bluetooth-bulk-final-validation.json`,
+`.build/bluetooth-bulk-app45.1-record.json`, `.build/bluetooth-bulk-ios-ci.log`,
+`.build/firmware-1.14.0-draft-record.json`, `.build/firmware-1.14.0-ci.log` and
+`.build/firmware-1.14.0-public-verification.json`.
 
 ## CoolLamp 1 screen-lock interruption and update-speed work — 2026-10-09
 
