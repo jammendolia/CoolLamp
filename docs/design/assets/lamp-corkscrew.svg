@@ -3,7 +3,6 @@
  <linearGradient id="asset-corkscrew-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#c7dff4"/><stop offset=".5" stop-color="#edd6f7"/><stop offset="1" stop-color="#bce9df"/></linearGradient>
  <linearGradient id="asset-corkscrew-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="asset-corkscrew-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="#161a1c"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="#383d41"/><stop class="lamp-artwork-base-end" offset="1" stop-color="#171b1e"/></linearGradient>
- <linearGradient id="asset-corkscrew-white-base" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c7cebf"/><stop offset=".5" stop-color="#f0f0e7"/><stop offset="1" stop-color="#b9c4b3"/></linearGradient>
  </defs><g fill="none" stroke-linecap="round" stroke-linejoin="round">
  <path d="M88 179 C89 151 92 104 92 63 C95 31 79 15 54 13 C36 10 24 15 25 23" stroke="#b5bdbb" stroke-width="8"/>
  <path d="M88 179 C89 151 92 104 92 63 C95 31 79 15 54 13 C36 10 24 15 25 23" stroke="url(#asset-corkscrew-support)" stroke-width="6.5"/>
@@ -14,7 +13,7 @@
  <path class="lamp-artwork-ribbon" d="M77 97 C69 113 39 120 27 113" stroke="url(#asset-corkscrew-light)" stroke-width="8.3"/><path d="M77 97 C69 113 39 120 27 113" stroke="#ffffff" stroke-opacity=".48" stroke-width="1.3"/>
  <path class="lamp-artwork-ribbon" d="M74 132 C66 146 50 151 42 153" stroke="url(#asset-corkscrew-light)" stroke-width="8.3"/><path d="M74 132 C66 146 50 151 42 153" stroke="#ffffff" stroke-opacity=".48" stroke-width="1.3"/>
  <circle cx="42" cy="153" r="4.2" fill="#e7eddf" stroke="#c6d6cc" stroke-width=".6"/>
- </g><g class="lamp-artwork-base" data-base="light"><ellipse cx="60" cy="195" rx="35" ry="3" fill="#252b291a"/>
- <rect class="lamp-artwork-base-side" x="29" y="180" width="62" height="13" rx="4" fill="url(#asset-corkscrew-white-base)"/>
- <ellipse class="lamp-artwork-base-bottom" cx="60" cy="193" rx="31" ry="4" fill="#bbc3b7"/>
- <ellipse class="lamp-artwork-base-top" cx="60" cy="180" rx="31" ry="6" fill="#ecede4"/></g></svg>
+ </g><g class="lamp-artwork-base" data-base="dark"><ellipse cx="60" cy="195" rx="35" ry="3" fill="#252b291a"/>
+ <rect class="lamp-artwork-base-side" x="29" y="180" width="62" height="13" rx="4" fill="url(#asset-corkscrew-base)"/>
+ <ellipse class="lamp-artwork-base-bottom" cx="60" cy="193" rx="31" ry="4" fill="#1b1d20"/>
+ <ellipse class="lamp-artwork-base-top" cx="60" cy="180" rx="31" ry="6" fill="#363b40"/></g></svg>

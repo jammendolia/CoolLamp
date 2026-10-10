@@ -6,17 +6,12 @@ let sequence=0;
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
 export const LAMP_ARTWORK_DARK_PALETTE=Object.freeze({frame:'#93a196',baseStart:'#849187',baseMiddle:'#9daa9f',baseEnd:'#7f8d81',baseTop:'#abb6a9',baseBottom:'#859287'});
 
-function blackBase(id,tones){
- return `<g class="lamp-artwork-base" data-base="dark"><ellipse cx="60" cy="195" rx="35" ry="3" fill="#252b2920"/>
- <rect class="lamp-artwork-base-side" x="31" y="180" width="58" height="13" rx="3" fill="url(#${id}-base)"/>
- <ellipse class="lamp-artwork-base-bottom" cx="60" cy="193" rx="29" ry="4" fill="${tones?.baseBottom||'#1b1d20'}"/>
- <ellipse class="lamp-artwork-base-top" cx="60" cy="180" rx="29" ry="5" fill="${tones?.baseTop||'#363b40'}"/></g>`;
-}
-function whiteBase(id){
- return `<g class="lamp-artwork-base" data-base="light"><ellipse cx="60" cy="195" rx="35" ry="3" fill="#252b291a"/>
- <rect class="lamp-artwork-base-side" x="29" y="180" width="62" height="13" rx="4" fill="url(#${id}-white-base)"/>
- <ellipse class="lamp-artwork-base-bottom" cx="60" cy="193" rx="31" ry="4" fill="#bbc3b7"/>
- <ellipse class="lamp-artwork-base-top" cx="60" cy="180" rx="31" ry="6" fill="#ecede4"/></g>`;
+function blackBase(id,tones,wide=false){
+ const radius=wide?31:29;
+ return `<g class="lamp-artwork-base" data-base="dark"><ellipse cx="60" cy="195" rx="35" ry="3" fill="${wide?'#252b291a':'#252b2920'}"/>
+ <rect class="lamp-artwork-base-side" x="${60-radius}" y="180" width="${radius*2}" height="13" rx="${wide?4:3}" fill="url(#${id}-base)"/>
+ <ellipse class="lamp-artwork-base-bottom" cx="60" cy="193" rx="${radius}" ry="4" fill="${tones?.baseBottom||'#1b1d20'}"/>
+ <ellipse class="lamp-artwork-base-top" cx="60" cy="180" rx="${radius}" ry="${wide?6:5}" fill="${tones?.baseTop||'#363b40'}"/></g>`;
 }
 const ribbon=(path,id,width=8)=>`<path class="lamp-artwork-ribbon" d="${path}" stroke="url(#${id}-light)" stroke-width="${width}"/><path d="${path}" stroke="#ffffff" stroke-opacity=".48" stroke-width="1.3"/>`;
 
@@ -41,7 +36,7 @@ function largeHelix(id,tones){
  ${ribbon('M102 100 C80 88 42 117 31 143 C19 167 37 179 60 177',id,8.8)}
  </g>${blackBase(id,tones)}`;
 }
-function corkscrew(id){
+function corkscrew(id,tones){
  // A separate straight support on the right carries the free hanging spiral.
  const support='M88 179 C89 151 92 104 92 63 C95 31 79 15 54 13 C36 10 24 15 25 23';
  const coil='M25 23 C47 15 75 24 79 41 C69 54 36 59 25 52 C17 47 23 41 39 40 C70 37 86 52 79 68 C72 85 37 88 27 81 C18 75 25 69 42 67 C68 65 85 81 77 97 C69 113 39 120 27 113 C18 108 26 101 42 101 C67 100 80 115 74 132 C66 146 50 151 42 153';
@@ -55,7 +50,7 @@ function corkscrew(id){
  ${ribbon('M77 97 C69 113 39 120 27 113',id,8.3)}
  ${ribbon('M74 132 C66 146 50 151 42 153',id,8.3)}
  <circle cx="42" cy="153" r="4.2" fill="#e7eddf" stroke="#c6d6cc" stroke-width=".6"/>
- </g>${whiteBase(id)}`;
+ </g>${blackBase(id,tones,true)}`;
 }
 function knot(id,tones){
  // An asymmetric outer oval wraps a small standing loop and a diagonal front ribbon.
@@ -83,6 +78,5 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  <linearGradient id="${id}-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="${colors[0]}"/><stop offset=".5" stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[2]}"/></linearGradient>
  <linearGradient id="${id}-support" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#bfc9c2"/><stop offset=".55" stop-color="#f5f4e9"/><stop offset="1" stop-color="#d4ddd2"/></linearGradient>
  <linearGradient id="${id}-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="${tones?.baseStart||'#161a1c'}"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="${tones?.baseMiddle||'#383d41'}"/><stop class="lamp-artwork-base-end" offset="1" stop-color="${tones?.baseEnd||'#171b1e'}"/></linearGradient>
- <linearGradient id="${id}-white-base" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#c7cebf"/><stop offset=".5" stop-color="#f0f0e7"/><stop offset="1" stop-color="#b9c4b3"/></linearGradient>
  </defs>${body}</svg>`;
 }
