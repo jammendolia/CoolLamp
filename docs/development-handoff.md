@@ -1,5 +1,48 @@
 # CoolLamp development handoff — 2026-10-06
 
+## CoolLamp 2 update failures and retained app feedback — 2026-10-09
+
+The user reports Wi-Fi and explicit phone-to-lamp Bluetooth transfers stopping
+around halfway. The phone remained foregrounded and unlocked. The original error
+was missed after the UI returned to its enabled state. A read-only check verified
+CoolLamp 2 (`f0b950b2f180`, `192.168.1.222`) still running **1.11.0**, connected
+on channel 6 at RSSI -60 dBm. Uptime was roughly nine hours, with no reset shown
+during the read-only observation. Stored HTTPS diagnostics showed stage 2,
+GitHub HTTP 302 followed by host 2, TLS error 12288 and transport error 32794.
+This identifies a handshake failure, not the missing Bluetooth failure trace.
+Free heap was roughly 30–32 KiB, largest block 17–20 KiB, and minimum since boot
+124 bytes. Die temperature was 79.7–83.7 C with a historical peak of 92.7 C.
+These historical minima/peaks do not establish the cause of the Bluetooth stop.
+No firmware, settings, reboot or update request was sent by the agent.
+
+The app now retains terminal update feedback on the correct lamp card and its
+Updates panel across disconnect, navigation, refresh and reload. It captures the
+receiver's original status and acknowledged bytes before Cancel changes the error
+to code 8. An uncertain native write gets at most one bounded, same-session
+read-only status snapshot. No data or final commit is repeated. A new explicit
+attempt or successful lamp removal clears the saved result; stale callbacks
+cannot overwrite it. Validation: **425 mobile tests**, Vite production build,
+three new production UI failure scenarios and ten existing update UI scenarios
+passed. Full-size 1,920,432-byte modeled transfers at MTU 23 and 185 pass,
+including all three sequence-number rollovers at minimum MTU. These tests do not
+prove physical Bluetooth reliability. App publication evidence is recorded after
+the existing macOS CI upload completes.
+
+The user was asked to restart CoolLamp 2, wait 35 seconds, reconnect by Bluetooth
+and report ready before another attempt. That coordinated test is pending.
+A bounded read-only observer and one-shot direct LAN installer of the exact
+published CI image are prepared privately under `.build/`; neither has started
+an update. The direct installer preserves a settings snapshot, journals before
+upload, never replays an uncertain transfer, and verifies a stable new boot and
+saved settings. Confirm readiness before using it because the user may be
+disconnecting power. Current Wi-Fi/Bluetooth transfer root cause is unresolved.
+
+Evidence: `.build/lamp2-update-readonly-*.json`,
+`.build/lamp2-update-observation-*.jsonl`,
+`.build/update-feedback-mobile-tests.log`,
+`.build/bluetooth-failure-feedback-ui-result.json` and
+`.build/ui-check/bluetooth-failure-feedback-mobile.png`.
+
 ## Firmware 1.13.0 published for OTA — 2026-10-09
 
 The user explicitly requested publication. **Firmware 1.13.0 is public Latest**,

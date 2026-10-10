@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {BluetoothFirmwareTransfer, downloadPhoneFirmware, parsePhoneManifest, decodeBleUpdate, compareFirmwareVersions, firmwareBase64, OTA_WRITE, OTA_STATUS} from '../src/bluetooth-firmware.js';
+import {BluetoothFirmwareTransfer, downloadPhoneFirmware, parsePhoneManifest, decodeBleUpdate, compareFirmwareVersions, firmwareBase64, bluetoothFirmwareFailureMessage, OTA_WRITE, OTA_STATUS} from '../src/bluetooth-firmware.js';
 import {LampTransport} from '../src/transport.js';
 const checksum=bytes=>createHash('sha256').update(bytes).digest('hex');
 function packageValue(){
@@ -90,6 +90,52 @@ test('lost final reply requires installed-version verification and never replays
 });
 test('confirmed image rejection is reported without a success result',async()=>{
  const radio=new Radio();radio.rejectFinish=true;await assert.rejects(radio.transfer().send(radio.pkg),/rejected/);assert.equal(radio.writes.filter(row=>row[1]===4).length,1);
+});
+test('receiver failure retains its acknowledged bytes and original reason after Cancel replaces status',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio);let count=0;
+ radio.write=async(...args)=>{const op=args[3].getUint8(1);if(op===3&&radio.s.phase===5)return;await write(...args);if(op===3&&++count===2){radio.s.phase=5;radio.s.error=7;}};
+ let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert(failure.confirmed);assert.equal(failure.updateDiagnostic.phase,5);assert.equal(failure.updateDiagnostic.error,7);
+ assert.equal(failure.updateDiagnostic.acknowledgedBytes,464);assert.equal(failure.updateDiagnostic.total,2048);assert.equal(failure.updateDiagnostic.progress,22);
+ assert.equal(radio.s.error,8);assert.equal(radio.writes.filter(row=>row[1]===5).length,1);
+ assert.match(bluetoothFirmwareFailureMessage(failure),/22%.*464 of 2,048 bytes confirmed/);assert.match(bluetoothFirmwareFailureMessage(failure),/code 7: receiver timed out/);
+});
+test('native write failure takes one bounded matching snapshot before Cancel and never replays bytes',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio),read=radio.read.bind(radio);let count=0,failed=false,snapshots=0;
+ radio.write=async(...args)=>{await write(...args);if(args[3].getUint8(1)===3&&++count===5){failed=true;throw Error('Native write timed out.');}};
+ radio.read=async(...args)=>{if(failed){++snapshots;assert.equal(args[3].timeout,1200);}return read(...args);};
+ let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert(failure.uncertain);assert.equal(snapshots,1);assert.equal(failure.updateDiagnostic.phase,2);
+ assert.equal(failure.updateDiagnostic.acknowledgedBytes,1160);assert.equal(failure.updateDiagnostic.progress,56);assert.equal(radio.s.error,8);
+ const data=radio.writes.filter(row=>row[1]===3);assert.equal(data.length,5);assert.equal(new Set(data.map(row=>new DataView(row.buffer).getUint32(8,true))).size,5);
+ assert(!radio.writes.some(row=>row[1]===4));assert.match(bluetoothFirmwareFailureMessage(failure),/check the installed version before retrying/);
+});
+test('a foreign receiver snapshot cannot replace this transfer’s last acknowledged offset',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio),read=radio.read.bind(radio);let count=0,failed=false;
+ radio.write=async(...args)=>{await write(...args);if(args[3].getUint8(1)===3&&++count===5){failed=true;throw Error('Write failed.');}};
+ radio.read=async(...args)=>{const result=await read(...args);if(failed)result.setUint32(4,radio.s.session^1,true);return result;};
+ let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert.equal(failure.updateDiagnostic.acknowledgedBytes,928);assert.equal(failure.updateDiagnostic.progress,45);assert.equal(radio.writes.filter(row=>row[1]===5).length,1);
+});
+test('changed connection suppresses the diagnostic read and Cancel on the replacement link',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio),read=radio.read.bind(radio);let count=0,failed=false,snapshots=0;
+ radio.write=async(...args)=>{await write(...args);if(args[3].getUint8(1)===3&&++count===5){radio.current=false;failed=true;throw Error('Link ended.');}};
+ radio.read=async(...args)=>{if(failed)++snapshots;return read(...args);};
+ let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert.equal(snapshots,0);assert.equal(failure.updateDiagnostic.acknowledgedBytes,928);assert(!radio.writes.some(row=>row[1]===4||row[1]===5));
+});
+test('an unresolved diagnostic read is bounded and cannot delay Cancel indefinitely',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio),read=radio.read.bind(radio);let failed=false,count=0,snapshots=0,release;
+ radio.write=async(...args)=>{await write(...args);if(args[3].getUint8(1)===3&&++count===5){failed=true;throw Error('Write failed.');}};
+ radio.read=async(...args)=>{if(failed){++snapshots;return new Promise(resolve=>release=resolve);}return read(...args);};
+ let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert.equal(snapshots,1);assert.equal(failure.updateDiagnostic.acknowledgedBytes,928);assert.equal(radio.writes.filter(row=>row[1]===5).length,1);
+ release(await read('target',null,OTA_STATUS));await Promise.resolve();assert.equal(failure.updateDiagnostic.error,0);
+});
+test('final rejection retains the receiver code without adding a diagnostic read or Cancel',async()=>{
+ const radio=new Radio();radio.rejectFinish=true;let failure;try{await radio.transfer().send(radio.pkg);}catch(error){failure=error;}
+ assert.equal(failure.updateDiagnostic.error,5);assert.equal(failure.updateDiagnostic.acknowledgedBytes,2048);assert.equal(failure.updateDiagnostic.progress,100);
+ assert(!radio.writes.some(row=>row[1]===5));assert.match(bluetoothFirmwareFailureMessage(failure),/image verification failed/);
 });
 function transport(radio){const lamp=new LampTransport(radio);lamp.id='target';lamp.deviceIdentity='aabbccddeeff';lamp.control={capabilities:['control']};return lamp;}
 test('protected identity is verified again before transfer',async t=>{
