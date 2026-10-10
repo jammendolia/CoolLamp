@@ -1,5 +1,66 @@
 # CoolLamp development handoff — 2026-10-06
 
+## CoolLamp 1 screen-lock interruption and update-speed work — 2026-10-09
+
+The user reported a Bluetooth stop at **23%**, with **453,096 of 1,920,432
+bytes acknowledged**, and confirmed **the phone screen locked**. The app's
+existing visibility handler deliberately cancels unfinished Bluetooth transfers
+when hidden; the generic message did not explain that cause. Read-only evidence
+verified CoolLamp 1 (`acb950b2f180`, `192.168.1.154`) still on public **1.11.0**
+with its Bluetooth connection closed. This failure predates any possible sequence
+counter rollover. Historical HTTPS error/minimum-heap fields do not establish
+the Bluetooth failure cause. CoolLamp 2 did not respond at its last Wi-Fi address
+during this check; its card's restarting receipt was stale after the previously
+verified successful 1.13.0 boot.
+
+The app candidate keeps the screen awake only while an explicit or card Bluetooth
+update owns a token-fenced native lease, and restores the prior idle flag on
+completion, failure, cancellation, backgrounding and teardown. Manual lock/app
+switching still cancels with a clear first-stop reason. Connection-changing card
+actions and late Wi-Fi/mesh selection results can no longer tear down an active
+Bluetooth update. Fresh verified installed versions reconcile pending success
+receipts; cached versions and failed receipts never do. Native iOS ownership
+tests are added to the existing macOS TestFlight workflow. Candidate publication
+and physical screen-lock acceptance are pending.
+
+For speed, existing 1.11.0/1.13.0 receivers already provide OTA-status
+notifications. The app-only candidate uses authenticated written-offset
+notifications as acknowledgments while retaining four sequential response writes,
+bounded read fallback, exact version/size/SHA verification and one final commit.
+Physical time improvement is not yet measured. Truly faster unacknowledged data
+bursts would require explicit new firmware capability and native backpressure;
+they are not implemented or advertised by this candidate.
+
+Final Windows validation passed **479 mobile tests**, the production build and
+**24 production UI scenarios** on bundle `index-DLjOmhDi.js`. The UI cases cover
+explicit/card update ownership, delayed connection selection, screen-awake
+cleanup, installed-version receipts and existing update/failure flows.
+The 70 focused Bluetooth cases include an exact **1,920,432-byte** model transfer
+with notification acknowledgments, validated image SHA, one initial status read,
+zero per-window reads and one final commit. Dropped notifications downgrade once
+to the existing polling path; stale session/size/offset/sequence and error statuses,
+bounded listener setup/cleanup, cancellation, reconnect ownership, sequence wrap
+and uncertain final responses were covered. These are sender/receiver-model tests,
+not physical Bluetooth throughput evidence. Evidence:
+`.build/bluetooth-speed-mobile-tests.log`,
+`.build/bluetooth-speed-mobile-build.log` and
+`.build/bluetooth-update-final-validation.json`.
+
+A one-shot local LAN upload of the exact published 1.13.0 image was attempted
+to avoid Bluetooth/remote HTTPS. Preflight first aborted without any upload on
+an outdated follower-role assumption; a fresh read confirmed CoolLamp 1 is now
+a **leader**, role 1, scene 0. That current role was preserved. The actual upload
+closed after **262,144 bytes / 11.3 seconds**, curl error 52, no HTTP response.
+Only read-only reconciliation followed; no mutation was replayed. The lamp
+still runs **1.11.0**, its uptime increased without a reboot, and the complete
+captured saved-settings snapshot compared equal afterward. The journal prevents
+another automatic upload. This local upload path remains unreliable.
+
+Evidence: `.build/lamp1-bluetooth-stop-1791602613857989900.json`,
+`.build/lamp1-direct-preflight-abort.json`,
+`.build/lamp1-direct-ota-1.13.0.json` and
+`.build/lamp1-after-lan-interruption.json`.
+
 ## CoolLamp 2 Bluetooth upgrade verified — 2026-10-09
 
 The user completed an explicit phone-to-lamp Bluetooth update using installed
@@ -29,6 +90,21 @@ Evidence: `.build/lamp2-controlled-update-1791596126906004300.jsonl`,
 `.build/lamp2-controlled-update-1791596791048289100.jsonl` and
 `.build/lamp2-bluetooth-1.13.0-installed.json`. No other lamp installation or
 physical mesh acceptance was established by this test.
+
+Subsequent GET-only relay readiness checks found CoolLamp 1 and BACL on 1.11.0;
+Automatic Updates was enabled on CoolLamp 1 and disabled on BACL. Corkscrew was
+unreachable at its last address. CoolLamp 2 remains on 1.13.0, but
+`/api/mesh/status` reports an empty fleet identifier, unavailable mesh and no
+trusted peers. Its owner fleet is not provisioned yet; reconnect it through the
+existing authorized phone Bluetooth connection to establish trust. Older public
+1.11.0 lamps need a one-time Wi-Fi/Bluetooth upgrade to 1.13.0 before they can
+receive future ESP-NOW firmware offers. Group ESP-NOW coordination alone is not
+firmware-relay capability or fleet trust. The current automatic HTTPS checks on
+CoolLamp 2, CoolLamp 1 and BACL report phase 5 / error 3; HTTPS checking remains
+unresolved after CoolLamp 2's upgrade. No update, setting or trust provisioning
+command was sent during these checks. Evidence:
+`.build/firmware-relay-fleet-version-check.json` and
+`.build/lamp2-espnow-relay-readiness.json`.
 
 ## Direct Bluetooth connection from Updates — 2026-10-09
 

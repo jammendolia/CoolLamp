@@ -8,6 +8,9 @@ import android.os.Looper;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
+import android.view.Window;
+import android.view.WindowManager;
+import androidx.lifecycle.Lifecycle;
 import com.getcapacitor.*;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.nio.charset.StandardCharsets;
@@ -29,6 +32,56 @@ public class LampNetworkPlugin extends Plugin {
     private boolean resolving = false;
     private PluginCall pending;
     private NsdManager manager;
+    private static String firmwareScreenToken;
+    private static boolean firmwareScreenPrevious;
+    private static Window firmwareScreenWindow;
+    private String firmwareScreenOwnedToken;
+    private boolean firmwareScreenDestroyed;
+
+    @PluginMethod public void setFirmwareScreenAwake(PluginCall call) {
+        String token=call.getString("token"); Boolean enabled=call.getBoolean("enabled");
+        if(token==null || !token.matches("[a-f0-9]{32}") || enabled==null){call.reject("Invalid firmware screen lease.");return;}
+        handler.post(() -> {
+            if(enabled){
+                if(firmwareScreenDestroyed || getActivity()==null || getActivity().isFinishing() || getActivity().isDestroyed() ||
+                   !getActivity().getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.RESUMED)){
+                    call.reject("Keep the app in the foreground to update through Bluetooth.");return;
+                }
+                if(firmwareScreenToken!=null && !firmwareScreenToken.equals(token)){
+                    call.reject("Another firmware transfer already holds the screen awake.");return;
+                }
+                if(firmwareScreenToken==null){
+                    Window window=getActivity().getWindow();
+                    firmwareScreenPrevious=(window.getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)!=0;
+                    firmwareScreenWindow=window;firmwareScreenToken=token;
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
+                firmwareScreenOwnedToken=token;
+            }else{
+                restoreFirmwareScreenToken(token);
+                if(token.equals(firmwareScreenOwnedToken))firmwareScreenOwnedToken=null;
+            }
+            JSObject result=new JSObject();result.put("active",firmwareScreenToken!=null);call.resolve(result);
+        });
+    }
+
+    private static void restoreFirmwareScreenToken(String token) {
+        if(token==null || !token.equals(firmwareScreenToken))return;
+        Window window=firmwareScreenWindow;boolean previous=firmwareScreenPrevious;
+        firmwareScreenToken=null;firmwareScreenWindow=null;
+        if(window!=null){
+            if(previous)window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+    private void restoreFirmwareScreen() {
+        String token=firmwareScreenOwnedToken;firmwareScreenOwnedToken=null;
+        restoreFirmwareScreenToken(token);
+    }
+    private void firmwareUi(Runnable action) {
+        if(Looper.myLooper()==Looper.getMainLooper())action.run();else handler.post(action);
+    }
+    @Override protected void handleOnPause(){super.handleOnPause();firmwareUi(this::restoreFirmwareScreen);}
 
     @PluginMethod public void firmwareDigest(PluginCall call) {
         String encoded=call.getString("data");
@@ -93,7 +146,10 @@ public class LampNetworkPlugin extends Plugin {
         JSArray lamps=new JSArray();for(JSObject item:found.values())lamps.put(item);
         JSObject result=new JSObject();result.put("lamps",lamps);call.resolve(result);
     }
-    @Override protected void handleOnDestroy(){handler.post(()->finish("Discovery stopped."));}
+    @Override protected void handleOnDestroy(){
+        super.handleOnDestroy();
+        firmwareUi(()->{firmwareScreenDestroyed=true;restoreFirmwareScreen();finish("Discovery stopped.");});
+    }
 
     @PluginMethod public void credential(PluginCall call) {
         String id=call.getString("id"),value=call.getString("value");

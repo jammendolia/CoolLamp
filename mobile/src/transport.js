@@ -40,7 +40,8 @@ export class LampTransport {
     this.control=null;this.raw=null;this.controlSequence=0;this.controlTail=Promise.resolve();this.actionTail=Promise.resolve();
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
-  disconnected(confirmedId = null) {
+  disconnected(confirmedId = null,reason='native-disconnect') {
+    this.bluetoothUpdate?.recordStop?.(reason);
     if(confirmedId)this.connectionAttempts.delete(confirmedId);
     const hadConnection = this.id !== null;
     clearTimeout(this.controlTimer);this.controlTimer=null;
@@ -211,10 +212,10 @@ export class LampTransport {
       throw error;
     }
   }
-  async disconnect() {
-    if(this.bluetoothUpdate)await this.bluetoothUpdate.cancel();
+  async disconnect(reason='transport-disconnect') {
+    if(this.bluetoothUpdate)throw Object.assign(Error('Finish or cancel the Bluetooth firmware transfer before changing its connection.'),{confirmed:true,firmwareBusy:true});
     const id = this.id;
-    this.disconnected();
+    this.disconnected(null,reason);
     if (id) { try { await this.ble.disconnect(id);this.connectionAttempts.delete(id); } catch {} }
   }
   command(operation, value = 0, responseCharacteristic = null, beforeWrite = null) {
@@ -318,7 +319,7 @@ export class LampTransport {
     if(signal?.aborted)throw Error('Bluetooth update cancelled. No firmware was sent.');
     if(this.bluetoothUpdate||epoch!==this.epoch||id!==this.id)throw Error('The Bluetooth connection changed.');
     this.bluetoothUpdate=transfer;
-    const cancel=()=>void transfer.cancel();signal?.addEventListener('abort',cancel,{once:true});
+    const cancel=()=>void transfer.cancel(typeof signal?.reason==='string'?signal.reason:'cancelled');signal?.addEventListener('abort',cancel,{once:true});
     try{
     transfer.current();
     // Verify protected device identity again after the phone download.

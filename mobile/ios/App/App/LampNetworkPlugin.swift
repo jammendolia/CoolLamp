@@ -1,6 +1,7 @@
 import Foundation
 import Capacitor
 import Security
+import UIKit
 
 @objc(LampNetworkPlugin)
 public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDelegate, NetServiceDelegate {
@@ -9,13 +10,67 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "discover", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "credential", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "firmwareDigest", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "firmwareDigest", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setFirmwareScreenAwake", returnType: CAPPluginReturnPromise)
     ]
     private var browser: NetServiceBrowser?
     private var services: [NetService] = []
     private var found: [[String: String]] = []
     private var pending: CAPPluginCall?
     private var deadline: DispatchWorkItem?
+    private static let firmwareScreenAwake = LampFirmwareScreenAwake(
+        readFlag: { UIApplication.shared.isIdleTimerDisabled },
+        writeFlag: { UIApplication.shared.isIdleTimerDisabled = $0 })
+    private var firmwareScreenToken: String?
+    private var firmwareBackgroundObserver: NSObjectProtocol?
+
+    public override func load() {
+        super.load()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.firmwareBackgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.restoreFirmwareScreenAwake() }
+        }
+    }
+
+    deinit {
+        if let observer = firmwareBackgroundObserver { NotificationCenter.default.removeObserver(observer) }
+        if let token = firmwareScreenToken {
+            let lease = Self.firmwareScreenAwake
+            let restore = { _ = try? lease.set(token: token, enabled: false, foreground: false) }
+            if Thread.isMainThread { restore() }
+            else { DispatchQueue.main.async(execute: restore) }
+        }
+    }
+
+    private func restoreFirmwareScreenAwake() {
+        if let token = firmwareScreenToken {
+            firmwareScreenToken = nil
+            _ = try? Self.firmwareScreenAwake.set(token: token, enabled: false, foreground: false)
+        }
+    }
+
+    @objc func setFirmwareScreenAwake(_ call: CAPPluginCall) {
+        guard let token = call.getString("token"), let enabled = call.getBool("enabled") else {
+            call.reject("Invalid firmware screen lease."); return
+        }
+        DispatchQueue.main.async {
+            do {
+                let active = try Self.firmwareScreenAwake.set(token: token, enabled: enabled,
+                    foreground: UIApplication.shared.applicationState == .active)
+                if enabled { self.firmwareScreenToken = token }
+                else if self.firmwareScreenToken == token { self.firmwareScreenToken = nil }
+                call.resolve(["active": active])
+            } catch LampFirmwareScreenAwake.Failure.notForeground {
+                call.reject("Keep the app in the foreground to update through Bluetooth.")
+            } catch LampFirmwareScreenAwake.Failure.alreadyOwned {
+                call.reject("Another firmware transfer already holds the screen awake.")
+            } catch {
+                call.reject("Invalid firmware screen lease.")
+            }
+        }
+    }
 
     @objc func firmwareDigest(_ call: CAPPluginCall) {
         guard let encoded = call.getString("data"), encoded.utf8.count <= 2_708_824 else {
