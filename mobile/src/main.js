@@ -1416,7 +1416,7 @@ function renderLamps() {
     if(meshSelection?.id===entry.id){readiness.textContent='Finding your lamp…';button.setAttribute('aria-busy','true');}
     const actions=document.createElement('div');actions.className='v2-card-actions';
     const power=cardPowerButton(entry);power.classList.add('v2-card-power');
-    const gear=document.createElement('button');gear.type='button';gear.className='lamp-connection lamp-settings v2-card-settings';gear.dataset.connection='settings';gear.textContent='Settings';gear.title='Settings for '+name;gear.setAttribute('aria-label',gear.title);
+    const gear=document.createElement('button');gear.type='button';gear.className='lamp-connection lamp-settings v2-card-settings';gear.dataset.connection='settings';gear.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.11 4.43L10.61 2.1L13.39 2.1L13.89 4.43L16.02 5.31L18.02 4.01L19.99 5.98L18.69 7.98L19.57 10.11L21.9 10.61L21.9 13.39L19.57 13.89L18.69 16.02L19.99 18.02L18.02 19.99L16.02 18.69L13.89 19.57L13.39 21.9L10.61 21.9L10.11 19.57L7.98 18.69L5.98 19.99L4.01 18.02L5.31 16.02L4.43 13.89L2.1 13.39L2.1 10.61L4.43 10.11L5.31 7.98L4.01 5.98L5.98 4.01L7.98 5.31Z"/><circle cx="12" cy="12" r="3"/></svg>';gear.title='Settings for '+name;gear.setAttribute('aria-label',gear.title);
     gear.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||!firmwareConnectionSelectionAllowed(entry);gear.onclick=()=>openCardSettings(entry,{section:'overview'});
     actions.append(power,gear);const update=cardFirmwareButton(entry);
     const connectionDetails=document.createElement('details');connectionDetails.className='v2-connection-details';connectionDetails.open=openConnections.has(entry.id);
