@@ -62,6 +62,27 @@ native device is disconnected. It can arise before the post-download identity
 read or initial receiver-status read; the disconnect boundary was not captured.
 Download completion proves neither bytes written to the lamp nor installation.
 
+The user subsequently tested 58.1 twice and reported the reconciled message
+`The update did not start. Your lamp is unchanged.` The furthest visible stage
+is uncertain: the user did not remember seeing phone download, then clarified
+that the brief message may have been missed. No video has yet established the
+failed native call. This is a failed physical acceptance, not successful updating.
+
+Read-only USB after those attempts confirmed public 1.13.0 in the same boot,
+failed internet TLS allocation, unchanged observed light configuration, and
+16,308 bytes available / 7,668 largest block after closing the iPhone app.
+During app traffic, a valid but incomplete diagnostic object lacked its firmware
+field and reported 3,580 available / 1,140 largest block. The memory recovery
+does not independently prove which native request failed. No reboot, USB flash,
+network change or settings save was used.
+
+Production-handler host fixtures reproduce that exact message without ever
+downloading or invoking a Bluetooth sender: a rejected Wi-Fi check, malformed
+firmware reply, or failure reading the install token can all reach it. The
+coordinator previously discarded the original cause after an inactive protected
+snapshot confirmed no installation. The successor preserves a separate bounded
+safe stage/code record while retaining the stronger safety journal.
+
 Read-only USB after the app was closed confirmed the same boot session, public
 1.13.0 still running, failed internet preflight (phase 5/error 3), and unchanged
 observed power, effect, brightness and 134-pixel configuration. Available heap
@@ -116,6 +137,29 @@ version plus responsive protected control and an inactive receiver confirms
 version/control recovery. This does **not** prove installed flash digest or
 postboot health/rollback. Those remain separate physical gates.
 
+A ready release with automatic updates enabled can start an installation in
+legacy firmware even when the phone never sent `/api/firmware/install`.
+Protected phase 2 with `automatic`, `available` and a newer release is therefore
+pending, and blocks a Bluetooth start or an explicit-retry proof. An idle BLE
+receiver alone is insufficient. Both ordinary and legacy receipt reconciliation
+use this guard; malformed release identity with ready automatic flags fails
+conservatively. No automatic route replay was added.
+
+The optional `coollamp-firmware-update-diagnostics-v1` client record is separate
+from update authority: up to 32 targets, four retained stage entries per target,
+32 KiB total storage and a 4 KiB copied report. It records only enumerated codes,
+time, numeric status and durable command-boundary flags. Raw errors, request
+bodies, credentials, SSIDs, network addresses, firmware bytes and manifests are
+excluded. Storage failure cannot change execution. **Connection & care →
+Update details** reads this saved record without polling or modifying a lamp;
+copying it is local and user initiated. These records cannot recover a cause
+that 58.1 did not save. The normal target Bluetooth connection is retired before
+private protected update reads, including when it was healthy, so an in-flight
+rich read cannot rearm polling during preflight. Its already authorized native
+radio is reused; firmware-only leases never start those lanes. Pending native
+reads remain epoch fenced. Legacy receipts also survive a second interrupted
+read-only check without losing the original durable confirmation boundary.
+
 Same-version repair needs the exact acknowledged Finish receipt saved before
 fresh post-restart checks can resolve it: equal version alone proves nothing
 about the repair. A lost final reply stays pending. A verified inactive repair
@@ -166,6 +210,15 @@ cancellation, stale inventory, and an active updater fail closed. Reads after a
 check POST or before install never acquire this fallback permission. This covers
 the observed diagnostics-success/state-timeout pattern without replaying a
 possibly executed command.
+
+A later explicit retry prefers the saved protected Bluetooth route when the
+previous attempt is durably confirmed as never starting an installation and
+issued no updater frames or Wi-Fi install. A failed phone preflight that also
+sent nothing retains this preference for the next explicit retry. This avoids
+repeating a failed Wi-Fi check while preserving fresh identity, receiver and
+minimum-version checks. Pending or possibly executed installations cannot use
+this preference. After a confirmed installation, a later release follows the
+normal Wi-Fi-first policy again; no persistent transport setting is introduced.
 
 Starting a card or legacy Bluetooth update cancels passive fleet refresh. Later
 inventory refreshes exclude its target while continuing reads for other lamps;

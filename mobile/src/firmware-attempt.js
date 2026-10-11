@@ -15,6 +15,14 @@ const delayDefault=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const cleanupOwners=new Map();
 const acquisitionOwners=new Map(),workerOwners=new Map();
 
+// Phase 2 can leave the loop's automatic installer armed. The BLE receiver's
+// idle phase does not reserve that updater or prove it cannot start next turn.
+export function firmwareMayInstall(firmware){
+ if([1,3,4].includes(firmware?.phase))return true;
+ if(firmware?.phase!==2||firmware.automatic!==true||firmware.available!==true)return false;
+ try{return compareFirmwareVersions(firmware.latest,firmware.version)>0;}catch{return true;}
+}
+
 function artifact(value){
  const parsed=parsePhoneManifest(value?.text);
  if(parsed.version!==value.version||parsed.size!==value.size||parsed.sha256!==value.sha256)
@@ -164,7 +172,7 @@ export class FirmwareAttemptJournal {
    result.safetyVersion!==value.safetyVersion)throw failure('This lamp check belongs to an older update attempt.',{stale:true});
   if(!terminal.has(result.outcome))return copy(value);
   const installed=result.outcome==='installed';
-  if(!result.controlResponsive||!version(result.installedVersion)||
+  if(!result.controlResponsive||!version(result.installedVersion)||result.firmwareMayInstall===true||
    installed&&(result.installedVersion!==value.version||result.receiverInactive!==true||value.reinstall&&!value.commitAcknowledged)||
    !installed&&(value.commitAttempted||value.wifiInstallAttempted||result.receiverInactive!==true||
     (compareFirmwareVersions(result.installedVersion,value.version)>=0&&!(value.reinstall&&result.installedVersion===value.version))||
@@ -179,6 +187,8 @@ function snapshot(value,attempt){
  const state=value.state,fw=value.firmware,receiver=value.receiver;
  if(!state||!integer(state.mode,1,255)||!integer(state.effectCount,1,255)||state.mode>state.effectCount||
   !integer(state.brightness,1,255)||typeof state.power!=='boolean'||!version(fw?.version)||!integer(fw.phase,0,5)||
+  fw.automatic!==undefined&&typeof fw.automatic!=='boolean'||fw.available!==undefined&&typeof fw.available!=='boolean'||
+  fw.latest!==undefined&&!version(fw.latest)||
   !receiver||!integer(receiver.phase,0,5)||!integer(receiver.error,0,9)||typeof receiver.committed!=='boolean'||
   !integer(receiver.session,0,0xffffffff)||!integer(receiver.size,0,2031616)||!integer(receiver.offset,0,receiver.size)||
   receiver.committed&&receiver.phase!==4||receiver.phase===4&&(!receiver.committed||receiver.size===0||receiver.offset!==receiver.size))
@@ -189,8 +199,11 @@ function outcome(attempt,value){
  const base={identity:attempt.identity,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,
   outcome:'unresolved',pending:true,safeRetry:false,safeExplicitRetry:false,controlResponsive:Boolean(value),
   installedVersion:value?.firmware.version??null,receiverInactive:Boolean(value&&[0,5].includes(value.receiver.phase)),
+  firmwareMayInstall:Boolean(value&&firmwareMayInstall(value.firmware)),
   message:'The connection was lost. We’ll check your lamp when it is available.'};
  if(!value)return Object.freeze(base);
+ if(value.firmware.phase===2&&base.firmwareMayInstall)return Object.freeze({...base,receiverInactive:false,automaticInstallPossible:true,
+  message:'Your lamp may start its automatic update. We’ll check its status before another update.'});
  const busy=[1,3,4].includes(value.firmware.phase),inactive=base.receiverInactive&&!busy;
  const comparison=compareFirmwareVersions(value.firmware.version,attempt.version);
  if(comparison===0&&inactive){
@@ -246,9 +259,12 @@ function legacyOutcome(receipt,value){
  const base={identity:receipt.identity,targetVersion:receipt.targetVersion,legacyReceipt:true,
   outcome:'unresolved',pending:true,safeRetry:false,safeExplicitRetry:false,controlResponsive:Boolean(value),
   installedVersion:value?.firmware.version??null,receiverInactive:Boolean(value&&[0,5].includes(value.receiver.phase)),
+  firmwareMayInstall:Boolean(value&&firmwareMayInstall(value.firmware)),
   artifactDigestVerified:false,bootHealthVerified:false,
   message:'The earlier update is not confirmed. We’ll check your lamp before another update.'};
  if(!value)return Object.freeze(base);
+ if(value.firmware.phase===2&&base.firmwareMayInstall)return Object.freeze({...base,receiverInactive:false,automaticInstallPossible:true,
+  message:'Your lamp may start its automatic update. We’ll check its status before another update.'});
  if(!base.receiverInactive||[1,3,4].includes(value.firmware.phase))return Object.freeze({...base,outcome:'active',message:'Checking your lamp…'});
  if(receipt.outcome==='verified-restarting'&&value.firmware.version===receipt.targetVersion)return Object.freeze({...base,
   outcome:'installed',pending:false,verification:'installed-version-and-protected-control',message:'Your lamp is updated.'});

@@ -104,3 +104,11 @@ test('32 pending receipts stop a new attempt before any history can evict them',
  for(let i=1;i<=32;i++)feedback.update(feedback.begin(i.toString(16).padStart(12,'0')),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
  assert.throws(()=>feedback.begin(id),error=>error.requiresReconciliation);assert.equal(new FirmwareFeedback(storage).records.size,32);
 });
+test('a second interrupted legacy check inherits its original pending receipt',()=>{
+ const storage=memory(),feedback=new FirmwareFeedback(storage);
+ feedback.update(feedback.begin(id),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
+ const first=feedback.begin(id,{preservePending:true});feedback.update(first,{message:'Checking your lamp…'});
+ const second=feedback.begin(id,{preservePending:true});feedback.update(second,{message:'Checking again…'});
+ assert(!feedback.update(first,{message:'Late completion.',terminal:true,outcome:'installed',targetVersion:'1.15.1'}));
+ assert.equal(new FirmwareFeedback(storage).get(id).outcome,'verification-required');
+});

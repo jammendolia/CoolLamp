@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {FirmwareAttemptJournal,FIRMWARE_ATTEMPT_KEY,reconcileFirmwareAttempt,classifyFirmwareSnapshot,reconcileLegacyFirmwareReceipt} from '../src/firmware-attempt.js';
+import {FirmwareAttemptJournal,FIRMWARE_ATTEMPT_KEY,reconcileFirmwareAttempt,classifyFirmwareSnapshot,reconcileLegacyFirmwareReceipt,firmwareMayInstall} from '../src/firmware-attempt.js';
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
-import {decodeState} from '../src/protocol.js';
+import {decodeState,decodeFirmware} from '../src/protocol.js';
 
 const id='f0b950b2f180',other='74b950b2f180';
 const manifest=(release='1.15.1',size=512,digest='a'.repeat(64))=>parsePhoneManifest('COOLLAMP-OTA-1\n'+release+'\nesp32c3\ndual-ota-2031616\n'+size+'\n'+digest+'\n');
@@ -413,4 +413,66 @@ test('legacy and new-artifact workers share pending native cleanup and cannot re
  const blocked=await reconcile(a.value,modern,{timeoutMs:15});assert.equal(blocked.outcome,'unresolved');assert.deepEqual(modern.calls,[]);
  close.resolve();await new Promise(resolve=>setTimeout(resolve,0));
  const verified=await reconcile(a.value,modern,{timeoutMs:50});assert.equal(verified.outcome,'installed');
+});
+
+function decodedFirmwareSnapshot({version='1.13.0',latest='1.15.1',phase=2,automatic=true,available=true}={}){
+ const packet=new DataView(new ArrayBuffer(20));packet.setUint8(0,1);packet.setUint8(1,phase);packet.setUint8(2,Number(automatic));packet.setUint8(3,1);packet.setUint8(18,Number(available));
+ for(const [offset,text] of [[6,version],[12,latest]])text.split('.').forEach((part,index)=>packet.setUint16(offset+index*2,Number(part),true));
+ return {...lampSnapshot({version,phase}),firmware:decodeFirmware(packet)};
+}
+test('firmwareMayInstall uses the actual decoded automatic and available flags, without mistaking idle BLE for updater ownership',()=>{
+ for(const phase of [1,3,4])assert.equal(firmwareMayInstall(decodedFirmwareSnapshot({phase,automatic:false,available:false}).firmware),true);
+ assert.equal(firmwareMayInstall(decodedFirmwareSnapshot().firmware),true);
+ for(const fields of [{automatic:false},{available:false},{latest:'1.13.0'},{latest:'0.0.0'},{phase:0},{phase:5}])
+  assert.equal(firmwareMayInstall(decodedFirmwareSnapshot(fields).firmware),false);
+ assert.equal(firmwareMayInstall({phase:2,version:'1.13.0'}),false);
+ assert.equal(firmwareMayInstall({phase:2,version:'1.13.0',automatic:true,available:true}),true);
+});
+test('fresh protected phase2 automatic eligibility cannot classify an inactive receiver as a safe terminal outcome',()=>{
+ for(const flags of [{},{begin:true},{reinstall:true},{begin:true,reinstall:true}]){
+  const a=attempt(flags),observed=decodedFirmwareSnapshot(flags.reinstall?{version:'1.15.1',latest:'1.16.0'}:{});
+  const result=classifyFirmwareSnapshot(a.value,{...observed,observedAt:Date.now()});
+  assert.equal(result.outcome,'unresolved');assert.equal(result.pending,true);assert.equal(result.safeRetry,false);assert.equal(result.safeExplicitRetry,false);
+  assert.equal(result.firmwareMayInstall,true);assert.equal(result.automaticInstallPossible,true);assert.equal(result.receiverInactive,false);
+  assert.match(result.message,/automatic update/);a.journal.settle(a.token,result);assert.equal(a.journal.pending().length,1);
+ }
+});
+test('actual read-only reconciliation fences an armed automatic installation and rejects a forged safe-stop label',async()=>{
+ const a=attempt(),radio=reader([decodedFirmwareSnapshot()]),result=await reconcile(a.value,radio);
+ assert.equal(result.outcome,'unresolved');assert.equal(result.automaticInstallPossible,true);assert.deepEqual(radio.calls,['acquire','snapshot','release']);
+ a.journal.settle(a.token,result);assert.equal(new FirmwareAttemptJournal(a.memory).pending().length,1);
+ assert.throws(()=>a.journal.settle(a.token,{...result,outcome:'installationNotStarted',receiverInactive:true}),error=>error.requiresReconciliation);
+ assert.equal(a.value.metadataIssued,false);assert.equal(a.value.beginAttempted,false);assert.equal(a.value.commitAttempted,false);
+});
+test('explicit automatic opt-out or no newer available image permits the existing fresh inactive safe-stop proof',async()=>{
+ for(const fields of [{automatic:false},{available:false},{latest:'1.13.0'},{latest:'0.0.0'}]){
+  const a=attempt(),result=await reconcile(a.value,reader([decodedFirmwareSnapshot(fields)]));
+  assert.equal(result.outcome,'installationNotStarted');assert.equal(result.safeExplicitRetry,true);assert.equal(result.firmwareMayInstall,false);
+  a.journal.settle(a.token,result);assert.equal(a.journal.pending().length,0);
+ }
+});
+test('legacy default flag absence is accepted but malformed booleans or latest versions cannot provide safe-stop proof',async()=>{
+ const a=attempt(),defaults=await reconcile(a.value,reader([lampSnapshot({phase:2})]));assert.equal(defaults.outcome,'installationNotStarted');
+ for(const fields of [{automatic:'true'},{available:1},{latest:'unknown'}]){
+  const invalid=await reconcile(a.value,reader([{...lampSnapshot({phase:2}),firmware:{version:'1.13.0',phase:2,...fields}}]));
+  assert.equal(invalid.outcome,'unresolved');assert.equal(invalid.safeRetry,false);
+ }
+ const missingLatest=await reconcile(a.value,reader([{...lampSnapshot({phase:2}),firmware:{version:'1.13.0',phase:2,automatic:true,available:true}}]));
+ assert.equal(missingLatest.outcome,'unresolved');assert.equal(missingLatest.automaticInstallPossible,true);
+});
+test('older saved final receipts cannot settle while a newer automatic installation may start',async()=>{
+ const armed=decodedFirmwareSnapshot({version:'1.15.1',latest:'1.16.0'});
+ for(const outcome of ['verified-restarting','verification-required']){
+  const result=await reconcileOld(oldReceipt(outcome),reader([armed]));assert.equal(result.outcome,'unresolved');assert.equal(result.pending,true);
+  assert.equal(result.firmwareMayInstall,true);assert.equal(result.safeExplicitRetry,false);
+ }
+ const inactive=await reconcileOld(oldReceipt(),reader([decodedFirmwareSnapshot({version:'1.15.1',latest:'1.16.0',automatic:false})]));
+ assert.equal(inactive.outcome,'installed');assert.equal(inactive.firmwareMayInstall,false);
+});
+test('automatic eligibility is reconciled only by another fresh read and never resumes or sends a transfer',async()=>{
+ const a=attempt({reinstall:true}),first=await reconcile(a.value,reader([decodedFirmwareSnapshot({version:'1.15.1',latest:'1.16.0'})]));
+ a.journal.settle(a.token,first);assert.equal(a.journal.pending().length,1);
+ const radio=reader([decodedFirmwareSnapshot({version:'1.15.1',latest:'1.16.0',automatic:false})]),second=await reconcile(a.value,radio);
+ assert.equal(second.outcome,'installationNotStarted');assert.equal(second.safeExplicitRetry,true);assert.deepEqual(radio.calls,['acquire','snapshot','release']);
+ a.journal.settle(a.token,second);assert.equal(a.journal.pending().length,0);assert.equal(a.value.commitAttempted,false);
 });

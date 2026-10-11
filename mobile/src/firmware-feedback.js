@@ -21,8 +21,10 @@ export class FirmwareFeedback {
  get(id){return this.records.get(id);}
  begin(id,{preservePending=false}={}){
   if(!identity(id))throw Error('Invalid lamp identity for update feedback.');
-  if(!this.records.has(id)&&[...this.records.values()].filter(value=>value.terminal&&pending.has(value.outcome)).length>=32)throw Object.assign(Error('Previous lamp updates need confirmation before another update can start.'),{requiresReconciliation:true});
-  const current=this.records.get(id),pendingReceipt=preservePending&&current?.terminal&&pending.has(current.outcome)?Object.freeze({...current}):null;
+  const unresolved=new Set([...this.records].filter(([,value])=>value.terminal&&pending.has(value.outcome)).map(([id])=>id));for(const[id,token]of this.attempts)if(token.pendingReceipt)unresolved.add(id);
+  if(!unresolved.has(id)&&unresolved.size>=32)throw Object.assign(Error('Previous lamp updates need confirmation before another update can start.'),{requiresReconciliation:true});
+  const current=this.records.get(id),original=current?.terminal&&pending.has(current.outcome)?current:this.attempts.get(id)?.pendingReceipt;
+  const pendingReceipt=preservePending&&original?Object.freeze({...original}):null;
   const token=Object.freeze({id,...(pendingReceipt?{pendingReceipt}:{})});this.attempts.set(id,token);
   if(!pendingReceipt){this.records.delete(id);this.persist();}return token;
  }

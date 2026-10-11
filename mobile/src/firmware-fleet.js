@@ -326,7 +326,7 @@ export class FirmwareFleet {
       } else if (fw.version !== originalVersion) {
         throw failure('Lamp firmware changed unexpectedly. Refresh the Wi-Fi list.');
       } else if (fw.phase === 5) {
-        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
+        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{firmwareError:fw.error,firmwarePhase:fw.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
       } else if ([3,4].includes(fw.phase)) {
         if (!updating) deadline = this.now() + this.updateTimeout;
         updating = true; observedActivity = true;
@@ -351,7 +351,7 @@ export class FirmwareFleet {
         if (busyPhases.includes(identity.firmware.phase) || (identity.firmware.available && newer(identity.firmware.latest, identity.firmware.version))) {
           fw = identity.firmware; continue;
         }
-        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
+        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{firmwareError:identity.firmware.error,firmwarePhase:identity.firmware.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
         if(run.expectedVersion&&newer(run.expectedVersion,identity.firmware.version))throw failure('The lamp did not find the selected release. Refresh before trying again.');
         return this.live(lamp, run, identity, 'ready', 'Already up to date.');
       }

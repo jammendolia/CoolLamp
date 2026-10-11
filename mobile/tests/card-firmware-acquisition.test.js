@@ -20,7 +20,7 @@ function fixture({authorized=true,active=false}={}){
   async connect(saved,retry,options){this.saved=saved;this.connectOptions=options;calls.push('connect');await connectHook(this);}
   async disconnect(){calls.push('disconnect');}
  }
- const context={AbortController,Error,Map,FirmwareScreenAwake,LampTransport:Transport,BleClient:{},
+ const context={AbortController,Error,Map,clearTimeout,FirmwareScreenAwake,LampTransport:Transport,BleClient:{},
   cardFirmwareTasks:tasks,isNative:true,phonePlatform:'ios',native:{setFirmwareScreenAwake:async value=>{calls.push(value.enabled?'awake-on':'awake-off');return {active:value.enabled};}},
   stopGroupInspection:async()=>{calls.push('stop-inspection');await inspectionHook();},
   initializeGroupRadio:async()=>{calls.push('initialize-radio');await radioHook();},bleLamp,
@@ -44,10 +44,16 @@ test('actual card updater acquires a restricted firmware connection without flee
  assert.equal(lease.lamp,transport);await lease.release();assert.equal(f.owner.transport,null);
  assert.equal(f.calls.filter(x=>x==='disconnect').length,1);
 });
-test('an already verified target connection is reused and released without a second radio or fleet enrollment',async t=>{
+test('healthy target retires its full-state polling and adopts a private lease without waiting on an old unresolved command lane',async t=>{
+ const f=fixture({active:true});t.after(f.cleanup);let polled=false;
+ f.context.bleLamp.controlTimer=setTimeout(()=>{polled=true;},15);f.context.bleLamp.controlTail=new Promise(()=>{});
+ const lease=await f.acquire();assert.notEqual(lease.lamp,f.context.bleLamp);assert.equal(lease.lamp.options.firmwareOnly,true);assert.equal(f.context.bleLamp.controlTimer,null);
+ await new Promise(resolve=>setTimeout(resolve,25));assert.equal(polled,false);await lease.release();
+});
+test('an already verified target is retired for private reads without recreating its authorized radio or fleet enrollment',async t=>{
  const f=fixture({active:true});t.after(f.cleanup);const lease=await f.acquire();
- assert.equal(lease.lamp,f.context.bleLamp);assert.equal(f.context.bluetoothFirmwareTask,f.owner);
- assert.equal(f.instances.length,0);await lease.release();assert.equal(f.context.bluetoothFirmwareTask,null);
+ assert.equal(lease.lamp,f.instances[0]);assert.equal(lease.lamp.options.firmwareOnly,true);assert.equal(f.context.bluetoothFirmwareTask,null);
+ assert.equal(f.instances.length,1);assert(!f.calls.includes('initialize-radio'));await lease.release();assert.equal(f.owner.transport,null);
  assert.equal(f.calls.filter(x=>x==='active-disconnect').length,1);
 });
 test('cancellation before acquisition performs no radio work or firmware mutation',async()=>{
@@ -57,7 +63,7 @@ test('cancellation before acquisition performs no radio work or firmware mutatio
 test('an unauthorized iPhone target cannot start a firmware connection',async t=>{
  const f=fixture({authorized:false});t.after(f.cleanup);
  f.context.lamp={identity:id,disconnect:async()=>{throw Error('Ineligible target lost its selected route');}};
- await assert.rejects(f.acquire(),/Pair this lamp/);
+ await assert.rejects(f.acquire(),error=>error.unauthorized&&error.installationNotStarted);
  assert.equal(f.instances.length,0);assert(!f.calls.includes('initialize-radio'));
 });
 test('a replaced task after screen protection or group inspection cannot adopt a connection',async t=>{
