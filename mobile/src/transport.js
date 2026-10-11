@@ -97,20 +97,31 @@ export class LampTransport {
     return peripheral;
   }
   async connect(savedDevice = null, retryInitialState = true) {
-    await this.disconnect();
+    const readOnlyReconnect=Boolean(savedDevice?.deviceId&&savedDevice?.readOnlyReconnect);
+    const expectedReconnectIdentity=this.expectedDeviceIdentity||savedDevice?.lampId||savedDevice?.id;
+    // disconnect() advances the generation before waiting for native cleanup.
+    // Capture it now so cancellation during cleanup or authorization cannot
+    // revive this attempt after another connection has taken ownership.
+    const cleanup=this.disconnect(),epoch=this.epoch;
+    const current=()=>{if(epoch!==this.epoch)throw Error('Connection changed.');};
+    await cleanup;current();
     // ASK authorization/migration must precede creation of CBCentralManager.
     const selected = this.selectDevice ? await this.selectDevice(savedDevice) : savedDevice;
     // Authorization is a durable event even if initialization/GATT later fails.
     if(selected)await this.onDeviceSelected(selected);
+    current();
     // The iOS plugin recreates CBCentralManager on every initialize call but
     // keeps its peripheral cache. Keep one manager for this app session.
     if(!this.initialization)this.initialization=this.ble.initialize({ androidNeverForLocation: true }).catch(error=>{
       this.initialization=null;throw error;
     });
     await this.initialization;
+    // The native radio was created even if the initiating selection changed.
+    // Persist that fact before rejecting the old connection attempt.
     this.onRadioReady();
+    current();
     const device = selected || await this.ble.requestDevice({ services: [SERVICE] });
-    const epoch = ++this.epoch;
+    current();
     this.id = device.deviceId;
     try {
       if(selected && typeof this.ble.getDevices==='function') {
@@ -125,13 +136,16 @@ export class LampTransport {
         if(device.newAuthorization)this.connectionAttempts.delete(device.deviceId);
         if(this.connectionAttempts.has(device.deviceId)) {
           await this.ble.disconnect(device.deviceId);
+          current();
           this.connectionAttempts.delete(device.deviceId);
         }
       } else device.bluetoothName=device.name||device.bluetoothName||'CoolLamp';
+      current();
       this.connectionAttempts.add(device.deviceId);
       await this.ble.connect(this.id, () => { if (epoch === this.epoch) this.disconnected(device.deviceId); });
+      current();
       // Protected read triggers the phone's pairing prompt before subscriptions or commands.
-      const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: this.controlOnly||savedDevice?.automaticReconnect?this.timeout:60000 });
+      const initial = await this.ble.read(this.id, SERVICE, STATE, { timeout: this.controlOnly||savedDevice?.automaticReconnect||readOnlyReconnect?this.timeout:60000 });
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       try { decodeState(initial); } // Fail visibly on incompatible firmware.
       catch(error) { error.initialStateRead=true;throw error; }
@@ -144,7 +158,9 @@ export class LampTransport {
       } catch { /* Firmware before network discovery has no identity characteristic. */ }
       if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
       if(this.expectedDeviceIdentity&&protectedIdentity!==this.expectedDeviceIdentity)throw Error('Bluetooth identity did not match this coordinator. Pair the correct lamp first.');
+      if(readOnlyReconnect&&expectedReconnectIdentity&&protectedIdentity!==expectedReconnectIdentity)throw Error('Bluetooth identity did not match this lamp. Connect to the correct lamp first.');
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
+      if(epoch!==this.epoch)throw Error('Connection changed.');
       this.receive(initial);
       // Continue beyond the cached acknowledgment from the previous connection.
       // A readback must never mistake that reply for our first new command.
@@ -156,6 +172,24 @@ export class LampTransport {
         catch(error){if(epoch!==this.epoch)throw error;throw Object.assign(Error('Update this lamp to firmware 1.10.0 for offline Bluetooth group controls.'),{incompatible:true,code:'OFFLINE_CONTROL_UNAVAILABLE'});}
         if(epoch!==this.epoch)throw Error('Connection changed.');
         await this.refresh(this.expectedDeviceIdentity||this.deviceIdentity);return device;
+      }
+      if(readOnlyReconnect){
+        // A saved lamp already negotiated its effects during setup. Its protected
+        // control snapshots supply the current catalog without replaying setup.
+        let capabilities;
+        try{capabilities=await this.readControlCapabilities(epoch);}
+        catch(error){
+          if(epoch!==this.epoch||!/^Characteristic not found\.?$/i.test(error.message||''))throw error;
+          // Firmware before 1.10 has no optional control characteristic.
+        }
+        if(epoch!==this.epoch)throw Error('Connection changed.');
+        if(capabilities){
+          if(!protectedIdentity)throw Error('Could not verify this lamp’s Bluetooth control identity.');
+          this.deviceIdentity=protectedIdentity;this.control=capabilities;
+          await this.refresh(expectedReconnectIdentity||protectedIdentity);
+          if(epoch!==this.epoch)throw Error('Connection changed.');
+          this.scheduleControlRefresh();return device;
+        }
       }
       if (this.state.capabilities & 8) {
         await this.command('enableEffects', (this.state.capabilities & 32) ? 3 : (this.state.capabilities & 16) ? 2 : 1);
@@ -204,14 +238,20 @@ export class LampTransport {
     } catch (error) {
       if(error.code==='COMMAND_NOT_CONFIRMED'&&device.accessoryManaged)
         error.message='Bluetooth connected, but the lamp did not confirm setup. Tap its saved card to reconnect.';
-      error.device=device; await this.disconnect();
+      error.device=device;
+      // A cancelled attempt must not disconnect a later connection that owns
+      // this transport while an old native read or subscription is completing.
+      if(epoch!==this.epoch)throw error;
+      await this.disconnect();
       if(retryInitialState&&device.accessoryManaged&&error.initialStateRead&&error.code==='INVALID_STATE_PACKET') {
         // Service Changed may invalidate iOS's old handles during the first
         // encrypted read after an update. No commands have been sent yet.
         const retryEpoch=this.epoch;
         await new Promise(resolve=>setTimeout(resolve,250));
         if(retryEpoch!==this.epoch)throw error;
-        return this.connect({...device,newAuthorization:false},false);
+        return this.connect({...device,newAuthorization:false,
+          ...(savedDevice?.automaticReconnect?{automaticReconnect:true}:{}),
+          ...(readOnlyReconnect?{readOnlyReconnect:true}: {})},false);
       }
       throw error;
     }

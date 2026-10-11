@@ -657,7 +657,7 @@ async function change(operation, value, activatePalette = false,changedOption=nu
   catch (error) { status(error.message); }
   finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
 }
-async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,navigate=true,automaticReconnect=false,isCurrent=()=>true,signal=null}={}) {
+async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,navigate=true,automaticReconnect=false,readOnlyReconnect=false,isCurrent=()=>true,signal=null}={}) {
   cancelMeshSelection();
   if(bluetoothFirmwareOwner()){firmwareConnectionNotice();return;}
   const startedNavigation=navigationSerial;
@@ -673,7 +673,7 @@ async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,na
   const abort=()=>{if(ownsBluetooth&&lamp===bleLamp&&connecting)void bleLamp.disconnect().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
   try {
     await stopGroupInspection(id);guard();await lamp.disconnect();guard();lamp=bleLamp;ownsBluetooth=true;
-    const device=await lamp.connect(saved?.deviceId?{...saved,automaticReconnect}:null);guard();
+    const device=await lamp.connect(saved?.deviceId?{...saved,automaticReconnect,readOnlyReconnect}:null);guard();
     removedAccessoryIds.delete(device.deviceId.toLowerCase());
     const prior=store.items.find(x=>x.id===device.lampId || x.deviceId===device.deviceId);
     selected=store.upsert({...prior,id:device.lampId||prior?.id||'ble:'+device.deviceId,deviceId:device.deviceId,name:prior?.name||device.name||'CoolLamp',
@@ -682,7 +682,7 @@ async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,na
     store.rememberFirmware(selected.id,firmware);
     $('pairingRecovery').hidden=true;pairingRecoveryTarget=null;
     savedDevice=device; connected('Bluetooth',{navigate:navigate&&navigationSerial===startedNavigation,quiet:automaticReconnect});
-    if(!automaticReconnect)provisionFirmwareFleet(bleLamp);
+    if(!automaticReconnect&&!readOnlyReconnect)provisionFirmwareFleet(bleLamp);
     return {connected:true,id:selected.id};
   } catch(e) {
     if(automaticReconnect)return {connected:false,error:e};
@@ -1163,7 +1163,7 @@ async function pairCardBluetooth(entry) {
   form.append(title,instructions,actions);dialog.append(form);document.body.append(dialog);
   const choice=new Promise(resolve=>dialog.addEventListener('close',()=>{const chosen=dialog.returnValue==='pair';dialog.remove();resolve(chosen);},{once:true}));dialog.showModal();return choice;
 }
-async function connectCardBluetooth(entry,{forWifiSettings=false,forCardSettings=false}={}) {
+async function connectCardBluetooth(entry,{forWifiSettings=false,forCardSettings=false,readOnlyReconnect=false}={}) {
   if(bluetoothFirmwareOwner()){if(!firmwareConnectionSelectionAllowed(entry)){firmwareConnectionNotice();return;}if(!forWifiSettings&&!forCardSettings)return openCardSettings(entry,{section:'lighting',bluetooth:true});return {connected:true,id:entry.id};}
   if(busy||connecting||fleetLampInstalling(entry.id))return;
   if(!forWifiSettings&&!forCardSettings)return openCardSettings(entry,{section:'lighting',bluetooth:true});
@@ -1174,8 +1174,9 @@ async function connectCardBluetooth(entry,{forWifiSettings=false,forCardSettings
   if(!current.deviceId&&!await pairCardBluetooth(current)){wifiSettingsTarget=null;return;}
   if(intent&&(wifiSettingsTarget!==intent||navigationSerial!==intent.navigation))return;
   if(!mergedLampEntries().some(value=>value.id===entry.id)){status('This lamp was removed. Find it again before connecting.');return;}
-  const result=await connect(current,{expectedId:/^[0-9a-f]{12}$/.test(entry.id)?entry.id:null,preserveWifiIntent:true,navigate:false,
-    automaticReconnect:intent?.automaticReconnect===true,isCurrent:intent?.isCurrent||(()=>true),signal:intent?.signal||null});
+  if(readOnlyReconnect&&!intent?.automaticReconnect)status('Connecting to '+(current.name||'your lamp')+' over Bluetooth…');
+  const result=await connect(current,{expectedId:/^[0-9a-f]{12}$/.test(entry.id)?entry.id:null,preserveWifiIntent:true,navigate:false,readOnlyReconnect,
+    automaticReconnect:readOnlyReconnect||intent?.automaticReconnect===true,isCurrent:intent?.isCurrent||(()=>true),signal:intent?.signal||null});
   if(!result?.connected&&!forCardSettings)wifiSettingsTarget=null;return result;
 }
 function completeCardSettings(intent) {
@@ -1199,18 +1200,20 @@ async function createMeshLampLease(id,{signal,isCurrent=()=>true,bridgeId=null,r
 const entries=mergedLampEntries().filter(entry=>entry.id!==id&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&(!entry.firmwareVersion||compareFirmwareVersions(entry.firmwareVersion,'1.12.0')>=0)).sort((a,b)=>(b.id===bridgeId)-(a.id===bridgeId)||Number(Boolean(connectivity?.get(b.id).wifi?.fresh&&connectivity?.get(b.id).wifi?.state==='connected'))-Number(Boolean(connectivity?.get(a.id).wifi?.fresh&&connectivity?.get(a.id).wifi?.state==='connected')));
   for(const entry of entries)if(entry.address)candidates.push({entry,kind:'wifi'});
   for(const entry of entries)if(entry.deviceId&&(phonePlatform!=='ios'||entry.accessoryManaged))candidates.push({entry,kind:'bluetooth'});
-  return acquireMeshLamp({target:id,candidates:recoveryOnly?selectMeshRecoveryCandidates(candidates):candidates,signal,isCurrent,options:{timeout:recoveryOnly?4000:6000},onInventory:(value,bridge)=>{meshInventory.remember(value,bridge);renderLamps();},acquireBridge:async candidate=>{
+  const guard=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true,confirmed:true});};
+  return acquireMeshLamp({target:id,candidates:recoveryOnly?selectMeshRecoveryCandidates(candidates):candidates,signal,isCurrent,options:recoveryOnly?{timeout:4000,totalTimeout:10000,stopOnTimeout:true}:{timeout:6000},onInventory:(value,bridge)=>{meshInventory.remember(value,bridge);renderLamps();},acquireBridge:async candidate=>{
+    guard();
     if(candidate.transport){if(candidate.transport.epoch!==candidate.epoch||candidate.transport.identity!==candidate.id)throw Error('Bridge connection changed.');return {lamp:candidate.transport,borrowed:true,release:async()=>{}};}
     const entry=candidate.entry;
     if(candidate.kind==='wifi'){
       const bridge=new WifiTransport(CapacitorHttp);
-      try{const savedPassword=(await credential(entry.id)).value;if(recoveryOnly&&!savedPassword)throw Error('No saved access for this connection.');const password=savedPassword||'coollamp';await bridge.connect(entry.address,password,entry.id);clearTimeout(bridge.timer);return {lamp:bridge,release:()=>bridge.disconnect()};}
+      try{const savedPassword=(await credential(entry.id)).value;guard();if(recoveryOnly&&!savedPassword)throw Error('No saved access for this connection.');const password=savedPassword||'coollamp';await bridge.connect(entry.address,password,entry.id);guard();clearTimeout(bridge.timer);return {lamp:bridge,release:()=>bridge.disconnect()};}
       catch(error){await bridge.disconnect();throw error;}
     }
-    await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
+    await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>recoveryOnly?[entry]:[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});guard();
     const bridge=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true,
       ...(recoveryOnly&&phonePlatform==='ios'?{selectDevice:device=>pairing.reconnect(device)}:{})});
-    try{await bridge.connect({...entry,lampId:entry.id,automaticReconnect:recoveryOnly});clearTimeout(bridge.controlTimer);if(isNative&&!recoveryOnly)await firmwareFleetTrust.provision(bridge);return {lamp:bridge,release:()=>bridge.disconnect()};}
+    try{await bridge.connect({...entry,lampId:entry.id,automaticReconnect:recoveryOnly});guard();clearTimeout(bridge.controlTimer);if(isNative&&!recoveryOnly)await firmwareFleetTrust.provision(bridge);guard();return {lamp:bridge,release:()=>bridge.disconnect()};}
     catch(error){await bridge.disconnect();throw error;}
   }});
 }
@@ -1220,7 +1223,9 @@ async function connectMeshCard(entry,intent){
   const current=()=>!task.abort.signal.aborted&&(!intent.isCurrent||intent.isCurrent())&&!bluetoothFirmwareOwner()&&intent.firmwareSerial===bluetoothFirmwareConnectionSerial&&meshSelection===task&&wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===entry.id);
   let lease;
   try{
-    lease=await createMeshLampLease(entry.id,{signal:task.abort.signal,isCurrent:current,bridgeId:entry.meshBridgeId,recoveryOnly:intent.automaticReconnect===true});if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
+    // Opening settings only reads existing routes; it must never enroll or
+    // provision another lamp while looking for this one.
+    lease=await createMeshLampLease(entry.id,{signal:task.abort.signal,isCurrent:current,bridgeId:entry.meshBridgeId,recoveryOnly:true});if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
     const transport=lease.lamp,previous=lamp;
     await stopGroupInspection(entry.id);if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
     if(previous?.isMesh&&previous.bridge===transport.bridge&&transport.lease.borrowed){const inherited=previous.lease;previous.lease=null;transport.lease.release=()=>inherited?.release?.();await previous.disconnect();}
@@ -1369,21 +1374,27 @@ async function openCardSettings(entry,{section='overview',bluetooth=false,prefer
   const intent={id:current.id,address:current.address,deviceId:current.deviceId,section,serial:++cardSettingsSerial,navigation:navigationSerial,firmwareSerial:bluetoothFirmwareConnectionSerial,automaticReconnect,signal,isCurrent,navigate};
   wifiSettingsTarget=intent;
   const pending=()=>!signal?.aborted&&isCurrent()&&!bluetoothFirmwareOwner()&&intent.firmwareSerial===bluetoothFirmwareConnectionSerial&&wifiSettingsTarget===intent&&navigationSerial===intent.navigation&&mergedLampEntries().some(value=>value.id===intent.id&&value.address===intent.address&&value.deviceId===intent.deviceId);
-  const offline=connectivity?.get(entry.id).wifi?.state==='disconnected'||['offline','failed'].includes(fleetStatuses.get(entry.id)?.state);
-  const reuse=verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp===wifiLamp||lamp?.isMesh&&offline||!current.address);
+  const reuse=verifiedSelectedLamp()&&selected.id===entry.id&&(!bluetooth||lamp===bleLamp)&&(!preferWifi||lamp!==bleLamp||bleLamp.supportsOfflineControl||!current.address);
   // A verified connection can use an IP while discovery lists its mDNS alias.
   // Keep its exact epoch and address; identity verification already matched it.
   if(reuse&&lamp===wifiLamp)intent.activeWifi={epoch:lamp.epoch,address:lamp.base};
   if(!reuse){
     let result,wifiResult;
-    if(current.address&&!bluetooth&&(automaticReconnect||!offline))result=wifiResult=await connectCardWifiAsync(current,intent);
+    const authorizedBluetooth=Boolean(current.deviceId&&(phonePlatform!=='ios'||current.accessoryManaged));
+    const wifi=connectivity?.get(entry.id).wifi;
+    // A fresh verified Wi-Fi route is fast. After commissioning, the saved
+    // Bluetooth route avoids waiting for Wi-Fi discovery or probing the fleet.
+    const wifiFirst=!bluetooth&&current.address&&(!authorizedBluetooth||wifi?.fresh&&wifi.state==='connected');
+    if(wifiFirst)result=wifiResult=await connectCardWifiAsync(current,intent);
     if(!pending())return result;
-    if(automaticReconnect&&!result?.connected&&current.deviceId&&(phonePlatform!=='ios'||current.accessoryManaged))result=await connectCardBluetooth(current,{forCardSettings:true});
+    if(!result?.connected&&authorizedBluetooth)result=await connectCardBluetooth(current,{forCardSettings:true,readOnlyReconnect:true});
+    if(!pending())return result;
+    // Old offline telemetry must not suppress a direct retry of this lamp.
+    if(!result?.connected&&current.address&&!bluetooth&&!wifiFirst)result=wifiResult=await connectCardWifiAsync(current,intent);
     if(!pending())return result;
     if(!result?.connected&&!bluetooth)result=await connectMeshCard(current,intent);
     if(!pending())return result;
-    if(!result?.connected&&result?.error?.uncertain&&!automaticReconnect){status(result.error.message);wifiSettingsTarget=null;return result;}
-    if(!result?.connected&&!automaticReconnect){
+    if(!result?.connected&&!automaticReconnect&&!authorizedBluetooth){
       current=mergedLampEntries().find(value=>value.id===entry.id);if(!current)return;
       if(current.deviceId||!current.address||bluetooth)result=await connectCardBluetooth(current,{forCardSettings:true});
     }

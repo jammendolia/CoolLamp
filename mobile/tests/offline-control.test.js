@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {LampTransport} from '../src/transport.js';
-import {CONTROL,STATE,COMMAND,SERVICE,encodeControlCommand,decodeControlPage,decodeControlCapabilities} from '../src/protocol.js';
+import {CONTROL,STATE,COMMAND,SERVICE,EFFECT_OPTIONS,encodeControlCommand,decodeControlPage,decodeControlCapabilities} from '../src/protocol.js';
+import {CATALOG} from '../src/catalog.js';
 
 const identity='aabbccddeeff', identityChar='7b610006-6e2b-4f3d-9a71-28e45c001001';
 const view=bytes=>new DataView(Uint8Array.from(bytes).buffer);
@@ -176,4 +177,166 @@ test('unavailable optional characteristic leaves older firmware basic controls u
   const radio=new Radio();const original=radio.read.bind(radio);radio.read=(id,service,char)=>char===CONTROL?Promise.reject(Error('missing')):original(id,service,char);
   const lamp=new LampTransport(radio,{timeout:60});t.after(()=>lamp.disconnect());await lamp.connect();assert.equal(lamp.supportsOfflineControl,false);await lamp.command('brightness',120);
   await assert.rejects(lamp.request('/api/config',{}),/connection changed/);
+});
+
+class CatalogRadio extends Radio {
+  constructor(){super();this.stateTimeouts=[];this.capabilityReads=0;}
+  packet(id=0){const data=super.packet(id);data.setUint8(7,41);return data;}
+  async read(id,service,char,options){
+    if(char===STATE)this.stateTimeouts.push(options?.timeout);
+    if(char===CONTROL)this.capabilityReads++;
+    if(char===CATALOG){
+      const index=this.writes.findLast(write=>write.id===id&&write.bytes[2]===13).bytes[3];
+      return view(new TextEncoder().encode(JSON.stringify({id:index,name:this.model.effects[index-1],category:'calm',speed:true})));
+    }
+    if(char===EFFECT_OPTIONS)return view([1,4,50,100,0,0,0,0]);
+    return super.read(id,service,char);
+  }
+}
+test('saved settings reconnect reads current settings and catalog without replaying effect setup',async t=>{
+  const radio=new CatalogRadio(),observed=[],firmware=[],options=[];
+  radio.model.leds=175;radio.model.firmware={version:'1.15.0'};
+  radio.model.effectOptions=radio.model.effects.map(()=>[50,100,0,0,0,0]);
+  const lamp=new LampTransport(radio,{timeout:80,onState:(state,metadata)=>observed.push({state,metadata}),onFirmware:value=>firmware.push(value),onOptions:value=>options.push(value)});
+  t.after(()=>lamp.disconnect());
+  await lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true});
+  assert.equal(radio.stateTimeouts[0],80);assert.equal(lamp.identity,identity);assert.equal(lamp.raw.leds,175);
+  assert.equal(lamp.catalog.length,28);assert.equal(lamp.catalog[0].name,'Effect 1');
+  assert.equal(observed.at(-1).metadata.freshControl,true);assert.equal(firmware.at(-1).version,'1.15.0');assert.equal(options.at(-1).mode,4);
+  assert.deepEqual(radio.requests.map(request=>({endpoint:request.endpoint,method:request.method})),[{endpoint:1,method:1},{endpoint:26,method:1}]);
+  assert(radio.writes.every(write=>[22,24,25].includes(write.bytes[2])));assert(lamp.controlTimer);
+});
+test('explicit first connection retains protected pairing time and complete legacy effect negotiation',async t=>{
+  const radio=new CatalogRadio(),lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  await lamp.connect({deviceId:'target',lampId:identity});
+  assert.equal(radio.stateTimeouts[0],60000);assert.equal(radio.writes.filter(write=>write.bytes[2]===12).length,1);
+  assert.equal(radio.writes.filter(write=>write.bytes[2]===13).length,28);assert.equal(lamp.catalog.length,28);assert(lamp.supportsOfflineControl);
+});
+test('saved settings reconnect retains old lamp controls when the optional characteristic is absent',async t=>{
+  const radio=new CatalogRadio(),read=radio.read.bind(radio);
+  radio.read=(id,service,char,options)=>char===CONTROL?Promise.reject(Error('Characteristic not found.')):read(id,service,char,options);
+  const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  await lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true});
+  assert.equal(radio.stateTimeouts[0],80);assert.equal(lamp.supportsOfflineControl,false);
+  assert.equal(radio.writes.filter(write=>write.bytes[2]===12).length,1);assert.equal(radio.writes.filter(write=>write.bytes[2]===13).length,28);
+  await lamp.command('brightness',120);assert.equal(lamp.id,'target');
+});
+test('saved settings reconnect fails on modern read errors without replaying legacy setup',async t=>{
+  for(const fault of ['timeout','invalid capabilities']){
+    const radio=new CatalogRadio(),read=radio.read.bind(radio),lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+    radio.read=(id,service,char,options)=>char===CONTROL?(fault==='timeout'?Promise.reject(Error('Reading characteristic timed out.')):Promise.resolve(envelope('{}'))):read(id,service,char,options);
+    await assert.rejects(lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true}),fault==='timeout'?/timed out/:/capabilities/);
+    assert.equal(radio.writes.length,0);assert.equal(lamp.id,null);assert.equal(lamp.raw,null);
+  }
+});
+test('saved settings reconnect rejects protected identity mismatches before sending any commands',async t=>{
+  const radio=new CatalogRadio(),lamp=new LampTransport(radio,{timeout:80});radio.protectedIdentity='112233445566';t.after(()=>lamp.disconnect());
+  await assert.rejects(lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true}),/identity did not match this lamp/);
+  assert.equal(radio.writes.length,0);assert.equal(radio.capabilityReads,0);assert.equal(lamp.id,null);
+});
+test('saved settings reconnect rejects another lamp in the protected snapshot before catalog publication',async t=>{
+  const radio=new CatalogRadio(),observed=[],lamp=new LampTransport(radio,{timeout:80,onState:(state,metadata)=>observed.push({state,metadata})});
+  radio.model.deviceId='112233445566';t.after(()=>lamp.disconnect());
+  await assert.rejects(lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true}),/Invalid Bluetooth settings snapshot/);
+  assert.equal(radio.requests.length,1);assert.equal(radio.requests[0].method,1);assert(!observed.some(value=>value.metadata?.freshControl));
+  assert.equal(lamp.id,null);assert.equal(lamp.catalog,null);assert.equal(lamp.raw,null);
+});
+test('initial state cache retry retains saved read-only and automatic reconnect flags',async t=>{
+  const radio=new CatalogRadio(),read=radio.read.bind(radio),selections=[];let initial=true;
+  radio.read=async(id,service,char,options)=>{
+    if(char===STATE&&initial){initial=false;radio.stateTimeouts.push(options?.timeout);return view([1]);}
+    return read(id,service,char,options);
+  };
+  const lamp=new LampTransport(radio,{timeout:80,selectDevice:device=>{selections.push(device);return {deviceId:device.deviceId,lampId:device.lampId,accessoryManaged:true};}});
+  t.after(()=>lamp.disconnect());await lamp.connect({deviceId:'target',lampId:identity,accessoryManaged:true,readOnlyReconnect:true,automaticReconnect:true});
+  assert.equal(selections.length,2);assert.equal(selections[1].readOnlyReconnect,true);assert.equal(selections[1].automaticReconnect,true);
+  assert.deepEqual(radio.stateTimeouts.slice(0,2),[80,80]);assert(radio.writes.every(write=>[22,24,25].includes(write.bytes[2])));assert.equal(lamp.raw.leds,134);
+});
+test('cancelled capability read cannot fall back to setup or disconnect a newer settings connection',async t=>{
+  const radio=new CatalogRadio(),read=radio.read.bind(radio);let release,ready,hold=true;
+  const reading=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve);
+  radio.read=async(id,service,char,options)=>{if(char===CONTROL&&id==='old'&&hold){ready();await gate;}return read(id,service,char,options);};
+  const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true});const rejection=assert.rejects(old,/Connection changed/);
+  await reading;await lamp.disconnect();hold=false;
+  await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});const writes=radio.writes.length;
+  release();await rejection;
+  assert.equal(lamp.id,'new');assert.equal(lamp.raw.leds,134);assert.equal(radio.writes.length,writes);assert(!radio.disconnections.includes('new'));
+});
+
+test('cancelled authorization preserves its saved accessory without opening a late native link',async t=>{
+  const radio=new CatalogRadio(),authorized=[],connections=[];let release,ready;
+  const selecting=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve);
+  const connect=radio.connect.bind(radio);radio.connect=async(id,...args)=>{connections.push(id);return connect(id,...args);};
+  const lamp=new LampTransport(radio,{timeout:80,selectDevice:async device=>{
+    if(device.deviceId==='old'){ready();await gate;}return {...device,accessoryManaged:true};
+  },onDeviceSelected:device=>authorized.push(device.deviceId)});
+  t.after(()=>lamp.disconnect());
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true}),rejected=assert.rejects(old,/Connection changed/);
+  await selecting;await lamp.disconnect();await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;
+  assert.deepEqual(connections,['new']);assert.deepEqual(authorized,['new','old']);assert.equal(lamp.id,'new');
+  assert(!radio.disconnections.includes('new'));
+});
+
+test('cancelled native initialization records radio creation but cannot revive its old connection',async t=>{
+  const radio=new CatalogRadio(),connections=[];let release,ready,radioReady=0;
+  const initializing=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve);
+  radio.initialize=async()=>{radio.initializations++;ready();await gate;};
+  const connect=radio.connect.bind(radio);radio.connect=async(id,...args)=>{connections.push(id);return connect(id,...args);};
+  const lamp=new LampTransport(radio,{timeout:80,onRadioReady:()=>radioReady++});t.after(()=>lamp.disconnect());
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true}),rejected=assert.rejects(old,/Connection changed/);
+  await initializing;await lamp.disconnect();const newer=lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;await newer;
+  assert.equal(radio.initializations,1);assert.equal(radioReady,2);assert.deepEqual(connections,['new']);assert.equal(lamp.id,'new');
+  assert(!radio.disconnections.includes('new'));
+});
+
+test('cancelled foreground device picker cannot connect after a saved lamp has taken ownership',async t=>{
+  const radio=new CatalogRadio(),connections=[];let release,ready;
+  const picking=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve);
+  radio.requestDevice=async()=>{ready();await gate;return {deviceId:'old'};};
+  const connect=radio.connect.bind(radio);radio.connect=async(id,...args)=>{connections.push(id);return connect(id,...args);};
+  const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  const old=lamp.connect(),rejected=assert.rejects(old,/Connection changed/);
+  await picking;await lamp.disconnect();await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;
+  assert.deepEqual(connections,['new']);assert.equal(lamp.id,'new');assert(!radio.disconnections.includes('new'));
+});
+
+test('cancellation during native disconnect cleanup cannot renew the cancelled connection generation',async t=>{
+  const radio=new CatalogRadio(),connections=[];let release,ready;
+  const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  await lamp.connect({deviceId:'prior',lampId:identity,readOnlyReconnect:true});
+  const cleaning=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve),disconnect=radio.disconnect.bind(radio);
+  radio.disconnect=async id=>{if(id==='prior'){ready();await gate;}return disconnect(id);};
+  const connect=radio.connect.bind(radio);radio.connect=async(id,...args)=>{connections.push(id);return connect(id,...args);};
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true}),rejected=assert.rejects(old,/Connection changed/);
+  await cleaning;await lamp.disconnect();await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;
+  assert.deepEqual(connections,['new']);assert.equal(lamp.id,'new');assert(!radio.disconnections.includes('new'));
+});
+
+test('cancelled existing-peripheral cleanup cannot proceed into a late native connection',async t=>{
+  const radio=new CatalogRadio(),connections=[];let release,ready,hold=true;
+  const cleaning=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve),disconnect=radio.disconnect.bind(radio);
+  radio.disconnect=async id=>{if(id==='old'&&hold){hold=false;ready();await gate;}return disconnect(id);};
+  const connect=radio.connect.bind(radio);radio.connect=async(id,...args)=>{connections.push(id);return connect(id,...args);};
+  const lamp=new LampTransport(radio,{timeout:80});lamp.connectionAttempts.add('old');t.after(()=>lamp.disconnect());
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true}),rejected=assert.rejects(old,/Connection changed/);
+  await cleaning;await lamp.disconnect();await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;
+  assert.deepEqual(connections,['new']);assert.equal(lamp.id,'new');assert(!radio.disconnections.includes('new'));
+});
+
+test('cancelled native connection completion cannot issue protected reads against an old lamp',async t=>{
+  const radio=new CatalogRadio(),reads=[];let release,ready;
+  const connecting=new Promise(resolve=>ready=resolve),gate=new Promise(resolve=>release=resolve),connect=radio.connect.bind(radio),read=radio.read.bind(radio);
+  radio.connect=async(id,...args)=>{await connect(id,...args);if(id==='old'){ready();await gate;}};
+  radio.read=async(id,...args)=>{reads.push(id);return read(id,...args);};
+  const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+  const old=lamp.connect({deviceId:'old',lampId:identity,readOnlyReconnect:true}),rejected=assert.rejects(old,/Connection changed/);
+  await connecting;await lamp.disconnect();await lamp.connect({deviceId:'new',lampId:identity,readOnlyReconnect:true});
+  release();await rejected;
+  assert(!reads.includes('old'));assert.equal(lamp.id,'new');assert(!radio.disconnections.includes('new'));
 });

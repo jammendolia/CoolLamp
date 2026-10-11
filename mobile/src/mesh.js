@@ -136,11 +136,14 @@ export class MeshTransport extends WifiTransport {
 }
 
 export async function acquireMeshLamp({target,candidates,acquireBridge,signal,isCurrent=()=>true,options={},onInventory=()=>{}}){
- const current=()=>{if(signal?.aborted||!isCurrent())throw cancelled();};let lastError,uncertainError;
+ const deadline=Number.isFinite(options.totalTimeout)?Date.now()+options.totalTimeout:Infinity;
+ const timedOut=()=>Object.assign(noRoute(),{routeTimeout:true});
+ const current=()=>{if(signal?.aborted||!isCurrent())throw cancelled();if(Date.now()>=deadline)throw timedOut();};let lastError,uncertainError;
  const bounded=async(action,lateRelease=false)=>{
+  current();
   let timer,abort,settled=false;const pending=Promise.resolve().then(action);
   pending.then(value=>{if(settled&&lateRelease)void value?.release?.();},()=>{});
-  try{return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(noRoute()),options.timeout??6000);abort=()=>reject(cancelled());signal?.addEventListener('abort',abort,{once:true});})]);}
+   try{return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(timedOut()),Math.min(options.timeout??6000,deadline-Date.now()));abort=()=>reject(cancelled());signal?.addEventListener('abort',abort,{once:true});})]);}
   finally{settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);}
  };
  for(const candidate of candidates){
@@ -151,8 +154,11 @@ export async function acquireMeshLamp({target,candidates,acquireBridge,signal,is
    const inventory=parse(await bounded(()=>bridge.request('/api/mesh/status')));current();
    if(!validInventory(inventory,bridge)||inventory.available!==true)throw noRoute();
    verifiedBridges.set(bridge,{identity:bridge.identity,epoch:bridge.epoch});onInventory(inventory,bridge.identity);
-   transport=new MeshTransport(options);const owned=lease;lease=null;await transport.connect(target,owned,{signal,isCurrent,poll:false});current();return {lamp:transport,release:()=>transport.disconnect()};
-  }catch(error){lastError=error;if(error.uncertain)uncertainError=error;await transport?.disconnect();await lease?.release?.();current();if(error.cancelled)throw error;}
+   transport=new MeshTransport(options);const owned=lease;lease=null;
+   if(Number.isFinite(options.totalTimeout))await bounded(()=>transport.connect(target,owned,{signal,isCurrent,poll:false}));
+   else await transport.connect(target,owned,{signal,isCurrent,poll:false});
+   current();return {lamp:transport,release:()=>transport.disconnect()};
+  }catch(error){lastError=error;if(error.uncertain)uncertainError=error;await transport?.disconnect();await lease?.release?.();current();if(error.cancelled||error.routeTimeout&&options.stopOnTimeout)throw error;}
  }
  if(uncertainError)throw uncertainError;
  if(lastError&&!lastError.noRoute&&!lastError.confirmed)throw lastError;

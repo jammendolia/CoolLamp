@@ -40,7 +40,7 @@ export function mountAppV2(api){
    close();api.navigate(section==='lighting'?'effects':'settings',section);
   }catch(error){
    if(selectionTask!==task)return;
-   const message=task.timedOut?'We couldn’t reach '+name+'. Check that it has power and try again.':error.uncertain?'We could not confirm the connection. Please choose your lamp again.':error.message||'We couldn’t open '+name+'. Please try again.';
+   const message=task.timedOut?'The connection to '+name+' took too long. Bring your phone closer to the lamp and try again.':error.uncertain?'We could not confirm the connection. Please choose your lamp again.':error.message||'We couldn’t open '+name+'. Please try again.';
    if(feedback){feedback.dataset.state='error';feedback.textContent=message;feedback.scrollIntoView({block:'nearest'});}api.message(message);
   }finally{clearTimeout(timer);task.controller.signal.removeEventListener('abort',abort);if(selectionTask===task)cancelSelection();}
  }
@@ -59,7 +59,7 @@ export function mountAppV2(api){
     const power=document.createElement('button');power.type='button';power.className='v2-home-power';power.dataset.v2='power';power.dataset.id=id;power.setAttribute('aria-pressed',String(observed.lighting.power));power.setAttribute('aria-label',(observed.lighting.power?'Turn off ':'Turn on ')+(group?groupName(id,group.name):entry.name));power.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M7 5a8 8 0 1 0 10 0"/></svg>';wrapper.append(power);
   }
   if(focused?.action){const replacement=[...home.querySelectorAll('[data-v2]')].find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id);replacement?.focus({preventScroll:true});}
-  document.getElementById('v2Version').textContent='CoolLamp 2.0.4';
+  document.getElementById('v2Version').textContent='CoolLamp 2.0.5';
  }
  function chooseLight(section='lighting'){
   const model=api.model();sheet('Choose your lights',`<p>Choose a lamp. We’ll find its best available connection.</p>${section==='lighting'?(model.groups||[]).map(g=>`<button class="v2-choice" data-v2="open-group" data-id="${esc(g.id)}"><strong>${esc(groupName(g.id,g.name))}</strong><small>Shared group lighting</small>${icon('arrow')}</button>`).join(''):''}${(model.lamps||[]).map(l=>`<button class="v2-choice" data-v2="select-settings" data-section="${section}" data-id="${esc(l.id)}"><strong>${esc(l.name)}</strong><small>${esc(room(l.id))}</small>${icon('arrow')}</button>`).join('')||'<p>Add a lamp to get started.</p>'}<button class="secondary" data-v2="add">Add a lamp</button>`);

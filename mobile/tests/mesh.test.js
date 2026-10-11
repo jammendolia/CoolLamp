@@ -157,3 +157,34 @@ test('selection revision changed after a target read never returns a stale lease
  f.bridge.request=async(...args)=>{const reply=await original(...args);if(args[0]==='/api/mesh/result')current=false;return reply;};
  await assert.rejects(acquireMeshLamp({target,candidates:[f],acquireBridge:async()=>f.lease,isCurrent:()=>current,options:{timeout:90,pollInterval:1}}),error=>error.cancelled===true);assert.equal(f.releases(),1);
 });
+
+test('settings bridge timeout stops searching and releases a late native connection',async()=>{
+ const first=fixture(),second=fixture();let finish;const attempts=[];
+ await assert.rejects(acquireMeshLamp({target,candidates:[first,second],
+  acquireBridge:candidate=>{attempts.push(candidate);return new Promise(resolve=>finish=()=>resolve(candidate.lease));},
+  options:{timeout:15,totalTimeout:80,stopOnTimeout:true}}),error=>error.routeTimeout===true);
+ assert.equal(attempts.length,1);finish();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(first.releases(),1);assert.equal(second.requests.length,0);
+});
+
+test('settings mesh has one total deadline across bridge acquisition and status',async()=>{
+ const f=fixture();let statusStarted,finishStatus;const started=new Promise(resolve=>statusStarted=resolve);
+ const original=f.bridge.request.bind(f.bridge);
+ f.bridge.request=(path,...args)=>path==='/api/mesh/status'?new Promise(resolve=>{statusStarted();finishStatus=()=>resolve(original(path,...args));}):original(path,...args);
+ const before=Date.now(),pending=acquireMeshLamp({target,candidates:[f],
+  acquireBridge:async()=>{await new Promise(resolve=>setTimeout(resolve,25));return f.lease;},
+  options:{timeout:200,totalTimeout:60,stopOnTimeout:true}});
+ await started;await assert.rejects(pending,error=>error.routeTimeout===true);assert(Date.now()-before<150);
+ assert.equal(f.releases(),1);finishStatus();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.requests.filter(row=>row.path==='/api/mesh/request').length,0);
+});
+
+test('settings mesh deadline includes reading the target snapshot and catalog',async()=>{
+ const f=fixture(),original=f.bridge.request.bind(f.bridge);let finish,reading;
+ const started=new Promise(resolve=>reading=resolve);
+ f.bridge.request=(path,...args)=>path==='/api/mesh/request'?new Promise(resolve=>{reading();finish=()=>resolve(original(path,...args));}):original(path,...args);
+ const pending=acquireMeshLamp({target,candidates:[f],acquireBridge:async()=>f.lease,
+  options:{timeout:200,totalTimeout:40,stopOnTimeout:true,pollInterval:1}});
+ await started;await assert.rejects(pending,error=>error.routeTimeout===true);
+ assert.equal(f.releases(),1);finish();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.writes.length,0);
+});

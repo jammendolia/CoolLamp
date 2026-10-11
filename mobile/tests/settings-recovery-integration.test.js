@@ -45,10 +45,10 @@ function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wif
   return {...context.ui,calls,posts,entry,context,view};
 }
 
-test('actual automatic card recovery probes stale-offline Wi-Fi, then authorized Bluetooth without navigation',async()=>{
+test('actual automatic card recovery prefers saved Bluetooth over stale-offline Wi-Fi without navigation',async()=>{
   const f=cardHarness({wifi:async()=>({connected:false,error:Object.assign(Error('Read reply lost'),{uncertain:true})}),bluetooth:async()=>({connected:true})});
   const controller=new AbortController(),result=await f.open(f.entry,{section:'network',automaticReconnect:true,signal:controller.signal,isCurrent:()=>true});
-  assert.equal(result.connected,true);assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['wifi','bluetooth']);
+  assert.equal(result.connected,true);assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth']);
   const call=f.calls.find(value=>value.kind==='bluetooth');assert.equal(call.options.expectedId,id);assert.equal(call.options.automaticReconnect,true);assert.equal(call.options.signal,controller.signal);assert.equal(call.options.navigate,false);assert(call.options.isCurrent());
   assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.scope().section,'network');assert.equal(f.scope().navigation,7);assert.equal(f.intent(),null);assert.equal(f.posts.length,0);
 });
@@ -56,7 +56,7 @@ test('actual automatic card recovery probes stale-offline Wi-Fi, then authorized
 test('actual automatic card recovery continues through trusted mesh after read-only route errors',async()=>{
   const f=cardHarness({bluetooth:async()=>({connected:false,error:Object.assign(Error('Protected read lost'),{uncertain:true})}),mesh:async()=>({connected:true})});
   const result=await f.open(f.entry,{section:'hardware',automaticReconnect:true});assert.equal(result.connected,true);
-  assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['wifi','bluetooth','mesh']);
+  assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth','wifi','mesh']);
   assert.equal(f.calls.find(value=>value.kind==='mesh').intent.automaticReconnect,true);assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
 });
 
@@ -82,11 +82,11 @@ test('automatic missing-password failure never opens a password form or pairing 
 
 test('automatic card recovery checks cancellation/navigation before trying another route',async()=>{
   for(const reason of ['signal','navigation','scope']){
-    const pending=deferred(),f=cardHarness({wifi:()=>pending.promise}),controller=new AbortController();let current=true;
+    const pending=deferred(),f=cardHarness({bluetooth:()=>pending.promise}),controller=new AbortController();let current=true;
     const running=f.open(f.entry,{automaticReconnect:true,signal:controller.signal,isCurrent:()=>current});await tick();
     if(reason==='signal')controller.abort();else if(reason==='navigation')f.navigate();else current=false;
-    pending.resolve({connected:false,error:Error('Old Wi-Fi failure')});await running;
-    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['wifi']);
+    pending.resolve({connected:false,error:Error('Old Bluetooth failure')});await running;
+    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth']);
     assert(!f.calls.some(value=>['page','complete','picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
   }
 });
