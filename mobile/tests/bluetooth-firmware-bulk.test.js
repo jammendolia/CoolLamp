@@ -119,7 +119,8 @@ for(const mtu of [23,185,247])test(`published-size fast data with MTU ${mtu} has
   assert.equal(value.progress,Math.floor(receiver.s.offset*100/receiver.pkg.image.length));assert(value.progress>=previous);previous=value.progress;
   if(value.stage==='transferring')assert.equal(count++,receiver.windows);
  }});
- assert.deepEqual(await transfer.send(receiver.pkg),{committed:true,version:'1.13.0'});
+ const result=await transfer.send(receiver.pkg);assert.equal(result.committed,true);assert.equal(result.version,'1.13.0');
+ assert(Object.isFrozen(result.receipt));assert.deepEqual(result.receipt,{session:receiver.s.session,size:1920432,offset:1920432,ack:receiver.sequence,phase:4,error:0,committed:true});
  const data=receiver.writes.filter(row=>row.op===3),chunk=Math.min(232,Math.min(244,mtu-3)-12);
  assert.equal(data.length,Math.ceil(1920432/chunk));assert(data.every(row=>row.kind==='bulk'));
  assert.equal(new Set(data.map(row=>row.offset)).size,data.length);assert.equal(receiver.maxQueued,4);

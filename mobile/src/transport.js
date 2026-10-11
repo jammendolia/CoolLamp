@@ -3,7 +3,7 @@ import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, CONTROL, CO
 import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wifiSetupMessage } from './wifi-setup.js';
 import { WifiTransport } from './wifi.js';
 import { normalizeLampStyle } from './lamp-style.js';
-import { BluetoothFirmwareTransfer } from './bluetooth-firmware.js';
+import { BluetoothFirmwareTransfer, decodeBleUpdate, OTA_STATUS } from './bluetooth-firmware.js';
 
 const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/api/sync':4,'/api/sync/scene':5,
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
@@ -388,8 +388,28 @@ export class LampTransport {
     if(this.firmwareOnly&&!this.firmwareConnectionGuard?.())throw Object.assign(Error('Firmware connection changed or cancelled.'),{confirmed:true,cancelled:true});
     const status=decodeFirmware(value);this.receiveFirmware(status);return status;
   }
-  async updateOverBluetooth(packageValue,onProgress=()=>{},{signal,isCurrent=()=>true,enableResume=false,resumeLease=null,onLease=()=>{}}={}) {
-    if(this.bluetoothUpdate||!this.id||!this.deviceIdentity||!this.supportsBluetoothFirmware)throw Error('Connect to the intended lamp over Bluetooth first.');
+  async readFirmwareUpdateSnapshot({signal,isCurrent=()=>true,expectedSession=null}={}) {
+    if(this.bluetoothUpdate)throw Object.assign(Error('The active firmware sender owns its receiver status.'),{confirmed:true,firmwareBusy:true});
+    if(!this.supportsBluetoothFirmware||!/^[0-9a-f]{12}$/.test(this.deviceIdentity||''))throw Error('Connect to the intended lamp over protected Bluetooth first.');
+    if(expectedSession!==null&&(!Number.isInteger(expectedSession)||expectedSession<1||expectedSession>0xffffffff))throw Error('Invalid expected firmware receiver session.');
+    const epoch=this.epoch,id=this.id,target=this.deviceIdentity,ownerGuard=this.firmwareOnly?this.firmwareConnectionGuard:null;
+    const guard=()=>{let owned=false;try{owned=isCurrent()&&(!ownerGuard||ownerGuard());}catch{}
+      if(!owned||signal?.aborted||epoch!==this.epoch||id!==this.id||target!==this.deviceIdentity)
+        throw Object.assign(Error('Firmware snapshot connection changed or cancelled.'),{cancelled:true,confirmed:true});};
+    const read=async characteristic=>{guard();const data=await this.ble.read(id,SERVICE,characteristic,{timeout:this.timeout});guard();return data;};
+    const canonical=new TextDecoder('utf-8',{fatal:true}).decode(await read('7b610006-6e2b-4f3d-9a71-28e45c001001'));
+    if(canonical!==target)throw Object.assign(Error('Bluetooth identity did not match this lamp.'),{identity:true,confirmed:true});
+    const firmware=decodeFirmware(await read(FIRMWARE)),state=decodeState(await read(STATE)),receiverBytes=await read(OTA_STATUS);
+    const receiver={...decodeBleUpdate(receiverBytes),resumeSupported:Boolean(receiverBytes.getUint8(3)&4),detached:Boolean(receiverBytes.getUint8(3)&8)};
+    if(receiver.size>2031616||receiver.offset>receiver.size||receiver.maxData<1||receiver.maxData>232||receiver.committed&&receiver.phase!==4||
+      receiver.phase===4&&(!receiver.committed||receiver.size===0||receiver.offset!==receiver.size))
+      throw Error('Invalid Bluetooth firmware receiver snapshot.');
+    if(expectedSession!==null&&receiver.session!==expectedSession)throw Object.assign(Error('Firmware receiver session changed. Reconcile the original update before retrying.'),{uncertain:true,sessionChanged:true});
+    guard();const observedAt=Date.now();return Object.freeze({identity:canonical,observedAt,firmware:Object.freeze(firmware),state:Object.freeze(state),receiver:Object.freeze(receiver)});
+  }
+  async updateOverBluetooth(packageValue,onProgress=()=>{},{signal,isCurrent=()=>true,enableResume=false,resumeLease=null,onLease=()=>{},onBeforeWrite=null}={}) {
+    if(this.bluetoothUpdate)throw Object.assign(Error('Another Bluetooth update owns this connection.'),{confirmed:true,firmwareBusy:true});
+    if(!this.id||!this.deviceIdentity||!this.supportsBluetoothFirmware)throw Object.assign(Error('Connect to the intended lamp over Bluetooth first.'),{installationNotStarted:true,metadataIssued:false,uncertain:false});
     const epoch=this.epoch,id=this.id,identity=this.deviceIdentity;
     const ownerGuard=this.firmwareOnly?this.firmwareConnectionGuard:null;
     const ownsUpdate=()=>{try{return isCurrent()&&(!ownerGuard||ownerGuard());}catch{return false;}};
@@ -407,9 +427,11 @@ export class LampTransport {
     // Verify protected device identity again after the phone download.
     const value=await this.ble.read(id,SERVICE,'7b610006-6e2b-4f3d-9a71-28e45c001001',{timeout:this.timeout});
     const actual=new TextDecoder().decode(new Uint8Array(value.buffer,value.byteOffset,value.byteLength));
-    if(epoch!==this.epoch||id!==this.id||actual!==identity)throw Error('The Bluetooth lamp changed. No firmware was sent.');
-    return await transfer.send(packageValue,{enableResume,resumeLease});}
+    if(epoch!==this.epoch||id!==this.id||actual!==identity)throw Object.assign(Error('The Bluetooth lamp changed. No firmware was sent.'),{identity:actual!==identity});
+    return await transfer.send(packageValue,{enableResume,resumeLease,onBeforeWrite});}
     catch(failure){
+      if(!transfer.firstStop)transfer.recordStop(transfer.isCurrent()?'native-read-failure':'connection-changed');
+      if(!failure.updateDiagnostic)transfer.describeFailure(failure);
       const lease=transfer.getResumeLease();
       if(lease){const bounded=Object.freeze({...lease,identity});failure.firmwareResumeLease=bounded;try{onLease(bounded);}catch{}}
       throw failure;

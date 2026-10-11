@@ -11,9 +11,10 @@ const release=parsePhoneManifest('COOLLAMP-OTA-1\n1.14.0\nesp32c3\ndual-ota-2031
 const entry={id:'aabbccddeeff',name:'Reading corner'};
 function fixture(overrides={}){
  const calls=[],context={availableCardRelease,publicFirmware:release,publicFirmwareFresh:true,cardInstalledVersion:()=> '1.13.0',fleetRefreshRun:null,publicFirmwareRun:null,
+  firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),firmwareFeedback:{get:()=>null},checkLampUpdateResult:value=>calls.push(['check-update',value.id]),
   connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardFirmwareUnconfirmed:new Map(),
   updateLampCard:value=>calls.push(['update',value.id]),refreshPublicFirmware:options=>calls.push(['release-check',options.force]),refreshLampFirmware:()=>calls.push(['version-check']),
-  document:{createElement:()=>({dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;}})},...overrides};
+  document:{createElement:()=>({dataset:{},attributes:{},label:{textContent:''},querySelector(){return this.label;},setAttribute(name,value){this.attributes[name]=value;}})},...overrides};
  runInNewContext(helper+'\nglobalThis.makeButton=cardFirmwareButton;',context);
  return {button:context.makeButton(entry),calls};
 }
@@ -36,6 +37,14 @@ test('a cached unverified public release only offers a forced check',()=>{
 });
 
 test('card care retains operation guards and communicates an active check',()=>{
- for(const overrides of [{connecting:true},{cardFirmwareTasks:new Map([[entry.id,{}]])},{bluetoothFirmwareTask:{}},{fleetUpdating:true},{powerLaneBusy:()=>true},{fleetLampInstalling:()=>true},{cardFirmwareUnconfirmed:new Map([[entry.id,'1.14.0']])}])assert.equal(fixture(overrides).button.disabled,true);
+ for(const overrides of [{connecting:true},{cardFirmwareTasks:new Map([[entry.id,{}]])},{bluetoothFirmwareTask:{}},{fleetUpdating:true},{powerLaneBusy:()=>true},{fleetLampInstalling:()=>true}])assert.equal(fixture(overrides).button.disabled,true);
  const {button}=fixture({publicFirmware:null,publicFirmwareRun:Promise.resolve()});assert.equal(button.disabled,true);assert.match(button.innerHTML,/<span>Checking…<\/span>/);
+});
+test('a persisted unfinished update offers a status check and never another install',()=>{
+ const {button,calls}=fixture({firmwareAttempts:{pending:()=>[{identity:entry.id}]},cardFirmwareUnconfirmed:new Map([[entry.id,'1.14.0']])});
+ assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check update');button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
+});
+test('an older app’s unfinished receipt offers the same read-only check',()=>{
+ const {button,calls}=fixture({legacyFirmwareReceipts:new Map([[entry.id,{targetVersion:'1.14.0',outcome:'verification-required'}]])});
+ assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check update');button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
 });

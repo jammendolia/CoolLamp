@@ -1,4 +1,5 @@
 import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './bluetooth-firmware.js';
+import {classifyFirmwareSnapshot} from './firmware-attempt.js';
 
 // The lamp's installed-version observation is separate from a public release
 // check. A failed or expired release check must never make an old offer fresh.
@@ -22,26 +23,111 @@ export function availableCardRelease(installed,manifest){
 
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
-export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal}){
+export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
  current();
+ if(attemptJournal){attempt??=attemptJournal.begin(entry.id,release,{reinstall:allowReinstall});onAttempt(attempt);}
+ const latest=()=>attemptJournal?.get(entry.id)||attempt;
+ const finish=result=>{if(attemptJournal&&attempt)attemptJournal.settle(latest(),result);return result;};
+ const checkResult=async failure=>{
+  if(!reconcile||!attemptJournal||!attempt)throw failure;
+  current();onProgress({stage:'checking-result'});
+  const result=await reconcile(latest(),{entry,signal,isCurrent,onProgress});current();
+  return finish({...result,path:'bluetooth'});
+ };
+ const stopUnstarted=async error=>{
+  const value=latest();
+  if(attemptJournal&&value&&!value.metadataIssued&&!value.wifiCheckAttempted&&!value.wifiInstallAttempted&&!value.beginAttempted&&!value.commitAttempted){
+   attemptJournal.abandonUnstarted(value);throw error;
+  }
+  if(attemptJournal&&reconcile)return checkResult(error);
+  throw error;
+ };
  if(entry.address){
   onProgress({stage:'wifi',progress:0});
-  try{const result=await wifi(entry,release.version);current();return {...result,path:'wifi'};}
-  catch(error){current();if(!error.safeBluetoothFallback||error.uncertain||error.identity||error.stale||error.cancelled)throw error;}
+  try{const result=await wifi(entry,release.version);current();
+   if(attemptJournal){
+    const value=latest();
+    if(result.state==='updated'&&result.verified&&result.fresh&&result.id===entry.id&&result.installedVersion===release.version)
+     return finish({...result,path:'wifi',outcome:'installed',identity:entry.id,attemptId:value.attemptId,safetyVersion:value.safetyVersion,controlResponsive:true,receiverInactive:true});
+    return checkResult(null);
+   }
+   return {...result,path:'wifi'};
+  }
+  catch(error){current();if(!error.safeBluetoothFallback||error.uncertain||error.identity||error.stale||error.cancelled){
+   if(latest()?.wifiInstallAttempted)return checkResult(error);
+   return stopUnstarted(error);
+  }}
  }
+ // A short protected preflight checks eligibility without holding the radio
+ // through the phone's potentially slow Internet download.
  onProgress({stage:'connecting',progress:0});
- const lease=await acquireBluetooth(entry);
+ let preflightFailure;
+ for(let retry=0;retry<2;retry++){
+ let preflight;
  try{
-  current();if(lease.lamp.identity!==entry.id)throw Error('Bluetooth identity does not match this lamp.');
-  const installed=await lease.lamp.refreshFirmware();current();
-  if([1,3,4].includes(installed.phase))throw Error('The lamp already has an update in progress. Reconnect and check its installed version before retrying.');
-  if(compareFirmwareVersions(release.version,installed.version)<=0)return {path:'bluetooth',state:'ready',installedVersion:installed.version,message:'Already up to date.'};
-  if(compareFirmwareVersions(installed.version,'1.11.0')<0)throw Error('This lamp needs firmware 1.11.0 installed once using Wi-Fi or USB to enable Bluetooth updates.');
-  const packageValue=await download(release,{signal,isCurrent,onProgress});current();
+  preflight=await acquireBluetooth(entry);current();
+  if(preflight.lamp.identity!==entry.id)throw Object.assign(Error('This is a different lamp. No update was sent.'),{identity:true});
+  const initialFirmware=await preflight.lamp.refreshFirmware();current();
+  if(compareFirmwareVersions(initialFirmware.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
+  const observed=attemptJournal?await preflight.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
+  const installed=observed?.firmware||initialFirmware;current();
+  if([1,3,4].includes(installed.phase))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
+  if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
+   finish({...classifyFirmwareSnapshot(latest(),observed),path:'bluetooth',state:'ready'}):
+   {path:'bluetooth',state:'ready',version:installed.version,installedVersion:installed.version,message:'Your lamp is up to date.'};
+  if(compareFirmwareVersions(installed.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
+  preflightFailure=null;break;
+ }catch(error){
+  preflightFailure=error;
+  if(error.identity||error.cancelled||error.stale||error.receiverBusy||error.bootstrapRequired||signal?.aborted)break;
+  if(retry===0)onProgress({stage:'recovering-connection'});
+ }finally{await preflight?.release();}
+ }
+ if(preflightFailure){
+  if(attemptJournal&&reconcile&&preflightFailure.receiverBusy)return checkResult(preflightFailure);
+  return stopUnstarted(preflightFailure);
+ }
+ // Download and verify the approved artifact before taking a Bluetooth lease.
+ // Native foreground time spent on the Internet cannot stale this new link.
+ let packageValue;
+ try{packageValue=await download(release,{signal,isCurrent,onProgress});current();
   if(packageValue.manifest.text!==release.text)throw Error('The prepared release changed. Nothing was sent.');
-  const result=await lease.lamp.updateOverBluetooth(packageValue,onProgress,{signal,isCurrent});
-  return {...result,path:'bluetooth',state:'restarting',message:result.committed?'Firmware verified. Reconnect to confirm the installed version.':'Final result unconfirmed. Reconnect and check the installed version before retrying.'};
- }finally{await lease.release();}
+ }catch(error){return stopUnstarted(error);}
+ for(let connectionAttempt=0;connectionAttempt<2;connectionAttempt++){
+  current();onProgress({stage:connectionAttempt?'recovering-connection':'connecting',progress:0});
+  let lease,failure,result;
+  try{
+  lease=await acquireBluetooth(entry);
+  current();if(lease.lamp.identity!==entry.id)throw Object.assign(Error('Bluetooth identity does not match this lamp.'),{identity:true});
+  const initialFirmware=await lease.lamp.refreshFirmware();current();
+  if(compareFirmwareVersions(initialFirmware.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
+  const observed=attemptJournal?await lease.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
+  const installed=observed?.firmware||initialFirmware;current();
+  if([1,3,4].includes(installed.phase))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
+  if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
+   finish({...classifyFirmwareSnapshot(latest(),observed),path:'bluetooth',state:'ready'}):
+   {path:'bluetooth',state:'ready',version:installed.version,installedVersion:installed.version,message:'Your lamp is up to date.'};
+  if(compareFirmwareVersions(installed.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
+  onProgress({stage:'preparing'});
+  result=await lease.lamp.updateOverBluetooth(packageValue,value=>{
+   if(attemptJournal&&Number.isInteger(value.acknowledgedBytes)&&value.stage==='transferring')attemptJournal.noteProgress(latest(),{offset:value.acknowledgedBytes});
+   onProgress(value);
+  },{signal,isCurrent,...(attemptJournal?{onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)}:{})});
+  }catch(error){failure=error;}
+  finally{await lease?.release();}
+  current();
+  if(result){
+   if(attemptJournal&&result.receipt)attemptJournal.confirmCommit(latest(),result.receipt);
+   if(reconcile&&attemptJournal)return checkResult(null);
+   return {...result,path:'bluetooth',state:'restarting',message:'Checking that your lamp finished updating…'};
+  }
+  const noFrames=!(latest()?.metadataIssued||latest()?.beginAttempted||latest()?.commitAttempted);
+  if(connectionAttempt===0&&noFrames&&(!attemptJournal?failure?.installationNotStarted:true)&&
+   !failure?.cancelled&&!failure?.identity&&!failure?.stale&&!failure?.receiverBusy&&!failure?.bootstrapRequired&&!failure?.journalFailure&&!failure?.firmwareBusy)continue;
+  if(reconcile&&attemptJournal)return checkResult(failure);
+  throw failure;
+ }
 }

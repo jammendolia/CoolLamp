@@ -70,3 +70,37 @@ test('the exact legacy success receipt can reconcile without guessing generic fi
  assert(!feedback.confirmInstalled(other,{version:'1.13.0',verified:true,fresh:true}));
  assert.match(feedback.get(other).message,/unconfirmed/);
 });
+test('read-only legacy checks retain their original receipt through app termination at begin and reconnect',()=>{
+ for(const outcome of ['verified-restarting','verification-required']){
+  const storage=memory(),feedback=new FirmwareFeedback(storage);
+  feedback.update(feedback.begin(id),{message:'Previous result awaits confirmation.',terminal:true,outcome,targetVersion:'1.15.1'});
+  const token=feedback.begin(id,{preservePending:true});
+  assert.equal(new FirmwareFeedback(storage).get(id).outcome,outcome);
+  feedback.update(token,{message:'Checking your lamp…'});
+  // An unrelated card can save while the first native reconnect is pending.
+  feedback.update(feedback.begin(other),{message:'Other lamp updated.',terminal:true,outcome:'installed',targetVersion:'1.15.1'});
+  const restored=new FirmwareFeedback(storage);assert.equal(restored.get(id).outcome,outcome);assert.equal(restored.get(id).targetVersion,'1.15.1');assert.equal(restored.get(other).outcome,'installed');
+  feedback.update(token,{message:'We’ll check when the lamp is available.',terminal:true});
+  assert.equal(new FirmwareFeedback(storage).get(id).outcome,outcome);
+ }
+});
+test('only the exact intended installed result replaces a preserved legacy receipt',()=>{
+ const storage=memory(),feedback=new FirmwareFeedback(storage);
+ feedback.update(feedback.begin(id),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
+ feedback.update(feedback.begin(id,{preservePending:true}),{message:'Unexpected version.',terminal:true,outcome:'installed',targetVersion:'1.15.2'});
+ assert.equal(new FirmwareFeedback(storage).get(id).outcome,'verification-required');
+ feedback.update(feedback.begin(id,{preservePending:true}),{message:'Your lamp is updated.',terminal:true,outcome:'installed',targetVersion:'1.15.1',progress:100});
+ assert.equal(new FirmwareFeedback(storage).get(id).outcome,'installed');
+});
+test('pending legacy receipts survive more than 32 unrelated terminal saves',()=>{
+ const storage=memory(),feedback=new FirmwareFeedback(storage);
+ feedback.update(feedback.begin(id),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
+ const checking=feedback.begin(id,{preservePending:true});feedback.update(checking,{message:'Checking your lamp…'});
+ for(let i=1;i<=40;i++)feedback.update(feedback.begin(i.toString(16).padStart(12,'0')),{message:'Updated.',terminal:true,outcome:'installed',targetVersion:'1.15.1'});
+ const restored=new FirmwareFeedback(storage);assert.equal(restored.get(id).outcome,'verification-required');assert.equal(restored.get(id).targetVersion,'1.15.1');assert.equal(JSON.parse(storage.getItem('coollamp-firmware-feedback-v1')).length,32);
+});
+test('32 pending receipts stop a new attempt before any history can evict them',()=>{
+ const storage=memory(),feedback=new FirmwareFeedback(storage);
+ for(let i=1;i<=32;i++)feedback.update(feedback.begin(i.toString(16).padStart(12,'0')),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
+ assert.throws(()=>feedback.begin(id),error=>error.requiresReconciliation);assert.equal(new FirmwareFeedback(storage).records.size,32);
+});

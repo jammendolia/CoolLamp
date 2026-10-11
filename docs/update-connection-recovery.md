@@ -52,6 +52,80 @@ fixture; missing optional newer fields are not a confirmed incompatibility.
 
 ## Implemented phone recovery contract
 
+### Follow-up failure in 57.1
+
+The signed 2.0.5 / 57.1 successor was available to internal TestFlight testers.
+The user reported Wi-Fi fallback, a protected Bluetooth connection, phone
+download at 100%, then `Not connected to device.` without an installation
+result. In the pinned iOS Bluetooth plugin that exact error means the cached
+native device is disconnected. It can arise before the post-download identity
+read or initial receiver-status read; the disconnect boundary was not captured.
+Download completion proves neither bytes written to the lamp nor installation.
+
+Read-only USB after the app was closed confirmed the same boot session, public
+1.13.0 still running, failed internet preflight (phase 5/error 3), and unchanged
+observed power, effect, brightness and 134-pixel configuration. Available heap
+recovered from 7,640 bytes / largest block 1,908 during reconnect traffic to
+15,928 / 7,668 after closure. That observation does not establish the cause of
+the native disconnect. Ordinary BLE RPC counters are not OTA-frame counters.
+No USB flash, reset or router change was used to bypass the failed update.
+
+### Download, transfer and result ownership
+
+The coordinator now releases its short protected preflight connection before
+downloading the approved artifact. It then acquires a fresh target connection,
+rechecks identity, installed version and inactive receiver, and sends the same
+verified download. A transient preflight or post-download failure permits one
+bounded connection recovery only while the durable journal proves no updater
+frame was issued. Wrong identity, owner loss, access failure, busy receiver,
+unsupported bootstrap and failed journal persistence do not get that retry.
+
+Phone progress says **Getting the update on your phone**, then **Preparing your
+lamp**. Numeric **Updating your lamp · N%** comes only from receiver-acknowledged
+written bytes. Download 100% cannot become lamp progress 100%. The final stages
+say **Finishing the update** and **Checking your lamp**. On a lost final reply
+the app performs protected read-only checks itself; it does not instruct the
+owner to reconnect or issue another installation. If the target stays absent,
+the card keeps a visible pending result and offers **Check update**. Foreground
+recovery checks are rate limited per lamp to once per 60 monotonic seconds.
+
+The saved attempt pins canonical target identity and the exact approved
+manifest text, version, size, chip/partition identity and SHA-256. Its bounded
+`coollamp-firmware-attempts-v1` journal retains at most 32 targets in 32 KiB;
+pending records are never evicted to make room. Before every native updater
+write and every Wi-Fi firmware POST, storage is written and read back. Safety
+flags distinguish metadata, Begin, Data, Finish, Cancel, resume and Wi-Fi
+check/install. A failed save stops the next mutation. Per-chunk acknowledged
+progress remains in memory; ten-percent checkpoints and safety boundaries keep
+durable writes bounded to 32 per attempt plus its terminal result. No image,
+credential, private key, SSID or request body enters the journal.
+
+Every update entry point, including the advanced Bluetooth button and fleet
+Update all, shares the pending-attempt fence. Passive inventory excludes those
+targets while continuing bounded reads of other owned records. An uncertain
+Wi-Fi installation cannot be replayed over Bluetooth; a missing Finish reply
+cannot trigger another Finish or Begin. There is one updater owner and one
+screen-awake lease, retained across download, transfer and result checks.
+
+The result worker is read only, with at most three acquisitions, 24 protected
+snapshots and a 45-second total deadline. Acquisition and cleanup gates are
+shared by old and new receipts; late native work cannot retire a replacement
+connection. Each snapshot reads canonical identity, binary firmware, binary
+state and receiver status, with a five-second freshness limit. An intended
+version plus responsive protected control and an inactive receiver confirms
+version/control recovery. This does **not** prove installed flash digest or
+postboot health/rollback. Those remain separate physical gates.
+
+Same-version repair needs the exact acknowledged Finish receipt saved before
+fresh post-restart checks can resolve it: equal version alone proves nothing
+about the repair. A lost final reply stays pending. A verified inactive repair
+that stopped before any possible Finish/Wi-Fi install remains safely retryable.
+Older app receipts retain their original target/outcome durably while checking,
+including across iOS termination and unrelated feedback saves. Only an old
+explicit acknowledged completion can resolve through exact version/control;
+old lost-reply receipts stay uncertain. Generic old error prose has no invented
+artifact, session or completion receipt.
+
 An explicit update can acquire a **firmware-only** Bluetooth transport for its
 already saved, authorized target. It performs four short protected reads:
 binary state, canonical identity, control capability metadata and binary firmware
@@ -114,10 +188,10 @@ loss and lost final acknowledgements. All 125 firmware sources and the frozen
 1.15.1 artifacts remain unchanged. No new firmware version is needed for this
 phone recovery change.
 
-The change is not installed in the user's 55.1 app. The user authorized a new
-TestFlight build. Initial 56.1 passed signing/upload and exact Apple availability
-checks, but review found the pre-POST Wi-Fi blocker above, so a corrected successor
-is required for this test. Verify the successor's exact source, signed upload,
+The user authorized corrective TestFlight publication. Builds 56.1 and 57.1
+passed signing/upload and exact Apple availability checks; 57.1 did not complete
+the user's wireless installation. The new bounded recovery/journal flow needs a
+successor and a fresh physical test. Verify its exact source, signed upload,
 `VALID` processing, nonexpired status and internal tester availability before
 using it. Keep CoolLamp 2 connected to USB only for observation and
 leave router/SSID/channel/settings unchanged. Use its card's Update action and
@@ -128,6 +202,18 @@ identity/version/control health after restart; never repeat a final commit after
 an uncertain outcome. Then exercise a subsequent phone-driven update with the
 lamp in place, without USB. Native throughput and complete wireless success are
 pending until these steps run on the real phone/lamp.
+
+The concrete first acceptance is CoolLamp 2 from public 1.13.0 to the unchanged
+standard 1.15.1 image: 2,020,592 bytes, SHA-256
+`10218a28628724c2f4fca45b670e28ea2d6d4fab276eeb51197dc199e780bb9d`.
+Record the exact TestFlight build, phone download completion, first/last written
+offset, acknowledged Finish, native disconnect/reconnect and protected target
+identity/version after restart. Observe control and animation beyond the
+30-second firmware health gate and compare saved lamp settings without a save.
+Next cover app background/cancellation before Finish, loss of final reply,
+relaunch with pending journal, an unavailable lamp returning, and in-place
+transfer without USB on real iPhone and Android. Host mocks and builds do not
+establish native throughput, radio range, accessible cues or twenty-lamp scale.
 
 Pink Corkscrew's last verified installed image is the isolated diagnostic
 1.15.1 build, which cannot donate. Its version number alone does not make it a

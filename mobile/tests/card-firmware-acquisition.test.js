@@ -7,7 +7,7 @@ import {initializeGroupRadio} from '../src/bluetooth-groups.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const start=source.indexOf('async function acquireCardFirmwareBluetooth(');
-const end=source.indexOf('\nasync function updateLampCard(',start);
+const end=source.indexOf('\nfunction rememberVerifiedUpdateResult(',start);
 assert(start>=0&&end>start);
 const handler=source.slice(start,end),id='f0b950b2f180';
 function fixture({authorized=true,active=false}={}){

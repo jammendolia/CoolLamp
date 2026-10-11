@@ -53,8 +53,9 @@ function target(entry) {
 // GET-only refresh and explicit bulk installs have independent lifetimes.
 export class FirmwareFleet {
   constructor({http, credential, getLamps, onStatus, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
-    requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000} = {}) {
+    requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000,beforeMutation} = {}) {
     this.http = http; this.credential = credential; this.getLamps = getLamps; this.onStatus = onStatus;
+    this.beforeMutation=beforeMutation;
     Object.assign(this, {now, sleep, requestTimeout, pollInterval, checkTimeout, updateTimeout, healthyUptime});
     this.statuses = new Map(); this.catalogues=new Map();this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;this.singleRuns=new Map();
   }
@@ -88,6 +89,9 @@ export class FirmwareFleet {
     const attemptedAt=this.now();
     let timer;
     const mutation = token !== undefined;
+    // Durable phone fences must succeed before an update POST can leave.
+    // Observer failure is a local failure, never an uncertain native send.
+    if(mutation){await this.beforeMutation?.({identity:lamp.id,path,expectedVersion:run.expectedVersion});this.assertCurrent(lamp,run);}
     const options = {url: lamp.base + path, method: mutation ? 'POST' : 'GET',
       headers: {Authorization: lamp.authorization, ...(mutation ? {'X-Lamp-Token': token, 'Content-Type': 'application/x-www-form-urlencoded'} : {})},
       ...(mutation ? {data: ''} : {}), responseType: 'text', connectTimeout: 5000, readTimeout: 8000, disableRedirects: true};
@@ -222,17 +226,19 @@ export class FirmwareFleet {
     if (this.refreshRun === run) this.refreshRun = null;
     return {results, cancelled: run.cancelled};
   }
-  updateAll(expectedVersion) {
+  updateAll(expectedVersion,{excludeIds=[]}={}) {
     if (this.bulkPromise) return this.bulkPromise;
     if(this.singleRuns.size)return Promise.reject(failure('Finish the current lamp update first.'));
     if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))return Promise.reject(failure('Check the selected public release before updating.'));
     this.cancelRefresh();
     const run = this.run();run.expectedVersion=expectedVersion; this.bulkRun = run;
+    const excluded=new Set(excludeIds);
     const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()];
     this.bulkPromise = (async () => {
       const results = [];
       for (const entry of entries) {
         if (run.cancelled) break;
+        if(excluded.has(entry.id)){results.push({id:entry.id,state:'pending',verified:false,fresh:false,message:'The previous update needs confirmation.'});continue;}
         try { results.push(await this.updateOne(await this.prepare(entry, run), run)); }
         catch (error) { const result = this.errorStatus(entry, run, error); if (result) results.push(result); }
       }

@@ -9,7 +9,7 @@ const end=source.indexOf('\nasync function updateAllLamps(',start);
 assert(start>=0&&end>start);
 const handler=source.slice(start,end);
 function fixture({cards=[],bluetooth=null,updating=false,pending=null}={}){
- const calls=[],context={Set,cardFirmwareTasks:new Map(cards.map(id=>[id,{}])),
+ const calls=[],context={Set,firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),cardFirmwareTasks:new Map(cards.map(id=>[id,{}])),
   bluetoothFirmwareTask:bluetooth?{id:bluetooth}:null,fleetUpdating:updating,
   fleetRefreshRun:pending,fleetRefreshQueued:false,fleetSummary:'',renderFleetControls(){},
   fleet:{refresh(options){calls.push([...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}}};
@@ -29,4 +29,7 @@ test('ordinary passive refresh has no excluded lamps; a pending or fleet update 
  const f=fixture();f.refresh();assert.deepEqual(f.calls,[[]]);
  const pending=fixture({pending:Promise.resolve()});pending.refresh();assert.deepEqual(pending.calls,[]);
  const updating=fixture({updating:true});updating.refresh();assert.deepEqual(updating.calls,[]);
+});
+test('an older app’s pending receipt fences only its target from passive refresh',()=>{
+ const f=fixture();f.context.legacyFirmwareReceipts.set('f0b950b2f180',{outcome:'verification-required'});f.refresh();assert.deepEqual(f.calls,[['f0b950b2f180']]);
 });

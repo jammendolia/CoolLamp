@@ -55,7 +55,7 @@ test('production card update reaches its verified BLE lease after real fleet pre
   },download:async selected=>{events.push('download-pinned-release');pinned=selected;assert.equal(selected.text,manifest.text);return {manifest:selected,image};}});
  assert.equal(result.path,'bluetooth');assert.equal(result.state,'restarting');assert.equal(result.committed,true);assert.equal(senderCalls,1);
  assert.deepEqual(posts(f),[]);assert.deepEqual(events,['/api/diagnostics','/api/diagnostics','/api/state','acquire-bluetooth',
-  'protected-firmware-status','download-pinned-release','send-pinned-image','release-bluetooth']);
+  'protected-firmware-status','release-bluetooth','download-pinned-release','acquire-bluetooth','protected-firmware-status','send-pinned-image','release-bluetooth']);
 });
 
 test('malformed initial read and missing boot token remain proven pre-POST failures',async()=>{
@@ -155,4 +155,14 @@ test('replacement excluded refresh discards cancelled late results without mixin
 test('bulk ownership remains exclusive even when every lamp is passively excluded',async()=>{
  const f=fixture(2);f.fleet.bulkRun=f.fleet.run();
  assert.deepEqual(await f.fleet.refresh({excludeIds:ids}),{results:[],cancelled:false,busy:true});assert.deepEqual(f.calls,[]);
+});
+
+test('a durable mutation observer failure prevents the production fleet from sending a POST',async()=>{
+ const f=fixture();let observed=0;f.fleet.beforeMutation=async value=>{observed++;assert.equal(value.identity,ids[0]);assert.equal(value.path,'/api/firmware/check');throw Object.assign(Error('Phone storage failed.'),{journalFailure:true});};
+ await assert.rejects(f.update(),error=>error.journalFailure&&!error.uncertain);assert.equal(observed,1);assert.deepEqual(posts(f),[]);
+});
+test('bulk exclusion visibly retains a pending target without any target reads or writes',async()=>{
+ const f=fixture();const result=await f.fleet.updateAll('1.15.1',{excludeIds:[ids[0]]});
+ assert.equal(result.results.length,1);assert.equal(result.results[0].state,'pending');assert.equal(result.results[0].id,ids[0]);
+ assert.deepEqual(f.calls,[]);assert.equal(f.entries().length,1);
 });
