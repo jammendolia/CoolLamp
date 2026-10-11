@@ -98,7 +98,8 @@ export class LampTransport {
   }
   async connect(savedDevice = null, retryInitialState = true) {
     const readOnlyReconnect=Boolean(savedDevice?.deviceId&&savedDevice?.readOnlyReconnect);
-    const expectedReconnectIdentity=this.expectedDeviceIdentity||savedDevice?.lampId||savedDevice?.id;
+    const savedIdentity=savedDevice?.lampId||savedDevice?.id;
+    const expectedReconnectIdentity=this.expectedDeviceIdentity||(/^[0-9a-f]{12}$/.test(savedIdentity||'')?savedIdentity:null);
     // disconnect() advances the generation before waiting for native cleanup.
     // Capture it now so cancellation during cleanup or authorization cannot
     // revive this attempt after another connection has taken ownership.

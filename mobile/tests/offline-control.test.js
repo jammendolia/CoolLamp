@@ -221,6 +221,15 @@ test('saved settings reconnect retains old lamp controls when the optional chara
   assert.equal(radio.writes.filter(write=>write.bytes[2]===12).length,1);assert.equal(radio.writes.filter(write=>write.bytes[2]===13).length,28);
   await lamp.command('brightness',120);assert.equal(lamp.id,'target');
 });
+
+test('legacy saved phone-only card IDs are not treated as protected lamp identities',async t=>{
+ const radio=new CatalogRadio(),read=radio.read.bind(radio);radio.identityFailure=true;
+ radio.read=(id,service,char,options)=>char===CONTROL?Promise.reject(Error('Characteristic not found.')):read(id,service,char,options);
+ const lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
+ await lamp.connect({deviceId:'target',id:'ble:target',readOnlyReconnect:true});
+ assert.equal(lamp.deviceIdentity,null);assert.equal(lamp.supportsOfflineControl,false);
+ await lamp.command('brightness',120);assert.equal(lamp.id,'target');
+});
 test('saved settings reconnect fails on modern read errors without replaying legacy setup',async t=>{
   for(const fault of ['timeout','invalid capabilities']){
     const radio=new CatalogRadio(),read=radio.read.bind(radio),lamp=new LampTransport(radio,{timeout:80});t.after(()=>lamp.disconnect());
