@@ -22,3 +22,10 @@ test('versions must be canonical bounded stable versions',()=>{
   assert.deepEqual(parseVersion('1.10.3'),[1,10,3]);
   for(const v of ['1.2','01.2.3','1.2.3-beta','65536.0.0','1.2.3\n','1.2.3;echo'])assert.throws(()=>parseVersion(v));
 });
+test('diagnostic test marker cannot pass normal OTA publication packaging',()=>{
+  const b=image();b.write('COOLLAMP-TEST-IMAGE-1.2.0',400);
+  assert.throws(()=>manifestFor(b,'1.2.0'),/cannot be packaged for publication/);
+  const lines=manifestFor(b,'1.2.0',{testImage:true}).trim().split('\n');
+  assert.equal(lines[5],crypto.createHash('sha256').update(b).digest('hex'));
+  assert.throws(()=>manifestFor(image(),'1.2.0',{testImage:true}),/requires a diagnostic build/);
+});

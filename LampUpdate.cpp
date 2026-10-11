@@ -16,6 +16,8 @@
 #include <Preferences.h>
 #include <nvs.h>
 #include "UpdateHttp.h"
+#include "LampUpdateControlPolicy.h"
+#include "LampHttpJson.h"
 #include <esp_ota_ops.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
@@ -37,6 +39,9 @@ FirmwareManifest candidate{};
 uint32_t candidateEpoch=0;
 char signedCandidate[UpdatePublisher::ManifestCapacity]{};
 TaskHandle_t worker = nullptr;
+// The loop owns the handle. Completion is published only after the one-shot
+// HTTPS operation returns and its TLS objects have been destroyed.
+std::atomic<bool> workerFinished{false};
 bool manual = false;
 uint8_t job = 0;
 LampUpdateHandoff handoff;
@@ -50,7 +55,13 @@ bool userUseObserved=false;
 bool policyReadable=true;
 bool policySaveUncertain=false;
 bool policyNeedsReconcile=false;
+bool policyReconcileAttempted=false;
+uint32_t policyReconcileAttemptAt=0;
 bool explicitRepair=false;
+bool jobBackground=false;
+std::atomic<bool> backgroundActive{false},cancelBackground{false},backgroundDeferred{false};
+bool backgroundPriorAvailable=false;
+bool backgroundReadDeferred=false; // Worker-owned until completion notification.
 
 bool busy(uint8_t phase) { return phase == UPDATE_CHECKING || phase == UPDATE_DOWNLOADING || phase == UPDATE_RESTARTING; }
 void phase(uint8_t value, uint8_t error = UPDATE_OK) {
@@ -63,16 +74,24 @@ void startReceiverCue(){
   portENTER_CRITICAL(&mux);status.receiving=true;status.cueOn=light.power;status.cueBrightness=light.brightness;status.writtenOffset=0;status.totalBytes=0;if(!++status.cueGeneration)++status.cueGeneration;portEXIT_CRITICAL(&mux);
 }
 void fail(uint8_t error) { phase(UPDATE_ERROR, error); }
-String versionText(const uint16_t v[3]) { return String(v[0]) + "." + String(v[1]) + "." + String(v[2]); }
+String versionText(const uint16_t v[3]) {
+  String out;
+  if(!out.concat(v[0])||!out.concat('.')||!out.concat(v[1])||!out.concat('.')||!out.concat(v[2]))return String();
+  return out;
+}
 
-bool checkRelease(bool installing = false) {
+bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
   UpdateHttp http; int code = 0; int64_t length = 0;
   // Discovery must bypass a cached Latest redirect. Installation rechecks the
   // exact offered release, never a second Latest lookup that could go backward.
   const char* manifestName=UpdatePublisher::enforced()?"coollamp-manifest-v2.txt":"coollamp-manifest.txt";
   const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/" + manifestName :
     String("latest/download/") + manifestName + "?check=" + String(esp_random(), HEX);
-  if (!http.open(String(ROOT) + path, code, length)) { fail(UPDATE_NETWORK); return false; }
+  if (!http.open(String(ROOT) + path, code, length,background?&cancelBackground:nullptr,
+                 background?backgroundBudget:LampUpdateControlPolicy::ExplicitBudgetMs)) {
+    if(background&&(http.cancelled()||http.memoryFailure())){backgroundReadDeferred=true;return false;}
+    fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK);return false;
+  }
   char text[UpdatePublisher::ManifestCapacity] = {}; size_t used = 0;
   if (code == 200 && (length < 0 || length < sizeof(text))) {
     while (used < sizeof(text) - 1) {
@@ -84,6 +103,7 @@ bool checkRelease(bool installing = false) {
   }
   const bool complete = http.complete();
   http.close();
+  if(background&&cancelBackground.load()){backgroundReadDeferred=true;return false;}
   if (code == 404) {
     if (installing) { fail(UPDATE_MANIFEST); return false; }
     portENTER_CRITICAL(&mux); status.available = false; memset(status.latest, 0, sizeof(status.latest)); portEXIT_CRITICAL(&mux);
@@ -104,6 +124,7 @@ bool checkRelease(bool installing = false) {
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   if (!target || target->size < 2031616 || next.size > target->size) { fail(UPDATE_PARTITION); return false; }
   const bool newer = firmwareIsNewer(next.version, CURRENT);
+  if(background&&cancelBackground.load()){backgroundReadDeferred=true;return false;}
   portENTER_CRITICAL(&mux);
   candidate = next; candidateEpoch=nextEpoch;if(nextEpoch)strlcpy(signedCandidate,text,sizeof(signedCandidate));else signedCandidate[0]=0;memcpy(status.latest, next.version, sizeof(status.latest));status.checkedAt=millis();
   status.available = newer; status.progress = 0;
@@ -124,7 +145,7 @@ void downloadRelease() {
   const String version = versionText(selected.version);
   if (!recordAttempt(version)) { fail(UPDATE_STORAGE); return; }
   UpdateHttp http; int code = 0; int64_t length = 0;
-  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(UPDATE_NETWORK); return; }
+  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
   if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   esp_ota_handle_t ota = 0;
@@ -173,18 +194,46 @@ void installRelease() {
   if (checkRelease(true) && getLampUpdateStatus().available) downloadRelease();
 }
 void updateTask(void*) {
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    portENTER_CRITICAL(&mux); const uint8_t operation = job; job = 0; portEXIT_CRITICAL(&mux);
-    if (WiFi.status() != WL_CONNECTED) { fail(UPDATE_OFFLINE); continue; }
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  const auto run=[&]{
+    portENTER_CRITICAL(&mux); const uint8_t operation = job;const bool background=jobBackground; job = 0; portEXIT_CRITICAL(&mux);
+    backgroundReadDeferred=false;
+    bool completed=false;
+    // The worker alone owns/destroys TLS. The loop may only request cancellation.
+    const auto finishBackground=[&]{
+      if(background){
+        if(!completed&&(cancelBackground.load()||backgroundReadDeferred)){
+          phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);
+          backgroundDeferred=true;
+        }
+        backgroundActive=false;
+      }
+    };
+    if(background&&cancelBackground.load()){finishBackground();return;}
+    if (WiFi.status() != WL_CONNECTED) { fail(UPDATE_OFFLINE);finishBackground();return; }
     const uint32_t started = millis();
-    while (time(nullptr) < 1700000000 && millis() - started < 15000) vTaskDelay(pdMS_TO_TICKS(100));
-    if (time(nullptr) < 1700000000) { fail(UPDATE_CLOCK); continue; }
-    if (operation == 2) installRelease(); else checkRelease();
-  }
+    const uint32_t clockBudget=background?LampUpdateControlPolicy::BackgroundBudgetMs:15000;
+    while (time(nullptr) < 1700000000 && uint32_t(millis()-started)<clockBudget&&!(background&&cancelBackground.load())) vTaskDelay(pdMS_TO_TICKS(100));
+    if(background&&cancelBackground.load()){finishBackground();return;}
+    if (time(nullptr) < 1700000000) { fail(UPDATE_CLOCK);finishBackground();return; }
+    const uint32_t elapsed=uint32_t(millis()-started);
+    const uint32_t left=background&&elapsed<LampUpdateControlPolicy::BackgroundBudgetMs?LampUpdateControlPolicy::BackgroundBudgetMs-elapsed:0;
+    if(background&&!left){fail(UPDATE_CLOCK);finishBackground();return;}
+    if (operation == 2) installRelease(); else completed=checkRelease(false,background,left);
+    finishBackground();
+  };
+  run();
+  workerFinished.store(true,std::memory_order_release);
+  // Never self-delete or execute another job. The loop deletes this blocked
+  // task after observing completion; until then its handle/stack stay valid.
+  for(;;)ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
 }
-bool request(uint8_t operation,bool manualRepair=false) {
-  if (!worker || !healthy || LampCommission::working() || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
+bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
+  if (worker || !healthy || LampCommission::working() || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
+  if(backgroundActive.load())return false;
+  // Automatic discovery waits without taking audio/radio ownership or advancing
+  // its pending deadline. Explicit Check now / Update now are separate paths.
+  if(background&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(millis()),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t)))return false;
   FirmwareManifest offered;
   portENTER_CRITICAL(&mux);
   if(manual||busy(status.phase)||job||(operation==2&&!status.available)){portEXIT_CRITICAL(&mux);return false;}
@@ -194,11 +243,14 @@ bool request(uint8_t operation,bool manualRepair=false) {
   portENTER_CRITICAL(&mux);
   if (manual || busy(status.phase) || job) { portEXIT_CRITICAL(&mux); return false; }
   if (operation == 2 && !status.available) { portEXIT_CRITICAL(&mux); return false; }
-  job = operation; status.phase = UPDATE_CHECKING; status.error = 0;explicitRepair=manualRepair;
+  job = operation;jobBackground=background;backgroundPriorAvailable=status.available;
+  cancelBackground=false;backgroundActive=background;
+  status.phase = UPDATE_CHECKING; status.error = 0;explicitRepair=manualRepair;
   portEXIT_CRITICAL(&mux);
   // request() runs on the loop task. Do not wake HTTPS until DMA is released.
   if (!stopLampAudio()) {
     portENTER_CRITICAL(&mux); job = 0; portEXIT_CRITICAL(&mux);
+    backgroundActive=false;
     handoff.cancel();
     fail(UPDATE_MEMORY); return false;
   }
@@ -236,7 +288,6 @@ void beginLampUpdater() {
   }else{status.automatic=false;policyReadable=false;}
   setenv("TZ",updatePolicy.timezone,1);tzset();
   configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
-  if (xTaskCreate(updateTask, "lamp-update", 8192, nullptr, 1, &worker) != pdPASS) { worker = nullptr; fail(UPDATE_MEMORY); }
   nextCheck = millis() + 60000 + esp_random() % 30000;
 }
 LampUpdateStatus getLampUpdateStatus() {
@@ -252,15 +303,15 @@ bool setLampAutoUpdate(bool enabled) {
   if (saved) { portENTER_CRITICAL(&mux); status.automatic = enabled; portEXIT_CRITICAL(&mux); }
   return saved;
 }
-bool lampRemoteUpdateBusy() { return busy(getLampUpdateStatus().phase); }
+bool lampRemoteUpdateBusy() { return worker || job || busy(getLampUpdateStatus().phase); }
 bool lampUpdateOwnsResources() {
-  portENTER_CRITICAL(&mux); const bool result = manual || busy(status.phase); portEXIT_CRITICAL(&mux);
+  portENTER_CRITICAL(&mux); const bool result = manual || worker || job || busy(status.phase); portEXIT_CRITICAL(&mux);
   return result;
 }
 bool reserveLampManualUpdate() {
   if (!healthy || LampCommission::working() || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
   portENTER_CRITICAL(&mux);
-  const bool ok = !manual && !busy(status.phase) && !job;
+  const bool ok = !manual && !worker && !busy(status.phase) && !job;
   if (ok) manual = true;
   portEXIT_CRITICAL(&mux);
   if (ok && !stopLampAudio()) { releaseLampManualUpdate(); return false; }
@@ -288,6 +339,15 @@ void finishLampBluetoothUpdate(bool verified,bool cancelled) {
 }
 void serviceLampUpdater() {
   const uint32_t now = millis();
+  if(worker&&workerFinished.load(std::memory_order_acquire)){
+    // No TLS, NVS or candidate access remains in the completed task. Remove
+    // the handle before any later request/status builder can observe it.
+    const TaskHandle_t completed=worker;worker=nullptr;
+    vTaskDelete(completed);workerFinished=false;
+  }
+  serviceLampUpdatePolicy(now);
+  if(backgroundActive.load()&&!lampControlTrafficIdle(now))cancelBackground=true;
+  if(backgroundDeferred.exchange(false))nextCheck=now;
   if (!healthy && bootHealth.observe(now)) {
     esp_ota_img_states_t state;
     const auto* running = esp_ota_get_running_partition();
@@ -309,6 +369,18 @@ void serviceLampUpdater() {
   // a full subsequent pass covers HTTP, BLE, USB and automatic request origins,
   // including a BLE request made after the current loop's group service pass.
   if(handoff.service()){
+    // An accepted request has crossed the existing full-loop ownership
+    // barrier. Only now allocate its stack; idle lamps retain no HTTPS task.
+    if(jobBackground&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(now),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t))){
+      portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
+      backgroundActive=false;backgroundDeferred=true;
+      phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);handoff.cancel();return;
+    }
+    workerFinished=false;
+    if(xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)!=pdPASS){
+      worker=nullptr;portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
+      backgroundActive=false;handoff.cancel();fail(UPDATE_MEMORY);return;
+    }
     xTaskNotifyGive(worker);return;
   }
   const auto current = getLampUpdateStatus();
@@ -322,11 +394,11 @@ void serviceLampUpdater() {
   }
   if (WiFi.status() != WL_CONNECTED || manual || busy(current.phase)) return;
   if (lampAutomaticUpdateAllowed() && current.available && current.phase == UPDATE_AVAILABLE &&
-      versionText(current.latest) != attemptedVersion && now > 60000 && lampRolloutAllowsAutomaticUpdate(candidate)) {
+      versionText(current.latest) != attemptedVersion && now > 60000 && lampControlTrafficIdle(now) && lampRolloutAllowsAutomaticUpdate(candidate)) {
     if (request(2)) return;
   }
   if (static_cast<int32_t>(now - nextCheck) >= 0) {
-    if (requestLampUpdateCheck()) nextCheck = now + 6UL * 60 * 60 * 1000 + esp_random() % 300000;
+    if (request(1,false,true)) nextCheck = now + 6UL * 60 * 60 * 1000 + esp_random() % 300000;
   }
 }
 void getLampUpdatePacket(uint8_t* out) {
@@ -342,21 +414,37 @@ void getLampUpdatePacket(uint8_t* out) {
 String lampUpdateJson() {
   const auto s = getLampUpdateStatus();
   FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
-  return String("{\"version\":\"") + LAMP_FIRMWARE_VERSION + "\",\"build\":\"" +
+  String out;bool good=true;
+  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+  add("{\"version\":\"");
+  add(LAMP_FIRMWARE_VERSION);add("\",\"build\":\"");
 #ifdef COOL_LAMP_PUBLIC_RELEASE
-    "COOLLAMP-PUBLIC-" LAMP_FIRMWARE_VERSION +
+  add("COOLLAMP-PUBLIC-" LAMP_FIRMWARE_VERSION);
 #else
-    "COOLLAMP-LOCAL-" LAMP_FIRMWARE_VERSION +
+  add("COOLLAMP-LOCAL-" LAMP_FIRMWARE_VERSION);
 #endif
-    "\",\"latest\":\"" + versionText(s.latest) +
-    "\",\"phase\":" + s.phase + ",\"progress\":" + s.progress + ",\"error\":" + s.error +
-    ",\"automatic\":" + (s.automatic ? "true" : "false") + ",\"available\":" + (s.available ? "true" : "false") +
-    ",\"wifi\":" + (WiFi.status() == WL_CONNECTED ? "true" : "false") +
-    ",\"updateContractVersion\":2,\"route\":"+String(s.route)+",\"checkedAt\":"+String(s.checkedAt)+",\"receiver\":"+(s.receiving?"true":"false")+",\"writtenOffset\":"+String(s.writtenOffset)+",\"totalBytes\":"+String(s.totalBytes)+
-    ",\"freeHeap\":" + String(ESP.getFreeHeap()) +
-    ",\"largestBlock\":" + String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)) +
-    ",\"workerStackFree\":" + String(worker ? uxTaskGetStackHighWaterMark(worker) : 0) +
-    ",\"loopStackFree\":" + String(uxTaskGetStackHighWaterMark(nullptr)) + ",\"bootHealthy\":"+(healthy?"true":"false")+",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":"+(UpdatePublisher::enforced()?"true":"false")+",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":"+LampUpdateAttempt::statusJson(offered)+",\"policy\":" + lampUpdatePolicyJson() + updateHttpDiagnostics() + "}";
+  {const String latest=versionText(s.latest);if(!latest.length())return String();add("\",\"latest\":\"");add(latest);}
+  add("\",\"phase\":");add(String(s.phase));add(",\"progress\":");add(String(s.progress));add(",\"error\":");add(String(s.error));
+  add(",\"automatic\":");add((s.automatic?"true":"false"));add(",\"available\":");add((s.available?"true":"false"));
+  add(",\"wifi\":");add((WiFi.status()==WL_CONNECTED?"true":"false"));
+  add(",\"updateContractVersion\":2,\"route\":");add(String(s.route));add(",\"checkedAt\":");add(String(s.checkedAt));
+  add(",\"receiver\":");add((s.receiving?"true":"false"));add(",\"writtenOffset\":");add(String(s.writtenOffset));add(",\"totalBytes\":");add(String(s.totalBytes));
+  add(",\"freeHeap\":");add(String(ESP.getFreeHeap()));add(",\"largestBlock\":");add(String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  add(",\"workerStackFree\":");add(String(worker?uxTaskGetStackHighWaterMark(worker):0));add(",\"loopStackFree\":");add(String(uxTaskGetStackHighWaterMark(nullptr)));
+  add(",\"bootHealthy\":");add((healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((UpdatePublisher::enforced()?"true":"false"));
+  add(",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
+  // End each nested builder's lifetime before creating the next one. Returning
+  // the named String also avoids copying a full StringSumHelper result.
+  {const String attempt=LampUpdateAttempt::statusJson(offered);if(!attempt.length())return String();add(attempt);}
+  add(",\"policy\":");
+  {const String policy=lampUpdatePolicyJson();if(!policy.length())return String();add(policy);}
+  {const String http=updateHttpDiagnostics();if(!http.length())return String();add(http);}
+  add('}');
+  // The legacy HTTP diagnostic fragment is itself a StringSumHelper chain:
+  // an OOM can drop its leading field yet leave valid shorter JSON.
+  const char* const httpKeys[]={"httpStage","httpCode","httpHost","tlsError","tlsFlags","transportError"};
+  if(!good||!LampHttpJson::requiredKeys(out.c_str(),out.length(),httpKeys,sizeof(httpKeys)/sizeof(httpKeys[0])))return String();
+  return out;
 }
 void noteLampUpdateUse(){lastUserUse=millis();userUseObserved=true;}
 void beginLampManualUpdateCue(){startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_MANUAL_UPLOAD);}
@@ -368,7 +456,7 @@ bool lampRolloutRecoveryPreflight(const FirmwareManifest& pinned){
   // A started lease never expires into another target. Only this verified
   // current-boot snapshot can support renewing the same artifact/target lease.
   if(pinned.size<288||pinned.size>2031616||!healthy||LampCommission::working()||lampWifiSetupBusy()||lampFactoryResetPending()||lampFactoryResetArmed()||lampNetworkRestartPending())return false;
-  portENTER_CRITICAL(&mux);const bool owned=manual||busy(status.phase)||job||restartAt||status.receiving;portEXIT_CRITICAL(&mux);
+  portENTER_CRITICAL(&mux);const bool owned=manual||worker||busy(status.phase)||job||restartAt||status.receiving;portEXIT_CRITICAL(&mux);
   if(owned)return false;
   const auto* running=esp_ota_get_running_partition();const auto* selected=esp_ota_get_boot_partition();
   if(!running||!selected||running->flash_chip!=selected->flash_chip||running->address!=selected->address||running->size!=selected->size||running->type!=selected->type||running->subtype!=selected->subtype)return false;
@@ -381,7 +469,6 @@ bool lampRolloutRecoveryPreflight(const FirmwareManifest& pinned){
 uint32_t lampUpdatePolicyRevision(){if(policyNeedsReconcile)reconcileUncertainPolicy();return policyRevision;}
 static LampUpdatePolicy::Eligibility policyEligibility(){
   if(!policyReadable)return LampUpdatePolicy::InvalidPolicy;
-  if(userUseObserved&&uint32_t(millis()-lastUserUse)>=updatePolicy.idleSeconds*1000UL)userUseObserved=false;
   const time_t utc=time(nullptr);const bool valid=utc>=1700000000;struct tm local{};
   const bool converted=valid&&localtime_r(&utc,&local);
   return LampUpdatePolicy::eligibility(updatePolicy,getLampUpdateStatus().automatic,converted,
@@ -417,6 +504,15 @@ static bool reconcileUncertainPolicy(){
   }else policyReadable=false; // Known corrupt/absent storage needs deliberate owner repair.
   policyNeedsReconcile=false;return true;
 }
+void serviceLampUpdatePolicy(uint32_t now){
+  // Status reads are RAM-only. Reconcile an uncertain durable save on its
+  // owner loop, at most once per second while storage remains unavailable.
+  if(policyNeedsReconcile&&!lampUpdateOwnsResources()&&(!policyReconcileAttempted||uint32_t(now-policyReconcileAttemptAt)>=1000)){
+    policyReconcileAttempted=true;policyReconcileAttemptAt=now;reconcileUncertainPolicy();
+  }
+  if(!policyNeedsReconcile)policyReconcileAttempted=false;
+  if(userUseObserved&&uint32_t(now-lastUserUse)>=updatePolicy.idleSeconds*1000UL)userUseObserved=false;
+}
 bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& next,uint32_t expectedRevision){
   // An uncertain write may have advanced durable revision. Never overwrite it
   // using a stale RAM revision merely because the read failed at the boundary.
@@ -437,17 +533,22 @@ bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& next,uint32_t expectedR
     if(opened)verify.end();
     if(observedKnown&&!observedAbsent&&!memcmp(observed,record,sizeof(record)))saved=true;
     else if(!(priorKnown&&observedKnown&&priorAbsent==observedAbsent&&(priorAbsent||!memcmp(observed,prior,sizeof(prior))))){
-      policySaveUncertain=true;policyNeedsReconcile=true;policyReadable=false;
+      policySaveUncertain=true;policyNeedsReconcile=true;policyReadable=false;policyReconcileAttempted=false;
     }
   }
   if(!saved)return false;
   updatePolicy=next;policyReadable=true;++policyRevision;setenv("TZ",updatePolicy.timezone,1);tzset();return true;
 }
 String lampUpdatePolicyJson(){
-  if(policyNeedsReconcile)reconcileUncertainPolicy();
-  const auto eligibility=policyEligibility();const uint8_t coordination=lampRolloutAutomaticAdmissionReason();
-  return String("{\"version\":1,\"valid\":")+(policyReadable?"true":"false")+",\"revision\":"+policyRevision+",\"window\":"+(updatePolicy.window?"true":"false")+
-    ",\"startMinute\":"+updatePolicy.startMinute+",\"endMinute\":"+updatePolicy.endMinute+",\"timezone\":\""+updatePolicy.timezone+
-    "\",\"deferDuringUse\":"+(updatePolicy.deferDuringUse?"true":"false")+",\"idleSeconds\":"+updatePolicy.idleSeconds+
-    ",\"eligibility\":"+String(uint8_t(eligibility))+",\"groupCoordination\":"+String(coordination)+",\"automaticEligible\":"+(eligibility==LampUpdatePolicy::Ready&&coordination==0?"true":"false")+",\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}";
+  const auto eligibility=policyEligibility();const uint8_t coordination=lampRolloutAutomaticAdmissionSnapshotReason();
+  String out;bool good=true;
+  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+  add("{\"version\":1,\"valid\":");
+  add((policyReadable?"true":"false"));add(",\"revision\":");add(String(policyRevision));add(",\"window\":");add((updatePolicy.window?"true":"false"));
+  add(",\"startMinute\":");add(String(updatePolicy.startMinute));add(",\"endMinute\":");add(String(updatePolicy.endMinute));add(",\"timezone\":\"");add(updatePolicy.timezone);
+  add("\",\"deferDuringUse\":");add((updatePolicy.deferDuringUse?"true":"false"));add(",\"idleSeconds\":");add(String(updatePolicy.idleSeconds));
+  add(",\"eligibility\":");add(String(uint8_t(eligibility)));add(",\"groupCoordination\":");add(String(coordination));
+  add(",\"automaticEligible\":");add((eligibility==LampUpdatePolicy::Ready&&coordination==0?"true":"false"));add(",\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}");
+  if(!good)return String();
+  return out;
 }

@@ -7,6 +7,8 @@
 #include <vector>
 using namespace LampMeshWire;
 using LampMesh::Core;
+extern unsigned lampGcmGuardEmptyEncryptCalls,lampGcmGuardNullRejections;
+extern bool lampGcmGuardFailEmpty;
 struct Envelope {unsigned sender;std::vector<uint8_t> bytes;};
 struct Network;
 struct Node {
@@ -70,9 +72,45 @@ void crypto(){
 }
 const LampMesh::Peer& peer(const Core& core,const uint8_t* address){for(unsigned i=0;i<LampMesh::MaxPeers;++i)if(same(core.peers()[i].mac,address))return core.peers()[i];assert(false);return core.peers()[0];}
 void inject(Node& origin,Node& target,Packet& p,const uint8_t* bytes,uint32_t now,bool expected=true){uint8_t wire[250];size_t size=0;assert(LampMeshCrypto::seal(p,bytes,origin.key,origin.mac,3,0,wire,size));assert(target.core.receive(origin.mac,wire,size,now)==expected);}
+void emptyPayload(){
+ uint8_t fleet[16]{1},a[6]{2,1,2,3,4,5},b[6]{2,1,2,3,4,6};
+ Packet p;memcpy(p.origin,a,6);memcpy(p.target,b,6);p.boot=123;p.targetBoot=456;p.requestId=789;
+ uint8_t wire[250]{},sameWire[250]{},openedBody[160]{},dummy=0;size_t size=0,otherSize=0;Packet opened;
+ for(uint8_t kind:{uint8_t(Challenge),uint8_t(ChallengeReply),uint8_t(Request),uint8_t(Response)}){
+  p.kind=kind;++p.sequence;p.status=kind==Response?200:0;
+  assert(LampMeshCrypto::seal(p,nullptr,fleet,a,3,0,wire,size));
+  assert(LampMeshCrypto::seal(p,&dummy,fleet,a,3,0,sameWire,otherSize));
+  assert(size==HeaderSize+HopSize+2*TagSize&&size==otherSize&&!memcmp(wire,sameWire,size));
+  assert(LampMeshCrypto::open(wire,size,fleet,a,opened,openedBody)&&opened.payloadSize==0&&opened.kind==kind);
+  for(size_t i=0;i<size;++i){wire[i]^=1;assert(!LampMeshCrypto::open(wire,size,fleet,a,opened,openedBody));wire[i]^=1;}
+ }
+ // Null data for a nonempty request is rejected before entering the SDK.
+ const unsigned before=lampGcmGuardNullRejections;p.kind=Request;p.status=0;p.payloadSize=p.totalSize=1;
+ assert(!LampMeshCrypto::seal(p,nullptr,fleet,a,3,0,wire,size)&&size==0);
+ assert(lampGcmGuardNullRejections==before&&before==0);
+}
+void failedChallengeBackoff(){
+ Network mesh(1);mesh.now=0xffffff9b;Node origin;origin.mac[5]=9;origin.boot=10001;memcpy(origin.key,mesh.nodes[0]->key,16);
+ Packet p;memcpy(p.origin,origin.mac,6);p.boot=origin.boot;p.sequence=1;p.kind=Presence;p.payloadSize=p.totalSize=3;
+ uint8_t presence[3]{};inject(origin,*mesh.nodes[0],p,presence,mesh.now);
+ const unsigned before=lampGcmGuardEmptyEncryptCalls;lampGcmGuardFailEmpty=true;
+ mesh.nodes[0]->core.service(mesh.now);const auto& pending=peer(mesh.nodes[0]->core,origin.mac);
+ const uint32_t sequence=pending.challengeSequence;assert(sequence&&pending.challengeAttempt==0&&pending.challengeAt==mesh.now+LampMesh::RetryPeriod);
+ for(unsigned i=1;i<LampMesh::RetryPeriod;++i)mesh.nodes[0]->core.service(mesh.now+i);
+ assert(lampGcmGuardEmptyEncryptCalls==before+1);
+ mesh.nodes[0]->core.service(mesh.now+LampMesh::RetryPeriod);assert(lampGcmGuardEmptyEncryptCalls==before+2&&pending.challengeAttempt==0);
+ lampGcmGuardFailEmpty=false;
+ for(unsigned i=LampMesh::RetryPeriod+1;i<2*LampMesh::RetryPeriod;++i)mesh.nodes[0]->core.service(mesh.now+i);
+ assert(lampGcmGuardEmptyEncryptCalls==before+2);
+ mesh.nodes[0]->core.service(mesh.now+2*LampMesh::RetryPeriod);assert(lampGcmGuardEmptyEncryptCalls==before+3&&pending.challengeAttempt==1);
+ const auto& sent=mesh.capturedKind(Challenge,0);Packet decoded;assert(decode(sent.bytes.data(),sent.bytes.size(),decoded)&&decoded.sequence==sequence&&sent.bytes[HeaderSize+1]==0);
+ assert(!mesh.nodes[0]->core.online(origin.mac,mesh.now+2*LampMesh::RetryPeriod));
+}
 int main(int argc,char** argv){
  assert(argc==2);const std::string scenario=argv[1];
  if(scenario=="crypto"){crypto();std::cout<<"PASS mesh crypto every-byte tamper, physical-source/key binding, distinct nonce, identical retry ciphertext\n";return 0;}
+ if(scenario=="empty-payload"){emptyPayload();std::cout<<"PASS production empty mesh challenge/reply/request/response, strict ESP GCM pointer checks, unchanged tags, every-byte tamper, null nonempty rejection\n";return 0;}
+ if(scenario=="challenge-crypto-backoff"){failedChallengeBackoff();std::cout<<"PASS failed crypto challenge admission bounded to 350 ms across rollover, unchanged nonce/attempt, no premature trust\n";return 0;}
  if(scenario=="ttl"){
   Network mesh(6);mesh.run(10000);assert(mesh.nodes[0]->core.online(mesh.nodes[4]->mac,mesh.now));assert(!mesh.nodes[0]->core.online(mesh.nodes[5]->mac,mesh.now));assert(mesh.sent<6000);std::cout<<"PASS mesh TTL four hops, no fifth-hop discovery\n";return 0;
  }

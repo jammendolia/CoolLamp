@@ -15,6 +15,8 @@ bool save(const Record& record,void* name){Preferences prefs;if(!prefs.begin("co
 char coordinatorKey[]="rolloutC1",receiverKey[]="rolloutR1";
 State coordinator(save,coordinatorKey),receiver(save,receiverKey);
 bool loaded=false;
+bool loadAttempted=false;
+uint32_t loadAttemptAt=0;
 uint32_t acceptedAt=0;
 bool windowOpen=false;
 bool load(){
@@ -65,14 +67,19 @@ bool manifest(const String& text,FirmwareManifest& image){
 }
 }
 String statusJson(){
-  const bool ready=load();const auto& c=coordinator.state();const auto& r=receiver.state();
+  const bool ready=loaded;const auto& c=coordinator.state();const auto& r=receiver.state();
   return String("{\"version\":1,\"storageReady\":")+(ready?"true":"false")+",\"distributedAutomaticService\":false,\"requiresPhoneOrCoordinatorOrchestration\":true,\"coordinatorLast\":true,\"ticket\":\""+number(c.ticket)+"\",\"lease\":\""+number(c.lease)+"\",\"phase\":"+String(c.phase)+",\"members\":"+String(c.count)+",\"armedMask\":"+String(c.armed)+",\"completedMask\":"+String(c.completed)+",\"releasedMask\":"+String(c.released)+",\"target\":\""+c.target+"\",\"receiverTicket\":\""+number(r.ticket)+"\",\"receiverLease\":\""+number(r.lease)+"\",\"receiverPhase\":"+String(r.phase)+",\"permitLifetimeMs\":"+String(PermitLifetime)+",\"uncertainLease\":"+(c.phase==Reserved?"true":"false")+"}";
 }
-void service(uint32_t now){if(windowOpen&&uint32_t(now-acceptedAt)>=PermitLifetime)windowOpen=false;}
+void service(uint32_t now){
+  if(!loaded&&!lampUpdateOwnsResources()&&(!loadAttempted||uint32_t(now-loadAttemptAt)>=1000)){
+    loadAttempted=true;loadAttemptAt=now;load();
+  }
+  if(windowOpen&&uint32_t(now-acceptedAt)>=PermitLifetime)windowOpen=false;
+}
 LampControlReply request(const String& action,const String& imageText,const String& commandText,const String& ticketText,const String& target,const String& targetBootText,const String& proofText){
+  if(action=="status")return {loaded?uint16_t(200):uint16_t(500),statusJson()};
   if(!load())return result(StorageFailure);
   Context context;
-  if(action=="status")return {200,statusJson()};
   if(context.group.protocol!=3||!context.group.role)return result(Invalid);
   if(action=="renew-proof"){
     if(!lampRolloutRecoveryPreflight(receiver.state().artifact))return result(Busy);
@@ -183,18 +190,22 @@ bool started(const FirmwareManifest& artifact){
 }
 bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest& artifact){return LampRollout::allows(artifact);}
 uint8_t lampRolloutAutomaticAdmissionReason(){
-  using namespace LampRolloutCore;
   if(!LampRollout::load())return 3;
+  LampRollout::service(millis());
+  return lampRolloutAutomaticAdmissionSnapshotReason();
+}
+uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){
+  using namespace LampRolloutCore;
+  if(!LampRollout::loaded)return 3;
   LampRollout::Context context;const auto& r=LampRollout::receiver.state();const auto& c=LampRollout::coordinator.state();
   if(!context.group.role)return r.phase==Empty&&c.phase==Empty?0:4;
   if(context.group.protocol!=LampSyncWire::ExpandedVersion)return 2;
   if(r.phase==Empty)return 1;
-  LampRollout::service(millis());
-  if(!LampRollout::windowOpen||r.phase!=Accepted||r.targetBoot!=context.group.boot||!LampRollout::receiver.matchingGroup(context.group)||strcmp(r.target,context.group.identity))return 4;
+  if(!LampRollout::windowOpen||uint32_t(millis()-LampRollout::acceptedAt)>=PermitLifetime||r.phase!=Accepted||r.targetBoot!=context.group.boot||!LampRollout::receiver.matchingGroup(context.group)||strcmp(r.target,context.group.identity))return 4;
   if(context.group.role==1&&(c.phase!=Reserved||c.ticket!=r.ticket||c.lease!=r.lease||strcmp(c.target,context.group.identity)))return 4;
   return 0;
 }
 bool lampRolloutAllowsAutomaticAdmission(){return lampRolloutAutomaticAdmissionReason()==0;}
 bool lampRolloutAutomaticUpdateStarted(const FirmwareManifest& artifact){return LampRollout::started(artifact);}
-bool lampRolloutPinsMembership(){return !LampRollout::load()||LampRollout::coordinator.state().phase!=LampRolloutCore::Empty||LampRollout::receiver.state().phase!=LampRolloutCore::Empty;}
+bool lampRolloutPinsMembership(){return !LampRollout::loaded||LampRollout::coordinator.state().phase!=LampRolloutCore::Empty||LampRollout::receiver.state().phase!=LampRolloutCore::Empty;}
 bool lampRolloutAllowsUnpinnedUpdate(){return !lampRolloutPinsMembership();}

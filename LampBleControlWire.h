@@ -60,13 +60,23 @@ public:
 
 class Transfer {
   uint8_t request[MaxRequest+1]{};
-  uint8_t* response=nullptr;
+  const uint8_t* response=nullptr;
+  void* responseOwner=nullptr;
+  using ResponseRelease=void(*)(void*,size_t);
+  ResponseRelease releaseResponse=nullptr;
   uint32_t owner=0,touched=0;
   uint16_t transaction=0,lastTransaction=0,total=0,received=0,responseSize=0,responseStatus=0;
   uint8_t id=0,method=0;
   enum Phase:uint8_t {Idle,Receiving,Consumed,Responded} phase=Idle;
   bool sequenceReady=false;
   bool matches(const uint8_t* frame,uint32_t generation)const{return owner==generation&&transaction&&u16(frame+3)==transaction;}
+  static void releaseCopied(void* bytes,size_t size){if(bytes){zero(bytes,size);free(bytes);}}
+  bool finishPayload(uint16_t status,const uint8_t* bytes,size_t size,void* owner,ResponseRelease release){
+    if(phase!=Consumed||size>MaxResponse||(size&&!bytes))return false;
+    zero(request,sizeof(request));total=received=0;
+    response=bytes;responseOwner=owner;releaseResponse=release;
+    responseSize=size;responseStatus=status;phase=Responded;return true;
+  }
 public:
   ~Transfer(){reset();}
   Transfer()=default;
@@ -74,8 +84,13 @@ public:
   Transfer& operator=(const Transfer&)=delete;
   void clearPayload(){
     zero(request,sizeof(request));
-    if(response){zero(response,responseSize);free(response);response=nullptr;}
+    // Every terminal path releases the immutable view's owner exactly once.
+    // Its callback wipes and frees storage; wire framing never depends on a
+    // String representation or on detaching private allocator pointers.
+    const auto release=releaseResponse;void* previousOwner=responseOwner;const size_t previousSize=responseSize;
+    response=nullptr;responseOwner=nullptr;releaseResponse=nullptr;
     transaction=total=received=responseSize=responseStatus=0;id=method=0;touched=0;phase=Idle;
+    if(release)release(previousOwner,previousSize);
   }
   void reset(uint32_t generation=0){clearPayload();owner=generation;lastTransaction=0;sequenceReady=false;}
   bool service(uint32_t generation,uint32_t now,bool authorized,bool updating){
@@ -110,8 +125,16 @@ public:
   bool finish(uint16_t status,const uint8_t* bytes,size_t size){
     if(phase!=Consumed||size>MaxResponse||(size&&!bytes))return false;
     zero(request,sizeof(request));total=received=0;
-    if(size){response=static_cast<uint8_t*>(malloc(size));if(!response)return false;memcpy(response,bytes,size);}
-    responseSize=size;responseStatus=status;phase=Responded;return true;
+    uint8_t* copied=nullptr;
+    if(size){copied=static_cast<uint8_t*>(malloc(size));if(!copied)return false;memcpy(copied,bytes,size);}
+    return finishPayload(status,copied,size,copied,releaseCopied);
+  }
+  // Ownership transfers only on success. The owner must keep this view
+  // unchanged until release, and the callback must wipe/release its storage.
+  // This zero-allocation path is used by the loop-owned Arduino String adapter.
+  bool finishOwned(uint16_t status,const uint8_t* bytes,size_t size,void* owner,ResponseRelease release){
+    if(!owner||!release)return false;
+    return finishPayload(status,bytes,size,owner,release);
   }
   bool selectPage(const uint8_t* frame,size_t size,uint32_t generation,uint32_t now){
     if(!validFrame(frame,size)||frame[2]!=Page||!matches(frame,generation)||phase!=Responded||

@@ -73,8 +73,11 @@ bool seal(const Transcript& t,const Keys& keys,uint8_t direction,uint8_t kind,ui
  size=0;if(!out||!sequence||!bodyValid(direction,kind,length)||(length&&!body))return false;
  uint8_t digest[32]{};if(!transcriptHash(t,digest)||memcmp(digest,keys.digest,32))return false;header(t,direction,kind,sequence,length,out);
  uint8_t aad[HeaderSize+32],nonce[12];memcpy(aad,out,HeaderSize);memcpy(aad+HeaderSize,keys.digest,32);put64(nonce,direction?t.targetBoot:t.brokerBoot);put32(nonce+8,sequence);
+ // ESP-IDF 5.5.5 rejects null input even when length is zero. A dummy
+ // address preserves the empty plaintext, nonce, transcript and wire tag.
+ const uint8_t empty=0;const uint8_t* input=length?body:&empty;
  mbedtls_gcm_context context;mbedtls_gcm_init(&context);int result=mbedtls_gcm_setkey(&context,MBEDTLS_CIPHER_ID_AES,direction?keys.targetToBroker:keys.brokerToTarget,128);
- if(!result)result=mbedtls_gcm_crypt_and_tag(&context,MBEDTLS_GCM_ENCRYPT,length,nonce,sizeof(nonce),aad,sizeof(aad),body,out+HeaderSize,TagSize,out+HeaderSize+length);
+ if(!result)result=mbedtls_gcm_crypt_and_tag(&context,MBEDTLS_GCM_ENCRYPT,length,nonce,sizeof(nonce),aad,sizeof(aad),input,out+HeaderSize,TagSize,out+HeaderSize+length);
  mbedtls_gcm_free(&context);erase(aad,sizeof(aad));erase(digest,sizeof(digest));if(result)return false;size=HeaderSize+length+TagSize;return true;
 }
 bool open(const Transcript& t,const Keys& keys,const uint8_t* source,const uint8_t* in,size_t size,uint8_t& kind,uint32_t& sequence,uint8_t* body,size_t& length){

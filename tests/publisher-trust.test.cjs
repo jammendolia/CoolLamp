@@ -23,3 +23,14 @@ test('actual build helper combines public/provisioned flags, stages only generat
   assert.equal(processContext.exitCode,0);
  }
 });
+test('actual test-image helper keeps public measurement, isolates artifacts/cache, and suppresses donation by compile flag',async()=>{
+ const vm=require('node:vm'),source=fs.readFileSync(path.resolve(__dirname,'../tools/build-firmware.cjs'),'utf8');let command;
+ const context={__dirname:path.resolve(__dirname,'../tools'),process:{argv:['node','helper','--public','--test-image'],env:{ARDUINO_CLI:'mock-cli'},platform:'win32'},console:{log:()=>{},error:()=>{}},require:name=>name==='node:fs'?{existsSync:()=>false,mkdirSync:()=>{},readdirSync:()=>[]}:name==='node:child_process'?{spawnSync:(cli,args)=>{command={cli,args};return {status:0};}}:name==='./build-tls-library.cjs'?{ensureTlsLibrary:async()=>'/sdk/tls.a'}:require(name)};
+ await vm.runInNewContext(source,context);
+ assert(command.args.includes('compiler.cpp.extra_flags=-DCOOL_LAMP_PUBLIC_RELEASE=1 -DCOOL_LAMP_TEST_IMAGE=1'));
+ assert(command.args.includes(path.resolve(__dirname,'../firmware/test-image')));
+ assert(command.args.includes(path.resolve(__dirname,'../.build/cache-test-image')));
+ assert(command.args.includes(path.resolve(__dirname,'../.build/sketch-test-image/CoolLamp')));
+ const invalid={...context,process:{...context.process,argv:['node','helper','--test-image']}};
+ assert.throws(()=>vm.runInNewContext(source,invalid),/requires --public/);
+});

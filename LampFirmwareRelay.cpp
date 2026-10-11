@@ -38,6 +38,15 @@ mbedtls_sha256_context hash;
 void erase(void* data,size_t size){volatile uint8_t* p=static_cast<volatile uint8_t*>(data);while(size--)*p++=0;}
 uint64_t randomSession(){return (uint64_t(esp_random())<<32|esp_random())|1;}
 bool newer(const uint16_t* a,const uint16_t* b){for(unsigned i=0;i<3;++i)if(a[i]!=b[i])return a[i]>b[i];return false;}
+// Local diagnostic builds still measure their running image for postboot
+// health, but must never start an implicit rollout to the owner's fleet.
+bool donationAllowedByBuild(){
+#ifdef COOL_LAMP_TEST_IMAGE
+ return false;
+#else
+ return true;
+#endif
+}
 bool donationAllowedByRollout(){return lampSyncRole()!=1||!lampRolloutPinsMembership();}
 bool send(const uint8_t* bytes,size_t size,const uint8_t* destination){
  if(!paired||!boot||sequence==UINT32_MAX)return false;
@@ -125,7 +134,7 @@ bool receive(const LampEspNow::Received& message){
   memcpy(peer,message.source,6);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;session=randomSession();while(!uint32_t(session))session=randomSession();state=AwaitDonor;started=touched=now;lastSent=0;offset=0;return true;
  }
  if(body[0]==Request){
-  if(state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||now<35000||lampUpdateOwnsResources()||!donationAllowedByRollout())return true;
+  if(!donationAllowedByBuild()||state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||now<35000||lampUpdateOwnsResources()||!donationAllowedByRollout())return true;
   if(!reserveLampManualUpdate())return true;
   if(!beginLampBluetoothUpdateRadio()){releaseLampManualUpdate();return true;}
   donorReserved=true;state=Sending;memcpy(peer,message.source,6);session=u64(body+1);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;offerToken=0;offset=0;senderReady=false;started=touched=now;lastSent=0;return true;
@@ -196,7 +205,7 @@ void service(uint32_t now){
   }
   described=okay;if(!okay){describeRetryAt=now+60000;return;}
  }
- if(!paired||!radio.active||radio.suspended||!donationAllowedByRollout())return;
+ if(!donationAllowedByBuild()||!paired||!radio.active||radio.suspended||!donationAllowedByRollout())return;
  if(now-lastOffer>=10000){lastOffer=now;offerToken=randomSession();uint8_t p[123]{};p[0]=ownSigned?SignedOffer:Offer;for(unsigned i=0;i<3;++i)LampBleUpdateWire::put16(p+1+2*i,current[i]);put32(p+7,imageSize);memcpy(p+11,ownHash,32);put64(p+43,offerToken);if(ownSigned){put32(p+51,ownPublisher.epoch);put32(p+55,ownPublisher.keyId);memcpy(p+59,ownPublisher.signature,64);}send(p,ownSigned?sizeof(p):51,broadcast);}
 }
 bool copyFleetKey(uint8_t* out){if(!out||!paired)return false;memcpy(out,fleet,16);return true;}
@@ -225,7 +234,11 @@ LampControlReply control(bool mutation,const String& form){
   if(!provisionFleetKey(next)){erase(next,sizeof(next));return {507,"Could not save fleet trust."};}
   erase(next,sizeof(next));
  }
- const auto radio=LampEspNow::status();const bool eligible=paired&&described&&state==Idle&&!lampUpdateOwnsResources()&&!LampCommission::working()&&radio.active&&!radio.suspended&&donationAllowedByRollout();
- return {200,String("{\"version\":1,\"signedOfferVersion\":2,\"publisherEnforced\":")+(UpdatePublisher::enforced()?"true":"false")+",\"signedImageReady\":"+(ownSigned?"true":"false")+",\"donorEligible\":"+(eligible?"true":"false")+",\"coordinatorDonationHeld\":"+(donationAllowedByRollout()?"false":"true")+",\"paired\":"+(paired?"true":"false")+",\"fleetId\":\""+fleetId()+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")+"}"};
+ const auto radio=LampEspNow::status();const bool eligible=donationAllowedByBuild()&&paired&&described&&state==Idle&&!lampUpdateOwnsResources()&&!LampCommission::working()&&radio.active&&!radio.suspended&&donationAllowedByRollout();
+ return {200,String("{\"version\":1,\"signedOfferVersion\":2,\"publisherEnforced\":")+(UpdatePublisher::enforced()?"true":"false")+",\"signedImageReady\":"+(ownSigned?"true":"false")+",\"donorEligible\":"+(eligible?"true":"false")+",\"coordinatorDonationHeld\":"+(donationAllowedByRollout()?"false":"true")+",\"paired\":"+(paired?"true":"false")+",\"fleetId\":\""+fleetId()+"\",\"automatic\":"+(getLampUpdateStatus().automatic?"true":"false")+",\"active\":"+(ownsRadio()?"true":"false")
+#ifdef COOL_LAMP_TEST_IMAGE
+  +",\"testImage\":\"COOLLAMP-TEST-IMAGE-" LAMP_FIRMWARE_VERSION "\""
+#endif
+  +"}"};
 }
 }

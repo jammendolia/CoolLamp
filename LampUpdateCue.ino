@@ -1,3 +1,4 @@
+#include "LampRuntimeMetrics.h"
 bool renderLampUpdateCue(){
   const auto update=getLampUpdateStatus();
   static LampUpdateCue::Cadence cadence;
@@ -12,7 +13,7 @@ bool renderLampUpdateCue(){
     const uint8_t glow=update.cueOn?LampUpdateCue::level(i,NUM_LEDS,lampMidpoint,uint32_t(now-cadence.started),update.writtenOffset,update.totalBytes):0;
     leds[i]=CRGB(glow,uint16_t(glow)*4/5,uint16_t(glow)*3/5);
   }
-  FastLED.show(update.cueOn?min(uint8_t(40),update.cueBrightness):uint8_t(0));
+  lampShowFrame(update.cueOn?min(uint8_t(40),update.cueBrightness):uint8_t(0),LampRuntimeMetrics::FrameKind::Update);
   ::memcpy(leds,originalFrame,NUM_LEDS*sizeof(CRGB));
   return true;
 }

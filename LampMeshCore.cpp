@@ -87,7 +87,11 @@ void Core::challenge(Peer& peer,uint32_t now){
  if(!peer.candidateBoot||peer.challengeAttempt>AttemptLimit)return;
  if(!peer.challengeSequence)peer.challengeSequence=reserve();
  Packet p=packet(Challenge,peer.mac,peer.candidateBoot,peer.challengeSequence,peer.challengeSequence);
- if(emit(p,nullptr,peer.challengeAttempt)){++peer.challengeAttempt;peer.challengeAt=now+RetryPeriod;}
+ // Local crypto/queue failure must not spin on every rendering-loop turn.
+ // A failed admission consumes no on-wire attempt; retry the same nonce,
+ // empty plaintext and attempt after the existing rollover-safe interval.
+ peer.challengeAt=now+RetryPeriod;
+ if(emit(p,nullptr,peer.challengeAttempt))++peer.challengeAttempt;
 }
 void Core::receipt(const Packet& p,uint8_t code,uint16_t status,uint64_t bitmap,uint16_t responseSize){
  uint8_t payload[9];payload[0]=code;put64(payload+1,bitmap);Packet reply=packet(Receipt,p.origin,p.boot,p.requestId);reply.payloadSize=9;reply.status=status;reply.totalSize=responseSize;emit(reply,payload);

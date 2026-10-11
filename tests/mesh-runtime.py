@@ -34,12 +34,15 @@ with tempfile.TemporaryDirectory(prefix='coollamp-mesh-', dir=ROOT / '.build') a
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                     *SANITIZERS, *includes, *defines,
                     str(ROOT / 'tests/mesh-runtime.cpp'), str(ROOT / 'LampMeshCrypto.cpp'),
-                    str(ROOT / 'LampMeshCore.cpp'), *objects, '-o', str(binary)], check=True)
+                    str(ROOT / 'LampMeshCore.cpp'), str(ROOT / 'tests/gcm-hardware-input-guard.cpp'),
+                    *objects, '-Wl,--wrap=mbedtls_gcm_crypt_and_tag',
+                    '-Wl,--wrap=mbedtls_gcm_auth_decrypt', '-o', str(binary)], check=True)
     scenarios = ['crypto', 'chain', 'lost-ack', 'lost-fragment', 'reorder-duplicate',
                  'sequential', 'deadline-replay', 'boot-rollover', 'wrong-fleet',
                  'wrong-target-trust', 'peer-expiry', 'ttl', 'pause', 'capacity',
                  'send-backpressure', 'nonce-restart', 'malformed-noop',
-                 'target-deadline-before-service', 'changed-request-id']
+                 'target-deadline-before-service', 'changed-request-id',
+                 'empty-payload', 'challenge-crypto-backoff']
     for scenario in scenarios:
         subprocess.run([str(binary), scenario], check=True)
     print(f'PASS: {len(scenarios)} production mesh scenarios; real pinned AES-GCM/HMAC; no network access')

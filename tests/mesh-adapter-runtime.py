@@ -21,7 +21,11 @@ with tempfile.TemporaryDirectory(prefix='coollamp-mesh-adapter-',dir=ROOT/'.buil
     (folder/'esp_random.h').write_text('#pragma once\n#include <stdint.h>\n#ifdef __cplusplus\nextern "C" {\n#endif\nuint32_t esp_random(void);\n#ifdef __cplusplus\n}\n#endif\n')
     (folder/'WiFi.h').write_text('#pragma once\nconstexpr int WL_CONNECTED=3;\ninline struct {int state=WL_CONNECTED;int status(){return state;}} WiFi;\n')
     arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text().replace('#include <cstdint>','#include <cstdint>\n#include <algorithm>\nusing std::min;')
+    arduino=arduino.replace('[[maybe_unused]] inline struct','inline uint32_t fakeFreeHeap=65536,fakeLargestBlock=65536;\n[[maybe_unused]] inline struct')
+    arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap()const{return fakeFreeHeap;}uint32_t getMaxAllocHeap()const{return fakeLargestBlock;}uint64_t getEfuseMac()')
     (folder/'Arduino.h').write_text(arduino)
+    for name in ('WebServer.h','LampHttpServer.h'):
+        (folder/name).write_bytes((ROOT/'tests/control-stubs'/name).read_bytes())
     (folder/'adapter-mbedtls-config.h').write_text('#pragma once\n#include "espnow-host-mbedtls-config.h"\n#define MBEDTLS_BASE64_C\n')
     includes=['-I'+str(folder),'-I'+str(ROOT),'-I'+str(ROOT/'tests'),
               '-I'+str(source/'include'),'-I'+str(source/'library')]
@@ -38,6 +42,6 @@ with tempfile.TemporaryDirectory(prefix='coollamp-mesh-adapter-',dir=ROOT/'.buil
                     str(ROOT/'LampMeshCrypto.cpp'),str(ROOT/'LampSyncRadioCrypto.cpp'),*objects,'-o',str(binary)],check=True)
     scenarios=['confidential','http400','pagination','retention','no-route','same-id-content',
                'wrong-result','lost-receipts','updater-pause','direct-only','remote-direct-only',
-               'idle-auth-hold']
+               'idle-auth-hold','resource-denied-no-replay']
     for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
     print(f'PASS: {len(scenarios)} actual mesh adapter scenarios; SHA-verified AES-GCM/HMAC/base64; no network')

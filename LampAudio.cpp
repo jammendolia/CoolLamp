@@ -206,13 +206,20 @@ LampAudioFeatures getLampAudioFeatures() {
 }
 String lampAudioJson() {
   const auto f = getLampAudioFeatures();
-  return String("{\"installed\":") + (installed ? "true" : "false") + ",\"liveTuning\":true,\"automaticGain\":true,\"gain\":" + gain + ",\"gate\":" + gate + ",\"scale\":" + scale +
-    ",\"running\":" + (f.running ? "true" : "false") + ",\"valid\":" + (f.valid ? "true" : "false") +
-    ",\"signalSeen\":" + (f.signalSeen ? "true" : "false") + ",\"level\":" + f.level +
-    ",\"noiseFloor\":" + f.noiseFloor + ",\"effectiveGate\":" + f.effectiveGate + ",\"effectiveGain\":" + f.effectiveGain + ",\"rms\":" + f.rms + ",\"peak\":" + f.peak + ",\"blocks\":" + f.sequence +
-    ",\"errors\":" + f.errors + ",\"overruns\":" + f.overruns + ",\"stackFree\":" + f.stackFree +
-    ",\"bass\":" + f.bass + ",\"mid\":" + f.mid + ",\"treble\":" + f.treble +
-    ",\"beat\":" + f.beat + ",\"bassBeat\":" + f.bassBeat +
-    ",\"heap\":" + ESP.getFreeHeap() + ",\"frames\":" + lampRenderedFrames +
-    ",\"maxRenderUs\":" + lampMaxRenderUs + ",\"error\":" + f.error + "}";
+  String out;bool good=true;
+  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+  add("{\"installed\":");
+  add((installed?"true":"false"));add(",\"liveTuning\":true,\"automaticGain\":true,\"gain\":");add(String(gain));
+  add(",\"gate\":");add(String(gate));add(",\"scale\":");add(String(scale));
+  add(",\"running\":");add((f.running?"true":"false"));add(",\"valid\":");add((f.valid?"true":"false"));
+  add(",\"signalSeen\":");add((f.signalSeen?"true":"false"));add(",\"level\":");add(String(f.level));
+  add(",\"noiseFloor\":");add(String(f.noiseFloor));add(",\"effectiveGate\":");add(String(f.effectiveGate));add(",\"effectiveGain\":");add(String(f.effectiveGain));
+  add(",\"rms\":");add(String(f.rms));add(",\"peak\":");add(String(f.peak));add(",\"blocks\":");add(String(f.sequence));
+  add(",\"errors\":");add(String(f.errors));add(",\"overruns\":");add(String(f.overruns));add(",\"stackFree\":");add(String(f.stackFree));
+  add(",\"bass\":");add(String(f.bass));add(",\"mid\":");add(String(f.mid));add(",\"treble\":");add(String(f.treble));
+  add(",\"beat\":");add(String(f.beat));add(",\"bassBeat\":");add(String(f.bassBeat));
+  add(",\"heap\":");add(String(ESP.getFreeHeap()));add(",\"frames\":");add(String(lampRenderedFrames));
+  add(",\"maxRenderUs\":");add(String(lampMaxRenderUs));add(",\"error\":");add(String(f.error));add('}');
+  if(!good)return String();
+  return out;
 }

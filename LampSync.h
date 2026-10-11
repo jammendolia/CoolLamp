@@ -16,6 +16,10 @@ bool lampSyncGroupContext(LampSyncGroupContext& out);
 void beginLampSync();
 void serviceLampSync(const String& name, bool blocked, bool scanning=false);
 String lampSyncJson(uint8_t peerCursor=0,uint8_t peerLimit=8);
+// Loop-only checked append into an owned reply. False leaves a partial suffix;
+// the caller must discard the complete reply and report failed serialization.
+// This avoids retaining a second full group snapshot during parent growth.
+bool appendLampSyncJson(String& reply,uint8_t peerCursor=0,uint8_t peerLimit=8);
 String lampSyncIncarnation(); // Stable nonsecret group fingerprint; empty if independent.
 bool configureLampSync(uint8_t role,const String& leader,const String& key,uint8_t protocol=2,const String& expectedIncarnation="");
 String lampSyncInvite();

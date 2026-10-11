@@ -21,8 +21,11 @@ bool seal(const LampMeshWire::Packet& p,const uint8_t* payload,const uint8_t* fl
  if(!fleet||!mac(sender)||!out||!valid(p)||(p.payloadSize&&!payload)||ttl>=HopLimit||attempt>AttemptLimit)return false;
  uint8_t key[32]{};if(!derive(fleet,p.origin,false,key))return false;encode(p,out);out[HeaderSize]=ttl;out[HeaderSize+1]=attempt;
  uint8_t nonce[12];put64(nonce,p.boot);put32(nonce+8,p.sequence);
+ // ESP-IDF 5.5.5's AES-GCM port requires a nonnull input even for an
+ // authenticated empty body. Keep length zero so tags and the wire stay v1.
+ const uint8_t empty=0;const uint8_t* input=p.payloadSize?payload:&empty;
  mbedtls_gcm_context context;mbedtls_gcm_init(&context);int result=mbedtls_gcm_setkey(&context,MBEDTLS_CIPHER_ID_AES,key,128);
- if(!result)result=mbedtls_gcm_crypt_and_tag(&context,MBEDTLS_GCM_ENCRYPT,p.payloadSize,nonce,sizeof(nonce),out,HeaderSize,payload,out+HeaderSize+HopSize,TagSize,out+HeaderSize+HopSize+p.payloadSize);
+ if(!result)result=mbedtls_gcm_crypt_and_tag(&context,MBEDTLS_GCM_ENCRYPT,p.payloadSize,nonce,sizeof(nonce),out,HeaderSize,input,out+HeaderSize+HopSize,TagSize,out+HeaderSize+HopSize+p.payloadSize);
  mbedtls_gcm_free(&context);erase(key,sizeof(key));if(result)return false;
  size=HeaderSize+HopSize+p.payloadSize+2*TagSize;
  if(!hopTag(out,size,fleet,sender,out+size-TagSize)){size=0;return false;}return true;

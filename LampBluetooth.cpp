@@ -457,6 +457,7 @@ bool forgetLampPhones()
   return verified;
 }
 bool lampBluetoothHasBonds(){if(!server)return false;ble_addr_t peers[CONFIG_BT_NIMBLE_MAX_BONDS];return bondedPeers(peers)!=0;}
+bool lampBluetoothConnected(){return connection!=NO_CONNECTION;}
 
 void serviceLampBluetooth()
 {
@@ -578,6 +579,7 @@ void serviceLampBluetooth()
 }
 #else
 void beginLampBluetooth(const String&) {}
+bool lampBluetoothConnected(){return false;}
 void serviceLampBluetooth() {}
 void setLampPairingWindow(bool) {}
 bool lampPairingOpen() { return false; }

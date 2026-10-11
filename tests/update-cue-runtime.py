@@ -10,6 +10,7 @@ fixture=r'''
 #include "LampUpdateCue.h"
 #include "LampUpdate.h"
 #include "LampControl.h"
+#include "LampRuntimeMetrics.h"
 #include <cassert>
 #include <cstring>
 #include <vector>
@@ -32,6 +33,7 @@ struct {
  std::vector<CRGB> visible;
  void show(uint8_t b){++calls;brightness=b;visible.assign(leds,leds+NUM_LEDS);}
 }FastLED;
+void lampShowFrame(uint8_t brightness,LampRuntimeMetrics::FrameKind kind){assert(kind==LampRuntimeMetrics::FrameKind::Update);FastLED.show(brightness);}
 '''
 test=r'''
 int main(){

@@ -1,4 +1,13 @@
 #define ARDUINO 1
+#include <Preferences.h>
+struct TrackedPreferences:Preferences {
+  inline static unsigned opens=0,reads=0;
+  inline static bool failOpen=false;
+  bool begin(const char* name,bool readOnly){++opens;return !failOpen&&Preferences::begin(name,readOnly);}
+  size_t getBytesLength(const char* key){++reads;return Preferences::getBytesLength(key);}
+  size_t getBytes(const char* key,void* out,size_t length){++reads;return Preferences::getBytes(key,out,length);}
+};
+#define Preferences TrackedPreferences
 #include "../LampRollout.cpp"
 #include <cassert>
 #include <iostream>
@@ -25,7 +34,7 @@ void select(unsigned index,bool reboot=false){
   selected=memberIds[index];Preferences::storage=fixtures[selected];
   LampRollout::coordinator=State(LampRollout::save,LampRollout::coordinatorKey);
   LampRollout::receiver=State(LampRollout::save,LampRollout::receiverKey);
-  LampRollout::loaded=false;LampRollout::acceptedAt=0;LampRollout::windowOpen=false;
+  LampRollout::loaded=false;LampRollout::loadAttempted=false;LampRollout::loadAttemptAt=0;LampRollout::acceptedAt=0;LampRollout::windowOpen=false;
   fixtureGroup={};fixtureGroup.role=index?2:1;fixtureGroup.protocol=3;fixtureGroup.boot=1000+index+(reboot?10000:0);
   strcpy(fixtureGroup.identity,memberIds[index]);strcpy(fixtureGroup.leader,memberIds[0]);
   fixtureGroup.count=index?1:32;
@@ -71,6 +80,17 @@ void portable(){
 int main(){
   for(unsigned i=0;i<32;++i)snprintf(memberIds[i],13,"11223344%04x",i*2);
   fixtureImage={};fixtureImage.version[0]=2;fixtureImage.version[2]=1;fixtureImage.size=1024;memset(fixtureImage.sha256,0x11,32);portable();
+  fakeNow=UINT32_MAX-100;select(0);
+  const auto untouchedOpens=Preferences::opens,untouchedReads=Preferences::reads;
+  assert(call("status").status==500&&LampRollout::statusJson().find("\"storageReady\":false")!=String::npos);
+  assert(lampRolloutAutomaticAdmissionSnapshotReason()==3&&lampRolloutPinsMembership());
+  assert(Preferences::opens==untouchedOpens&&Preferences::reads==untouchedReads&&!LampRollout::loaded);
+  fixtureOwns=true;LampRollout::service(fakeNow);assert(Preferences::opens==untouchedOpens&&!LampRollout::loadAttempted);fixtureOwns=false;
+  Preferences::failOpen=true;LampRollout::service(fakeNow);assert(Preferences::opens==untouchedOpens+1);
+  fakeNow+=999;LampRollout::service(fakeNow);assert(Preferences::opens==untouchedOpens+1);
+  assert(call("status").status==500&&lampRolloutAutomaticAdmissionSnapshotReason()==3&&Preferences::opens==untouchedOpens+1);
+  fakeNow+=1;LampRollout::service(fakeNow);assert(Preferences::opens==untouchedOpens+2);
+  Preferences::failOpen=false;fakeNow+=1000;LampRollout::service(fakeNow);assert(LampRollout::loaded&&call("status").status==200);
   fakeNow=100;select(0);fixtureEnforced=true;assert(call("start","","1","","","",manifestText()).status==400);fixtureEnforced=false;
   assert(lampRolloutAutomaticAdmissionReason()==1&&!lampRolloutAllowsAutomaticAdmission());fixtureGroup.role=0;assert(lampRolloutAllowsAutomaticAdmission());fixtureGroup.role=1;
   fixtureGroup.protocol=2;assert(lampRolloutAutomaticAdmissionReason()==2);fixtureGroup.protocol=3;
@@ -90,7 +110,12 @@ int main(){
     select(i);auto wrong=permit;wrong[0]='f';assert(call("accept",wrong).status==400);assert(call("accept",permit).status==200);
     assert(lampRolloutAllowsAutomaticUpdate(fixtureImage));auto other=fixtureImage;other.sha256[0]^=1;assert(!lampRolloutAllowsAutomaticUpdate(other));
     assert(lampRolloutAllowsAutomaticAdmission());
-    fakeNow+=PermitLifetime;assert(!lampRolloutAllowsAutomaticUpdate(fixtureImage));assert(call("accept",permit).status==200);assert(!lampRolloutAllowsAutomaticUpdate(fixtureImage)); // duplicate does not renew expiry
+    fakeNow+=PermitLifetime;
+    const auto statusOpens=Preferences::opens,statusReads=Preferences::reads;
+    assert(LampRollout::windowOpen&&lampRolloutAutomaticAdmissionSnapshotReason()==4);
+    assert(call("status").status==200&&!LampRollout::statusJson().empty()&&lampRolloutPinsMembership());
+    assert(LampRollout::windowOpen&&Preferences::opens==statusOpens&&Preferences::reads==statusReads);
+    assert(!lampRolloutAllowsAutomaticUpdate(fixtureImage));assert(call("accept",permit).status==200);assert(!lampRolloutAllowsAutomaticUpdate(fixtureImage)); // duplicate does not renew expiry
     assert(lampRolloutAutomaticAdmissionReason()==4);
     // Explicit renewal holds exactly the original lease; external update HAL
     // preflight is separately tested by production updater/OTA fixture suites.

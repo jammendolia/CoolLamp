@@ -13,6 +13,7 @@ fixture=r'''
 #include <iostream>
 bool healthy=true,manual=false,commission=false,wifiBusy=false,resetPending=false,resetArmed=false,networkRestart=false;
 uint8_t job=0;uint32_t restartAt=0;int mux=0;
+void* worker=nullptr;
 LampUpdateStatus status{};
 #define portENTER_CRITICAL(value) ((void)(value))
 #define portEXIT_CRITICAL(value) ((void)(value))
@@ -34,6 +35,12 @@ namespace LampFirmwareRelay{bool runningManifest(FirmwareManifest& out){if(!meas
 test=r'''
 int main(){
  assert(lampRolloutRecoveryPreflight(pinned));
+ // A one-shot HTTPS task may have published its final status while its TLS
+ // scope/stack is still owned until the loop reaps the valid task handle.
+ // Recovery cannot release the group lease during that completion boundary.
+ worker=reinterpret_cast<void*>(1);
+ for(auto phase:{UPDATE_IDLE,UPDATE_AVAILABLE,UPDATE_ERROR}){status.phase=phase;assert(!lampRolloutRecoveryPreflight(pinned));}
+ worker=nullptr;assert(lampRolloutRecoveryPreflight(pinned));status.phase=UPDATE_IDLE;
  for(bool* guard:{&manual,&commission,&wifiBusy,&resetPending,&resetArmed,&status.receiving,&networkRestart}){*guard=true;assert(!lampRolloutRecoveryPreflight(pinned));*guard=false;}
  healthy=false;assert(!lampRolloutRecoveryPreflight(pinned));healthy=true;
  job=2;assert(!lampRolloutRecoveryPreflight(pinned));job=0;restartAt=1;assert(!lampRolloutRecoveryPreflight(pinned));restartAt=0;

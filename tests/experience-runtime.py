@@ -28,6 +28,23 @@ with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
   bool begin(''')
     prefs=prefs.replace('++writes;return length;', '++writes;return commitThenFail?0:length;')
     (folder/'Preferences.h').write_text(prefs)
+    arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text()
+    arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return 65536;}uint32_t getMaxAllocHeap(){return 65536;}uint64_t getEfuseMac()')
+    arduino=arduino.replace('  bool isEmpty()const',r'''  inline static const char* omittedAppend=nullptr;
+  inline static bool appendEmptyObject=false;
+  using std::string::operator+=;
+  String& operator+=(const std::string& value){
+    // Pinned WString drops the entire StringSumHelper append when a temporary
+    // allocation fails. Reproduce that boundary in the actual serializer.
+    if(omittedAppend&&value.rfind(omittedAppend,0)==0){if(appendEmptyObject){std::string::operator+=(omittedAppend);std::string::operator+=("{}");}return *this;}
+    std::string::operator+=(value);return *this;
+  }
+  bool isEmpty()const''')
+    (folder/'Arduino.h').write_text(arduino)
+    # These fixture headers use quoted Arduino.h includes; keep their include
+    # directory with the single fault-injecting String definition.
+    for name in ('LampHttpServer.h','WebServer.h'):
+        (folder/name).write_text((ROOT/'tests/control-stubs'/name).read_text())
     (folder/'crypto-config.h').write_text('#pragma once\n#define MBEDTLS_PLATFORM_C\n#define MBEDTLS_SHA256_C\n')
     includes=['-I'+str(folder),'-I'+str(ROOT/'tests/control-stubs'),'-I'+str(ROOT),'-I'+str(crypto/'include')]
     define=['-DMBEDTLS_CONFIG_FILE="crypto-config.h"']
@@ -136,6 +153,18 @@ int main(int argc,char** argv){
  for(uint64_t id=1;id<=8;++id){assert(ledger.admit(99,id,1,digest,0xfffffff0,receipt)==LampCommands::Admission::New);ledger.finish(*receipt,200,LampCommands::Outcome::Executed);}
  assert(ledger.admit(99,9,1,digest,0x10,receipt)==LampCommands::Admission::New);assert(!ledger.query(99,1,0x10));assert(ledger.admit(99,1,1,digest,0x10,receipt)==LampCommands::Admission::Uncertain);assert(ledger.admit(99,2,1,digest,120000,receipt)==LampCommands::Admission::Uncertain);
  LampModel::Record model;strcpy(model.id,"future-coil-2070");strcpy(model.name,"Future coil");strcpy(model.artwork,"future-art");strcpy(model.hardware,"rev-z");model.preconfigured=1;assert(LampModel::provision(model));LampModel::begin();assert(!strcmp(LampModel::current().id,"future-coil-2070"));Preferences::failWrites=true;strcpy(model.id,"other");assert(!LampModel::provision(model));Preferences::failWrites=false;assert(!strcmp(LampModel::current().id,"future-coil-2070"));
+ // Invoke the production descriptor through the real shared transport adapter.
+ // A lost whole append can be valid JSON; neither that case nor an incomplete
+ // nested capability object may become a successful negotiated descriptor.
+ lampServer.on("/api/descriptor",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
+ const auto descriptorWrites=Preferences::writes;const auto descriptorControls=controls;
+ result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==200&&result.body.find("future-coil-2070")!=String::npos);
+ String::omittedAppend=",\"capabilities\":";
+ assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==507&&result.body.find("unavailable")!=String::npos);
+ String::appendEmptyObject=true;
+ assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==507);
+ String::omittedAppend=nullptr;String::appendEmptyObject=false;
+ result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==200&&result.body.find("future-coil-2070")!=String::npos&&Preferences::writes==descriptorWrites&&controls==descriptorControls);
  if(argc>1){std::ofstream output(argv[1]);output<<"["<<lampDescriptorJson();for(bool scenes:{false,true})for(unsigned offset=0;offset<(scenes?33:47);offset+=4){const auto page=lampEffectSchemaPage(offset,4,scenes);assert(!page.empty()&&page.size()<=4096);output<<","<<page;}output<<"]";}
  std::cout<<"PASS real appearance/command handlers, duplicate/loss/reboot/CAS/knob/storage/schema; ledger bytes="<<sizeof(LampCommands::Ledger)<<"\n";
 }

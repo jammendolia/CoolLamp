@@ -1,6 +1,13 @@
 # Physical acceptance for the unpublished experience candidate
 
-Nothing in this procedure has been executed on a real lamp during this implementation. Obtain separate authorization for the exact artifacts and each physical configuration change first. Keep the existing router, SSIDs, channel/VLAN/isolation and working primary↔IoT arrangement fixed throughout controlled tests. Do not interpret a build, mock radio or successful download as physical acceptance.
+The general experience acceptance matrix below remains pending. Separate,
+authorized one-lamp connection-stall experiments on Pink Corkscrew are recorded
+in `protocol-animation-connection-stalls.md`; they do not establish this matrix's
+native, group, update or fleet acceptance. Obtain authorization for additional
+physical configuration changes outside the already authorized test scope.
+Keep the existing router, SSIDs, channel/VLAN/isolation and working
+primary↔IoT arrangement fixed throughout controlled tests. Do not interpret a
+build, mock radio or successful download as physical acceptance.
 
 ## Preparation and recovery baseline
 

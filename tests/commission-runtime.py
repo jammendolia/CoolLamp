@@ -32,7 +32,10 @@ with tempfile.TemporaryDirectory(prefix='coollamp-commission-',dir=ROOT/'.build'
         objects.append(str(output))
     binary=folder/'commission.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,*includes,*defines,
-                    str(ROOT/'tests/commission-runtime.cpp'),str(ROOT/'LampCommissionCrypto.cpp'),*objects,'-o',str(binary)],check=True)
+                    str(ROOT/'tests/commission-runtime.cpp'),str(ROOT/'LampCommissionCrypto.cpp'),
+                    str(ROOT/'tests/gcm-hardware-input-guard.cpp'),*objects,
+                    '-Wl,--wrap=mbedtls_gcm_crypt_and_tag','-Wl,--wrap=mbedtls_gcm_auth_decrypt',
+                    '-o',str(binary)],check=True)
     scenarios=['crypto','success','no-app-approval','wrong-pattern','wrong-target-session',
                'cancel','expiry','no-overwrite','nvs-failure','lost-finish','lost-finish-proof',
                'replayed-offer','approval-preserves-state','blocked','backpressure','fresh-only',

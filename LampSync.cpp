@@ -158,7 +158,13 @@ Peer* peer(const char* id,uint32_t now,bool subscribing=false){
   }
   return nullptr;
 }
-String quote(const char* value){String s="\"";for(size_t i=0;value[i];++i){const uint8_t c=value[i];if(c=='"'||c=='\\')s+='\\';if(c>=32)s+=char(c);}return s+'"';}
+String quote(const char* value){
+  if(!value)return String();
+  String s="\"";
+  for(size_t i=0;value[i];++i){const uint8_t c=value[i];if((c=='"'||c=='\\')&&!s.concat('\\'))return String();if(c>=32&&!s.concat(char(c)))return String();}
+  if(!s.concat('"'))return String();
+  return s;
+}
 void locate(Peer& item,const Packet& p,uint32_t now,bool radio,const uint8_t* mac,uint8_t channel,IPAddress source) {
   strlcpy(item.info.sender,p.sender,sizeof(item.info.sender));strlcpy(item.info.name,p.name,sizeof(item.info.name));
   item.info.session=p.session;item.info.role=p.role;item.info.microphone=p.microphone;item.info.version=p.version;item.seen=now;
@@ -458,56 +464,65 @@ String lampSyncIncarnation(){
   volatile uint8_t* wipe=hash;for(unsigned i=0;i<sizeof(hash);++i)wipe[i]=0;
   return out;
 }
-String lampSyncJson(uint8_t peerCursor,uint8_t peerLimit){
+bool appendLampSyncJson(String& s,uint8_t peerCursor,uint8_t peerLimit){
   if(!peerLimit)peerLimit=1;else if(peerLimit>8)peerLimit=8;
   const uint32_t now=millis();unsigned members=0;for(auto& p:peers)if(p.joined&&uint32_t(now-p.subscribed)<Timeout)++members;
   const auto radio=LampEspNow::status();
   const char* transport=lampSyncFollowing()?(followingRadio?"esp-now":"udp"):
     started&&radio.active&&!radio.suspended?"hybrid":started?"udp":radio.active&&!radio.suspended?"esp-now":"none";
-  String s="{\"version\":"+String(wireVersion)+",\"protocolVersions\":[2,3],\"maxMembers\":"+String(memberLimit(wireVersion))+",\"maxSupportedMembers\":32,\"coordinatorMigration\":false,\"broadcastFrames\":"+(wireVersion==ExpandedVersion?"true":"false");
+  bool good=true;
+  const auto add=[&](const auto& value){if(good)good=s.concat(value);};
+  const auto quoted=[&](const char* value){const String text=quote(value);if(!text.length())good=false;add(text);};
+  add("{\"version\":");add(wireVersion);add(",\"protocolVersions\":[2,3],\"maxMembers\":");add(memberLimit(wireVersion));add(",\"maxSupportedMembers\":32,\"coordinatorMigration\":false,\"broadcastFrames\":");add(wireVersion==ExpandedVersion?"true":"false");
   char sessionText[17];snprintf(sessionText,sizeof(sessionText),"%016llx",static_cast<unsigned long long>(nonce));
-  s+=",\"session\":"+quote(sessionText)+",\"dissolutionV1\":true";
+  add(",\"session\":");quoted(sessionText);add(",\"dissolutionV1\":true");
   // The random group key identifies the group incarnation across reboot/prune.
   // Publish a domain-separated one-way fingerprint, never reusable authority.
-  const String incarnation=lampSyncIncarnation();if(incarnation.length())s+=",\"incarnation\":"+quote(incarnation.c_str());
-  s+=String(",\"membershipLocked\":")+(lampRolloutPinsMembership()?"true":"false");
-  s+=",\"role\":"+String(config.role)+",\"leader\":"+quote(config.leader)+",\"paused\":"+(paused?"true":"false")+",\"active\":"+(lampSyncFollowing()?"true":"false")+",\"members\":"+String(members)+",\"peers\":[";
+  const String incarnation=lampSyncIncarnation();if(incarnation.length()){add(",\"incarnation\":");quoted(incarnation.c_str());}else if(config.role)good=false;
+  add(",\"membershipLocked\":");add(lampRolloutPinsMembership()?"true":"false");
+  add(",\"role\":");add(config.role);add(",\"leader\":");quoted(config.leader);add(",\"paused\":");add(paused?"true":"false");add(",\"active\":");add(lampSyncFollowing()?"true":"false");add(",\"members\":");add(members);add(",\"peers\":[");
   unsigned peerTotal=0,peerReturned=0;
   bool comma=false;for(auto& p:peers)if(p.info.sender[0]&&uint32_t(now-p.seen)<PeerTimeout){
     if(peerTotal++<peerCursor||peerReturned>=peerLimit)continue;
     ++peerReturned;
-    if(comma)s+=',';
+    if(comma)add(',');
     comma=true;
     const bool udpLive=started&&p.udpKnown&&now-p.udpSeen<PeerTimeout,radioLive=p.radioKnown&&now-p.radioSeen<PeerTimeout;
     const char* link=udpLive&&radioLive?"hybrid":radioLive?"esp-now":"udp";
-    s+="{\"id\":"+quote(p.info.sender)+",\"name\":"+quote(p.info.name)+",\"address\":"+quote(udpLive?p.ip.toString().c_str():"");
-    s+=",\"role\":"+String(p.info.role)+",\"version\":"+String(p.info.version)+",\"microphone\":"+(p.info.microphone?"true":"false")+",\"transport\":"+quote(link)+",\"channel\":"+String(unsigned(radioLive?p.radioChannel:0))+"}";
+    add("{\"id\":");quoted(p.info.sender);add(",\"name\":");quoted(p.info.name);add(",\"address\":");
+    if(udpLive){const String address=p.ip.toString();if(!address.length())good=false;quoted(address.c_str());}else quoted("");
+    add(",\"role\":");add(p.info.role);add(",\"version\":");add(p.info.version);add(",\"microphone\":");add(p.info.microphone?"true":"false");add(",\"transport\":");quoted(link);add(",\"channel\":");add(unsigned(radioLive?p.radioChannel:0));add('}');
   }
-  s+="]";
-  s+=",\"peerTotal\":"+String(peerTotal)+",\"peerCursor\":"+String(peerCursor)+",\"peerNext\":"+String(peerCursor+peerReturned<peerTotal?peerCursor+peerReturned:0)+",\"peerTruncated\":"+(peerReturned<peerTotal?"true":"false");
-  s+=String(",\"slotSaved\":")+(wireVersion==ExpandedVersion&&config.role==2&&slotSaved&&!strcmp(followerSlot.leader,config.leader)?"true":"false")+",\"slotSaveFailures\":"+String(slotSaveFailures)+",\"incompatibleSubscriptions\":"+String(incompatibleSubscriptions);
-  s+=",\"transport\":"+quote(transport)+",\"radio\":{\"available\":"+(radio.active&&!radio.suspended?"true":"false");
-  s+=",\"channel\":"+String(radio.channel)+",\"seeking\":"+(radio.seeking?"true":"false")+",\"security\":\"aes-gcm-128\"";
-  s+=",\"received\":"+String(radio.received)+",\"receiveDropped\":"+String(radio.receiveDropped)+",\"sent\":"+String(radio.sent);
-  s+=",\"sendFailed\":"+String(radio.sendFailed)+",\"sendDropped\":"+String(radio.sendDropped)+",\"channelChanges\":"+String(radio.channelChanges)+"}";
-  s+=",\"network\":{\"listening\":"+String(started?"true":"false")+",\"blocked\":"+String(serviceBlocked?"true":"false");
-  s+=",\"received\":"+String(receivedPackets)+",\"discoveries\":"+String(discoveries)+",\"authenticationFailures\":"+String(authFailures);
-  s+=",\"subscriptions\":"+String(subscriptionsSent)+",\"frames\":"+String(framesReceived)+",\"clockDrops\":"+String(clockDrops)+"}";
-  s+=",\"sceneCount\":"+String(SceneCount);
+  add(']');
+  add(",\"peerTotal\":");add(peerTotal);add(",\"peerCursor\":");add(peerCursor);add(",\"peerNext\":");add(peerCursor+peerReturned<peerTotal?peerCursor+peerReturned:0);add(",\"peerTruncated\":");add(peerReturned<peerTotal?"true":"false");
+  add(",\"slotSaved\":");add(wireVersion==ExpandedVersion&&config.role==2&&slotSaved&&!strcmp(followerSlot.leader,config.leader)?"true":"false");add(",\"slotSaveFailures\":");add(slotSaveFailures);add(",\"incompatibleSubscriptions\":");add(incompatibleSubscriptions);
+  add(",\"transport\":");quoted(transport);add(",\"radio\":{\"available\":");add(radio.active&&!radio.suspended?"true":"false");
+  add(",\"channel\":");add(radio.channel);add(",\"seeking\":");add(radio.seeking?"true":"false");add(",\"security\":\"aes-gcm-128\"");
+  add(",\"received\":");add(radio.received);add(",\"receiveDropped\":");add(radio.receiveDropped);add(",\"sent\":");add(radio.sent);
+  add(",\"sendFailed\":");add(radio.sendFailed);add(",\"sendDropped\":");add(radio.sendDropped);add(",\"channelChanges\":");add(radio.channelChanges);add('}');
+  add(",\"network\":{\"listening\":");add(started?"true":"false");add(",\"blocked\":");add(serviceBlocked?"true":"false");
+  add(",\"received\":");add(receivedPackets);add(",\"discoveries\":");add(discoveries);add(",\"authenticationFailures\":");add(authFailures);
+  add(",\"subscriptions\":");add(subscriptionsSent);add(",\"frames\":");add(framesReceived);add(",\"clockDrops\":");add(clockDrops);add('}');
+  add(",\"sceneCount\":");add(SceneCount);
   const auto v=lampGroupVisual();
-  s+=",\"scene\":"+String(v.scene)+",\"position\":"+String(v.position)+",\"count\":"+String(v.count)+",\"sceneSpeed\":"+String(v.sceneSpeed)+",\"sceneIntensity\":"+String(v.sceneIntensity);
-  s+=",\"scenePrimary\":["+String(v.scenePrimary[0])+","+String(v.scenePrimary[1])+","+String(v.scenePrimary[2])+"],\"sceneSecondary\":["+String(v.sceneSecondary[0])+","+String(v.sceneSecondary[1])+","+String(v.sceneSecondary[2])+"]";
-  s+=",\"order\":[";
+  add(",\"scene\":");add(v.scene);add(",\"position\":");add(v.position);add(",\"count\":");add(v.count);add(",\"sceneSpeed\":");add(v.sceneSpeed);add(",\"sceneIntensity\":");add(v.sceneIntensity);
+  add(",\"scenePrimary\":[");add(v.scenePrimary[0]);add(',');add(v.scenePrimary[1]);add(',');add(v.scenePrimary[2]);add("],\"sceneSecondary\":[");add(v.sceneSecondary[0]);add(',');add(v.sceneSecondary[1]);add(',');add(v.sceneSecondary[2]);add(']');
+  add(",\"order\":[");
   if(config.role==1)for(unsigned i=0;i<sceneConfig.count;++i){
-    if(i)s+=",";
+    if(i)add(',');
     const char* label=!strcmp(sceneConfig.order[i],identity)?"This lamp":sceneConfig.order[i];bool online=!strcmp(sceneConfig.order[i],identity);
     for(const auto& p:peers)if(!strcmp(p.info.sender,sceneConfig.order[i])){if(wireVersion==LegacyVersion)label=p.info.name;online=p.joined&&uint32_t(now-p.subscribed)<Timeout;break;}
-    s+="{\"id\":"+quote(sceneConfig.order[i]);
-    if(wireVersion==LegacyVersion)s+=",\"name\":"+quote(label);
-    s+=String(",\"online\":")+(online?"true":"false")+"}";
+    add("{\"id\":");quoted(sceneConfig.order[i]);
+    if(wireVersion==LegacyVersion){add(",\"name\":");quoted(label);}
+    add(",\"online\":");add(online?"true":"false");add('}');
   }
-  return s+"]}";
-
+  add("]}");
+  return good;
+}
+String lampSyncJson(uint8_t peerCursor,uint8_t peerLimit){
+  String out;
+  if(!appendLampSyncJson(out,peerCursor,peerLimit))return String();
+  return out;
 }
 
 uint8_t lampSyncRole(){return config.role;}

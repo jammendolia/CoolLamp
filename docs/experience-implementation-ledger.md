@@ -1,5 +1,14 @@
 # Experience implementation ledger: unpublished 1.15.0 candidate
 
+This is the historical capability checkpoint for the pinned 1.15.0 candidate
+below. Subsequent controlled 1.15.1 animation/HTTP work and failed physical gates
+are recorded in [the continuity contract and results](protocol-animation-connection-stalls.md)
+and [the development handoff](development-handoff.md). Those single-lamp
+experiments do not complete this document's native, twenty-lamp, update,
+manufacturing or household-administrator gates. Resolve the exact artifact
+against its immutable evidence before any installation or release; current
+`firmware/public` output must not be inferred from this historical checkpoint.
+
 Evidence date: 10 October 2026. The starting checkout was firmware 1.14.0 with substantial modified and untracked firmware, protocol and app work. Existing edits were preserved. No physical lamp, router configuration, saved credential, remote repository or store submission was changed. `docs/design` remains the design deliverable and historical snapshot, not a claim of shipped behavior.
 
 ## Current outcome and integration boundary
@@ -63,7 +72,7 @@ Final default and maximum-four-root development signature builds, manifests, bin
 | Default unpublished public flavor | 2,019,614 | 2,019,760 | 11,856 | 85,452 |
 | Four-root development enforcement size fixture | 2,022,418 | 2,022,560 | 9,056 | 85,452 |
 
-The default application SHA-256 is `ca83d570010b8022c41d404a717a95295699020df5e83bd41cb90f1a6dcc96d4`; its matching six-line OTA-1 manifest and build/map/ELF/partition/bootloader evidence are under `.build/experience-candidate-public`. `firmware/public` contains these exact default outputs. Its retained 4 MiB merged image is a service artifact that writes more than the application, and requires separately approved backup/partition/NVS handling; it is not an ordinary OTA image.
+The checkpoint's default application SHA-256 is `ca83d570010b8022c41d404a717a95295699020df5e83bd41cb90f1a6dcc96d4`; its matching six-line OTA-1 manifest and build/map/ELF/partition/bootloader evidence are under `.build/experience-candidate-public`. At this checkpoint `firmware/public` contained those outputs; later builds can replace that directory. Its retained 4 MiB merged image is a service artifact that writes more than the application, and requires separately approved backup/partition/NVS handling; it is not an ordinary OTA image.
 
 The size-only development application SHA-256 is `956517dfb2f8f42303bc850fa12c9bb409da68b5ea5fea763950d13f48185edb`, under `.build/experience-development-trust-budget`. Its public-only configuration SHA-256 is `684b0a045f5ae357ef6177285b3f8af367f1bc97eacb5f88b79499451d92d636`; public configuration/header/provenance are retained beside that build. Four ephemeral private keys were generated only in process memory and discarded. No corresponding installable signed manifest was produced. The profile measures actual signature enforcement with maximum root capacity, but supplies no production authority or recovery key custody.
 
@@ -75,8 +84,35 @@ Fixed host layout bounds: command ledger 984 bytes including its 512-byte revisi
 
 ## Physical and release gates
 
-No requirement was physically verified in this implementation. Follow [the controlled acceptance and recovery procedure](experience-physical-acceptance.md): one independent canary first, preserve/compare settings, native iPhone and Android, actual three-node control handoff, signed/donor/interrupted updates, then mixed-style twenty-lamp streaming/removal/coexistence and staged rollout. Keep router configuration constant and pin exact digests. An actual installed rollback-capable bootloader/partition layout and a bounded faulty-image experiment must precede any automatic recovery promise.
+No requirement was physically verified at this historical checkpoint. Follow [the controlled acceptance and recovery procedure](experience-physical-acceptance.md): one independent canary first, preserve/compare settings, native iPhone and Android, actual three-node control handoff, signed/donor/interrupted updates, then mixed-style twenty-lamp streaming/removal/coexistence and staged rollout. Keep router configuration constant and pin exact digests. An actual installed rollback-capable bootloader/partition layout and a bounded faulty-image experiment must precede any automatic recovery promise.
 
 Production signing/manufacturing/native identity material is an external prerequisite; autonomous distributed orchestration and broader administrator-phone transfer are remaining implementation, not disguised as hardware blockers. The complete redesigned experience is not store-ready. The next concrete physical test is a separately authorized independent-lamp bootstrap with the exact default candidate, checking identity and all retained settings. The new progress cue cannot run while the old 1.14 updater installs 1.15: demonstrate on/off receiver-only progress, cancellation and restart only after supported firmware is running, using a separately pinned higher test-version artifact or an explicitly approved same-version repair. Only the 1.15 candidate artifacts listed here have been prepared.
 
 Protocol references: [common contracts](protocol-experience-v2.md), [groups and removal](protocol-groups-v2.md), [staged rollout](protocol-rollout-v1.md), [updates/signatures](protocol-updates-v2.md), and [commissioning/household](protocol-commissioning-v2.md).
+
+## Subsequent animation-continuity verification, 11 October 2026
+
+The historical resource/artifact table above is not the current release output.
+The installed Pink Corkscrew diagnostic is 1.15.1,
+`a6c39e5e0d9ef4e0d688ee349f12e44766166fdd61a29fdda086d4f81f65d75b`.
+Its source, exact normal/test builds, installation proof and measurements are
+recorded in [the continuity handoff](development-handoff.md) and
+[the transport contract and physical results](protocol-animation-connection-stalls.md).
+
+| Disposition | Exact evidence and limits |
+| --- | --- |
+| Implemented | Incremental bounded HTTP I/O with fair client slots, deferred socket cleanup, loop-owned handlers/state/NVS, pure read snapshots and BLE paging, inclusive frame/service metrics, bounded USB replies, memory admission and lazy HTTPS worker lifecycle. Incomplete v1 catalog allocation fails honestly; successful IDs/names/order are unchanged. |
+| Verified in software | Final 33-command production-handler gate, 16 legacy regressions, eight release guards and 1,168 pinned-String allocation-failure boundaries pass. Independent review verifies 125 sources and both actual build configurations. State/diagnostics are 8,082/8,096 bytes under the 8,192-byte bound. |
+| Physically verified within scope | One 134-LED Pink Corkscrew, direct-Wi-Fi eight-profile read-only canary: 63/63 normal reads, eight diagnostic/eight revision reads, same boot, complete timing coverage, 48.076-ms warm show-return maximum/zero new 100-ms overruns. Application readback and preserved boot/partition/NVS prefix verified. Eighteen post-run protected reads and bounded USB status pass. The user subsequently confirms Settings opens and animation continues smoothly on this final image; that interaction has no captured transport or numeric timing. No optical measurement. |
+| Not yet verified | This exact image's full 64-profile gate, transient heap floor, final native phone route, BLE/mesh handoff, actual update/donor interruption/rollback and twenty physical lamps. Earlier long-run USB reply loss remains unresolved; predecessor results retain their own hashes. Cold startup is 672.025 ms/one overrun. |
+| External/production gates | Production signing/provisioning and native manufacturing identity material remain prerequisites. The diagnostic cannot donate or pass normal publication packaging. The separate unsigned normal image is uninstalled and unpublished. This canary does not complete the broader implementation/native/store gates above. |
+
+The current diagnostic is 2,019,904 bytes (11,712-byte OTA margin; 94,204 static
+globals); the separately built normal image is 2,020,592 bytes (11,024-byte
+margin; 94,212 static globals). Sampled current free heap reaches 16,772 bytes
+and largest block 7,668; loop/cleanup stack free minima are 2,724/1,036. A
+reported historical regional minimum sum of 1,472 bytes is not a simultaneous
+global heap measurement. The immutable ignored archive has 216 digest-indexed
+evidence files and excludes private NVS/RAM captures. Repeat the long workload
+with bounded guarded USB recovery and independent optical timing before release;
+keep router and settings fixed.

@@ -1,19 +1,21 @@
 #pragma once
 #include <Arduino.h>
-#include <WebServer.h>
+#include <LampHttpServer.h>
 #include "LampControlEndpoint.h"
+#include "LampControlResourcePolicy.h"
+#include "LampHttpJson.h"
 #include <utility>
 
 // HTTP and encrypted/bonded BLE commands share the same loop-only handlers.
 // Only trusted loop-owned BLE/mesh services call executeControl(); HTTP cannot select this
 // context with a URL, header or form field. No handler executes on a callback.
 extern String lampToken;
-class LampControlHttpAdapter : public WebServer {
+class LampControlHttpAdapter : public LampHttpServer {
   static constexpr unsigned Slots=64, Fields=24;
   THandlerFunction controls[Slots][2];
   struct Entry { String key,value; } fields[Fields];
   unsigned fieldCount=0;
-  bool control=false;
+  bool control=false, httpFormActive=false;
   bool privateTransport=false;
   String controlUri;
   LampControlReply reply;
@@ -48,8 +50,8 @@ class LampControlHttpAdapter : public WebServer {
       if(!out.concat(char(c)))return false;
     }return utf8(out);
   }
-  bool parse(const String& body){
-    if(body.length()>1024)return false;
+  bool parse(const String& body,size_t maximum=1024){
+    if(body.length()>maximum)return false;
     for(size_t begin=0;begin<body.length();){
       if(fieldCount==Fields)return false;
       size_t end=begin;while(end<body.length()&&body[end]!='&')++end;
@@ -130,40 +132,50 @@ class LampControlHttpAdapter : public WebServer {
     if(id==EnrollCancel)return "/api/mesh/enroll/cancel";
     return "";
   }
+protected:
+  bool prepareHttpForm(const String& body) override {clearFields();httpFormActive=true;return parse(body,LampHttpServer::uri()=="/api/household/control"?2048:1024);}
+  void clearHttpForm() override {clearFields();httpFormActive=false;}
 public:
-  explicit LampControlHttpAdapter(uint16_t port):WebServer(port){}
-  using WebServer::on;using WebServer::arg;using WebServer::header;using WebServer::send;
-  RequestHandler& on(const char* path,HTTPMethod method,THandlerFunction handler){
+  explicit LampControlHttpAdapter(uint16_t port):LampHttpServer(port){}
+  using LampHttpServer::arg;using LampHttpServer::header;using LampHttpServer::send;
+  void on(const char* path,HTTPMethod method,THandlerFunction handler,THandlerFunction upload=THandlerFunction()){
     const uint8_t id=endpoint(path,method);
     if(id&&id<Slots)controls[id][method==HTTP_POST?1:0]=handler;
-    return WebServer::on(path,method,std::move(handler));
+    LampHttpServer::on(path,method,std::move(handler),std::move(upload));
   }
   void setControlRead(uint8_t id,THandlerFunction handler){if(id&&id<Slots)controls[id][0]=std::move(handler);}
   bool controlActive()const{return control;}
   bool controlConfidential()const{return control&&privateTransport;}
   bool fieldsAllowed(const char* const* names,size_t count,size_t maximum=1024)const{
-    const size_t total=control?fieldCount:WebServer::args();
-    if(total>Fields||(!control&&WebServer::arg("plain").length()>maximum))return false;
+    const bool localForm=control||httpFormActive;
+    const size_t total=localForm?fieldCount:LampHttpServer::args();
+    if(total>Fields||(!localForm&&LampHttpServer::arg("plain").length()>maximum))return false;
     size_t bytes=0;
-    for(size_t i=0;i<total;++i){const String key=control?fields[i].key:WebServer::argName(i);bool found=false;
+    for(size_t i=0;i<total;++i){const String key=localForm?fields[i].key:LampHttpServer::argName(i);bool found=false;
       if(key=="plain")continue;
-      const String value=control?fields[i].value:WebServer::arg(key);bytes+=key.length()+value.length()+2;if(bytes>maximum)return false;
-      for(size_t n=0;n<i;++n)if(key==(control?fields[n].key:WebServer::argName(n)))return false;
+      const String value=localForm?fields[i].value:LampHttpServer::arg(key);bytes+=key.length()+value.length()+2;if(bytes>maximum)return false;
+      for(size_t n=0;n<i;++n)if(key==(localForm?fields[n].key:LampHttpServer::argName(n)))return false;
       for(size_t n=0;n<count;++n)if(key==names[n]){found=true;break;}
       if(!found)return false;
     }return true;
   }
-  String arg(const String& name)const{if(!control)return WebServer::arg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return fields[i].value;return String();}
-  bool hasArg(const String& name)const{if(!control)return WebServer::hasArg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return true;return false;}
-  String uri()const{return control?controlUri:WebServer::uri();}
-  bool authenticate(const char* name,const char* password){return control||WebServer::authenticate(name,password);}
-  String header(const String& name)const{return control?(name=="X-Lamp-Token"?lampToken:String()):WebServer::header(name);}
-  void sendHeader(const String& name,const String& value,bool first=false){if(!control)WebServer::sendHeader(name,value,first);}
-  void send(int status,const char* type,const String& body){if(!control){WebServer::send(status,type,body);return;}reply.status=status;if(body.length()>8192){reply.status=507;reply.body="Control response too large.";}else reply.body=body;}
+  String arg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::arg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return fields[i].value;return String();}
+  bool hasArg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::hasArg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return true;return false;}
+  String uri()const{return control?controlUri:LampHttpServer::uri();}
+  bool authenticate(const char* name,const char* password){return control||LampHttpServer::authenticate(name,password);}
+  String header(const String& name)const{return control?(name=="X-Lamp-Token"?lampToken:String()):LampHttpServer::header(name);}
+  void sendHeader(const String& name,const String& value,bool first=false){if(!control)LampHttpServer::sendHeader(name,value,first);}
+  void send(int status,const char* type,const String& body){if(!control){LampHttpServer::send(status,type,body);return;}reply.status=status;if(body.length()>8192||(status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}else {reply.body=body;if(reply.body.length()!=body.length()){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}}}
+  void send(int status,const char* type,String&& body){if(!control){LampHttpServer::send(status,type,std::move(body));return;}reply.status=status;if(body.length()>8192||(status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}else reply.body=std::move(body);}
   void send(int status,const char* type,const char* body){send(status,type,String(body));}
   LampControlReply executeControl(uint8_t id,bool mutation,const String& body,bool confidential=false){
     if(control)return {409,"Another control request is active."};
     if(!id||id>=Slots||!controls[id][mutation?1:0])return {404,"This control endpoint is unavailable."};
+    // Decode and execution share the loop owner across BLE and mesh. Denial
+    // consumes no command here; an earlier uncertain submission still needs
+    // reconciliation rather than replay on a different route.
+    if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))
+      return {503,"Control resources unavailable. This request was not executed."};
     clearFields();
     if((!mutation&&!body.isEmpty())||!parse(body)){clearFields();return {400,"Invalid control request form."};}
     if(id==LampControlEndpoint::Bluetooth&&mutation){bool forget=false;for(unsigned i=0;i<fieldCount;++i)if(fields[i].key=="action"&&fields[i].value=="forget")forget=true;if(!forget){clearFields();return {400,"Choose a supported Bluetooth action."};}}

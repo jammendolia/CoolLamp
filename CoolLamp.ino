@@ -18,6 +18,7 @@
 #include "LampBluetooth.h"
 #include "LampUpdate.h"
 #include "LampUpdateCue.h"
+#include "LampRuntimeMetrics.h"
 #include "LampFirmwareRelay.h"
 #include "LampMeshAdapter.h"
 #include "LampCommission.h"
@@ -114,6 +115,7 @@ uint8_t Brightness = 100;
 uint8_t gHue = 0;
 bool PowerOn = true;
 uint32_t lampRenderedFrames = 0, lampMaxRenderUs = 0;
+static LampRuntimeMetrics::Tracker lampRuntimeMetrics;
 
 void setup() {
   Serial.begin(115200);
@@ -168,9 +170,14 @@ void setup() {
 }
 
 void loop() {
+  const LampRuntimeMetrics::LoopScope loopTiming(lampRuntimeMetrics, micros);
   if (!lampUpdateOwnsResources() && !lampFactoryResetPending()) serviceLampTemperature();
+  uint32_t serviceStarted = micros();
   serviceLampNetwork();
+  lampRuntimeMetrics.service(LampRuntimeMetrics::Service::Network, uint32_t(micros() - serviceStarted));
+  serviceStarted = micros();
   serviceLampBluetooth();
+  lampRuntimeMetrics.service(LampRuntimeMetrics::Service::Bluetooth, uint32_t(micros() - serviceStarted));
   LampRollout::service(millis());
   serviceLampUpdater();
   serviceLampFactoryReset();
@@ -179,6 +186,7 @@ void loop() {
   const bool needsAudio=groupScene?(groupScene==2||LampSyncWire::sceneNeedsAudio(groupScene)):Mode>LAMP_BASE_EFFECT_COUNT;
   serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing() || lampFactoryResetPending());
   bool renderNow = serviceLampKnob();
+  lampRuntimeMetrics.service(LampRuntimeMetrics::Service::BeforeRender, uint32_t(micros() - loopTiming.startedAt()));
   if (renderLampCalibration()) return;
   if (renderLampUpdateCue()) { delay(1); return; }
   if (lampIsUpdating()) { delay(1); return; }
@@ -189,7 +197,7 @@ void loop() {
   const uint32_t now = millis();
   uint8_t commissionR=0,commissionG=0,commissionB=0;
   if(LampCommission::cue(now,commissionR,commissionG,commissionB)){
-    ::memcpy(originalFrame,leds,NUM_LEDS*sizeof(CRGB));fill_solid(leds,NUM_LEDS,CRGB(commissionR,commissionG,commissionB));FastLED.show(100);::memcpy(leds,originalFrame,NUM_LEDS*sizeof(CRGB));delay(1);return;
+    ::memcpy(originalFrame,leds,NUM_LEDS*sizeof(CRGB));fill_solid(leds,NUM_LEDS,CRGB(commissionR,commissionG,commissionB));lampShowFrame(100,LampRuntimeMetrics::FrameKind::Signal);::memcpy(leds,originalFrame,NUM_LEDS*sizeof(CRGB));delay(1);return;
   }
   static bool wasPairing = false;
   static bool pairingFlashOn = false;
@@ -205,7 +213,7 @@ void loop() {
       pairingFlashOn = flashOn;
       FastLED.setBrightness(100);
       fill_solid(leds, NUM_LEDS, flashOn ? (lampFactoryResetArmed() || lampFactoryResetPending() ? CRGB(255,0,0) : pairingNow ? CRGB(0, 0, 255) : setupNow ? CRGB(255, 80, 0) : CRGB::White) : CRGB::Black);
-      FastLED.show();
+      lampShowFrame(LampRuntimeMetrics::FrameKind::Signal);
     }
     wasPairing = true;
     lastPairing = pairingNow;
@@ -219,7 +227,7 @@ void loop() {
     renderNow = true;
   }
   FastLED.setBrightness(PowerOn ? Brightness : 0);
-  if (!PowerOn) FastLED.show();
+  if (!PowerOn) lampShowFrame(LampRuntimeMetrics::FrameKind::Off);
   if (!PowerOn || (!renderNow && now - lastFrameMs < 1000 / FRAMES_PER_SECOND)) {
     delay(1);
     return;
@@ -363,8 +371,22 @@ void loop() {
     }
   }
   if (!lampGroupScene() && options.intensity < 100) for (int i=0;i<NUM_LEDS;++i) leds[i].nscale8(uint16_t(options.intensity)*255/100);
-  FastLED.show(frameBrightness);
+  lampShowFrame(frameBrightness,LampRuntimeMetrics::FrameKind::Animation);
   ::memcpy(leds, originalFrame, NUM_LEDS * sizeof(CRGB));
   ++lampRenderedFrames;
   lampMaxRenderUs = max(lampMaxRenderUs, uint32_t(micros() - renderStarted));
+}
+
+const LampRuntimeMetrics::Snapshot& getLampRuntimeMetrics() { return lampRuntimeMetrics.snapshot(); }
+void lampShowFrame(LampRuntimeMetrics::FrameKind kind) {
+  const uint32_t started = micros();
+  FastLED.show();
+  const uint32_t completed = micros();
+  lampRuntimeMetrics.show(kind, completed, uint32_t(completed - started));
+}
+void lampShowFrame(uint8_t brightness, LampRuntimeMetrics::FrameKind kind) {
+  const uint32_t started = micros();
+  FastLED.show(brightness);
+  const uint32_t completed = micros();
+  lampRuntimeMetrics.show(kind, completed, uint32_t(completed - started));
 }

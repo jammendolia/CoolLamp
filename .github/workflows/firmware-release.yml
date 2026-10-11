@@ -42,10 +42,19 @@ jobs:
           python3 tests/ble-update-radio-runtime.py
           python3 tests/ble-control-runtime.py
           python3 tests/control-http-adapter.py
+          mkdir -p .build
+          python3 tests/runtime-metrics-runtime.py
+          python3 tests/runtime-diagnostic-runtime.py
+          python3 tests/usb-diagnostics-runtime.py
+          python3 tests/http-parser-runtime.py
+          python3 tests/http-multipart-runtime.py
+          python3 tests/http-server-runtime.py
+          python3 tests/http-stall-probe.py
           python3 tests/espnow-runtime.py
           python3 tests/factory-reset-runtime.py
           python3 tests/lamp-style-runtime.py
           python3 tests/update-handoff-runtime.py
+          python3 tests/update-http-runtime.py
           node tests/update-page.cjs
           node tests/effects-page.cjs
           node tests/audio-page.cjs

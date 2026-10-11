@@ -10,6 +10,18 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'tools' / 'audio-usb.py'
 
 
 class SerialTests(unittest.TestCase):
+    def test_bounded_runtime_command_is_available(self):
+        events=[]
+        class Port:
+            def __init__(self,**kwargs):pass
+            def open(self):events.append(('open',self.dtr,self.rts))
+            def write(self,data):events.append(('write',data))
+            def close(self):events.append(('close',))
+        with patch.dict(sys.modules, {'serial':types.SimpleNamespace(Serial=Port)}):
+            with patch.object(sys,'argv',[str(SCRIPT),'COM8','r','--poll-command','r','--seconds','0']):
+                runpy.run_path(str(SCRIPT),run_name='__main__')
+        self.assertEqual(events,[('open',True,False),('write',b'r'),('close',)])
+
     def test_lines_are_configured_before_open_and_port_is_closed(self):
         events = []
 

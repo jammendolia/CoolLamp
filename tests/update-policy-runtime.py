@@ -19,13 +19,18 @@ fixture=r'''
 int setenv(const char* key,const char* value,int){return _putenv_s(key,value);}
 tm* localtime_r(const time_t* value,tm* out){const tm* converted=localtime(value);if(!converted)return nullptr;*out=*converted;return out;}
 #endif
+unsigned timezoneChanges=0;
+int trackedSetenv(const char* key,const char* value,int replace){++timezoneChanges;return setenv(key,value,replace);}
+void trackedTzset(){++timezoneChanges;tzset();}
+#define setenv trackedSetenv
+#define tzset trackedTzset
 struct Preferences {
  protected:uint32_t _handle=1;
  public:
  inline static bool failOpen=false,failWrite=false,commitThenFail=false,failRead=false,failReadAfterWrite=false,failReadOpenAfterWrite=false,otherAfterFailedWrite=false;
  inline static std::vector<uint8_t> bytes;
- inline static unsigned writes=0;
- bool begin(const char*,bool){return !failOpen;}void end(){}
+ inline static unsigned writes=0,opens=0,reads=0;
+ bool begin(const char*,bool){++opens;return !failOpen;}void end(){}
  bool isKey(const char*){return !bytes.empty();}
  size_t getBytesLength(const char*){return bytes.size();}
  size_t getBytes(const char*,void* out,size_t n){if(n<bytes.size())return 0;memcpy(out,bytes.data(),bytes.size());return bytes.size();}
@@ -36,6 +41,7 @@ struct Preferences {
 };
 using esp_err_t=int;constexpr int ESP_OK=0,ESP_ERR_NVS_NOT_FOUND=1,ESP_FAIL=2;
 esp_err_t nvs_get_blob(uint32_t,const char*,void* out,size_t* size){
+ ++Preferences::reads;
  if(Preferences::failRead)return ESP_FAIL;
  if(Preferences::bytes.empty())return ESP_ERR_NVS_NOT_FOUND;
  if(*size<Preferences::bytes.size())return ESP_FAIL;
@@ -48,8 +54,11 @@ bool userUseObserved=false,busy=false,healthy=true;
 bool policyReadable=true;
 bool policySaveUncertain=false;
 bool policyNeedsReconcile=false;
+bool policyReconcileAttempted=false;
+uint32_t policyReconcileAttemptAt=0;
 uint8_t coordinationReason=0;
 uint8_t lampRolloutAutomaticAdmissionReason(){return coordinationReason;}
+uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){return coordinationReason;}
 bool lampUpdateOwnsResources(){return busy;}
 int mux=0;void startReceiverCue(){}
 #define portENTER_CRITICAL(value) ((void)(value))
@@ -59,8 +68,19 @@ time_t clockUnix=0;time_t fakeTime(time_t*){return clockUnix;}
 #define time fakeTime
 '''
 test=r'''
+void pureStatus(){
+ const auto oldPolicy=updatePolicy;
+ const auto opens=Preferences::opens,reads=Preferences::reads,writes=Preferences::writes,zones=timezoneChanges;
+ const auto revision=policyRevision,lastUse=lastUserUse;
+ const bool used=userUseObserved,readable=policyReadable,uncertain=policySaveUncertain,reconcile=policyNeedsReconcile;
+ const bool attempted=policyReconcileAttempted;const auto attemptedAt=policyReconcileAttemptAt;
+ const auto json=lampUpdatePolicyJson();assert(!json.empty());
+ assert(opens==Preferences::opens&&reads==Preferences::reads&&writes==Preferences::writes&&zones==timezoneChanges);
+ assert(revision==policyRevision&&lastUse==lastUserUse&&used==userUseObserved&&readable==policyReadable&&uncertain==policySaveUncertain&&reconcile==policyNeedsReconcile);
+ assert(attempted==policyReconcileAttempted&&attemptedAt==policyReconcileAttemptAt&&!memcmp(&oldPolicy,&updatePolicy,sizeof(oldPolicy)));
+}
 int main(){
- status.automatic=true;assert(lampAutomaticUpdateAllowed());
+ status.automatic=true;assert(lampAutomaticUpdateAllowed());pureStatus();
  for(uint8_t reason=1;reason<=4;++reason){coordinationReason=reason;assert(!lampAutomaticUpdateAllowed());
   const auto json=lampUpdatePolicyJson();assert(json.find("\"groupCoordination\":"+String(reason))!=String::npos&&json.find("\"automaticEligible\":false")!=String::npos);}
  coordinationReason=0;assert(lampAutomaticUpdateAllowed());
@@ -75,7 +95,8 @@ int main(){
  clockUnix=1700006400;assert(lampAutomaticUpdateAllowed()); // 2023-11-15 00:00Z.
  clockUnix+=3600;assert(!lampAutomaticUpdateAllowed());
  next.window=false;next.deferDuringUse=true;next.idleSeconds=60;assert(setLampUpdatePolicy(next,2));
- fakeNow=UINT32_MAX-10;noteLampUpdateUse();fakeNow=25;assert(!lampAutomaticUpdateAllowed());fakeNow=60000;assert(lampAutomaticUpdateAllowed()&&!userUseObserved);
+ fakeNow=UINT32_MAX-10;noteLampUpdateUse();fakeNow=25;assert(!lampAutomaticUpdateAllowed());fakeNow=60000;assert(lampAutomaticUpdateAllowed()&&userUseObserved);
+ pureStatus();serviceLampUpdatePolicy(fakeNow);assert(!userUseObserved);
  status.automatic=false;assert(!lampAutomaticUpdateAllowed());status.automatic=true;
  Preferences::bytes[2]^=1;reboot();assert(!status.automatic); // Corrupt quiet policy fails closed.
  status.automatic=true;assert(!lampAutomaticUpdateAllowed()); // Opting in cannot silently reinterpret a corrupt window.
@@ -93,9 +114,20 @@ int main(){
  const auto uncertainRevision=policyRevision;
  assert(!setLampUpdatePolicy(next,uncertainRevision)&&lampUpdatePolicySaveUncertain()&&!policyReadable&&policyRevision==uncertainRevision&&updatePolicy.idleSeconds==62);
  const auto writesAtUncertainty=Preferences::writes;
+ pureStatus();assert(lampUpdatePolicyJson().find("\"valid\":false")!=String::npos);
+ // The owner loop retries unreadable storage at most once per second, with
+ // a rollover-safe bound. No status GET may bypass that bound or set TZ.
+ fakeNow=UINT32_MAX-100;const auto readsBefore=Preferences::reads;
+ busy=true;serviceLampUpdatePolicy(fakeNow);assert(Preferences::reads==readsBefore&&!policyReconcileAttempted);busy=false;
+ serviceLampUpdatePolicy(fakeNow);assert(Preferences::reads==readsBefore+1&&policyNeedsReconcile);
+ fakeNow+=999;serviceLampUpdatePolicy(fakeNow);assert(Preferences::reads==readsBefore+1);pureStatus();
+ fakeNow+=1;serviceLampUpdatePolicy(fakeNow);assert(Preferences::reads==readsBefore+2&&policyNeedsReconcile);
  // Still unreadable: even a new command cannot overwrite unknown durable r+1.
  assert(!setLampUpdatePolicy(next,uncertainRevision)&&lampUpdatePolicySaveUncertain()&&Preferences::writes==writesAtUncertainty);
  Preferences::commitThenFail=false;Preferences::failReadAfterWrite=false;Preferences::failRead=false;
+ pureStatus();assert(!policyReadable&&policyNeedsReconcile&&policyRevision==uncertainRevision);
+ fakeNow+=1000;serviceLampUpdatePolicy(fakeNow);
+ assert(policyReadable&&!policyNeedsReconcile&&policyRevision==uncertainRevision+1&&updatePolicy.idleSeconds==63);
  assert(!setLampUpdatePolicy(next,uncertainRevision)&&Preferences::writes==writesAtUncertainty&&policyRevision==uncertainRevision+1&&updatePolicy.idleSeconds==63&&policyReadable);
  assert(lampUpdatePolicyRevision()==uncertainRevision+1&&lampUpdatePolicyJson().find("\"valid\":true")!=String::npos);
  // A reboot reloads committed bytes rather than replaying the original save.
@@ -109,7 +141,8 @@ int main(){
  assert(!setLampUpdatePolicy(next,policyRevision)&&lampUpdatePolicySaveUncertain()&&!policyReadable);
  Preferences::failOpen=false;Preferences::failWrite=false;Preferences::failReadOpenAfterWrite=false;
  assert(setLampUpdatePolicy(next,policyRevision)&&!lampUpdatePolicySaveUncertain()&&policyReadable);
- std::cout<<"PASS production policy: revision CAS, NVS prior/new/ambiguous readback, commit-then-failure, recovery/repair, clock/DST/opt-out/use rollover, staged group admission\n";
+ pureStatus();
+ std::cout<<"PASS production policy: pure status without NVS/TZ/use mutation, throttled loop recovery/rollover, revision CAS, NVS prior/new/ambiguous readback, commit-then-failure, recovery/repair, clock/DST/opt-out/use rollover, staged group admission\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='update-policy-',dir=ROOT/'.build') as directory:

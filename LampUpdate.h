@@ -40,10 +40,12 @@ void noteLampUpdateUse();
 bool lampAutomaticUpdateAllowed();
 bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& policy,uint32_t expectedRevision);
 bool lampUpdatePolicySaveUncertain(); // Last save: failed return may have committed.
-uint32_t lampUpdatePolicyRevision();
+uint32_t lampUpdatePolicyRevision(); // Mutation CAS admission; may reconcile an uncertain save.
+void serviceLampUpdatePolicy(uint32_t now); // Owning loop: bounded retry/volatile expiry.
 String lampUpdatePolicyJson();
 bool lampBootHealthy(); // Responsive-loop gate only, not complete peripheral/RF acceptance.
 void beginLampManualUpdateCue(); // Loop only, after receiver reservation (never on a donor).
 void setLampManualUpdateCueProgress(uint32_t written); // Legacy upload has no pinned total.
 void setLampUpdateRoute(uint8_t route); // Loop-owned receiver route only.
 bool lampRolloutRecoveryPreflight(const FirmwareManifest& pinned);
+bool lampControlTrafficIdle(uint32_t now); // Owning loop only: active/recent HTTP or BLE.

@@ -1,11 +1,11 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
-#include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
+#include <freertos/task.h>
 #include "LampFactory.h"
 #include "LampPage.h"
 #include "LampWifiSetup.h"
@@ -18,9 +18,17 @@
 #include "UpdatePublisher.h"
 #include "LampHouseholdAdapter.h"
 #include "LampRollout.h"
+#include "LampRuntimeDiagnostic.h"
+#include "LampHttpJson.h"
 
 LampSettings lampSettings;
 LampControlHttpAdapter lampServer(80);
+uint32_t lastHttpControlAt=0;
+bool haveHttpControlActivity=false;
+bool lampControlTrafficIdle(uint32_t now){
+  return !lampServer.hasActiveClients() && !lampBluetoothConnected() &&
+    (!haveHttpControlActivity || uint32_t(now-lastHttpControlAt)>=15000);
+}
 String lampHost;
 String lampName;
 uint32_t identifyUntil = 0;
@@ -221,17 +229,40 @@ String lampEffectCatalogEntry(uint8_t mode)
 
 // Read-only support snapshot. Deliberately excludes session tokens, SSIDs,
 // passwords, group invitation keys and raw microphone samples.
+String lampRuntimeTimingJson()
+{
+  const auto& m=getLampRuntimeMetrics();const auto& h=lampServer.metrics();
+  const auto windowJson=[](const LampRuntimeMetrics::Window& w){
+    String text="{\"sequence\":"+String(w.sequence)+",\"startUs\":"+String(w.startUs)+",\"endUs\":"+String(w.endUs)+",\"observedThroughUs\":"+String(w.observedThroughUs);
+    text+=",\"observations\":"+String(w.observations)+",\"animationFrames\":"+String(w.animationFrames)+",\"maxAnimationGapUs\":"+String(w.maxAnimationGapUs)+",\"animationGapOverruns\":"+String(w.animationGapOverruns)+"}";
+    return text;
+  };
+  String out="{\"version\":1,\"animationGapTargetUs\":"+String(LampRuntimeMetrics::AnimationGapTargetUs);
+  out+=",\"loops\":"+String(m.loops)+",\"shows\":"+String(m.shows)+",\"animationShows\":"+String(m.animationShows);
+  out+=",\"maxLoopUs\":"+String(m.maxLoopUs)+",\"maxLoopGapUs\":"+String(m.maxLoopGapUs);
+  out+=",\"maxNetworkServiceUs\":"+String(m.maxNetworkServiceUs)+",\"maxBluetoothServiceUs\":"+String(m.maxBluetoothServiceUs)+",\"maxBeforeRenderUs\":"+String(m.maxBeforeRenderUs);
+  out+=",\"maxShowUs\":"+String(m.maxShowUs)+",\"maxFrameGapUs\":"+String(m.maxFrameGapUs)+",\"maxAnimationFrameGapUs\":"+String(m.maxAnimationFrameGapUs)+",\"animationGapOverruns\":"+String(m.animationGapOverruns);
+  out+=",\"windows\":{\"durationUs\":"+String(LampRuntimeMetrics::WindowUs)+",\"current\":"+windowJson(m.currentWindow)+",\"last\":"+windowJson(m.lastWindow)+"}";
+  out+=",\"http\":{\"accepted\":"+String(h.accepted)+",\"rejected\":"+String(h.rejected)+",\"deadlines\":"+String(h.deadlines)+",\"cancelled\":"+String(h.cancelled)+",\"blockedSends\":"+String(h.blockedSends);
+  out+=",\"responses\":"+String(h.responses)+",\"responseFailures\":"+String(h.responseFailures)+",\"dispatches\":"+String(h.dispatches)+",\"maxServiceUs\":"+String(h.maxServiceUs)+",\"maxDispatchUs\":"+String(h.maxDispatchUs);
+  out+=",\"maxReceiveBytes\":"+String(h.maxReceiveBytes)+",\"maxSendBytes\":"+String(h.maxSendBytes)+",\"closeQueueFull\":"+String(h.closeQueueFull)+",\"maxConnectionMs\":"+String(h.maxConnectionMs)+",\"maxIdleMs\":"+String(h.maxIdleMs)+"}}";
+  return out;
+}
 String lampDiagnosticsJson()
 {
   const bool connected = WiFi.status() == WL_CONNECTED;
   wifi_ps_type_t sleepMode = WIFI_PS_NONE;
   const int powerSave = esp_wifi_get_ps(&sleepMode) == ESP_OK ? static_cast<int>(sleepMode) : -1;
-  String out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
+  String out;
+  if(!out.reserve(6144))return String();
+  out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
   out += ",\"hostname\":" + jsonText(lampHost + ".local");
   out += ",\"uptimeMs\":" + String(millis()) + ",\"resetReason\":" + String(static_cast<int>(esp_reset_reason()));
   out += ",\"freeHeap\":" + String(ESP.getFreeHeap()) + ",\"minFreeHeap\":" + String(ESP.getMinFreeHeap());
   out += ",\"largestFreeBlock\":" + String(ESP.getMaxAllocHeap());
-  out += ",\"chipTemperature\":" + lampTemperatureJson();
+  out += ",\"loopStackMinimumBytes\":" + String(uxTaskGetStackHighWaterMark(nullptr));
+  out += ",\"httpCloseStackMinimumBytes\":" + String(lampServer.closeTaskStackMinimumBytes());
+  out += ",\"chipTemperature\":";out += lampTemperatureJson();
   out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
   out += ",\"address\":" + jsonText(WiFi.localIP().toString());
   out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());
@@ -244,20 +275,39 @@ String lampDiagnosticsJson()
   out += ",\"render\":{\"frames\":" + String(lampRenderedFrames) + ",\"maxRenderUs\":" + String(lampMaxRenderUs);
   out += ",\"power\":" + String(PowerOn ? "true" : "false") + ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
   out += ",\"leds\":" + String(NUM_LEDS) + ",\"midpoint\":" + String(lampMidpoint) + "}";
-  out += ",\"firmware\":" + lampUpdateJson() + ",\"audio\":" + lampAudioJson() + ",\"sync\":" + lampSyncJson();
-  out += ",\"lampStyle\":" + lampStyleJson() + "}";
+  out += ",\"timing\":";out += lampRuntimeTimingJson();
+  out += ",\"firmware\":";out += lampUpdateJson();
+  out += ",\"audio\":";out += lampAudioJson();
+  out += ",\"sync\":";if(!appendLampSyncJson(out))return String();
+  out += ",\"lampStyle\":";out += lampStyleJson();out += '}';
+  // An allocation failure can omit an entire append while leaving valid JSON.
+  // Require the support snapshot's fields before reporting a successful read.
+  const char* const keys[]={"diagnosticsVersion","deviceId","uptimeMs","freeHeap","minFreeHeap","largestFreeBlock","loopStackMinimumBytes","httpCloseStackMinimumBytes","chipTemperature","wifi","scan","render","timing","firmware","audio","sync","lampStyle"};
+  if(!LampHttpJson::requiredKeys(out.c_str(),out.length(),keys,sizeof(keys)/sizeof(keys[0])))return String();
+  const auto timing=LampHttpJson::member(out.c_str(),out.length(),"timing");
+  const auto firmware=LampHttpJson::member(out.c_str(),out.length(),"firmware");
+  const char* const timingKeys[]={"version","animationGapTargetUs","maxAnimationFrameGapUs","windows","http"};
+  const char* const firmwareKeys[]={"version","phase","automatic","bootHealthy"};
+  if(!LampHttpJson::requiredKeys(timing.bytes,timing.length,timingKeys,sizeof(timingKeys)/sizeof(timingKeys[0]))||
+     !LampHttpJson::requiredKeys(firmware.bytes,firmware.length,firmwareKeys,sizeof(firmwareKeys)/sizeof(firmwareKeys[0])))return String();
   return out;
 }
 void sendLampDiagnostics()
 {
   if (!authorizedLampRequest(false)) return;
-  lampServer.send(200, "application/json", lampDiagnosticsJson());
+  String snapshot=lampDiagnosticsJson();
+  if(snapshot.isEmpty()){lampServer.send(503,"text/plain","Diagnostic response memory unavailable. Nothing changed.");return;}
+  lampServer.send(200, "application/json", std::move(snapshot));
 }
 
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
-  String state = "{\"deviceId\":" + jsonText(lampIdentity());
+  String state;
+  // Reserve the common complete reply without demanding a contiguous 8 KiB
+  // block. Larger replies may grow within the unchanged transport bound.
+  if(!state.reserve(6144)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  state = "{\"deviceId\":" + jsonText(lampIdentity());
   if(!lampServer.controlActive())state += ",\"token\":" + jsonText(lampToken);
   state += ",\"name\":" + jsonText(lampName) + ",\"uptimeMs\":" + String(millis());
   state += ",\"controlVersion\":1";
@@ -266,12 +316,12 @@ void sendLampState()
   state += ",\"factoryReset\":true";
   state += ",\"usingDefaultPassword\":" + String(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
   state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
-  state += ",\"firmware\":" + lampUpdateJson();
-  state += ",\"audio\":" + lampAudioJson();
+  state += ",\"firmware\":";state += lampUpdateJson();
+  state += ",\"audio\":";state += lampAudioJson();
   // Keep the complete lighting/settings/status reply within the shared 8 KiB
   // bound. Route hints continue on /api/sync/page; durable order is never cut.
-  state += ",\"sync\":" + lampSyncJson(0,1);
-  state += ",\"lampStyle\":" + lampStyleJson();
+  state += ",\"sync\":";if(!appendLampSyncJson(state,0,1)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  state += ",\"lampStyle\":";state += lampStyleJson();
   state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+",\"kind\":\""+(lampCalibrationCenter()?"center":"leds")+"\",\"centerSupported\":true}";
   state += ",\"rotation\":{\"enabled\":"+String(lampRotation.enabled?"true":"false")+",\"random\":"+String(lampRotation.random?"true":"false")+",\"category\":"+String(lampRotation.category)+",\"seconds\":"+String(lampRotation.seconds)+"}";
   state += ",\"fountainColors\":[";
@@ -303,7 +353,28 @@ void sendLampState()
     state += "["+String(o.speed)+","+String(o.intensity)+","+String(o.dual)+","+String(o.r)+","+String(o.g)+","+String(o.b)+"]";
   }
   state += "]}";
-  lampServer.send(200, "application/json", state);
+  const char* const stateKeys[]={"deviceId","name","uptimeMs","controlVersion","apiVersion","startupMode","startupBrightness","catalogVersion","factoryReset","usingDefaultPassword","protocol","firmware","audio","sync","lampStyle","calibration","rotation","fountainColors","vuColors","midpoint","effectiveMidpoint","mode","brightness","leds","milliamps","power","ssid","connected","address","gateway","dns","hostname"};
+  const char* const appearanceKeys[]={"effects","colors","effectOptions"};
+  const auto firmware=LampHttpJson::member(state.c_str(),state.length(),"firmware");
+  const char* const firmwareKeys[]={"version","phase","automatic","bootHealthy"};
+  if(!LampHttpJson::requiredKeys(state.c_str(),state.length(),stateKeys,sizeof(stateKeys)/sizeof(stateKeys[0]))||
+     !LampHttpJson::requiredKeys(state.c_str(),state.length(),appearanceKeys,sizeof(appearanceKeys)/sizeof(appearanceKeys[0]))||
+     !LampHttpJson::requiredKeys(firmware.bytes,firmware.length,firmwareKeys,sizeof(firmwareKeys)/sizeof(firmwareKeys[0]))){
+    lampServer.send(503,"text/plain","State response incomplete. Nothing changed.");return;
+  }
+  // A transient allocation failure can omit both a separator and an entry,
+  // leaving valid JSON with a shorter array. Fence the complete appearance.
+  const char* const countedArrays[]={"effects","colors","effectOptions","fountainColors","vuColors"};
+  for(unsigned i=0;i<sizeof(countedArrays)/sizeof(countedArrays[0]);++i){
+    // The guards above already validated the whole immutable reply. Avoid
+    // repeating that full scan when locating each bounded array.
+    const auto array=LampHttpJson::Check(state.c_str(),state.length()).member(countedArrays[i]);
+    size_t count=0;
+    if(!LampHttpJson::arrayCount(array.bytes,array.length,count)||count!=(i<3?lampAvailableEffectCount():3)){
+      lampServer.send(503,"text/plain","State response incomplete. Nothing changed.");return;
+    }
+  }
+  lampServer.send(200, "application/json", std::move(state));
 }
 
 LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential) {
@@ -362,12 +433,12 @@ void failLampUpdate(const String& message)
 {
   if (Update.isRunning()) Update.abort();
   releaseLampManualUpdate();
-  otaAccepted = false; otaActive = false; otaComplete = false; otaMessage = message;
+  otaAccepted = false; otaActive = false; otaComplete = false; otaMessage = message; lampServer.acceptUpload(false);
 }
 
 void receiveLampUpdate()
 {
-  HTTPUpload& upload = lampServer.upload();
+  auto& upload = lampServer.upload();
   if (upload.status == UPLOAD_FILE_START) {
     otaComplete = false; otaAccepted = false; otaMessage = "Update did not finish.";
     imagePrefixUsed = 0; imageValidated = false;
@@ -378,7 +449,7 @@ void receiveLampUpdate()
     if(!lampRolloutAllowsUnpinnedUpdate()){otaMessage="This group has a pinned staged update. Finish or reconcile its rollout before using an unpinned service upload.";return;}
     if (!reserveLampManualUpdate()) { otaMessage = "Another update operation is active. Try again when it finishes."; return; }
     beginLampManualUpdateCue();
-    otaAccepted = true; otaActive = true; otaLastActivity = millis();
+    otaAccepted = true; otaActive = true; otaLastActivity = millis(); lampServer.acceptUpload(true);
   } else if (upload.status == UPLOAD_FILE_WRITE && otaAccepted) {
     otaLastActivity = millis();
     size_t offset = 0;
@@ -651,9 +722,39 @@ void beginLampNetwork()
   lampServer.on("/api/effects", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
     String catalog = "[";
-    for (uint8_t mode=1; mode<=lampAvailableEffectCount(); ++mode) { if (mode>1) catalog+=','; catalog+=lampEffectCatalogEntry(mode); }
-    catalog+=']';
-    lampServer.send(200, "application/json", catalog);
+    const uint8_t available=lampAvailableEffectCount();bool complete=catalog.length()==1;
+    static const char* const fields[]={"id","name","category","speed"};
+    // A failed jsonText append can leave a valid but shortened name. Compare
+    // its bounded JSON string against the canonical catalog without allocating.
+    const auto nameMatches=[](LampHttpJson::Member value,const char* expected){
+      if(!value||value.length<2||value.bytes[0]!='"'||value.bytes[value.length-1]!='"')return false;
+      const char* at=value.bytes+1;const char* end=value.bytes+value.length-1;
+      const char* hex="0123456789abcdef";
+      for(const uint8_t* text=reinterpret_cast<const uint8_t*>(expected);*text;++text){
+        const uint8_t c=*text;char encoded[6];size_t n=1;encoded[0]=char(c);
+        if(c=='"'||c=='\\'){
+          encoded[0]='\\';encoded[1]=char(c);n=2;
+        }else if(c<32){encoded[0]='\\';encoded[1]='u';encoded[2]=encoded[3]='0';encoded[4]=hex[c>>4];encoded[5]=hex[c&15];n=6;}
+        if(size_t(end-at)<n||memcmp(at,encoded,n))return false;at+=n;
+      }return at==end;
+    };
+    for(uint16_t index=1;complete&&index<=available;++index){
+      const uint8_t mode=uint8_t(index);const String entry=lampEffectCatalogEntry(mode);
+      if(!LampHttpJson::requiredKeys(entry.c_str(),entry.length(),fields,4)){complete=false;break;}
+      const auto id=LampHttpJson::Check(entry.c_str(),entry.length()).member("id");
+      char expected[3]={char('0'+mode/100),char('0'+(mode/10)%10),char('0'+mode%10)};
+      const size_t digits=mode<10?1:mode<100?2:3;
+      const auto name=LampHttpJson::Check(entry.c_str(),entry.length()).member("name");
+      if(id.length!=digits||memcmp(id.bytes,expected+3-digits,digits)||!nameMatches(name,effectNames[mode-1])){complete=false;break;}
+      if(mode>1)complete=catalog.concat(',');
+      if(complete)complete=catalog.concat(entry);
+    }
+    if(complete)complete=catalog.concat(']');
+    size_t count=0;
+    if(!complete||!LampHttpJson::arrayCount(catalog.c_str(),catalog.length(),count)||count!=available){
+      lampServer.send(503,"text/plain","Effect catalog incomplete. Nothing changed.");return;
+    }
+    lampServer.send(200, "application/json", std::move(catalog));
   });
   lampServer.on("/api/firmware", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
@@ -728,7 +829,7 @@ void beginLampNetwork()
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t on;
     if (!readNumber("on", 0, 1, on)) { lampServer.send(400, "text/plain", "Invalid power value."); return; }
-    setLampControl(Mode, Brightness, on); FastLED.show();
+    setLampControl(Mode, Brightness, on); lampShowFrame(PowerOn?LampRuntimeMetrics::FrameKind::Control:LampRuntimeMetrics::FrameKind::Off);
     lampServer.send(200, "text/plain", PowerOn ? "Light on." : "Light off.");
   });
   lampServer.on("/api/mesh/status", HTTP_GET, [](){
@@ -803,6 +904,23 @@ bool lampIsUpdating() {
   return otaActive || state.phase == UPDATE_DOWNLOADING || state.phase == UPDATE_RESTARTING;
 }
 
+size_t buildLampRuntimeDiagnostic(char* output,size_t capacity){
+  LampRuntimeDiagnostic::Input input;
+  char identity[13];
+  LampRuntimeDiagnostic::canonicalIdentity(ESP.getEfuseMac(),identity);
+  input.identity=identity;input.version=LAMP_FIRMWARE_VERSION;
+  input.uptime=millis();input.freeHeap=ESP.getFreeHeap();input.minHeap=ESP.getMinFreeHeap();input.largestBlock=ESP.getMaxAllocHeap();
+  input.loopStack=uxTaskGetStackHighWaterMark(nullptr);input.closeStack=lampServer.closeTaskStackMinimumBytes();
+  const auto cleanup=LampHttpSocketCleanup::metrics();
+  input.closeQueued=cleanup.queued;input.closeAttempts=cleanup.closeAttempts;input.closeFailures=cleanup.closeFailures;
+  input.closeAborts=cleanup.aborts;input.closePending=cleanup.pendingOwned;input.closeMaxOwnedMs=cleanup.maxOwnedMs;
+  input.frames=lampRenderedFrames;input.maxRender=lampMaxRenderUs;input.mode=Mode;input.brightness=Brightness;input.leds=NUM_LEDS;input.midpoint=lampMidpoint;input.power=PowerOn;
+  const auto update=getLampUpdateStatus();input.updatePhase=update.phase;input.updateError=update.error;input.automatic=update.automatic;input.healthy=lampBootHealthy();
+  input.connected=WiFi.status()==WL_CONNECTED;input.channel=WiFi.channel();input.scanning=scanActive;input.style=lampStyleCode();
+  const auto address=WiFi.localIP();for(unsigned i=0;i<4;++i)input.address[i]=address[i];
+  return LampRuntimeDiagnostic::serialize(output,capacity,input,getLampRuntimeMetrics(),lampServer.metrics());
+}
+
 // USB-only recovery/diagnostics. No credentials are included in replies.
 void serviceLampUSB()
 {
@@ -813,9 +931,20 @@ void serviceLampUSB()
   static bool centerPending = false;
   static bool bluetoothPending = false;
   static bool diagnosticsPending = false;
+  static bool runtimePending = false;
+  static char runtimeReply[LampRuntimeDiagnostic::Capacity];
+  static size_t runtimeLength=0,runtimeSent=0;
   static String audioReply;
   static size_t audioSent = 0;
-  while (Serial.available()) {
+  static uint32_t replyStartedAt=0,replyProgressAt=0,resyncAttemptAt=0;
+  static bool resyncPending=false,resyncAttempted=false;
+  static uint8_t nextReplyKind=0;
+  // A continuously writing USB peer must still yield to rendering and radio service.
+  constexpr size_t UsbCommandsPerTurn = 32;
+  constexpr size_t UsbReplyBytesPerTurn=64;
+  constexpr uint32_t UsbReplyLifetimeMs=5000,UsbReplyIdleMs=1500,UsbResyncRetryMs=100;
+  const uint32_t now=millis();
+  for (size_t commands = 0; commands < UsbCommandsPerTurn && Serial.available(); ++commands) {
     const char command = Serial.read();
     if (command == '?') statusPending = true;
     if (command == 'w') scanPending = true;
@@ -826,6 +955,7 @@ void serviceLampUSB()
     if (command == 'p') wifiSetupPending = true;
     if (command == 'q') bluetoothPending = true;
     if (command == 'd') diagnosticsPending = true;
+    if (command == 'r') runtimePending = true;
     if (command == 'c') { beginLampCenterCalibration(); centerPending = true; }
     if (command == 'j') centerPending = true;
     if (command == 's' && setupAP && !otaActive && !lampRemoteUpdateBusy()) {
@@ -847,34 +977,75 @@ void serviceLampUSB()
       if (saveLampAudioConfiguration(command == 'm', 8, 8)) restartAt = millis() + 1000;
     }
   }
-  if (wifiSetupPending && audioReply.isEmpty()) { audioReply = lampWifiSetupJson() + "\n"; audioSent = 0; wifiSetupPending = false; }
-  if (bluetoothPending && audioReply.isEmpty()) { audioReply = lampBluetoothStatusJson() + "\n"; audioSent = 0; bluetoothPending = false; }
-  if (diagnosticsPending && audioReply.isEmpty()) { audioReply = lampDiagnosticsJson() + "\n"; audioSent = 0; diagnosticsPending = false; }
-  if (centerPending && audioReply.isEmpty()) { audioReply = lampCenterCalibrationJson() + "\n"; audioSent = 0; centerPending = false; }
-  if (audioPending && audioReply.isEmpty()) { audioReply = lampAudioJson() + "\n"; audioSent = 0; audioPending = false; }
-  if (!audioReply.isEmpty()) {
-    const size_t room = Serial.availableForWrite();
-    const size_t count = min(room, audioReply.length() - audioSent);
-    if (count) audioSent += Serial.write(reinterpret_cast<const uint8_t*>(audioReply.c_str()) + audioSent, count);
-    if (audioSent == audioReply.length()) audioReply = "";
+  if ((!audioReply.isEmpty() || runtimeLength) &&
+      (uint32_t(now-replyStartedAt)>=UsbReplyLifetimeMs || uint32_t(now-replyProgressAt)>=UsbReplyIdleMs)) {
+    // Enqueue progress is not host delivery. Abandon the owned remainder;
+    // never replay it or splice a fresh reply onto its unterminated line.
+    audioReply=static_cast<const char*>(nullptr);audioSent=0;
+    runtimeLength=runtimeSent=0;runtimeReply[0]=0;
+    resyncPending=true;resyncAttempted=false;
   }
-  if (statusPending) {
-    String status = "reset=" + String(static_cast<int>(esp_reset_reason())) + " uptime=" + String(millis());
-    status += " ap=" + String(setupAP) + " apOK=" + String(lastAPStartOK) + " mode=" + String(static_cast<int>(WiFi.getMode()));
-    status += " ssid=" + lampAPName + " ip=" + WiFi.softAPIP().toString() + " heap=" + String(ESP.getFreeHeap()) + "\n";
-    if (Serial.availableForWrite() >= static_cast<int>(status.length())) {
-      Serial.write(reinterpret_cast<const uint8_t*>(status.c_str()), status.length());
-      statusPending = false;
+  if(resyncPending){
+    const int room=Serial.availableForWrite();
+    if(room>0 || !resyncAttempted || uint32_t(now-resyncAttemptAt)>=UsbResyncRetryMs){
+      resyncAttempted=true;resyncAttemptAt=now;
+      const uint8_t newline='\n';
+      // Setup pins HWCDC tx timeout to zero. This one-byte attempt reaches
+      // its bounded recovery kick even with no reported TX-ring room. Only
+      // a separator may enter the disconnected core's FIFO-replacement path.
+      Serial.setTxTimeoutMs(0);
+      if(Serial.write(&newline,1)==1)resyncPending=false;
+    }
+    return;
+  }
+  if(audioReply.isEmpty() && !runtimeLength){
+    bool* pending[]={&wifiSetupPending,&bluetoothPending,&runtimePending,&diagnosticsPending,
+                     &centerPending,&audioPending,&statusPending,&scanPending};
+    for(uint8_t offset=0;offset<8;++offset){
+      const uint8_t kind=(nextReplyKind+offset)%8;
+      if(!*pending[kind])continue;
+      *pending[kind]=false;nextReplyKind=(kind+1)%8;
+      switch(kind){
+        case 0:audioReply=lampWifiSetupJson()+"\n";break;
+        case 1:audioReply=lampBluetoothStatusJson()+"\n";break;
+        case 2:
+          runtimeLength=buildLampRuntimeDiagnostic(runtimeReply,sizeof(runtimeReply));
+          if(!runtimeLength){const char failure[]="{\"diagnosticsVersion\":2,\"error\":\"Runtime snapshot unavailable\"}\n";memcpy(runtimeReply,failure,sizeof(failure));runtimeLength=sizeof(failure)-1;}
+          break;
+        case 3:
+          audioReply=lampDiagnosticsJson();
+          if(audioReply.isEmpty())audioReply="{\"diagnosticsVersion\":1,\"error\":\"Diagnostic response memory unavailable\"}";
+          audioReply+="\n";break;
+        case 4:audioReply=lampCenterCalibrationJson()+"\n";break;
+        case 5:audioReply=lampAudioJson()+"\n";break;
+        case 6:
+          audioReply="reset="+String(static_cast<int>(esp_reset_reason()))+" uptime="+String(millis());
+          audioReply+=" ap="+String(setupAP)+" apOK="+String(lastAPStartOK)+" mode="+String(static_cast<int>(WiFi.getMode()));
+          audioReply+=" ssid="+lampAPName+" ip="+WiFi.softAPIP().toString()+" heap="+String(ESP.getFreeHeap())+"\n";break;
+        case 7:
+          // No SSIDs, passwords or tokens in USB scan diagnostics.
+          audioReply="scan="+String(scanCount)+" active="+String(scanActive);
+          audioReply+=" ms="+String(scanActive?millis()-scanStartedAt:scanDuration);
+          audioReply+=" polls="+String(scanPolls)+" clients="+String(WiFi.softAPgetStationNum())+"\n";break;
+      }
+      audioSent=runtimeSent=0;replyStartedAt=replyProgressAt=now;
+      break;
     }
   }
-  if (scanPending) {
-    // No SSIDs, passwords, or tokens in USB scan diagnostics.
-    String report = "scan=" + String(scanCount) + " active=" + String(scanActive);
-    report += " ms=" + String(scanActive ? millis() - scanStartedAt : scanDuration);
-    report += " polls=" + String(scanPolls) + " clients=" + String(WiFi.softAPgetStationNum()) + "\n";
-    if (Serial.availableForWrite() >= static_cast<int>(report.length())) {
-      Serial.print(report); scanPending = false;
-    }
+  const bool runtime=runtimeLength!=0;
+  const size_t length=runtime?runtimeLength:audioReply.length();
+  size_t& sent=runtime?runtimeSent:audioSent;
+  if(!length)return;
+  const int room=Serial.availableForWrite();
+  if(room<=0)return;
+  const size_t count=min(UsbReplyBytesPerTurn,min(static_cast<size_t>(room),length-sent));
+  const auto* bytes=reinterpret_cast<const uint8_t*>(runtime?runtimeReply:audioReply.c_str());
+  const size_t written=min(count,Serial.write(bytes+sent,count));
+  sent+=written;if(written)replyProgressAt=now;
+  if(sent==length){
+    // nullptr releases WString backing capacity; empty assignment retains it.
+    audioReply=static_cast<const char*>(nullptr);audioSent=0;
+    runtimeLength=runtimeSent=0;runtimeReply[0]=0;
   }
 }
 
@@ -948,7 +1119,10 @@ void serviceLampNetwork()
     }
   }
   if (!connected && mdnsStarted) { MDNS.end(); mdnsStarted = false; }
+  lampServer.serviceCleanup();
+  const uint32_t acceptedBefore=lampServer.metrics().accepted;
   if (serverStarted) lampServer.handleClient();
+  if(lampServer.hasActiveClients()||lampServer.metrics().accepted!=acceptedBefore){lastHttpControlAt=now;haveHttpControlActivity=true;}
   const bool probeScanning=serviceLampOfflineWifi(now);
   serviceLampSync(lampName, (lampUpdateOwnsResources()&&!LampFirmwareRelay::ownsRadio()) || setupAP || lampPairingOpen() || lampWifiSetupBusy() || lampFactoryResetPending(),scanActive||probeScanning);
 }

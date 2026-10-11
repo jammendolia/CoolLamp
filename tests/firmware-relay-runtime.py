@@ -86,13 +86,20 @@ Status status(){Status s;s.active=radioAvailable;s.channel=11;return s;}
 void holdChannel(uint32_t){}
 }
 // Compile the actual sender and recipient state machines with separate state.
+#ifdef LAMP_RELAY_TEST_DONOR
+#define COOL_LAMP_TEST_IMAGE 1
+#endif
 #define LampFirmwareRelay Donor
 #include "LampFirmwareRelay.cpp"
 #undef LampFirmwareRelay
+#undef COOL_LAMP_TEST_IMAGE
 #undef LAMP_FIRMWARE_VERSION
 #undef LAMP_VERSION_MINOR
 #define LAMP_FIRMWARE_VERSION "1.11.0"
 #define LAMP_VERSION_MINOR 11
+#ifdef LAMP_RELAY_TEST_RECEIVER
+#define COOL_LAMP_TEST_IMAGE 1
+#endif
 #define LampFirmwareRelay Recipient
 #include "LampFirmwareRelay.cpp"
 #undef LampFirmwareRelay
@@ -131,6 +138,19 @@ int main(int argc,char** argv){
  const String form="key="+String(keyHex);side=0;assert(Donor::control(true,form).status==200);side=1;
  assert(Recipient::control(true,scenario=="wrong-fleet"?String("key=ffffffffffffffffffffffffffffffff"):form).status==200);
  auto status=Recipient::control(false,"");assert(status.body.find(keyHex)==std::string::npos);assert(Recipient::control(true,"key=11111111111111111111111111111111").status==409);
+ if(scenario=="test-donor-measurement"||scenario=="test-donor-request"){
+  side=0;for(unsigned i=0;i<2000;++i){Donor::service(fakeNow);++fakeNow;}
+  FirmwareManifest measured{};assert(Donor::runningManifest(measured)&&measured.size==sizeof(image)&&packets.empty());
+  const auto donor=Donor::control(false,"");assert(donor.status==200&&donor.body.find("\"donorEligible\":false")!=std::string::npos&&donor.body.find("COOLLAMP-TEST-IMAGE-")!=std::string::npos&&donor.body.find("\"automatic\":false")!=std::string::npos);
+  if(scenario=="test-donor-request"){
+   // Even a valid authenticated delayed Request cannot revive donation.
+   Donor::offerToken=99;uint8_t request[49]{LampFirmwareRelayWire::Request};LampFirmwareRelayWire::put64(request+1,23);memcpy(request+9,measured.sha256,32);LampFirmwareRelayWire::put64(request+41,99);
+   LampEspNow::Received message;message.length=81;message.receivedAt=fakeNow;message.channel=11;memcpy(message.source,addresses[1],6);
+   assert(LampFirmwareRelayCrypto::seal(request,sizeof(request),addresses[1],addresses[0],fleetKey,41,1,message.data));assert(Donor::receive(message));
+  }
+  assert(!Donor::ownsRadio()&&!reservations[0]&&packets.empty()&&!begins&&!ends&&!boots&&automatic);
+  std::cout<<"PASS relay "<<scenario<<": measured artifact retained, no offering/donation or policy writes\n";return 0;
+ }
  if(scenario=="auto-off")automatic=false;
  if(scenario=="quiet-window")policyAllowed=false;
  if(scenario=="attempt-quarantine")attemptAllowed=false;
@@ -191,4 +211,8 @@ with tempfile.TemporaryDirectory(prefix='coollamp-firmware-relay-') as folder:
  scenarios=['crypto','unpaired-measurement','success','auto-off','commission','wrong-fleet','old-offer','lost-data','lost-ack','lost-finish-ack','corrupt','auto-disabled-midway','radio-lost','quiet-window','attempt-quarantine','attempt-storage','group-unassigned','group-legacy','rollout-denied','rollout-storage','coordinator-held','coordinator-legacy']
  if publisher:scenarios+=['malicious-signature','malicious-artifact','unsigned-offer','missing-metadata','retained-mismatch']
  for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
- print(f'PASS: {len(scenarios)} production relay scenarios; real pinned AES-GCM and SHA-256')
+ for mode,extra_scenarios in [('DONOR',['test-donor-measurement','test-donor-request']),('RECEIVER',['success'])]:
+  test_binary=folder/('test-'+mode.lower()+'.exe')
+  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,*includes,*defines,'-DLAMP_RELAY_TEST_'+mode+'=1',str(folder/'fixture.cpp'),str(ROOT/'LampFirmwareRelayCrypto.cpp'),str(ROOT/'LampBleUpdate.cpp'),*([str(ROOT/'UpdatePublisher.cpp')] if publisher else []),*objects,'-o',str(test_binary)],check=True)
+  for scenario in extra_scenarios:subprocess.run([str(test_binary),scenario],check=True)
+ print(f'PASS: {len(scenarios)+3} production relay scenarios; real pinned AES-GCM and SHA-256; diagnostic donor blocked, receiver retained')

@@ -1,5 +1,6 @@
 #include <Preferences.h>
 #include "LampPlayback.h"
+#include "LampRuntimeMetrics.h"
 LampRotation lampRotation;
 static uint32_t rotationAt=0;
 static uint8_t rotationMode=0;
@@ -64,7 +65,7 @@ bool finishLampCalibration(bool save){
   if(!lampCalibrationActive())return false;
   if(save && !(calibrationCenter?saveLampGeometry(calibrationPosition,NUM_LEDS):saveLampLedCount(calibrationPosition))){calibrationFailed=true;calibrationTouched=millis();return false;}
   // Clear the entire probe range, including pixels beyond the former length.
-  fill_solid(calibrationLeds,calibrationLength,CRGB::Black);FastLED.show();
+  fill_solid(calibrationLeds,calibrationLength,CRGB::Black);lampShowFrame(LampRuntimeMetrics::FrameKind::Calibration);
   FastLED[0].setLeds(leds,NUM_LEDS);delete[] calibrationLeds;calibrationLeds=nullptr;
   FastLED.setBrightness(PowerOn?Brightness:0);resetLampCalibrationKnob();return true;
 }
@@ -75,7 +76,7 @@ bool renderLampCalibration(){
   if(uint32_t(now-calibrationFrame)>=50){
     calibrationFrame=now;fill_solid(calibrationLeds,calibrationLength,CRGB::Black);
     if(!calibrationCenter||(now/250)%2==0)calibrationLeds[calibrationPosition-1]=calibrationFailed?CRGB::Red:calibrationCenter?CRGB::White:CRGB(0,220,180);
-    FastLED.setBrightness(80);FastLED.show();
+    FastLED.setBrightness(80);lampShowFrame(LampRuntimeMetrics::FrameKind::Calibration);
   }
   delay(1);return true;
 }

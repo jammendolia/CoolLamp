@@ -4,6 +4,7 @@
 #include <new>
 #include "../LampPlayback.h"
 #include "../LampGeometry.h"
+#include "../LampRuntimeMetrics.h"
 #include <Preferences.h>
 uint32_t now=0;uint32_t millis(){return now;}void delay(int){}
 uint32_t esp_random(){return 0;}
@@ -20,6 +21,7 @@ CRGB leds[NUM_LEDS];
 void fill_solid(CRGB* p,int n,CRGB c){std::fill(p,p+n,c);}
 struct Controller{CRGB* p=leds;int n=NUM_LEDS;void setLeds(CRGB* data,int count){p=data;n=count;}};
 struct Driver{Controller c;int brightness=100,shows=0;Controller& operator[](int){return c;}void show(){++shows;}void setBrightness(int b){brightness=b;}}FastLED;
+void lampShowFrame(LampRuntimeMetrics::FrameKind kind){assert(kind==LampRuntimeMetrics::FrameKind::Calibration);FastLED.show();}
 uint8_t lampSyncRole(){return role;}uint8_t lampGroupScene(){return scene;}
 bool lampHasMicrophone(){return mic;}bool lampUpdateOwnsResources(){return updating;}
 bool lampPairingOpen(){return false;}bool lampSetupPulse(){return false;}bool lampIdentifyActive(){return false;}

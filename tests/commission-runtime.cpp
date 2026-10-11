@@ -12,6 +12,7 @@
 #include "esp_mac.h"
 #include "esp_random.h"
 using namespace LampMeshWire;
+extern unsigned lampGcmGuardNullRejections;
 unsigned side=0;uint32_t now=1000;bool paired[2]{true,false},eligible[2]{false,true},persistence=true,blocked=false,onlineProof=false,radioHeld[2]{},sendBlocked=false;
 unsigned writes=0,holds=0;uint8_t fleet[2][16]{},addresses[2][6]{{2,0,1,2,3,4},{2,0,1,2,3,5}};
 unsigned power=1,group=0;String lampName="Brand new lamp";
@@ -72,6 +73,19 @@ void crypto(){
  uint8_t wire[96],opened[32],body[16]{},other[96];size_t size=0,n=0;uint8_t kind=0;uint32_t sequence=0;assert(seal(t,ka,0,Commit,1,body,sizeof(body),wire,size));assert(open(t,kb,addresses[0],wire,size,kind,sequence,opened,n)&&kind==Commit&&sequence==1&&n==16);
  for(size_t i=0;i<size;++i){wire[i]^=1;assert(!open(t,kb,addresses[0],wire,size,kind,sequence,opened,n));wire[i]^=1;}
  assert(!open(t,kb,addresses[1],wire,size,kind,sequence,opened,n));assert(!open(changed,kb,addresses[0],wire,size,kind,sequence,opened,n));assert(seal(t,ka,0,Commit,2,body,sizeof(body),other,n));assert(memcmp(wire+LampCommissionCrypto::HeaderSize,other+LampCommissionCrypto::HeaderSize,16));
+ // The hardware port requires real pointers for the empty authenticated
+ // confirmation/cancel records; exercise production sealing under that rule.
+ uint8_t dummy=0;unsigned index=0;
+ for(uint8_t type:{uint8_t(Ready),uint8_t(Approved),uint8_t(Finish),uint8_t(Cancel)}){
+  const uint8_t direction=type==Cancel?0:1;const uint32_t seq=10+index++;
+  assert(seal(t,ka,direction,type,seq,nullptr,0,wire,size));
+  assert(seal(t,ka,direction,type,seq,&dummy,0,other,n));assert(size==64&&n==size&&!memcmp(wire,other,size));
+  assert(open(t,kb,addresses[direction?1:0],wire,size,kind,sequence,opened,n)&&kind==type&&sequence==seq&&n==0);
+  for(size_t i=0;i<size;++i){wire[i]^=1;assert(!open(t,kb,addresses[direction?1:0],wire,size,kind,sequence,opened,n));wire[i]^=1;}
+ }
+ assert(!seal(t,ka,0,Commit,20,nullptr,16,wire,size)&&size==0);
+ assert(!seal(t,ka,1,Failed,21,nullptr,1,wire,size)&&size==0);
+ assert(lampGcmGuardNullRejections==0);
  uint8_t invalid[65]{};assert(!a.derive(invalid,t,kc));a.clear();b.clear();c.clear();assert(!a.active()&&!b.active());
 }
 void pulseCounts(){

@@ -1,5 +1,56 @@
 # CoolLamp development handoff — 2026-10-06
 
+## CoolLamp app 2.0.0 rewrite — 2026-10-10
+
+The user authorized implementing the new mobile application and publishing it
+to TestFlight. The app release is isolated from the firmware worker's checkout
+in `C:\Users\j_amm\.codex\worktrees\coollamp-app-two\CoolLamp`, branch
+`testflight/coollamp-2.0.0`, source
+`d3b5c4ffd8bd649e94f6ee27210d4b7d51ace7a8`. It starts from the existing app's
+validated native transport foundation, with the new Home, Lamps, Effects and
+Settings shell, guided six-second physical pairing, room/group naming, adaptive
+effect controls, warm light/dark/system appearance, and new platform icons.
+iOS marketing version and Android versionName are **2.0.0**; Android code is
+**20000**. The iOS workflow supplies build **46.1**.
+
+The release snapshot passed **608 mobile tests** and the production build.
+Hardware-free browser checks exercised actual connection, target switching,
+rich effect schemas, partial speed changes, receipt-confirmed tuning save,
+Home power, group creation, scene selection and confirmed group dissolution.
+The fixture blocks Bluetooth and non-loopback networking and is not included
+in the release. No physical lamp, firmware, router or device settings were changed.
+Screenshots are under ignored `.build/coollamp-2-welcome.png` and
+`.build/coollamp-2-setup.png`.
+
+Group creation checks every selected lamp before the first mutation, prefers a
+microphone-equipped main lamp, negotiates a common protocol and uses advertised
+capacity. Old group limits remain nine total lamps; expanded groups use verified
+v3 capacities, up to 32. This is contract and simulated validation, not a physical
+20-lamp test. Separately saved appearance and richer controls are enabled only
+when the selected lamp advertises them. The private firmware update animation
+does not become a selectable effect. Uncertain mutations are reconciled with
+their original receipts, never automatically replayed on a different connection.
+
+TestFlight run [38071307041](https://github.com/jammendolia/CoolLamp/actions/runs/38071307041)
+completed successfully: web tests, five native checks, signed arm64 archive,
+IPA export and Apple upload all passed. Apple processed **2.0.0 (46.1)** as
+**VALID**, unexpired, **IN_BETA_TESTING**. Read-only follow-up
+[38072405186](https://github.com/jammendolia/CoolLamp/actions/runs/38072405186)
+confirmed **one assigned internal group** and **one automatic internal group**
+at `2026-10-10T17:36:20.513868+00:00`. Existing internal testing access is
+confirmed; no testers, groups, invitations or distribution preferences changed.
+Evidence: `.build/app2-testflight-46-verified/testflight-status.json`.
+TestFlight availability is confirmed; physical iPhone installation and lamp
+acceptance are for the user's upcoming test.
+
+The first availability query hit an API error after confirming processing.
+Release follow-up `562d7a5` fixes group reads using an exact-build association
+and app-scoped group endpoint, preserves unknown access as `null`, and adds a
+verification-only workflow mode. Eleven mocked verifier cases passed. The
+follow-up run explicitly skipped the build/sign/upload job and checked the
+existing **46.1** build; it did not upload a second app. The app's uploaded
+source remains `d3b5c4ffd8bd649e94f6ee27210d4b7d51ace7a8`.
+
 ## Bluetooth bulk-transfer receiver and controller demotion — 2026-10-10
 
 The user confirmed the app 44.1 Bluetooth update completed, but remained very
@@ -40,21 +91,40 @@ apply. No automatic reassignment of former followers occurs. Current app 44.1
 workaround: select the leader's gear, open Groups → Advanced · selected lamp
 recovery → Leave group, then choose a group under Ungrouped lamps and Join.
 
-Windows validation: **516 mobile tests**, production build, **45 focused firmware
-checks**, **107 focused sender cases**, and the new controller-demotion UI cases
+Validation: **516 mobile tests**, production build, **45 focused firmware
+checks**, **107 focused sender cases**, and **33 production UI scenarios**
 passed. Public Windows image is **1,920,816 bytes**, SHA-256
 `0b7244603a68d81f05297f7e0c58726a7dce936968c69d5d12e6d8aa930c19d9`;
 packaging/credential/partition checks passed. SDK fresh frozen installation using
-CI pnpm 11.19.0 verified the real patched SwiftPM dependency. Full production UI,
-macOS native compilation/tests and Linux firmware CI/publication remain pending.
-Physical fast-mode throughput and bootstrap installation remain unmeasured.
-No new firmware/app release is published at this checkpoint. Evidence:
+CI pnpm 11.19.0 verified the real patched SwiftPM dependency. macOS CI
+**38027260969** passed the actual installed SDK's Swift gate tests and signed
+arm64 CoreBluetooth compilation/archive/export. Apple accepted app **1.0 (45.1)**
+at `2026-10-10T05:27:44.8148520Z` (**October 10, 12:27:44 AM CDT**).
+Tester availability remains unverified. Linux firmware CI **38027217705** passed
+all release checks. Public Latest **1.14.0** was published at
+`2026-10-10T05:32:15Z` (**October 10, 12:32:15 AM CDT**), tag/source
+`3b0b85893626463dfca225bb1a2613d4d93e1f59`. Its exact **CI** image is
+**1,920,432 bytes**, SHA-256
+`295a615acd70d9c2957d94f3b1704210f194bb5d362377eb96d6598058b71161`;
+manifest SHA-256
+`1e5dedcd9a2273153e86391fdf8c228b0ebc989dac7b79183a9551aeceea85e9`.
+Anonymous Latest and pinned downloads were verified against those CI assets,
+as was the published source tag. The Windows image is validation evidence and
+was not uploaded. Only personal **jammendolia** was used. No lamp install,
+reboot, GPIO, role, saved setting or router mutation was forced. Physical fast-mode
+throughput and installed 1.14.0 remain unverified; the last device check was 1.13.0.
+The original working tree and private evidence were preserved; only scoped paths
+were committed/pushed through `.build/release-1.9.5`. Evidence:
 `.build/bluetooth-bulk-mobile-tests.log`, `.build/bluetooth-bulk-mobile-build.log`,
 `.build/bluetooth-firmware-bulk-validation.json`,
 `.build/bluetooth-native-patch-validation.json`,
 `.build/stop-coordinating-model-tests.log`, `.build/stop-coordinating-ui-result.json`,
 `.build/firmware-1.14.0-windows-build.log` and
 `.build/firmware-1.14.0-packaging-tests.log`.
+Publication evidence: `.build/bluetooth-bulk-final-validation.json`,
+`.build/bluetooth-bulk-app45.1-record.json`, `.build/bluetooth-bulk-ios-ci.log`,
+`.build/firmware-1.14.0-draft-record.json`, `.build/firmware-1.14.0-ci.log` and
+`.build/firmware-1.14.0-public-verification.json`.
 
 ## CoolLamp 1 screen-lock interruption and update-speed work — 2026-10-09
 
@@ -1386,3 +1456,172 @@ App source: `1e3d89b1c430b8eef1c534e8051b149208a3c01b`; TestFlight workflow
 `37963110135` completed successfully and Apple accepted app **1.0 (40.1)** for
 TestFlight processing. Tester availability is not independently verified.
 Firmware 1.12.0 remains an unpublished draft.
+
+## Animation continuity candidate — initial historical checkpoint, 2026-10-10
+
+The current **1.15.1** implementation replaces blocking WebServer parsing,
+transmission and socket close on the rendering loop with bounded incremental
+HTTP and a descriptor-only cleanup worker. Mutable handlers, FastLED and NVS
+remain on the Arduino loop. Cached BLE paging releases abandoned reply memory;
+firmware and rollout status reads no longer trigger persistence/time reconciliation.
+The hidden update cue retains receiver-only, initially-on, active-update admission.
+Main-loop/frame/network/HTTP timing now includes the service time previously
+excluded by `maxRenderUs`. See `docs/protocol-animation-connection-stalls.md`
+for precise limits, source findings, migration/API compatibility and physical gates.
+
+Pink Corkscrew (`74b950b2f180`) is connected by USB. Read-only inspection verified
+published 1.15.0, 134 LEDs and corkscrew style. Controlled incomplete direct-HTTP
+requests caused a visible freeze reported by the user; concurrent reads timed out
+and USB diagnostics paused. No exact baseline frame-gap measurement or original
+phone-route capture exists. Its old diagnostic timer remained 13,264 us and failed
+to include the stall. Some later test connections failed before their intended
+trace, recorded honestly. Its historical minimum heap was 436 bytes and several
+diagnostic replies lost semantic sections under allocation pressure. Current Wi-Fi,
+router and lamp settings were not written.
+
+USB also exposed a radio crypto error flood. Pinned ESP-IDF hardware AES-GCM
+requires nonnull input even for an authenticated zero-length body. Mesh and
+commissioning now pass a valid dummy address without changing the wire/tag;
+failed mesh challenge admission uses its existing 350 ms retry interval. Real
+Mbed TLS tests with a strict hardware-pointer wrapper reproduced the defect before
+the fix and pass 21 mesh/30 commissioning cases afterward.
+
+Final local public-default candidate: 2,003,760-byte image, 27,856-byte OTA margin,
+91,780 static globals, unchanged partition table/bootloader, SHA-256
+`e642257a6d4abcb6bcc7bf6b997e6af21191ce806ffdb0d743f74035a0c044e1`.
+All 27 firmware contract commands, 16 existing C++ animation/control regressions,
+applicable web/diagnostic/recovery checks, 734 mobile tests and production mobile
+build pass. Production handler fixtures include bounded send/parse/cancellation,
+lost-reply ownership, signed household envelopes and 20/32-member simulations.
+Evidence and frozen artifacts are ignored/private under `.build/animation-continuity-*`.
+Do not mistake host scale or compiler RAM arithmetic for physical RF/native or
+heap/stack acceptance.
+
+The candidate has not been flashed or published at this checkpoint. Explicit
+approval for backup/application-only flash and controlled testing has been
+requested, as required by the implementation task. Physical frame-gap, resource
+margin, genuine iPhone/Android reconnect, update interruption and 20-lamp sustained
+acceptance remain pending. The provisional animation ceiling is 100 ms; capture
+actual results and preserve credentials/hardware/individual startup settings.
+
+## Animation continuity — tenth failed physical gate, 2026-10-11
+
+The initial checkpoint above is historical. The authorized application-only
+test image installed on Pink Corkscrew at this checkpoint was 1.15.1, SHA-256
+`384bbd2e2be32cf6a0397e2dfca8e990ed326b94510b35dc10c1cbbd2959d603`.
+Its2019248-byte image has12368 bytes of OTA-slot margin; bootloader, partitions,
+OTA metadata and user settings were preserved.33 firmware contract commands,
+the firmware build and production allocation-failure fixtures pass in software.
+
+The64-profile direct-Wi-Fi physical stress run fails acceptance:423/432 normal
+reads succeeded and a timed abort/restart occurred. Captured healthy warm
+show-return gaps were48.185ms and49.024ms in the separate boots, but exclude
+the restart. The exact ELF places the abort in lazy newlib mutex allocation.
+A subsequent read-only, CRC-validated core dump identifies the initiating
+failure: mDNS could not allocate its 64-byte receive item, then its error log
+attempted to allocate a UART mutex while memory was exhausted. The dump does
+not identify all heap owners at that instant. The lamp recovered and answered
+18/18 protected read checks plus the bounded USB status query. No1.15.1
+publication is authorized or justified. The immutable ignored evidence archive
+is `.build/animation-continuity-1.15.1-384bbd2e`; detailed limits and per-boot
+results are in `docs/protocol-animation-connection-stalls.md`.
+
+The next candidate keeps the HTTPS worker unallocated while idle, raises
+control-handler memory admission to 24 KiB, and preserves the original five
+second API deadline while allowing five seconds for ACK progress. These are
+bounded admission checks, not reserved SDK memory. Repeat the pinned physical
+gate before claiming stability. Real iPhone/Android
+route capture, genuine mesh, interrupted update/donor recovery and20-lamp
+hardware acceptance remain separate pending gates. Preserve the current
+router, network, power, LED count, hardware style and startup settings.
+
+## Animation continuity — eleventh controlled diagnostic, 2026-10-11
+
+The eleventh image `d942cfd1a4511f387ca0c275809e97e2c11cb38ac3f9b5a11cf1c24283e64850`
+was verified and flashed application-only. It disables donation/publication of
+the test artifact without changing saved preferences. The HTTPS worker is now
+created only for an admitted operation and deleted on the main loop after TLS
+destruction; a live handle continues to fence update ownership. Control memory
+admission is 24 KiB. All 33 contract commands, the build and independent source/
+artifact attestation passed. Image size is 2,019,168 bytes, OTA margin 12,448 bytes,
+static globals 94,204 bytes; bootloader, partitions and saved settings survive.
+
+Pink Corkscrew completed all 64 direct-Wi-Fi HTTP stress profiles and 503/503
+normal reads without a detected reboot. Captured warm show-return maximum was
+47.920 ms, with zero new 100-ms overruns. This still fails physical acceptance:
+USB capture missed 237.844 seconds and the sum of regional historical heap
+minima reached 84 bytes. The pinned SDK does not define that sum as the lowest
+simultaneous global free heap; it leaves transient margin inconclusive. Fresh
+final capture and 18/18 post-run protected reads succeeded.
+The exact evidence, startup/capture/resource limits and failed audit are retained
+in `.build/animation-continuity-1.15.1-d942cfd1` and documented in
+`docs/protocol-animation-connection-stalls.md`. Earlier native Settings success
+belongs to the sixth image; it must not be attributed to this one.
+
+The twelfth revision aligns bulk HTML with the 24-KiB control floor and gives
+incoming headers/upload data priority over page output. All 55 actual-server
+cases, ten ACK-policy comparisons and the complete 33-command gate pass; the
+firmware build and independent artifact review also pass. The exact image is
+`f711bb64abb59c922d548b16d84394e6775ee4802b442053b45d6f4687dc7b90`,
+2,019,152 bytes, with 12,464 bytes of OTA margin and 94,204 static globals.
+Application-only readback and the unchanged boot/partition/OTA metadata and NVS
+prefix were verified before restart.
+
+Its full direct-Wi-Fi workload completed 64/64 profiles and 504/504 normal reads,
+plus 64 diagnostic and 64 revision reads with the original boot session. The
+captured warm maximum was 47.786 ms, with no new 100-ms overruns. USB diagnostics
+stopped for the final 60.563 seconds; that missing tail prevents a continuous
+whole-workload timing claim. Sampled current free heap reached 16,636 bytes and
+largest block 7,668 bytes. The reported regional historical minimum sum was 96
+bytes, which is inconclusive about simultaneous total free heap. No reboot was
+detected. Eighteen post-run protected reads and the bounded USB status query
+succeeded after the capture port was reopened. The immutable archive is
+`.build/animation-continuity-1.15.1-f711bb64` (196 evidence files). Physical
+acceptance remains incomplete. Do not publish a claimed fix, change the router,
+or infer twenty-lamp/native/update acceptance from these results.
+
+## Animation continuity — current thirteenth canary, 2026-10-11
+
+Pink Corkscrew now runs the final local 1.15.1 diagnostic image
+`a6c39e5e0d9ef4e0d688ee349f12e44766166fdd61a29fdda086d4f81f65d75b`.
+It is 2,019,904 bytes, leaving 11,712 bytes in the existing OTA slot, with
+94,204 static globals. Independent attestation checked all 125 source copies,
+33 contract commands, 31 actual sketch compile commands, unchanged bootloader/
+partitions and normal-packaging rejection. The 16 legacy regression cases,
+eight release guards and 1,168 pinned-String allocation-failure boundaries pass.
+The final guard preserves successful v1 catalog bytes and refuses shortened
+catalogs/names instead of reporting a misleading success. Both actual build
+configurations pass: the uninstalled normal image is 2,020,592 bytes, with
+11,024 bytes of OTA margin and 94,212 static globals. Neither is published.
+
+The application-only flash was fully read back and verified; the boot,
+partition, OTA metadata and saved NVS prefix remained byte exact. This image's
+**eight-profile canary** passed 63/63 normal reads, eight diagnostic and eight
+revision reads in the same boot session. Complete USB timing coverage showed
+a warm show-return maximum of 48.076 ms and zero new 100-ms overruns. Its cold
+startup maximum of 672.025 ms and one overrun are retained separately. Sampled
+current free heap was at least 16,772 bytes; largest block 7,668 bytes; loop/
+cleanup stack free minima 2,724/1,036 bytes. Regional historical minimum sum
+1,472 bytes does not establish instantaneous total heap. All 18 post-run
+protected reads and the bounded USB status query also passed.
+
+The corrected independent canary audit and its original private timestamp-origin
+error are both retained; fixing that audit did not change firmware or traffic.
+The immutable ignored archive `.build/animation-continuity-1.15.1-a6c39e5e`
+contains 216 evidence files with a digest inventory, including the separate
+normal-build resource evidence. Raw NVS backups and RAM crash dumps are excluded.
+The exact test steps, measurements and pending gates are in
+`docs/protocol-animation-connection-stalls.md`.
+
+This is a short single-lamp direct-Wi-Fi pass, not the full 64-profile release
+gate. Earlier completed 64-profile runs belong to their predecessor hashes and
+had unresolved USB capture gaps. After this final image was installed, the user
+confirmed: **Settings opens; animation continues smoothly**. This is a human
+observation of Pink Corkscrew, without captured transport or numeric timing;
+the separate supplemental record preserves that distinction. Sustained transient
+heap margin, real iPhone/Android/BLE/mesh, twenty-lamp RF, donor/update interruption
+and actual bootloader rollback remain pending. The next controlled test is the
+same long workload with at most one guarded USB reopen and independent optical
+timing, followed by the native and fleet fixture gates. Keep router/settings
+constant. Production publication remains blocked by these gates and the signing/
+provisioning prerequisites recorded in the implementation ledger.

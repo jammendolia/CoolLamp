@@ -13,6 +13,7 @@ bool lampPairingCueActive();
 String lampBluetoothStatusJson();
 bool lampBluetoothReady();
 bool lampBluetoothHasBonds();
+bool lampBluetoothConnected(); // Read-only connection presence; no bond storage access.
 // Loop-only. Success means all peer bond deletion was verified; a failure can
 // be partial and requires an authoritative status read before retrying.
 bool forgetLampPhones();

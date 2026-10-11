@@ -27,6 +27,16 @@ bool consume(Transfer& transfer,uint16_t tx,uint32_t owner=9,uint32_t now=100){
   const auto frame=commit(tx);return transfer.consume(frame.data(),frame.size(),owner,now);
 }
 void wiped(const Transfer& transfer){for(size_t i=0;i<MaxRequest+1;++i)assert(transfer.body()[i]==0);}
+struct ViewOwner {
+  uint8_t bytes[MaxResponse]{};
+  unsigned releases=0;size_t releasedSize=0;
+  void fill(){memset(bytes,'p',sizeof(bytes));}
+  static void release(void* context,size_t size){
+    auto& self=*static_cast<ViewOwner*>(context);
+    ++self.releases;self.releasedSize=size;zero(self.bytes,sizeof(self.bytes));
+  }
+  void assertWiped()const{for(uint8_t byte:bytes)assert(byte==0);}
+};
 
 int main(){
   static_assert(MaxFrame==20&&Header==12&&MaxPage==492,"Keep the agreed minimum-MTU framing");
@@ -96,6 +106,47 @@ int main(){
   assert(begin(transfer,2));assert(transfer.service(9,100,true,true));wiped(transfer);
   assert(begin(transfer,3,18,Read));assert(!transfer.service(9,100,true,true));
 
+  // Pure wire users can supply one immutable, externally owned response.
+  // Invalid adoption never transfers ownership; every accepted owner receives
+  // exactly one wipe/release callback through every terminal state transition.
+  transfer.reset(9);ViewOwner view;view.fill();
+  assert(begin(transfer,1,1,Read)&&consume(transfer,1));
+  assert(!transfer.finishOwned(200,view.bytes,MaxResponse+1,&view,ViewOwner::release));
+  assert(!transfer.finishOwned(200,nullptr,1,&view,ViewOwner::release));
+  assert(!transfer.finishOwned(200,view.bytes,MaxResponse,nullptr,ViewOwner::release));
+  assert(!transfer.finishOwned(200,view.bytes,MaxResponse,&view,nullptr));
+  assert(view.releases==0);
+  assert(transfer.finishOwned(200,view.bytes,MaxResponse,&view,ViewOwner::release));
+  assert(!transfer.finishOwned(200,view.bytes,MaxResponse,&view,ViewOwner::release));
+  assert(!consume(transfer,1)&&view.releases==0);
+  assert(transfer.page(0,output,sizeof(output))==MaxPage&&u16(output+6)==MaxResponse);
+  assert(!memcmp(output+Header,view.bytes,PageBytes));
+  transfer.clearPayload();view.assertWiped();assert(view.releases==1&&view.releasedSize==MaxResponse);
+  transfer.clearPayload();assert(view.releases==1);
+  for(unsigned terminal=0;terminal<6;++terminal){
+    transfer.reset(9);view.fill();const auto prior=view.releases;
+    assert(begin(transfer,1,1,Read)&&consume(transfer,1));
+    assert(transfer.finishOwned(200,view.bytes,3,&view,ViewOwner::release));
+    switch(terminal){
+    case 0:assert(begin(transfer,2,1,Read));break;
+    case 1:{const auto cancel=start(1,0,0);assert(transfer.begin(cancel.data(),cancel.size(),9,100));break;}
+    case 2:assert(transfer.service(10,100,true,false));break;
+    case 3:assert(transfer.service(9,100,false,false));break;
+    case 4:assert(transfer.service(9,100,true,true));break;
+    case 5:assert(transfer.service(9,100+Timeout,true,false));break;
+    }
+    view.assertWiped();assert(view.releases==prior+1&&view.releasedSize==3);
+    transfer.reset(9);assert(view.releases==prior+1);
+  }
+  // Even a zero-length response owns capacity and must receive its callback.
+  view.fill();const auto emptyPrior=view.releases;
+  assert(begin(transfer,1,1,Read)&&consume(transfer,1));
+  assert(transfer.finishOwned(204,nullptr,0,&view,ViewOwner::release));
+  assert(transfer.page(0,output,sizeof(output))==Header&&u16(output+4)==204);
+  transfer.reset(9);view.assertWiped();assert(view.releases==emptyPrior+1&&view.releasedSize==0);
+  {Transfer dying;view.fill();assert(begin(dying,1,1,Read)&&consume(dying,1));assert(dying.finishOwned(200,view.bytes,3,&view,ViewOwner::release));}
+  view.assertWiped();assert(view.releases==emptyPrior+2);
+
   FrameQueue queue;Frame frame;frame.generation=42;frame.length=20;
   const char key[]="private-password";memcpy(frame.bytes,key,sizeof(key));
   for(unsigned i=0;i<8;++i)assert(queue.push(frame));
@@ -106,5 +157,5 @@ int main(){
   const auto* representation=reinterpret_cast<const uint8_t*>(&queue);
   assert(std::search(representation,representation+sizeof(queue),reinterpret_cast<const uint8_t*>(key),reinterpret_cast<const uint8_t*>(key)+sizeof(key))==representation+sizeof(queue));
   for(unsigned i=0;i<30;++i){assert(queue.push(frame));assert(queue.pop(received));}
-  std::cout<<"PASS: bounded BLE RPC framing, complete 8192-byte paging, owner/replay/timeout/cancel fences, request and queue zeroization, rollover and update cleanup\n";
+  std::cout<<"PASS: bounded BLE RPC framing, complete8192-byte paging, immutable owned-view callback lifecycle, owner/replay/timeout/cancel fences, request/response/queue zeroization, rollover and update cleanup\n";
 }

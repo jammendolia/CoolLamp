@@ -4,16 +4,18 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const wifiOnly = process.argv.includes('--wifi-only');
 const publicRelease = process.argv.includes('--public');
+const testImage = process.argv.includes('--test-image');
 const stackUsage=process.argv.includes('--stack-usage');
 const trustOptions=process.argv.filter(arg=>arg.startsWith('--publisher-trust='));
 if(process.argv.includes('--publisher-trust'))throw new Error('Use --publisher-trust=<public-only JSON path>.');
 if(trustOptions.length>1||trustOptions.some(arg=>arg==='--publisher-trust='))throw new Error('Specify one public publisher-trust JSON file.');
 const publisherTrust=trustOptions.length?require('./publisher-trust.cjs').load(trustOptions[0].slice('--publisher-trust='.length)):null;
 if (publicRelease && wifiOnly) throw new Error('Public releases require Bluetooth and the dual OTA layout.');
+if (testImage && !publicRelease) throw new Error('--test-image requires --public so installed-artifact health measurement remains available.');
 const bundledCli = path.join(process.env.LOCALAPPDATA || '', 'Programs/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe');
 const cli = process.env.ARDUINO_CLI || (process.platform === 'win32' && fs.existsSync(bundledCli) ? bundledCli : 'arduino-cli');
 fs.mkdirSync(path.join(root, '.build'), { recursive: true });
-const stageRoot = path.join(root, publicRelease ? '.build/sketch-public' : '.build/sketch');
+const stageRoot = path.join(root, testImage ? '.build/sketch-test-image' : publicRelease ? '.build/sketch-public' : '.build/sketch');
 const sketch = path.join(stageRoot, 'CoolLamp');
 fs.mkdirSync(sketch, { recursive: true });
 // Keep the sketch path stable for Arduino's compiler cache; remove stale source copies only.
@@ -30,7 +32,7 @@ if(publisherTrust){
   fs.writeFileSync(path.join(sketch,'LampPublisherTrust.generated.h'),publisherTrust.header);
   console.log('Publisher public trust configuration SHA-256: '+publisherTrust.provenance.sha256);
 }
-const flavor = publicRelease ? 'public' : wifiOnly ? 'wifi' : 'ble';
+const flavor = testImage ? 'test-image' : publicRelease ? 'public' : wifiOnly ? 'wifi' : 'ble';
 const board = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs';
 const jobs = Math.max(1, Math.min(8, Math.floor(require('node:os').availableParallelism() / 2)));
 const args = ['compile', '--fqbn', board, '--jobs', String(jobs), '--build-path', path.join(root, '.build/cache-' + flavor),
@@ -38,6 +40,7 @@ const args = ['compile', '--fqbn', board, '--jobs', String(jobs), '--build-path'
 const cppFlags=[];
 if (wifiOnly) cppFlags.push('-DCOOL_LAMP_BLE=0');
 if (publicRelease) cppFlags.push('-DCOOL_LAMP_PUBLIC_RELEASE=1');
+if (testImage) cppFlags.push('-DCOOL_LAMP_TEST_IMAGE=1');
 if (publisherTrust)cppFlags.push('-DCOOL_LAMP_PUBLISHER_TRUST_PROVISIONED=1');
 if(stackUsage)cppFlags.push('-fstack-usage');
 if(cppFlags.length)args.push('--build-property','compiler.cpp.extra_flags='+cppFlags.join(' '));

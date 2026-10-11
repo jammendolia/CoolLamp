@@ -8,6 +8,7 @@
 #include "LampFirmwareRelay.h"
 #include "LampUpdate.h"
 #include "LampControlEndpoint.h"
+#include "LampControlHttpAdapter.h"
 #include "esp_mac.h"
 #include "esp_random.h"
 #include <mbedtls/base64.h>
@@ -22,7 +23,10 @@ uint32_t millis(){return now;}
 uint32_t esp_random(){static uint32_t value=17;value=value*1664525+1013904223;return value;}
 int esp_read_mac(uint8_t* out,int){memcpy(out,addresses[side],6);return 0;}
 bool lampUpdateOwnsResources(){return updater;}
-LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint!=LampControlEndpoint::State)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));++calls;return {replyStatus,replyBody};}
+String lampToken="fixture-private-control-token";
+LampControlHttpAdapter resourceAdapter(80);
+bool exerciseResourceAdapter=false;
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint!=LampControlEndpoint::State)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));if(exerciseResourceAdapter)return resourceAdapter.executeControl(endpoint,mutation,form,confidential);++calls;return {replyStatus,replyBody};}
 namespace LampFirmwareRelay {bool copyFleetKey(uint8_t* out){memcpy(out,fleet,16);return true;}String fleetId(){return "1122334455667788";}}
 namespace LampEspNow {
 bool enqueue(const uint8_t* bytes,size_t size,const uint8_t*,bool){assert(size<=250);frames.push_back({side,{bytes,bytes+size}});return true;}
@@ -80,7 +84,22 @@ int main(int argc,char** argv){
   std::cout<<"PASS actual mesh adapter idle-auth-hold unknown/off-fleet ignored, idle proof extends hold, expiry releases seeking\n";return 0;
  }
  setup();
- if(scenario=="confidential"){
+ if(scenario=="resource-denied-no-replay"){
+  exerciseResourceAdapter=true;
+  resourceAdapter.on("/api/power",HTTP_POST,[]{assert(side==2&&resourceAdapter.controlActive()&&resourceAdapter.uri()=="/api/power"&&resourceAdapter.arg("power")=="1");++calls;resourceAdapter.send(200,"text/plain","Applied once.");});
+  fakeFreeHeap=16384;fakeLargestBlock=24000;
+  assert(start().status==202);complete();const auto denied=result();
+  assert(denied.status==200&&numberField(denied.body,"httpStatus")==503&&denied.body.find("\"uncertain\":false")!=std::string::npos);
+  assert(decode(denied.body)=="Control resources unavailable. This request was not executed."&&!calls&&!resourceAdapter.controlActive()&&!resourceAdapter.hasArg("power"));
+  // The authenticated target processed a denial and retains that reply.
+  // Neither release of heap nor duplicated RF request/receipt executes it.
+  fakeFreeHeap=24576;fakeLargestBlock=6160;run(100);
+  assert(start().status==200&&numberField(result().body,"httpStatus")==503&&!calls);
+  assert(start("0000000000000002").status==202);complete();const auto fresh=result(0,"0000000000000002");
+  assert(numberField(fresh.body,"httpStatus")==200&&decode(fresh.body)=="Applied once."&&calls==1);
+  run(100);assert(start("0000000000000002").status==200&&calls==1);
+ }
+ else if(scenario=="confidential"){
   assert(!Origin::allowed(LampControlEndpoint::State,0x81)&&!Origin::allowed(LampControlEndpoint::Config,0x82));
   side=0;assert(Origin::request(targetId,requestId,"48","2","action=status",false).status==403);
   assert(Origin::request(targetId,requestId,"48","2","action=status",true).status==202);complete();assert(calls==1&&result().status==403);side=0;assert(decode(Origin::result(targetId,requestId,"0",true).body)==replyBody);assert(Origin::request(targetId,requestId,"48","2","action=status",false).status==403);

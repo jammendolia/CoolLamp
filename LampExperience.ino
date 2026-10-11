@@ -6,6 +6,7 @@
 #include "LampVersion.h"
 #include "UpdatePublisher.h"
 #include "LampHousehold.h"
+#include "LampHttpJson.h"
 #include <mbedtls/sha256.h>
 extern LampControlHttpAdapter lampServer;
 
@@ -71,7 +72,21 @@ String lampDescriptorJson(){
   String out="{\"descriptorVersion\":2,\"deviceId\":"+jsonText(lampIdentity())+",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":"+LampModel::json()+",\"state\":"+lampRevisionJson();
   out+=",\"hardware\":{\"ledCount\":"+String(NUM_LEDS)+",\"midpoint\":"+String(lampMidpoint)+",\"currentBudgetMa\":"+String(lampSettings.milliAmps)+",\"microphone\":"+(lampHasMicrophone()?"true":"false")+",\"style\":"+lampStyleJson()+"}";
   out+=",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":"+String(UpdatePublisher::enforced()?"true":"false")+",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}";
-  out+=",\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":"+String(lampAppearanceMigrationPending()?"true":"false")+",\"inventory\":\"multi-broker-local-snapshots\"}}";return out;
+  out+=",\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":"+String(lampAppearanceMigrationPending()?"true":"false")+",\"inventory\":\"multi-broker-local-snapshots\"}}";
+  // A failed String temporary can omit a complete member and still leave valid
+  // JSON. Negotiate only the complete source-backed descriptor; the transports
+  // reject an empty reply rather than claiming successful capabilities.
+  static const char* const keys[]={"descriptorVersion","deviceId","firmwareVersion","model","state","hardware","capabilities","limits","compatibility"};
+  if(!LampHttpJson::requiredKeys(out.c_str(),out.length(),keys,sizeof(keys)/sizeof(keys[0])))return String();
+  const auto required=[&](const char* name,const auto& names){const auto member=LampHttpJson::member(out.c_str(),out.length(),name);return LampHttpJson::requiredKeys(member.bytes,member.length,names,sizeof(names)/sizeof(names[0]));};
+  static const char* const model[]={"version","id","displayName","artworkFamily","hardwareRevision","preconfigured"};
+  static const char* const state[]={"version","target","bootSession","revision","nextCommandId","mode","brightness","power"};
+  static const char* const hardware[]={"ledCount","midpoint","currentBudgetMa","microphone","style"};
+  static const char* const capabilities[]={"catalogVersions","sceneVersions","control","persistence","updates","commissioning","publisherProvisioned"};
+  static const char* const limits[]={"groupMembers","legacyGroupMembers","localPresence","forwardingHops","bleConnections","bleBonds","householdPhones","requestBytes","responseBytes","schemaPageEntries","schemaPageBytes","receipts","receiptLifetimeMs","appearanceWriteIntervalMs"};
+  static const char* const compatibility[]={"legacyCatalog","expandedGroupRequiresEveryMember","appearanceMigrationPending","inventory"};
+  if(!required("model",model)||!required("state",state)||!required("hardware",hardware)||!required("capabilities",capabilities)||!required("limits",limits)||!required("compatibility",compatibility))return String();
+  return out;
 }
 String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
   static const char* const sceneKeys[]={"mirror","portal","ping-pong","stereo-fountain","duet","orbit","storm-front","ember-exchange","color-wave","newtons-cradle","conversation","constellation","tidal-basin","firefly-courtship","rocket-relay","prism-split","rhythm-section","beat-chase","shared-heartbeat","bass-cathedral","spectrum-loom","resonant-rings","velvet-thunder","prism-chorus","twin-vortex","electric-bloom","room-groove","chromatic-screw","mercury-ribbon","bass-turbine","prism-torque","echo-coils","aurora-braid"};

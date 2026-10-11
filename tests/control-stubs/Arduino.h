@@ -17,6 +17,12 @@ struct String:std::string {
   bool isEmpty()const{return empty();}
   bool reserve(size_t size){std::string::reserve(size);return true;}
   bool concat(char value){push_back(value);return true;}
+  bool concat(const String& value){append(value);return true;}
+  inline static const char* failedConcatLiteral=nullptr;
+  inline static size_t concatFailures=0;
+  bool concat(const char* value){if(!value)return false;if(failedConcatLiteral&&!strcmp(value,failedConcatLiteral)){++concatFailures;return false;}append(value);return true;}
+  template<class T,typename std::enable_if<std::is_integral<T>::value&&!std::is_same<T,char>::value,int>::type=0>
+  bool concat(T value){append(std::to_string(value));return true;}
   bool concat(const char* value,size_t size){append(value,size);return true;}
   void trim(){while(!empty()&&std::isspace(uint8_t(front())))erase(begin());while(!empty()&&std::isspace(uint8_t(back())))pop_back();}
 };
