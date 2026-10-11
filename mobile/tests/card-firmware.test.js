@@ -18,6 +18,14 @@ test('old firmware requires bootstrap without downloading or transferring',async
 test('reconciles already-updated Bluetooth lamp without resending firmware',async()=>{const {calls,options,lamp}=setup();delete options.entry.address;lamp.refreshFirmware=async()=>({version:'1.12.0'});assert.equal((await updateCardFirmware(options)).state,'ready');assert.deepEqual(calls,['ble','release']);});
 test('fresh BLE status catches another update before any image is sent',async()=>{for(const phase of [1,3,4]){const {calls,options,lamp}=setup();delete options.entry.address;lamp.refreshFirmware=async()=>({version:'1.11.0',phase});await assert.rejects(updateCardFirmware(options),/in progress/);assert.deepEqual(calls,['ble','release']);}});
 test('target removal during phone download prevents transfer and releases lease',async()=>{const {calls,options}=setup();delete options.entry.address;let current=true;options.isCurrent=()=>current;options.download=async()=>{current=false;return {manifest};};await assert.rejects(updateCardFirmware(options),/changed/);assert.deepEqual(calls,['ble','release']);});
+test('actual card updater forwards its current-owner guard to both new and reused Bluetooth transfers',async()=>{
+ const {calls,options,lamp}=setup();delete options.entry.address;const abort=new AbortController();options.signal=abort.signal;
+ const guard=()=>true;options.isCurrent=guard;
+ lamp.updateOverBluetooth=async(prepared,progress,transferOptions)=>{
+  assert.equal(transferOptions.isCurrent,guard);assert.equal(transferOptions.signal,abort.signal);calls.push('transfer');return {committed:true};
+ };
+ await updateCardFirmware(options);assert.deepEqual(calls,['ble','download','transfer','release']);
+});
 test('manifest refresh is GET only, bypasses cached Latest redirects and does not download firmware',async()=>{const calls=[];const http={request:async options=>{calls.push(options);return {status:200,data:new TextEncoder().encode(manifest.text)};}};assert.equal((await fetchPhoneManifest(http)).version,'1.12.0');assert.equal(calls.length,1);assert.equal(calls[0].method,'GET');const url=new URL(calls[0].url);assert(url.pathname.endsWith('latest/download/coollamp-manifest.txt'));assert(url.searchParams.has('check'));assert.equal(calls[0].headers['Cache-Control'],'no-cache, no-store, max-age=0');});
 test('pinned phone download rejects altered release manifest before fetching image',async()=>{const calls=[];const http={request:async options=>{calls.push(options.url);return {status:200,data:new TextEncoder().encode(manifest.text.replace('288','289'))};}};await assert.rejects(downloadPhoneFirmware(http,{expectedManifest:manifest}),/release changed/);assert.equal(calls.length,1);assert(calls[0].includes('firmware-v1.12.0/coollamp-manifest.txt'));});
 

@@ -897,16 +897,22 @@ function cardUpdateConfirmation(entry,release,{previousVersion=null,bluetoothOnl
 }
 async function acquireCardFirmwareBluetooth(entry){
  const owner=cardFirmwareTasks.get(entry.id);if(!owner)throw Error('This lamp’s update changed.');
+ const current=()=>{if(owner.abort.signal.aborted||cardFirmwareTasks.get(entry.id)!==owner||!owner.isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
+ current();
  owner.screenAwake=new FirmwareScreenAwake({native,enabled:isNative});
  await owner.screenAwake.acquire({isCurrent:owner.isCurrent,signal:owner.abort.signal});
- await stopGroupInspection(entry.id);
+ current();await stopGroupInspection(entry.id);current();
  if(verifiedSelectedLamp()&&selected.id===entry.id&&lamp===bleLamp){const task=cardFirmwareTasks.get(entry.id);task.transport=bleLamp;bluetoothFirmwareTask=task;return {lamp:bleLamp,release:async()=>{if(bluetoothFirmwareTask===task)bluetoothFirmwareTask=null;await bleLamp.disconnect();}};}
  if(!entry.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged)throw Error('Pair this lamp using its Bluetooth icon before updating without Wi-Fi.');
- await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
- const transport=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
- try{await transport.connect({...entry,lampId:entry.id});if(isNative)await firmwareFleetTrust.provision(transport);const task=cardFirmwareTasks.get(entry.id);if(task)task.transport=transport;liveGroupBluetooth.set(entry.id,{transport,epoch:transport.epoch});renderLamps();
-  return {lamp:transport,release:async()=>{if(liveGroupBluetooth.get(entry.id)?.transport===transport)liveGroupBluetooth.delete(entry.id);await transport.disconnect();renderLamps();}};
- }catch(error){await transport.disconnect();throw error;}
+ await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[entry],onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
+ current();
+ // A direct update needs protected identity/status, not a large settings reply
+ // or a separate persistent fleet-enrollment mutation on older firmware.
+ const transport=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,firmwareOnly:true});
+ owner.transport=transport;
+ try{await transport.connect({...entry,lampId:entry.id},true,{signal:owner.abort.signal,isCurrent:owner.isCurrent});current();renderLamps();
+  return {lamp:transport,release:async()=>{await transport.disconnect();if(owner.transport===transport)owner.transport=null;renderLamps();}};
+ }catch(error){await transport.disconnect();if(owner.transport===transport)owner.transport=null;throw error;}
 }
 async function updateLampCard(entry){
  if(connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id))return;

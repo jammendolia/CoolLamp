@@ -41,7 +41,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   if(compareFirmwareVersions(installed.version,'1.11.0')<0)throw Error('This lamp needs firmware 1.11.0 installed once using Wi-Fi or USB to enable Bluetooth updates.');
   const packageValue=await download(release,{signal,isCurrent,onProgress});current();
   if(packageValue.manifest.text!==release.text)throw Error('The prepared release changed. Nothing was sent.');
-  const result=await lease.lamp.updateOverBluetooth(packageValue,onProgress,{signal});
+  const result=await lease.lamp.updateOverBluetooth(packageValue,onProgress,{signal,isCurrent});
   return {...result,path:'bluetooth',state:'restarting',message:result.committed?'Firmware verified. Reconnect to confirm the installed version.':'Final result unconfirmed. Reconnect and check the installed version before retrying.'};
  }finally{await lease.release();}
 }
