@@ -16,10 +16,10 @@ const newer = (a, b) => {
 const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
 const parse = response => {
   try { return typeof response.data === 'string' ? JSON.parse(response.data) : response.data; }
-  catch { throw failure('Invalid firmware response from lamp.'); }
+  catch { throw failure('Invalid firmware response from lamp.', {invalidRead: true}); }
 };
 function firmwareStatus(value) {
-  if (!validFirmwareVersion(value?.version)) throw failure('Invalid firmware version from lamp.');
+  if (!validFirmwareVersion(value?.version)) throw failure('Invalid firmware version from lamp.', {invalidRead: true});
   // Some older lamps expose their installed version without the OTA controls.
   const supported = Number.isInteger(value.phase) && value.phase >= 0 && value.phase <= 5 &&
     Number.isInteger(value.progress) && value.progress >= 0 && value.progress <= 100 &&
@@ -27,7 +27,7 @@ function firmwareStatus(value) {
     typeof value.wifi === 'boolean' && typeof value.available === 'boolean' && typeof value.automatic === 'boolean' &&
     (value.latest === '0.0.0' || Boolean(validFirmwareVersion(value.latest)));
   if (!supported && Object.keys(value).some(key => ['phase','available','error','progress'].includes(key))) {
-    throw failure('Invalid firmware status from lamp.');
+    throw failure('Invalid firmware status from lamp.', {invalidRead: true});
   }
   return {...value, supported, latest: validFirmwareVersion(value.latest)};
 }
@@ -126,7 +126,7 @@ export class FirmwareFleet {
     const raw = parse(response);
     this.verifyIdentity(lamp, raw);
     const firmware = firmwareStatus(raw.firmware);
-    if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.');
+    if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.', {missingUpdateToken: true});
     const lampStyle=raw.lampStyle&&typeof raw.lampStyle==='object'?normalizeLampStyle(raw.lampStyle):null;
     const catalogueKey=JSON.stringify([lamp.base,firmware.version,raw.audio?.installed??null]);
     const cached=this.catalogues.get(lamp.id);
@@ -195,11 +195,14 @@ export class FirmwareFleet {
       return {id: entry.id, ...value};
     }
   }
-  async refresh() {
-    if (this.bulkRun && !this.bulkRun.cancelled||this.singleRuns.size) return {results: [], cancelled: false, busy: true};
+  async refresh({excludeIds=[]}={}) {
+    const excluded=new Set(excludeIds);
+    if (this.bulkRun && !this.bulkRun.cancelled||[...this.singleRuns.keys()].some(id=>!excluded.has(id))) return {results: [], cancelled: false, busy: true};
     this.cancelRefresh();
     const run = this.run(); this.refreshRun = run;
-    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()], results = [];
+    // Exclusion belongs only to this passive workload. Target validation and
+    // mutative tasks continue to consult the complete owned-lamp inventory.
+    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()].filter(entry=>!excluded.has(entry.id)), results = [];
     let index = 0;
     const worker = async () => {
       while (!run.cancelled && index < entries.length) {
@@ -237,9 +240,19 @@ export class FirmwareFleet {
     })().finally(() => {if (this.bulkRun === run) this.bulkRun = null; this.bulkPromise = null;});
     return this.bulkPromise;
   }
-  async post(lamp, run, path) {
+  async post(lamp, run, path, {allowPreflightFallback=false}={}) {
     // Refresh identity and boot token directly before EVERY mutative operation.
-    const identity = await this.identify(lamp, run, true);
+    let identity;
+    try { identity = await this.identify(lamp, run, true); }
+    catch(error) {
+      // This catch ends before the first check POST. A malformed/token-less
+      // read or timeout cannot have started our update. Authentication,
+      // identity, lifetime and uncertain execution failures never reroute.
+      if(allowPreflightFallback&&path==='/api/firmware/check'&&!run.cancelled&&
+        !error.uncertain&&!error.identity&&!error.needsPassword&&!error.stale&&!error.cancelled&&
+        (error.offline||error.invalidRead||error.missingUpdateToken))error.safeBluetoothFallback=true;
+      throw error;
+    }
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if (busyPhases.includes(identity.firmware.phase)) return {identity, busy: true};
     if(path.endsWith('/install')&&run.expectedVersion&&identity.firmware.latest!==run.expectedVersion)throw failure('The available release changed. Refresh before updating.');
@@ -262,7 +275,7 @@ export class FirmwareFleet {
     if(run.expectedVersion&&!newer(run.expectedVersion,identity.firmware.version))return this.live(lamp,run,identity,'ready','Already up to date.');
     const originalVersion = identity.firmware.version;
     if (!busyPhases.includes(identity.firmware.phase)) {
-      const check = await this.post(lamp, run, '/api/firmware/check');
+      const check = await this.post(lamp, run, '/api/firmware/check', {allowPreflightFallback:true});
       identity = check.identity;
       if (check.busy) return this.observe(lamp, run, originalVersion, identity.firmware);
       return this.observe(lamp, run, originalVersion, null, {uncertain: check.uncertain, conflict: check.conflict});

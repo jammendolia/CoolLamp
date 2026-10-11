@@ -812,6 +812,7 @@ $('installBluetoothFirmware').onclick=async()=>{
   task.screenAwake=new FirmwareScreenAwake({native,enabled:isNative});
   const reinstall=$('reinstallBluetoothFirmware').checked;
   bluetoothFirmwareTask=task;
+  fleet?.cancelRefresh?.();
   const current=()=>!task.cancelled&&bluetoothFirmwareTask===task&&selected?.id===task.id&&lamp===bleLamp&&bleLamp.epoch===task.epoch&&bleLamp.id===task.deviceId;
   const progress=value=>{
     if(!current())return;
@@ -904,6 +905,9 @@ async function acquireCardFirmwareBluetooth(entry){
  current();await stopGroupInspection(entry.id);current();
  if(verifiedSelectedLamp()&&selected.id===entry.id&&lamp===bleLamp){const task=cardFirmwareTasks.get(entry.id);task.transport=bleLamp;bluetoothFirmwareTask=task;return {lamp:bleLamp,release:async()=>{if(bluetoothFirmwareTask===task)bluetoothFirmwareTask=null;await bleLamp.disconnect();}};}
  if(!entry.deviceId||phonePlatform==='ios'&&!entry.accessoryManaged)throw Error('Pair this lamp using its Bluetooth icon before updating without Wi-Fi.');
+ // Retire only this target's selected Wi-Fi/mesh poller before a private BLE
+ // transfer. Its old epoch fences late reads; reconnect obtains fresh state.
+ if(lamp!==bleLamp&&lamp?.identity===entry.id){await lamp.disconnect();current();}
  await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>[entry],onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});
  current();
  // A direct update needs protected identity/status, not a large settings reply
@@ -917,7 +921,7 @@ async function acquireCardFirmwareBluetooth(entry){
 async function updateLampCard(entry){
  if(connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id))return;
  const displayed=publicFirmwareFresh?availableCardRelease(cardInstalledVersion(entry),publicFirmware):null;if(cardFirmwareUnconfirmed.has(entry.id))return;
- const task={id:entry.id,entry:{...entry},abort:new AbortController()};cardFirmwareTasks.set(entry.id,task);renderLamps();
+ const task={id:entry.id,entry:{...entry},abort:new AbortController()};cardFirmwareTasks.set(entry.id,task);fleet?.cancelRefresh?.();renderLamps();
  const current=()=>cardFirmwareTasks.get(entry.id)===task&&mergedLampEntries().some(value=>value.id===entry.id&&value.deviceId===entry.deviceId&&value.address===entry.address)&&!groupRemovedIds.has(entry.id);
  task.isCurrent=current;
  try{
@@ -974,7 +978,9 @@ function refreshLampFirmware({newDiscovery=false}={}) {
   if(!fleet||fleetUpdating)return;
   if(fleetRefreshRun){fleetRefreshQueued ||= newDiscovery;return;}
   fleetSummary='Reading each lamp’s installed version in the background…';
-  const run=fleet.refresh();fleetRefreshRun=run;renderFleetControls();
+  const excludeIds=new Set(cardFirmwareTasks.keys());
+  if(bluetoothFirmwareTask?.id)excludeIds.add(bluetoothFirmwareTask.id);
+  const run=fleet.refresh({excludeIds});fleetRefreshRun=run;renderFleetControls();
   run.then(result=>{
     if(result.cancelled||result.busy||fleetUpdating)return;
     const live=result.results.filter(value=>value.verified&&value.fresh).length;

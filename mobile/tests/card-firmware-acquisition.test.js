@@ -55,7 +55,9 @@ test('cancellation before acquisition performs no radio work or firmware mutatio
  assert.deepEqual(f.calls,[]);assert.equal(f.instances.length,0);
 });
 test('an unauthorized iPhone target cannot start a firmware connection',async t=>{
- const f=fixture({authorized:false});t.after(f.cleanup);await assert.rejects(f.acquire(),/Pair this lamp/);
+ const f=fixture({authorized:false});t.after(f.cleanup);
+ f.context.lamp={identity:id,disconnect:async()=>{throw Error('Ineligible target lost its selected route');}};
+ await assert.rejects(f.acquire(),/Pair this lamp/);
  assert.equal(f.instances.length,0);assert(!f.calls.includes('initialize-radio'));
 });
 test('a replaced task after screen protection or group inspection cannot adopt a connection',async t=>{
@@ -89,4 +91,16 @@ test('actual native initializer authorizes only the update target despite unrela
  const lease=await f.acquire();assert.equal(lease.lamp.saved.deviceId,f.entry.deviceId);
  assert.equal(f.calls.filter(x=>x==='native-radio-initialized').length,1);
  assert.equal(f.context.pairing.radioStarted,true);await lease.release();
+});
+
+test('private update retires a selected same-target Wi-Fi or mesh poller before connecting',async t=>{
+ const f=fixture();t.after(f.cleanup);f.context.lamp={identity:id,disconnect:async()=>f.calls.push('target-poller-disconnect')};
+ const lease=await f.acquire();assert(f.calls.indexOf('target-poller-disconnect')<f.calls.indexOf('connect'));
+ assert.equal(f.calls.filter(x=>x==='target-poller-disconnect').length,1);await lease.release();
+});
+test('private update leaves an unrelated selected transport alone and fences retirement owner loss',async t=>{
+ const f=fixture();t.after(f.cleanup);f.context.lamp={identity:'112233445566',disconnect:async()=>{throw Error('Unrelated poller disconnected');}};
+ const lease=await f.acquire();await lease.release();
+ const stale=fixture();t.after(stale.cleanup);stale.context.lamp={identity:id,disconnect:async()=>stale.stale()};
+ await assert.rejects(stale.acquire(),error=>error.cancelled);assert.equal(stale.instances.length,0);
 });

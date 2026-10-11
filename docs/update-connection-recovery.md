@@ -84,18 +84,42 @@ to precede installation; an uncertain started installation still requires
 reconciliation. Receiver ownership and group-policy gates remain in firmware.
 No group membership, pause state or rollout permit is invented by this path.
 
+The initial Wi-Fi check refreshes the target's identity and boot token through
+`/api/state` before its first POST. A timeout, malformed read or missing token at
+that exact boundary may select the authorized Bluetooth path, which independently
+verifies protected identity. Wrong identity, access-password rejection, redirect,
+cancellation, stale inventory, and an active updater fail closed. Reads after a
+check POST or before install never acquire this fallback permission. This covers
+the observed diagnostics-success/state-timeout pattern without replaying a
+possibly executed command.
+
+Starting a card or legacy Bluetooth update cancels passive fleet refresh. Later
+inventory refreshes exclude its target while continuing reads for other lamps;
+the complete inventory remains available to target/route fencing. An already
+issued native HTTP GET may still finish, but its cancelled result cannot start
+another request or change app state. Explicit update reconciliation retains its
+own required reads. A selected Wi-Fi or mesh transport for that same target is
+disconnected before private Bluetooth acquisition, fencing its late poll results.
+Reconnection after update obtains fresh state; unrelated selected routes remain
+available. This does not claim every user-triggered read is suppressed.
+
 ## Software validation and pending physical test
 
-The final client passed **770 tests** and its production Vite build. The new
-tests exercise the production transport, sender, card acquisition handler and
-native initializer with malformed/unauthorized targets, cancellation, late
-responses, unrelated legacy cards, reused-connection owner loss and lost final
-acknowledgements. Independent review found and verified both related fixes.
-All 125 firmware sources and the existing frozen 1.15.1 artifacts remain
-unchanged. No new firmware version or remote app build was published by this fix.
+Client tests and the production Vite build are recorded against the exact source
+export under ignored `.build/coollamp2-update-diagnosis-20261011`. Tests exercise
+the production transport, sender, card acquisition handler, native initializer,
+Wi-Fi preflight and passive inventory with malformed/unauthorized targets,
+cancellation, late responses, unrelated legacy cards, reused-connection owner
+loss and lost final acknowledgements. All 125 firmware sources and the frozen
+1.15.1 artifacts remain unchanged. No new firmware version is needed for this
+phone recovery change.
 
-The change is not installed in the user's 55.1 app. After authorization to publish
-a new TestFlight build, keep CoolLamp 2 connected to USB only for observation and
+The change is not installed in the user's 55.1 app. The user authorized a new
+TestFlight build. Initial 56.1 passed signing/upload and exact Apple availability
+checks, but review found the pre-POST Wi-Fi blocker above, so a corrected successor
+is required for this test. Verify the successor's exact source, signed upload,
+`VALID` processing, nonexpired status and internal tester availability before
+using it. Keep CoolLamp 2 connected to USB only for observation and
 leave router/SSID/channel/settings unchanged. Use its card's Update action and
 keep the phone unlocked with the app in the foreground. Confirm the short-read
 connection reaches the pinned 1.15.1 transfer without settings or fleet RPCs.
