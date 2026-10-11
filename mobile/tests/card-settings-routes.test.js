@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampAddress} from '../src/lamps.js';
+import {selectMeshRecoveryCandidates} from '../src/settings-recovery.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 function extract(start,end){
@@ -14,7 +15,23 @@ const openSource=extract('async function openCardSettings(','\nconst openCardWif
 const completeSource=extract('function completeCardSettings(','\nfunction cancelMeshSelection(');
 const bluetoothSource=extract('async function connectCardBluetooth(','\nfunction completeCardSettings(');
 const meshSource=extract('async function connectMeshCard(','\nasync function connectCardWifiAsync(');
+const meshLeaseSource=extract('async function createMeshLampLease(','\nasync function connectMeshCard(');
 const id='aabbccddeeff',other='112233445566';
+
+for(const mode of ['offline-fleet','healthy-wifi','active-bridge'])test('bounded mesh recovery prioritizes '+mode+' without starving a saved Bluetooth bridge',async()=>{
+ const entries=Array.from({length:20},(_,index)=>({id:(index+1).toString(16).padStart(12,'0'),address:'http://bridge-'+index+'.local',deviceId:'peripheral-'+index,accessoryManaged:true,firmwareVersion:'1.15.0'}));
+ const active=mode==='active-bridge'?{identity:other,epoch:3}:null;
+ const context={entries,active,selectMeshRecoveryCandidates,phonePlatform:'ios',lamp:active,groupRemovedIds:new Set(),
+  fleetLampInstalling:()=>false,compareFirmwareVersions:()=>0,mergedLampEntries:()=>entries,meshBridgeSupported:()=>true,
+  connectivity:{get:()=>({wifi:{fresh:mode==='healthy-wifi',state:mode==='healthy-wifi'?'connected':'disconnected'}})},
+  acquireMeshLamp:async options=>options};
+ runInNewContext(meshLeaseSource+';globalThis.plan=()=>createMeshLampLease("'+id+'",{recoveryOnly:true});',context);
+ const plan=await context.plan();assert.equal(plan.candidates.length,2);
+ assert.equal(plan.options.stopOnTimeout,true);assert.equal(plan.options.totalTimeout,10000);
+ assert.equal(plan.candidates[0].transport===active&&Boolean(active)?'active':plan.candidates[0].kind,
+  mode==='active-bridge'?'active':mode==='healthy-wifi'?'wifi':'bluetooth');
+ assert(plan.candidates.some(candidate=>candidate.kind==='bluetooth'));
+});
 
 function routeFixture({active=null,activeId=id,offlineControl=true,paired=true,authorized=true,wifiState='unknown',wifiFresh=false,
  fleetState='unknown',inventoryCount=1,outcomes={},afterAttempt}={}){

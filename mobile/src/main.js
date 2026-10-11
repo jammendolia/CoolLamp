@@ -1200,8 +1200,12 @@ async function createMeshLampLease(id,{signal,isCurrent=()=>true,bridgeId=null,r
 const entries=mergedLampEntries().filter(entry=>entry.id!==id&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&(!entry.firmwareVersion||compareFirmwareVersions(entry.firmwareVersion,'1.12.0')>=0)).sort((a,b)=>(b.id===bridgeId)-(a.id===bridgeId)||Number(Boolean(connectivity?.get(b.id).wifi?.fresh&&connectivity?.get(b.id).wifi?.state==='connected'))-Number(Boolean(connectivity?.get(a.id).wifi?.fresh&&connectivity?.get(a.id).wifi?.state==='connected')));
   for(const entry of entries)if(entry.address)candidates.push({entry,kind:'wifi'});
   for(const entry of entries)if(entry.deviceId&&(phonePlatform!=='ios'||entry.accessoryManaged))candidates.push({entry,kind:'bluetooth'});
+  const routes=recoveryOnly?selectMeshRecoveryCandidates(candidates):candidates;
+  // A stale Wi-Fi bridge must not consume the deadline ahead of a paired
+  // Bluetooth bridge. Keep a live connection or fresh Wi-Fi route first.
+  if(recoveryOnly){const rank=candidate=>{if(candidate.transport)return 0;if(candidate.kind==='bluetooth')return 2;const wifi=connectivity?.get(candidate.entry.id).wifi;return wifi?.fresh&&wifi.state==='connected'?1:3;};routes.sort((a,b)=>rank(a)-rank(b));}
   const guard=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true,confirmed:true});};
-  return acquireMeshLamp({target:id,candidates:recoveryOnly?selectMeshRecoveryCandidates(candidates):candidates,signal,isCurrent,options:recoveryOnly?{timeout:4000,totalTimeout:10000,stopOnTimeout:true}:{timeout:6000},onInventory:(value,bridge)=>{meshInventory.remember(value,bridge);renderLamps();},acquireBridge:async candidate=>{
+  return acquireMeshLamp({target:id,candidates:routes,signal,isCurrent,options:recoveryOnly?{timeout:4000,totalTimeout:10000,stopOnTimeout:true}:{timeout:6000},onInventory:(value,bridge)=>{meshInventory.remember(value,bridge);renderLamps();},acquireBridge:async candidate=>{
     guard();
     if(candidate.transport){if(candidate.transport.epoch!==candidate.epoch||candidate.transport.identity!==candidate.id)throw Error('Bridge connection changed.');return {lamp:candidate.transport,borrowed:true,release:async()=>{}};}
     const entry=candidate.entry;
