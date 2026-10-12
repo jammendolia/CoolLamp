@@ -11,6 +11,8 @@ import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORA
 // are controlled explicitly, without a lamp or a browser process.
 const source=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8')
  .replace(/^import .*;\r?$/gm,'').replace(/\bexport /g,'');
+const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const startup=mainSource.slice(mainSource.indexOf("\npage('home');"),mainSource.indexOf('\nsetInterval',mainSource.indexOf("\npage('home');")));
 const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return {promise,resolve,reject};};
 const settle=async()=>{for(let turn=0;turn<12;turn++)await Promise.resolve();};
 const lamp={id:'aabbccddeeff',name:'New reading lamp',room:'Bedroom',phoneLampStyle:'helix'};
@@ -24,6 +26,7 @@ function fixture(select=async()=>({connected:true}),options={}){
    this._html=value;this.children=[];
    if(this.id==='v2Dialog'){
     elements.delete('v2DialogStatus');
+    elements.delete('v2SetupStyle');
     const statusTag=value.match(/<p\b([^>]*\bid="v2DialogStatus"[^>]*)>/);
     if(statusTag){const status=new Element('v2DialogStatus');for(const [,name,text] of statusTag[1].matchAll(/([\w-]+)="([^"]*)"/g))status.setAttribute(name,text);elements.set('v2DialogStatus',status);}
     for(const tag of value.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)){
@@ -65,7 +68,7 @@ function fixture(select=async()=>({connected:true}),options={}){
  }
  const element=id=>{if(!elements.has(id))elements.set(id,new Element(id));return elements.get(id);};
  document={hidden:false,activeElement:null,documentElement:element('root'),body:element('body'),
-  getElementById(id){return id==='v2DialogStatus'?elements.get(id)||null:element(id);},
+  getElementById(id){return ['v2DialogStatus','v2SetupStyle'].includes(id)?elements.get(id)||null:element(id);},
   querySelector:()=>element('settings-navigation'),querySelectorAll:()=>[],createElement:()=>new Element(),
   addEventListener(name,callback){const handlers=listeners.get(name)||[];handlers.push(callback);listeners.set(name,handlers);}};
  let preferenceValue=options.preferences??null;
@@ -78,6 +81,8 @@ function fixture(select=async()=>({connected:true}),options={}){
   select(id,section,options){selections.push({id,section,options});return select(id,section,options);},...options.api};
  runInNewContext(source+'\nglobalThis.mount=mountAppV2;',context);
  const ui=context.mount(api),dialog=element('v2Dialog');
+ // Match main's initial navigation before offering the one-time guide.
+ runInNewContext(startup,{page:name=>ui.navigate(name),appV2:ui});
  return {ui,dialog,messages,navigations,selections,element,preferences:()=>preferenceValue,
   status:()=>elements.get('v2DialogStatus')?.textContent||'',
   click(action,dataset={}){const button=dialog.children.find(candidate=>candidate.dataset.v2===action&&Object.entries(dataset).every(([name,value])=>candidate.dataset[name]===value))||new Element();button.dataset={...button.dataset,v2:action,...dataset};for(const callback of listeners.get('click')||[])callback({target:button});},
@@ -190,6 +195,7 @@ function setupFixture({count=0,error,gate,automaticGate,automatic=false,failStor
 }
 test('genuinely fresh first-use opens guide once and never pairs or mutates without a button',()=>{
  const ui=setupFixture();assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Let’s meet/);assert.equal(ui.pairs.length+ui.writes.length,0);
+ ui.ui.startWelcome();assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Let’s meet/);
  const saved=ui.preferences();ui.click('close');assert.equal(ui.dialog.open,false);ui.dispose();
  const reload=fixture(undefined,{model:{lamps:[],ownedLampIds:[],groups:[],statuses:{},connected:false},preferences:saved});assert.equal(reload.dialog.open,false);reload.dispose();
 });
@@ -213,6 +219,7 @@ test('Home during an unfinished WiFi-guide preference save cannot offer a group 
 test('partial setup save becomes review-only and interrupted reload cannot replay it',async()=>{
  const ui=setupFixture({error:Object.assign(Error('Style reply lost'),{uncertain:true})});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');await settle();
  assert.match(ui.dialog.innerHTML,/Check this lamp/);assert.doesNotMatch(ui.dialog.innerHTML,/data-v2="setup-save"/);assert.equal(ui.writes.length,1);assert.equal(JSON.parse(ui.preferences()).onboarding.pending.needsReview,true);
+ assert.match(ui.status(),/Some choices may already be saved/);assert.equal(ui.dialog.innerHTML.includes('id="v2SetupStyle"'),false);
  const saved=ui.preferences(),model=ui.model;ui.dispose();const replay=[];const reload=fixture(undefined,{model,preferences:saved,api:{pair:async()=>replay.push('pair'),setupDetails:async()=>replay.push('write')}});reload.click('add');assert.match(reload.dialog.innerHTML,/Check this lamp/);assert.equal(replay.length,0);reload.dispose();
 });
 test('late pairing cannot advance the guide after navigation',async()=>{

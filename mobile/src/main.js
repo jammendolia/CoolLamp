@@ -2803,6 +2803,7 @@ settingsRecovery=new SettingsConnectionRecovery({
 setInterval(()=>settingsRecovery.check(),1000);
 document.addEventListener('visibilitychange',()=>{settingsRecovery.check();if(!document.hidden)renderSettings();});
 page('home');
+appV2.startWelcome();
 setInterval(()=>{if(firmwareBackgroundWorkAllowed()&&!document.hidden&&!busy&&!connecting&&!updatingLamp())void loadApp2EffectSchema().catch(()=>{});},3000);
 renderPower();renderSettings();renderFirmware();
 meshOnboarding=new MeshOnboarding({getBridges:()=>firmwareBackgroundWorkAllowed()?mergedLampEntries().filter(entry=>/^[a-f0-9]{12}$/.test(entry.id)&&(entry.deviceId||entry.meshEnrolled)&&!groupRemovedIds.has(entry.id)&&!fleetLampInstalling(entry.id)&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.13.0')>=0):[],
