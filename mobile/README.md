@@ -122,6 +122,16 @@ actual gear and mounted UI, including a 20-second wait, cancellation, late
 completion, timeout and retry; the route tests cover Wi-Fi priority and fallback.
 These changes require a new native app build and are not in TestFlight 61.1.
 
+Transient busy responses on eight explicitly audited GET reads retry only on
+the same fenced connection, at most six calls. POSTs, scans, enrollment, firmware
+installation and uncertain network failures never retry. Wi-Fi Settings now has
+one shared nine-second State/catalog budget inside the chooser's 25-second total;
+individual native timeouts shrink with the remaining budget. CapacitorHttp offers
+no cancellation operation, so late native responses are ignored rather than
+claimed cancelled. A physical Node adapter test of the production client opened
+Settings/catalog in 8.44 seconds with two parked readers; native iOS/Android
+validation of this additional retry remains a separate gate.
+
 pnpm test exercises the actual transport code with a fake radio: input boundaries,
 effect consistency, notifications, reconnect, ordered writes, acknowledgments,
 timeouts, stale callbacks and firmware errors.

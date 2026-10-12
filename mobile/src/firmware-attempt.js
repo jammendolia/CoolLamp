@@ -363,7 +363,7 @@ async function reconcileProtectedFirmware({value,classify,unknown,acquire,isCurr
     if(error.identity){fatalIdentity=true;throw error;}
     if(error.cancelled||!current())break;
    }finally{
-    const closed=await cleanup(lease);if(closed!==true&&lease&&!fatalIdentity)return Object.freeze({...unknown(),attempts,reads,cleanupPending:closed===null});
+    const closed=await cleanup(lease);if(closed!==true&&lease&&!fatalIdentity)return Object.freeze({...unknown(),attempts,reads,cleanupPending:closed===null,timedOut:controller.signal.reason==='deadline'||remaining()===0});
    }
    if(current()&&attempts<maxAttempts)await bounded(()=>delay(Math.min(1000*attempts,remaining())));
   }
@@ -373,7 +373,7 @@ async function reconcileProtectedFirmware({value,classify,unknown,acquire,isCurr
    timedOut:controller.signal.reason==='deadline'||remaining()===0});
  }catch(error){
   if(error.identity)throw error;
-  return Object.freeze({...unknown(),attempts,reads,cancelled:cancelled||Boolean(error.cancelled),timedOut:Boolean(error.timeout)});
+  return Object.freeze({...unknown(),attempts,reads,cancelled:cancelled||Boolean(error.cancelled),timedOut:Boolean(error.timeout)||controller.signal.reason==='deadline'||remaining()===0});
  }finally{
   clearTimeout(deadlineTimer);signal?.removeEventListener('abort',external);controller.abort('finished');
   if(workerOwners.get(value.identity)===owner)workerOwners.delete(value.identity);

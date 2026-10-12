@@ -246,6 +246,14 @@ test('the real deadline cancels a hung protected read and releases the lease wit
  assert.equal(result.outcome,'unresolved');assert.equal(result.timedOut,true);assert(performance.now()-started<500);
  assert.deepEqual(calls,['read','release']);gate.resolve();
 });
+
+test('deadline while an earlier native cleanup is pending reports timeout without reacquiring',async()=>{
+ const a=attempt({begin:true,commit:true}),close=defer();let acquisitions=0;
+ const acquire=async()=>{acquisitions++;return {lamp:{identity:id,readFirmwareUpdateSnapshot:async()=>lampSnapshot({version:'1.15.1'})},release:async()=>close.promise};};
+ const first=await reconcileFirmwareAttempt({attempt:a.value,acquire,timeoutMs:20});assert.equal(first.cleanupPending,true);
+ const blocked=await reconcileFirmwareAttempt({attempt:a.value,acquire,timeoutMs:15});assert.equal(blocked.outcome,'unresolved');assert.equal(blocked.timedOut,true);assert.equal(acquisitions,1);
+ close.resolve();await new Promise(resolve=>setTimeout(resolve,0));
+});
 test('a pending native cleanup fences the next reconnect until the old close actually settles',async()=>{
  const a=attempt({begin:true,commit:true}),close=defer();let acquisitions=0;
  const acquire=async()=>{acquisitions++;return {lamp:{identity:id,readFirmwareUpdateSnapshot:async()=>lampSnapshot({version:'1.15.1'})},release:async()=>close.promise};};

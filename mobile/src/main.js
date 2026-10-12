@@ -1468,8 +1468,8 @@ async function connectCardWifiAsync(entry,intent){
   try{
     const password=(await credential(entry.id)).value;if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
     if(!password)throw Object.assign(Error('Enter the lamp access password to connect over Wi-Fi.'),{needsPassword:true});
-    const pending=probe.connect(entry.address,password,entry.id);
-    await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Lamp did not respond over Wi-Fi.')),6000);abort=()=>reject(Object.assign(Error('Lamp selection changed.'),{cancelled:true}));task.abort.signal.addEventListener('abort',abort,{once:true});})]);
+    const pending=probe.connect(entry.address,password,entry.id,{guard:current,timeoutMs:9000});
+    await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Lamp did not respond over Wi-Fi.')),9000);abort=()=>reject(Object.assign(Error('Lamp selection changed.'),{cancelled:true}));task.abort.signal.addEventListener('abort',abort,{once:true});})]);
     if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});clearTimeout(probe.timer);
     const value={base:probe.base,authorization:probe.authorization,identity:probe.identity,raw:probe.raw,state:probe.state,catalog:probe.catalog};
     await stopGroupInspection(entry.id);if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});

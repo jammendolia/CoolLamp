@@ -4,6 +4,18 @@ import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
 import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
+// These GET handlers only read current state. Scan, enrollment, firmware check,
+// installation and every POST are deliberately absent, including receipt reads
+// whose legacy transport uses POST. A confirmed busy reply is not a lost reply.
+const busyReadPaths=new Set(['/api/state','/api/effects','/api/audio','/api/firmware',
+  '/api/descriptor','/api/revision','/api/diagnostics','/api/firmware/upload/status']);
+const busyReadReplies=new Set(['Another response is pending. This request was not executed.',
+  'Read resources unavailable. Nothing changed.']);
+// A parked response can occupy the firmware's large-response lane for five
+// seconds. Six attempts span that lifetime while retaining the caller's total
+// deadline; these waits never reserve a new budget for the following catalog.
+const busyReadDelays=[500,1000,1500,1000,1000];
+const requestBudgetMs=13000;
 
 // One absolute durable field per request. A lost reply permits a fresh read,
 // never a second POST or automatic route change. Call from the owning queue.
@@ -32,9 +44,11 @@ async function verifiedSetting(lamp,{supported,path,data,matches,message}) {
 }
 
 export class WifiTransport {
-  constructor(http, callbacks = {}, {backgroundAllowed=()=>true,backgroundGeneration=()=>0}={}) {
+  constructor(http, callbacks = {}, {backgroundAllowed=()=>true,backgroundGeneration=()=>0,
+    now=()=>performance.now(),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
     this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve();
     this.backgroundAllowed=backgroundAllowed;this.backgroundGeneration=backgroundGeneration;
+    this.now=now;this.wait=wait;
   }
   readFence(epoch,guard=null) {
     if(!guard){if(epoch!==this.epoch)throw Error('Connection changed.');return;}
@@ -47,31 +61,55 @@ export class WifiTransport {
     return (expectedEpoch=epoch)=>{if(!valid||expectedEpoch!==this.epoch||this.backgroundAllowed()!==true||this.backgroundGeneration()!==generation)
       throw Object.assign(Error('Background lamp read cancelled.'),{confirmed:true,cancelled:true,backgroundCancelled:true});};
   }
-  async request(path, data, epoch=this.epoch, beforeWrite=null, readGuard=null) {
+  async request(path, data, epoch=this.epoch, beforeWrite=null, readGuard=null, deadline=null) {
     let response;
-    this.readFence(epoch,readGuard);
+    const base=this.base,authorization=this.authorization,identity=this.identity,token=this.raw?.token;
+    const fence=()=>{this.readFence(epoch,readGuard);if(this.base!==base||this.authorization!==authorization||this.identity!==identity||this.raw?.token!==token)throw Error('Connection changed.');};
+    const expires=deadline??this.now()+requestBudgetMs;
+    const timeout=()=>Object.assign(Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true,requestDeadline:true});
+    fence();
     beforeWrite?.();
-    this.readFence(epoch,readGuard);
-    try { response = await this.http.request({url:this.base+path,method:data===undefined?'GET':'POST',
-      headers:{Authorization:this.authorization,...(data===undefined?{}:{'X-Lamp-Token':this.raw.token,'Content-Type':'application/x-www-form-urlencoded'})},
-      ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
-    catch { this.readFence(epoch,readGuard);throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
-    this.readFence(epoch,readGuard);
+    fence();
+    for(let attempt=0;;attempt++){
+      fence();const remaining=Math.floor(expires-this.now());if(remaining<=0)throw timeout();
+      let timer;
+      try {
+        // CapacitorHttp has no public cancellation operation. Its read timeout
+        // can reset on incoming data; this JS deadline also ignores late native
+        // completion and never issues another request after a timed-out call.
+        response=await Promise.race([this.http.request({url:base+path,method:data===undefined?'GET':'POST',
+          headers:{Authorization:authorization,...(data===undefined?{}:{'X-Lamp-Token':token,'Content-Type':'application/x-www-form-urlencoded'})},
+          ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',
+          connectTimeout:Math.min(5000,remaining),readTimeout:Math.min(8000,remaining),disableRedirects:true}),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeout()),remaining);})]);
+      }
+      catch(error){fence();if(error?.requestDeadline)throw error;throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true});}
+      finally{clearTimeout(timer);}
+      fence();if(this.now()>=expires)throw timeout();
+      if(data!==undefined||!busyReadPaths.has(path)||response.status!==503||!busyReadReplies.has(response.data)||attempt>=busyReadDelays.length)break;
+      const delay=busyReadDelays[attempt];
+      // Return the last confirmed refusal if the next wait would consume the
+      // remaining budget. Retry only this identical, side-effect-free route.
+      if(expires-this.now()<=delay)break;
+      fence();await this.wait(delay);fence();
+    }
     if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true,status:401});
     if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true,status:response.status});
     return response.data;
   }
-  async connect(address,password,expectedId,{guard=null}={}) {
+  async connect(address,password,expectedId,{guard=null,timeoutMs=null}={}) {
+    if(timeoutMs!==null&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw Error('Choose a valid connection timeout.');
+    const deadline=timeoutMs===null?null:this.now()+timeoutMs;
     this.readFence(this.epoch,guard);
     await this.disconnect(); this.base=lampAddress(address);
     const epoch=this.epoch;
     this.authorization='Basic '+btoa(unescape(encodeURIComponent('lamp:'+password)));
-    try { this.readFence(epoch,guard);await this.refresh(expectedId,true,guard);this.readFence(epoch,guard);this.schedule();return this.raw; }
+    try { this.readFence(epoch,guard);await this.refresh(expectedId,true,guard,deadline);this.readFence(epoch,guard);this.schedule();return this.raw; }
     catch(e) { if(epoch===this.epoch)await this.disconnect();throw e; }
   }
-  async refresh(expectedId,retryCatalog=true,guard=null) {
+  async refresh(expectedId,retryCatalog=true,guard=null,deadline=null) {
     const epoch=this.epoch;
-    const result=await this.request('/api/state',undefined,epoch,null,guard);
+    const result=await this.request('/api/state',undefined,epoch,null,guard,deadline);
     this.readFence(epoch,guard);
     const raw=typeof result==='string'?JSON.parse(result):result;
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
@@ -82,10 +120,10 @@ export class WifiTransport {
     let catalog=this.catalog;
     if (!catalog || this.raw?.token!==raw.token || catalog.length!==raw.effects.length) {
       if (raw.catalogVersion===1) {
-        const data=await this.request('/api/effects',undefined,epoch,null,guard);
+        const data=await this.request('/api/effects',undefined,epoch,null,guard,deadline);
         this.readFence(epoch,guard);
         const entries=typeof data==='string'?JSON.parse(data):data;
-        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard);}
+        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard,deadline);}
         catalog=validateCatalog(entries,raw.effects.length);
       } else catalog=legacyCatalog(raw.effects);
     }
