@@ -21,7 +21,10 @@ struct Metrics {
 // A new application write waits until all prior copied bytes and the SDK's
 // pbuf queue have drained. The SDK may split/retransmit a queued write later;
 // this bounds application payload, not its physical pbuf or heap overhead.
-constexpr uint16_t MaxTransmitFlightBytes=1024;
+// A TCP payload copy and Wi-Fi's INTERNAL|DMA transmit copy coexist. Keep
+// smaller flights when a full immutable reply occupies the C3's large block.
+// Pinned Wi-Fi adds 136 bytes to the wire packet before allocator overhead.
+constexpr uint16_t MaxTransmitFlightBytes=384;
 // Copied outgoing data may use the original API lifetime instead of a shorter
 // secondary cutoff. RTT estimation/scheduling can change SDK retransmission
 // timing; this policy is not a retry guarantee. Incomplete input stays 1.5s,

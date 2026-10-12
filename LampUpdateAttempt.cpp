@@ -1,4 +1,5 @@
 #include "LampUpdateAttempt.h"
+#include "LampJsonSink.h"
 #include <nvs.h>
 
 namespace LampUpdateAttempt {
@@ -75,8 +76,19 @@ bool confirmHealthy(const FirmwareManifest& image){
  for(unsigned i=0;i<count;++i)if(int(i)!=matched)next[used++]=entries[i];
  portEXIT_CRITICAL(&mux);return save(next,used);
 }
-String statusJson(const FirmwareManifest& image){
+StatusSnapshot captureStatus(const FirmwareManifest& image){
  portENTER_CRITICAL(&mux);const bool ready=readable;const uint8_t used=count,reason=!ready?3:find(image)>=0?1:count==Capacity?2:0;portEXIT_CRITICAL(&mux);
- return String("{\"version\":1,\"storageReady\":")+(ready?"true":"false")+",\"unconfirmedArtifacts\":"+String(unsigned(used))+",\"capacity\":4,\"candidateReason\":"+String(unsigned(reason))+",\"sameArtifactRequiresManual\":true,\"rollbackProven\":false}";
+ return {ready,used,reason};
+}
+void appendStatus(LampJsonSink& out,const StatusSnapshot& snapshot){
+ if(snapshot.unconfirmedArtifacts>Capacity||snapshot.candidateReason>3){out.fail();return;}
+ out.concat("{\"version\":1,\"storageReady\":");out.concat(snapshot.storageReady?"true":"false");
+ out.concat(",\"unconfirmedArtifacts\":");out.concat(snapshot.unconfirmedArtifacts);
+ out.concat(",\"capacity\":4,\"candidateReason\":");out.concat(snapshot.candidateReason);
+ out.concat(",\"sameArtifactRequiresManual\":true,\"rollbackProven\":false}");
+}
+String statusJson(const FirmwareManifest& image){
+ const auto snapshot=captureStatus(image);
+ return lampJsonReply([&](LampJsonSink& out){appendStatus(out,snapshot);});
 }
 }

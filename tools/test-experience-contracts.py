@@ -19,7 +19,7 @@ CASES = [
     *[[sys.executable, 'tests/' + name + '.py'] for name in [
         'experience-runtime', 'household-runtime', 'household-adapter-runtime',
         'commission-runtime', 'mesh-runtime', 'mesh-adapter-runtime',
-        'control-http-adapter', 'status-builder-memory', 'factory-reset-runtime', 'bluetooth-runtime',
+        'control-http-adapter', 'status-builder-memory', 'network-address-runtime', 'platform-log-priming-runtime', 'factory-reset-runtime', 'bluetooth-runtime',
         'audio-health-runtime', 'motion-path-storage-runtime',
         'runtime-metrics-runtime', 'runtime-diagnostic-runtime', 'usb-diagnostics-runtime', 'http-parser-runtime', 'http-multipart-runtime', 'http-server-runtime', 'http-socket-cleanup-runtime', 'http-stall-probe',
         'ble-control-runtime', 'ble-update-runtime', 'ble-update-radio-runtime',

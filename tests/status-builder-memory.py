@@ -67,6 +67,7 @@ void* observedMalloc(size_t);void* observedRealloc(void*,size_t);void observedFr
 void observeStringCopy(size_t);
 uint32_t fixtureFreeHeap();uint32_t fixtureLargestBlock();
 #include "WString.h"
+class Print {public:virtual ~Print()=default;virtual size_t write(uint8_t)=0;size_t write(const uint8_t* bytes,size_t count){size_t written=0;for(size_t i=0;i<count;++i)written+=write(bytes[i]);return written;}};
 #define portENTER_CRITICAL(value) ((void)(value))
 #define portEXIT_CRITICAL(value) ((void)(value))
 inline uint32_t millis(){return 1000;}
@@ -119,15 +120,15 @@ bool policyReadable=false;LampUpdatePolicy::Policy updatePolicy;uint32_t policyR
 LampUpdatePolicy::Eligibility policyEligibility(){return LampUpdatePolicy::InvalidPolicy;}
 uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){return 4;}
 std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tlsError{INT32_MIN},tlsFlags{INT32_MIN},transportError{INT32_MIN};
-namespace LampUpdateAttempt {constexpr unsigned Capacity=4;unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
+namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
 }
 constexpr int WL_CONNECTED=3;
 using namespace LampSyncWire;
 struct {uint8_t role=1;char leader[13]="aabbccddeeff",key[33]="0123456789abcdef0123456789abcdef";} config;
-struct Address {String toString(){return "192.168.255.254";}};
-bool wifiConnected=false;
-struct {int status(){return wifiConnected?WL_CONNECTED:0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int){return {};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
+struct Address {const char* text="192.168.255.254";String toString(){return text;}size_t printTo(Print& out)const{return out.write(reinterpret_cast<const uint8_t*>(text),strlen(text));}};using IPAddress=Address;
+bool wifiConnected=false,ipv6Dns=false;
+struct {int status(){return wifiConnected?WL_CONNECTED:0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int i){return {ipv6Dns&&i==0?"ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff":"192.168.255.254"};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
 struct Peer {Packet info{};bool joined=true;uint32_t seen=1000,subscribed=1000;bool udpKnown=true,radioKnown=true;uint32_t udpSeen=1000,radioSeen=1000;Address ip;uint8_t radioChannel=14;} peers[31];
 struct {uint8_t count=32;char order[32][13]{};} sceneConfig;
 char identity[13]="aabbccddeeff";bool paused=false,followingRadio=true,started=true,serviceBlocked=false;
@@ -151,10 +152,14 @@ HANDLER_PLATFORM = r'''
 #define COOL_LAMP_AUDIO_EFFECTS 1
 constexpr unsigned LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,MODE_FIRE=4;
 LampSettings lampSettings{};
-String lampHost="test-host",lampToken="fixturetoken";
+// Fixture globals are already resident in the observed free-heap baseline.
+// Avoid counting their persistent storage again; any SDK text conversion is
+// still an observed pinned String temporary, including allocation failures.
+struct FixtureHost {const char* text="test-host";size_t length()const{return strlen(text);}operator String()const{return String(text);}String operator+(const char* suffix)const{return String(text)+suffix;}FixtureHost& operator=(const char* value){text=value;return *this;}} lampHost;
+const char* lampToken="fixturetoken";
 const char* lampName="A bounded public fixture lamp name";
 uint16_t NUM_LEDS=1024,lampMidpoint=512;uint8_t Mode=4,Brightness=255;bool PowerOn=true;
-uint8_t availableEffects=47;
+uint8_t availableEffects=47;bool useCanonicalNames=true;
 uint8_t lampAvailableEffectCount(){return availableEffects;}
 constexpr uint8_t LAMP_CUSTOM_SOLID=29;bool productionDefaultAppearance=false;
 struct Color {uint8_t enabled=1,r=255,g=255,b=255;};using LampColor=Color;
@@ -167,6 +172,7 @@ struct RGB {uint8_t r=255,g=255,b=255;};RGB fountainPaletteColor(unsigned){retur
 bool lampCalibrationActive(){return false;}bool lampCalibrationCenter(){return false;}unsigned lampCalibrationPosition(){return NUM_LEDS-1;}
 struct {bool enabled=false,random=false;uint8_t category=255;uint32_t seconds=UINT32_MAX;} lampRotation;
 String lampStyleJson(){return "{\"version\":1,\"code\":3,\"id\":\"corkscrew\",\"family\":\"corkscrew\"}";}
+uint8_t lampStyleCode(){return 3;}const char* lampStyleId(){return "corkscrew";}const char* lampStyleFamily(){return "corkscrew";}
 enum wifi_ps_type_t {WIFI_PS_NONE=0};constexpr int ESP_OK=0;
 int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}int esp_reset_reason(){return INT32_MIN;}
 bool setupAP=false,scanActive=false;unsigned scanStartedAt=0,scanDuration=UINT32_MAX,scanPolls=UINT32_MAX;int scanCount=INT32_MIN;
@@ -179,7 +185,7 @@ struct FixtureServer {
  std::function<void()> catalogRead;
  template<typename F>void on(const char*,int,F handler){catalogRead=handler;}
  const Metrics& metrics(){return measured;}unsigned closeTaskStackMinimumBytes(){return UINT32_MAX;}
- bool controlActive(){return false;}
+ bool privateControl=false;bool controlActive(){return privateControl;}
  void send(int code,const char*,String&& value){status=code;body=std::move(value);}
  void send(int code,const char*,const char* value){status=code;body=value;}
 } lampServer;
@@ -281,6 +287,18 @@ void measureLowMemory(){
   availableEffects=38;installed=false;audioRunning=false;
   measureHandler("cool2Profile38State",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}return std::move(lampServer.body);});
   measureHandler("cool2Profile38Diagnostics",[]{return lampDiagnosticsJson();});
+  // The latest failed native read left only 15,508 B free and a 7,668 B
+  // largest block. Preserve a full IPv6 DNS address and public 32-byte token;
+  // the SDK/workspace floor remains 8,704 B after the complete owned reply.
+  if(useCanonicalNames){
+  availableEffects=47;installed=true;audioRunning=true;heapBudget=15508;
+  lampHost="coollamp-abcdef";lampToken="0123456789abcdef0123456789abcdef";
+  lampName="Fixture Lamp2";ipv6Dns=true;
+  measureHandler("connected47StateHttp",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}assert(stats.peak<=15508-8704);return std::move(lampServer.body);});
+  lampServer.privateControl=true;
+  measureHandler("connected47StateBle",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}assert(stats.peak<=15508-8704);return std::move(lampServer.body);});
+  lampServer.privateControl=false;ipv6Dns=false;
+  }
   assert(stats.live==0);heapBudget=327680;largestBudget=327680;accountLiveHeap=false;
 }
 void checkSinkBounds(){
@@ -355,7 +373,10 @@ class StatusBuilderMemoryTests(unittest.TestCase):
         sources['LampVersion.h']=(ROOT/'LampVersion.h').read_text()
         current_version=re.search(r'^#define LAMP_FIRMWARE_VERSION "([^"]+)"$',sources['LampVersion.h'],re.MULTILINE)[1]
         bodies = '\n'.join(extract.function(sources[name], signature) for name, signature in [
-            ('LampUpdate.cpp', 'String versionText('), ('LampUpdate.cpp', 'String lampUpdatePolicyJson()'),
+            ('LampUpdate.cpp', 'String versionText('),
+            ('LampUpdate.cpp', 'LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson()'),
+            ('LampUpdate.cpp', 'void appendLampUpdatePolicyJson('),
+            ('LampUpdate.cpp', 'String lampUpdatePolicyJson()'),
             ('UpdateHttp.cpp', 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()'),
             ('UpdateHttpDiagnostics.cpp', 'void appendUpdateHttpDiagnostics('),
             ('LampUpdate.cpp', 'LampUpdateJsonSnapshot captureLampUpdateJson('),
@@ -370,18 +391,19 @@ class StatusBuilderMemoryTests(unittest.TestCase):
         diagnostic=extract.function(network,'String lampDiagnosticsJson()')
         state=extract.function(network,'void sendLampState()')
         timing='template<class HttpMetrics>\n'+extract.function(network,'void appendLampRuntimeTimingJson(')
-        bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+timing+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+state
+        bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+timing+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+extract.function(network,'bool captureLampNetworkText(')+'\n'+extract.function(network,'struct LampNetworkAddressWriter ')+ ';\n'+extract.function(network,'bool captureLampNetworkAddress(')+'\n'+state
         bodies+='\n'+extract.function(network,'String lampEffectCatalogEntry(')
         catalog_registration=extract.registration(network,'/api/effects','GET')
         server=(ROOT/'LampHttpServer.h').read_text()
         metrics=extract.function(server,'struct Metrics ')
         names=network[network.index('const char* const effectNames[]'):network.index('static_assert(sizeof(effectNames)')]
-        platform = PLATFORM.replace('ATTEMPT_JSON', extract.function(sources['LampUpdateAttempt.cpp'], 'String statusJson(const FirmwareManifest& image)'))
+        platform = PLATFORM.replace('ATTEMPT_JSON','\n'.join(extract.function(sources['LampUpdateAttempt.cpp'],signature) for signature in ['StatusSnapshot captureStatus(', 'void appendStatus(', 'String statusJson(const FirmwareManifest& image)']))
         platform=platform.replace('SYNC_JSON_SNAPSHOT',extract.function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
         colors=(ROOT/'LampColors.ino').read_text();sources['LampColors.ino']=colors
         defaults=HANDLER_PLATFORM.replace('DEFAULT_COLOR_FN',extract.function(colors,'LampColor defaultLampColor(uint8_t mode)\n'))
         defaults=defaults.replace('DEFAULT_OPTIONS_FN',extract.function(colors,'LampEffectOptions defaultEffectOptions(uint8_t mode) {'))
         platform+='\n'+defaults.replace('HTTP_METRICS',metrics).replace('EFFECT_NAMES',names)
+        target_output=None
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             (directory/'Arduino.h').write_text(ARDUINO)
@@ -427,15 +449,25 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             unusual_names=ordinary_names+['Future '+str(i) for i in range(48,256)]
             unusual_names[:4]=['Quote" and backslash\\','LF\nCR\rTAB\t','Control\x01\x1f','Future café']
             future_names='const char* const effectNames[]={'+','.join(json.dumps(value,ensure_ascii=False).replace('\\u0001','\\001').replace('\\u001f','\\037') for value in unusual_names)+'};'
-            future=combined.replace(names,future_names).replace('availableEffects=47;measureCatalog("catalog47");','availableEffects=47;measureCatalog("catalog47");measureCatalogLoop255();')
+            future=combined.replace(names,future_names).replace('availableEffects=47;measureCatalog("catalog47");','availableEffects=47;measureCatalog("catalog47");measureCatalogLoop255();').replace('int main(){','int main(){useCanonicalNames=false;')
             cpp.write_text(future)
             subprocess.run(['c++','-std=c++17','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
             future_output=subprocess.run([str(binary)],capture_output=True,text=True,timeout=20)
             self.assertEqual(future_output.returncode,0,future_output.stderr)
+            # One additional model uses the target's exact 15-byte SSO array
+            # (14 data bytes). All String methods remain pinned; this is a
+            # test-local ABI model, not a target heap measurement.
+            header=(core/'WString.h').read_text()
+            self.assertEqual(header.count('SSOSIZE = sizeof(struct _ptr) + 4 - 1'),1)
+            (directory/'WString.h').write_text(header.replace('SSOSIZE = sizeof(struct _ptr) + 4 - 1','SSOSIZE = 15'))
+            cpp.write_text(combined)
+            subprocess.run(['c++','-std=c++17','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
+            target_output=subprocess.run([str(binary)],capture_output=True,text=True,timeout=20)
+            self.assertEqual(target_output.returncode,0,target_output.stderr[-2500:])
         rows=[json.loads(line) for line in output.stdout.splitlines()]
         snapshot_sizes=next(row['snapshotSizes'] for row in rows if 'snapshotSizes' in row)
         results = [row for row in rows if 'name' in row]
-        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','compactUpdate'])
+        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','connected47StateHttp','connected47StateBle','compactUpdate'])
         compact=results[-1];self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
         self.assertEqual(compact['value']['automaticService'],dict(version=1,state=6,reason=24,retryInMs=21600000,donorWaitMs=30000,internetAttempts=65535,donorOffers=65535,attention=False,phoneFallback=False,newerSeen=False))
         for result in results:
@@ -492,6 +524,13 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             self.assertEqual(digest,LEGACY_PAYLOAD_DIGESTS[result['name']],result['name']+' legacy JSON changed')
         self.assertLess(results[5]['peakStringPayloadBytes'],15696)
         self.assertLess(results[6]['peakStringPayloadBytes'],16096)
+        target_results=[json.loads(line) for line in target_output.stdout.splitlines() if '"name":' in line]
+        for result in results[16:18]+[r for r in target_results if r['name'].startswith('connected47')]:
+            self.assertLessEqual(result['peakStringPayloadBytes'],15508-8704)
+            value=result['value'];self.assertEqual(value['dns'][0],'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff')
+            self.assertEqual(value['hostname'],'coollamp-abcdef.local')
+            self.assertEqual(len(value['effects']),47);self.assertEqual(len(value['sync']['order']),4)
+            self.assertEqual('token' in value,result['name'].endswith('Http'))
         for result in results[9:]:
             self.assertLessEqual(result['peakStringPayloadBytes'],16316-8192)
             if result['name'].startswith('fourMember'):
@@ -519,6 +558,9 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       catalogUnusualCanonicalNamesRoundTrip=True,catalogUint8MaximumLoopTerminates=True,
                       catalog255FixtureIsHandlerOnly=True,catalog255FixtureStatus=future_catalog['status'],
                       lowMemoryFixture={'freeHeapBytes':16316,'largestBlockBytes':7668,'durableMembers':4},
+                      connectedLowMemoryFixture={'freeHeapBytes':15508,'largestBlockBytes':7668,'ipv6DnsPreserved':True,'httpTokenBytes':32,'httpAndPrivateBle':True,'unchangedReplyHeadroomBytes':8704},
+                      targetSsoArrayModelBytes=15,targetSsoModelIsNotPhysicalHeap=True,
+                      targetSsoModelResults=[{k:v for k,v in r.items() if k!='value'} for r in target_results],
                       snapshotStructBytesHost=snapshot_sizes,snapshotStructSizesAreNotTargetSizes=True,
                       worst32MemberReadRejectedAtLowMemory=True,
                       maximizedFourMemberV2StateAcceptedAtLowMemory=next(row for row in rows if row.get('maxAppearanceLowMemory')),
@@ -526,7 +568,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       measuredScope='String payload allocation only; host pointer/SSO sizes differ; excludes allocator transient and SDK allocations',
                       results=[dict(**{k:v for k,v in r.items() if k!='value'},
                                     finalReplyReservationBytes=(r['bytes']+16)&~15,
-                                    minimumRemainingModeledHeapBytes=16316-r['peakStringPayloadBytes'] if r in results[9:] else None,
+                                    minimumRemainingModeledHeapBytes=(15508 if r['name'].startswith('connected47') else 16316)-r['peakStringPayloadBytes'] if r in results[9:] else None,
                                     payloadSha256=hashlib.sha256(json.dumps(r['value'],separators=(',',':')).encode()).hexdigest()) for r in results])
         (ROOT/'.build').mkdir(exist_ok=True)
         report_path=Path(os.environ.get('COOLLAMP_STATUS_BUILDER_REPORT',str(ROOT/'.build/status-builder-memory.json')))

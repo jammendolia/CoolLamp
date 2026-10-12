@@ -13,7 +13,8 @@ SCENARIOS=('mapped-page-low-memory-auth-and-no-copy','mapped-page-low-memory-bou
            'fairness-and-capacity','slow-reader-and-no-replay','trickled-response-hard-deadline','static-page-heap-guard','static-page-priority','static-page-pressure-deadline','ready-memory-before-mutation','stalled-json-memory-recovery','response-budget','household-compatibility','invalid-json-and-allocation-after-mutation','bounded-work',
            'static-page-separate-floor','static-page-receiving-priority','static-page-input-deadline-resumes','static-page-upload-deadline-resumes',
            'control-memory-before-decode','read-memory-admission-and-immediate-denial','read-form-capture-budget','prepared-releases-before-memory-admission','prepared-raw-form-and-ble-isolation','prepared-single-slot-and-half-close','prepared-form-allocation-failure','prepared-survives-upload-completion','prepared-waits-for-delayed-cleanup','complete-input-total-deadline-and-rollover',
-           'transmit-credit-delayed-ack-and-deadline','mapped-page-delayed-ack','single-data-ack-loss-recovers-at-three-seconds','partial-ack-progress-before-drain-and-rollover','partial-ack-equal-contention-and-fd-reuse','partial-ack-segments-total-and-cancel','partial-ack-html-progress-beyond-five','final-flight-baseline-close-backpressure','mapped-page-deadline-rollover-and-cleanup','ack-drain-restores-unsent-idle','mapped-page-idle-cancel-and-request-bound','close-queue-full','stopped-close-queue-full','upload-complete','upload-abort-owner','upload-malformed-and-loss','failed-old-upload-new-owner','upload-final-status-under-response-pressure','fleet-twenty')+POLICY_SCENARIOS
+           'transmit-credit-delayed-ack-and-deadline','transmit-credit-delayed-ack-reachable','mapped-page-delayed-ack','mapped-page-fast-delayed-ack','mapped-root-delayed-ack','owned-state-two-copy-dma-pressure','single-data-ack-loss-recovers-at-three-seconds','partial-ack-progress-before-drain-and-rollover','partial-ack-equal-contention-and-fd-reuse','partial-ack-segments-total-and-cancel','partial-ack-html-progress-beyond-five','final-flight-baseline-close-backpressure','mapped-page-deadline-rollover-and-cleanup','ack-drain-restores-unsent-idle','mapped-page-idle-cancel-and-request-bound','close-queue-full','stopped-close-queue-full','upload-complete','upload-abort-owner','upload-malformed-and-loss','failed-old-upload-new-owner','upload-final-status-under-response-pressure','fleet-twenty',
+           'parser-admission-bounds-and-recovery','parser-admission-retained-ble-pressure','parser-admission-cancel-and-close-queue-full','parser-admission-allocation-failure-and-race')+POLICY_SCENARIOS
 with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as folder:
     binary=Path(folder)/'server.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
@@ -34,8 +35,26 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
                     '-I'+str(ROOT/'tests/http-server-stubs'),'-I'+str(ROOT),
                     str(ROOT/'tests/http-server-runtime.cpp'),str(ROOT/'LampHttpServer.cpp'),
                     '-o',str(gzip_binary)],check=True)
-    for scenario in SCENARIOS[:5]:
+    gzip_scenarios=SCENARIOS[:5]+('mapped-root-delayed-ack',)
+    for scenario in gzip_scenarios:
         subprocess.run([str(gzip_binary),scenario],check=True,timeout=15)
+    # Restore only the former flight in temporary headers, driving the same
+    # production response owner/send/deadline path. No second request processor
+    # or artifact-specific fake success is substituted for the transport.
+    former_flight=Path(folder)/'former-flight';former_flight.mkdir()
+    old_flight,count=re.subn(r'(MaxTransmitFlightBytes\s*=\s*)384;',r'\g<1>1024;',
+                            (ROOT/'LampHttpSocketCleanup.h').read_text())
+    assert count==1
+    (former_flight/'LampHttpSocketCleanup.h').write_text(old_flight)
+    for name in ('LampHttpServer.h','LampHttpServer.cpp'):
+        (former_flight/name).write_bytes((ROOT/name).read_bytes())
+    former_binary=former_flight/'server.exe'
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
+                    '-DLAMP_HTTP_LEGACY_TX_FLIGHT_FIXTURE',*SANITIZERS,'-I'+str(former_flight),
+                    '-I'+str(ROOT/'tests/http-server-stubs'),'-I'+str(ROOT),
+                    str(ROOT/'tests/http-server-runtime.cpp'),str(former_flight/'LampHttpServer.cpp'),
+                    '-o',str(former_binary)],check=True)
+    subprocess.run([str(former_binary),'owned-state-two-copy-dma-pressure'],check=True,timeout=15)
     # Same production transport and fixtures, with ONLY its former copied-data
     # policy restored in temporary headers. The normal compile asserts5s, so a
     # silent production revert cannot be mistaken for a passing comparison.
@@ -59,11 +78,22 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
                 formerCopiedIdleMs=3500,originalApiTotalMs=5000,inputIdleMs=1500,
                 bulkHtmlSharesControlAdmission=False,mappedPageGetOnly=True,mappedPageSendHeapBytes=11776,
                 mappedPageContiguousWorkspaceBytes=512,mappedPageFlightReserveBytes=3072,
-                mappedPageSingleFlightBytes=1024,acceptedReceiveAndUploadHaveBulkPriority=True,
+                mappedPageSingleFlightBytes=384,acceptedReceiveAndUploadHaveBulkPriority=True,
                 lowMemorySafeReadBudget={'freeHeapBytes':16316,'largestBlockBytes':7668},
                 lowMemoryReadDenialImmediate=True,mutationAdmissionUnchanged=True,
                 bulkHtmlOriginalTotalMs=15000,mappedHtmlByteExact=len((ROOT/'LampPage.h').read_text(encoding='utf-8').split('R"HTML(',1)[1].rsplit(')HTML";',1)[0].encode('utf-8')),
-                mappedGzipLowMemoryScenariosPassed=5,mappedGzip=gzip_report,
+                mappedGzipLowMemoryScenariosPassed=len(gzip_scenarios),mappedGzip=gzip_report,
+                twoCopyPressure=dict(hostModelOnly=True,physicalCauseConfirmed=False,fixtureDmaBlockBytes=1380,
+                    currentFlightBytes=384,formerFlightBytes=1024,currentComplete=True,formerAcceptedButUnsent=True,
+                    ipv4WirePrefixBytes=54,maximumTcpPbufPrefixBytes=74,pbufBytes=16,tcpSegmentBytes=16,
+                    wifiAllocationAdditionalBytes=136,fixtureAllocatorAllowancePerAllocationBytes=16),
+                rawHtml250MsAckBoundedCancellation=True,rawHtml100MsAckComplete=True,
+                compressedRoot250MsAckComplete=True,lateApi250MsAckBoundedCancellation=True,
+                lateApi100MsAckComplete=True,
+                parserAdmission=dict(hostModelOnly=True,freeReserveBytes=8704,compiledParserSizeBudgeted=True,
+                    conservativeAllocatorRoundingBytes=16,largestBlockCheckedBeforeAllocation=True,
+                    shortageReplyStatic=True,handlerNotExecutedOrReplayed=True,postAllocationHeadroomChecked=True,
+                    retainedBleLikeReplyBytes=6255,pressureCasesPassed=4,physicalAvailabilityConfirmed=False),
                 noPhysicalAttribution=True,notGuaranteedTcpRetry=True,
                 sources={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
                          ('LampControlResourcePolicy.h','LampHttpServer.h','LampHttpServer.cpp','LampHttpSocketCleanup.h','tests/http-server-runtime.cpp')})

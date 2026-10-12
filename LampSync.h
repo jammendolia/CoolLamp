@@ -23,7 +23,7 @@ String lampSyncJson(uint8_t peerCursor=0,uint8_t peerLimit=8);
 // This avoids retaining a second full group snapshot during parent growth.
 bool appendLampSyncJson(String& reply,uint8_t peerCursor=0,uint8_t peerLimit=8);
 bool appendLampSyncJson(LampJsonSink& reply,uint8_t peerCursor,uint8_t peerLimit,uint32_t now);
-struct LampSyncJsonSnapshot {uint32_t now=0;LampEspNow::Status radio{};LampSyncWire::Visual visual{};String incarnation;};
+struct LampSyncJsonSnapshot {uint32_t now=0;LampEspNow::Status radio{};LampSyncWire::Visual visual{};char incarnation[33]{};};
 LampSyncJsonSnapshot captureLampSyncJson(uint32_t now);
 bool appendLampSyncJson(LampJsonSink& reply,uint8_t peerCursor,uint8_t peerLimit,const LampSyncJsonSnapshot& snapshot);
 String lampSyncIncarnation(); // Stable nonsecret group fingerprint; empty if independent.

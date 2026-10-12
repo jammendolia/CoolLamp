@@ -14,6 +14,7 @@ extern "C" {
 #include <iostream>
 #include <string>
 using namespace LampHttpSocketCleanup;
+static_assert(MaxTransmitFlightBytes==384,"Simultaneous TCP/Wi-Fi flight bound drifted");
 #if defined(LAMP_HTTP_LEGACY_ACK_POLICY_FIXTURE)
 static_assert(AckWaitTimeoutMs==3500,"Legacy policy comparison drifted");
 #else
@@ -159,7 +160,7 @@ int main(int argc,char** argv){
   }else if(scenario=="creation-failures"){
     queueFailure=true;assert(!start());queueFailure=false;taskFailure=true;assert(!start()&&queueDeleted);taskFailure=false;assert(start());assert(enqueue({-1,0,0,5000,false})&&metrics().pendingOwned==0);
   }else if(scenario=="transmit-credit-ack-partial-and-cap"){
-    inWorker=false;auto& p=create(40);auto credit=transmitCredit(40);assert(credit.bytes==1024&&!credit.disconnected&&credit.observed&&!credit.pendingBytes&&!credit.pendingSegments&&!locked&&!holderMarked);
+    inWorker=false;auto& p=create(40);auto credit=transmitCredit(40);assert(credit.bytes==MaxTransmitFlightBytes&&!credit.disconnected&&credit.observed&&!credit.pendingBytes&&!credit.pendingSegments&&!locked&&!holderMarked);
     // Either byte ownership or pbuf ownership alone is sufficient to defer.
     buffered(p,1024);credit=transmitCredit(40);assert(!credit.bytes&&credit.observed&&credit.pendingBytes==1024&&credit.pendingSegments==1);
     buffered(p,768);credit=transmitCredit(40);assert(!credit.bytes&&credit.observed&&credit.pendingBytes==768&&credit.pendingSegments==1);
@@ -169,14 +170,14 @@ int main(int argc,char** argv){
     // write. Credit waits for every queue entry, not an assumed single pbuf.
     for(uint32_t entries:{1U,2U,16U}){p.pcb.snd_queuelen=entries;credit=transmitCredit(40);assert(!credit.bytes&&credit.observed&&credit.pendingSegments==entries);}
     p.pcb.snd_queuelen=0;p.pcb.snd_buf=TCP_SND_BUF-1;assert(!transmitCredit(40).bytes);
-    p.pcb.snd_buf=TCP_SND_BUF;assert(transmitCredit(40).bytes==1024);p.pcb.mss=300;assert(transmitCredit(40).bytes==300);p.pcb.mss=0;assert(!transmitCredit(40).bytes);
-    p.pcb.mss=1436;p.pcb.state=CLOSE_WAIT;assert(transmitCredit(40).bytes==1024);assert(!closeCalls&&!abortCalls);
+    p.pcb.snd_buf=TCP_SND_BUF;assert(transmitCredit(40).bytes==MaxTransmitFlightBytes);p.pcb.mss=300;assert(transmitCredit(40).bytes==300);p.pcb.mss=0;assert(!transmitCredit(40).bytes);
+    p.pcb.mss=1436;p.pcb.state=CLOSE_WAIT;assert(transmitCredit(40).bytes==MaxTransmitFlightBytes);assert(!closeCalls&&!abortCalls);
   }else if(scenario=="transmit-credit-contention-errors-and-fd-reuse"){
     inWorker=false;auto& p=create(41);const auto before=lookups;tryContended=true;auto credit=transmitCredit(41);assert(!credit.bytes&&!credit.observed&&lookups==before&&!holderMarked&&!locked);
-    tryContended=false;assert(transmitCredit(41).bytes==1024);p.socket.fd_used=1;credit=transmitCredit(41);assert(!credit.bytes&&!credit.observed);p.socket.fd_used=0;p.socket.fd_free_pending=1;credit=transmitCredit(41);assert(!credit.bytes&&!credit.observed);p.socket.fd_free_pending=0;
+    tryContended=false;assert(transmitCredit(41).bytes==MaxTransmitFlightBytes);p.socket.fd_used=1;credit=transmitCredit(41);assert(!credit.bytes&&!credit.observed);p.socket.fd_used=0;p.socket.fd_free_pending=1;credit=transmitCredit(41);assert(!credit.bytes&&!credit.observed);p.socket.fd_free_pending=0;
     p.pcb.state=LISTEN;assert(transmitCredit(41).disconnected);p.pcb.state=ESTABLISHED;p.conn.type=NETCONN_UDP;assert(transmitCredit(41).disconnected);
     p.conn.type=NETCONN_TCP;p.conn.pcb.tcp=nullptr;assert(transmitCredit(41).disconnected);p.socket.conn=nullptr;assert(transmitCredit(41).disconnected);assert(transmitCredit(42).disconnected&&transmitCredit(-1).disconnected);
-    create(41,2);assert(transmitCredit(41).bytes==1024&&peers[41].generation==2&&!closeCalls&&!abortCalls);
+    create(41,2);assert(transmitCredit(41).bytes==MaxTransmitFlightBytes&&peers[41].generation==2&&!closeCalls&&!abortCalls);
     auto* saved=lock_tcpip_core;lock_tcpip_core=nullptr;const auto without=lookups;assert(!transmitCredit(41).bytes&&lookups==without);lock_tcpip_core=saved;assert(tryLocks);
   }else return 2;
   assert(locks==unlocks&&!locked);std::cout<<scenario<<" passed\n";

@@ -2,6 +2,7 @@
 #include <esp_wifi.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <Print.h>
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
@@ -339,19 +340,45 @@ void sendLampDiagnostics()
   lampServer.send(200, "application/json", std::move(snapshot));
 }
 
+// Bounded immutable text captures precede reservation of the full reply.
+bool captureLampNetworkText(char* destination,size_t capacity,const String& value)
+{
+  const size_t length=value.length();
+  if(!length||length>=capacity||strlen(value.c_str())!=length)return false;
+  memcpy(destination,value.c_str(),length+1);return true;
+}
+struct LampNetworkAddressWriter : Print {
+  char* destination;size_t capacity,used=0;bool good=true;
+  LampNetworkAddressWriter(char* bytes,size_t size):destination(bytes),capacity(size){if(capacity)destination[0]=0;}
+  size_t write(uint8_t byte) override {
+    if(!good||!byte||used+1>=capacity){good=false;return 0;}
+    destination[used++]=char(byte);destination[used]=0;return 1;
+  }
+};
+bool captureLampNetworkAddress(char* destination,size_t capacity,const IPAddress& address)
+{
+  LampNetworkAddressWriter writer(destination,capacity);
+  const size_t written=address.printTo(writer);
+  return writer.good&&writer.used&&written==writer.used;
+}
+
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
   const uint32_t snapshotTime=millis();
   const auto firmwareSnapshot=captureLampUpdateJson();const auto audioSnapshot=captureLampAudioJson();
   const auto syncSnapshot=captureLampSyncJson(snapshotTime);
-  const String identitySnapshot=lampIdentity(),styleSnapshot=lampStyleJson();
-  const char* const styleKeys[]={"version","code","id","family"};
-  if(identitySnapshot.length()!=12||!LampHttpJson::requiredKeys(styleSnapshot.c_str(),styleSnapshot.length(),styleKeys,4)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  char identitySnapshot[13]{},hostname[64]{},address[64]{},gateway[64]{},dns0[64]{},dns1[64]{};
+  const uint8_t styleCode=lampStyleCode();
+  const char* const styleId=lampStyleId();const char* const styleFamily=lampStyleFamily();
+  if(!captureLampNetworkText(identitySnapshot,sizeof(identitySnapshot),lampIdentity())||strlen(identitySnapshot)!=12||
+     !captureLampNetworkText(hostname,sizeof(hostname)-6,lampHost)||!styleId||!styleFamily){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  memcpy(hostname+lampHost.length(),".local",7);
   const bool wifiConnected=WiFi.status()==WL_CONNECTED;
-  const String address=WiFi.localIP().toString(),gateway=WiFi.gatewayIP().toString(),dns0=WiFi.dnsIP(0).toString(),dns1=WiFi.dnsIP(1).toString();
-  const String hostname=lampHost+".local";
-  if(address.isEmpty()||gateway.isEmpty()||dns0.isEmpty()||dns1.isEmpty()||hostname.length()!=lampHost.length()+6){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  if(!captureLampNetworkAddress(address,sizeof(address),WiFi.localIP())||
+     !captureLampNetworkAddress(gateway,sizeof(gateway),WiFi.gatewayIP())||
+     !captureLampNetworkAddress(dns0,sizeof(dns0),WiFi.dnsIP(0))||
+     !captureLampNetworkAddress(dns1,sizeof(dns1),WiFi.dnsIP(1))){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
   String state=lampJsonReply([&](LampJsonSink& state){
   state.concat("{\"deviceId\":");state.quote(identitySnapshot);
   if(!lampServer.controlActive()){state.concat(",\"token\":");state.quote(lampToken);}
@@ -367,7 +394,8 @@ void sendLampState()
   // Keep the complete lighting/settings/status reply within the shared 8 KiB
   // bound. Route hints continue on /api/sync/page; durable order is never cut.
   state.concat(",\"sync\":");if(!appendLampSyncJson(state,0,1,syncSnapshot)){state.fail();return;}
-  state.concat(",\"lampStyle\":");state.concat(styleSnapshot);
+  state.concat(",\"lampStyle\":{\"version\":1,\"code\":");state.concat(styleCode);
+  state.concat(",\"id\":");state.quote(styleId);state.concat(",\"family\":");state.quote(styleFamily);state.concat('}');
   state.concat(",\"calibration\":{\"active\":");state.concat(lampCalibrationActive()?"true":"false");state.concat(",\"position\":");state.concat(lampCalibrationPosition());state.concat(",\"kind\":\"");state.concat((lampCalibrationCenter()?"center":"leds"));state.concat("\",\"centerSupported\":true}");
   state.concat(",\"rotation\":{\"enabled\":");state.concat(lampRotation.enabled?"true":"false");state.concat(",\"random\":");state.concat(lampRotation.random?"true":"false");state.concat(",\"category\":");state.concat(lampRotation.category);state.concat(",\"seconds\":");state.concat(lampRotation.seconds);state.concat("}");
   state.concat(",\"fountainColors\":[");

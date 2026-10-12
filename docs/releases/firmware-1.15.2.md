@@ -45,81 +45,82 @@ appearance and startup settings retain their existing persistence contracts.
 
 ## Compatibility and remaining gates
 
-App 2.0.5 (61.1) retains its existing behavior and ignores the new optional fields.
-The new phone guides, microphone/layout controls and update-card presentation
-are **not released with this firmware**. Browser upload is part of the lamp's
-bundled page. Trusted donation remains its separate protected service; ordinary
-control mesh routing does not carry arbitrary firmware uploads.
-New client code also preserves explicit commit uncertainty across reload and
-never reports it as unchanged. Installed 61.1 does not contain that refinement.
-Protected binary Bluetooth snapshots cannot yet prove a fresh boot, exact running
-digest and health; newly flagged client attempts therefore stay honestly pending.
+TestFlight **2.0.5 (64.1)** is processed and available for internal testing.
+It includes visible Settings loading, target-fenced connection recovery and
+bounded retries of explicitly rejected read-only Wi-Fi queries. Mutations and
+uncertain update commits are never replayed. Existing clients retain legacy
+catalog, wire, settings and update contracts; unsupported optional controls stay
+hidden. Trusted donation remains a separate protected service. Generic control
+mesh does not carry arbitrary firmware uploads.
 
-The standard artifact retains the disclosed legacy OTA-1 SHA-256/HTTPS/fleet-trust
-policy. **Production publisher-signature keys are not provisioned.** A lamp with
-publisher enforcement must receive the original valid signed metadata; this
-update does not bypass that requirement. Development signing fixtures are not
-release assets. Production key custody, rotation and manufacturing trust remain
-external prerequisites.
+This standard artifact retains the disclosed legacy OTA-1 SHA-256/HTTPS/fleet
+trust policy. **Production publisher-signature roots are not provisioned.**
+Enforcing receivers still require valid original signed metadata. Private keys,
+development signing fixtures and merged/service images are not release assets.
 
-Flash is nearly full. Low runtime memory can still hold updates or reject durable
-settings; a readable lamp is not proof that a save can be admitted. Legacy
-protocol-2 groups remain held for automatic staged rollout, and automatic radio
-permit distribution is incomplete. Do not infer twenty-lamp RF acceptance,
-native iPhone/Android interoperability, long-run resource margins or automatic
-bootloader rollback from host tests and compilation.
+Legacy protocol-2 groups retain their staged automatic-rollout hold. Automatic
+radio permit distribution, production manufacturing trust, twenty-lamp RF,
+Android interoperability, sustained heap/stack margins and actual bootloader
+rollback remain separate unfinished gates. Low memory can reject reads, updates
+or durable saves explicitly; a readable lamp does not prove save admission.
 
-## Release evidence
+## Exact artifact and validation
 
-- Standard public application: **2,029,232 bytes**, with **2,384 bytes** of
-  OTA-slot headroom, SHA-256
-  `a532bf18876bdeb5d9d7076fc3dcd6c7d46f464ec477ab6bb4b9d6185ef7d0f0`.
-- Matching legacy-compatible 120-byte `coollamp-manifest.txt`: SHA-256
-  `ee0a89715aded1e188579e445869eb50eccbd6f19eb0bb1860da357aea1e7046`.
-- Pinned core 3.3.11, FastLED 3.10.5, ESP32RotaryEncoder 1.2.0 and normal public
-  ESP32-C3/no_fs build; no test-image or development-trust flags. Compiler program
-  size 2,029,092 bytes, static globals 94,348 bytes. Individual `.su` estimates
-  and exact staged sources are retained locally; they do not measure complete
-  SDK stack chains or runtime heap. The 39-command production-handler gate
-  passes. Local client contracts pass 1,344 tests and the production web build;
-  that client build is not a TestFlight release.
-- CoolLamp 2 identity `f0b950b2f180` received this exact standard image through
-  an authorized application-only flash. Independent readback matches its digest;
-  bootloader, partitions, OTA metadata and the full NVS prefix were byte-exact
-  before restart. A fresh 4 MiB private backup preceded each installation.
-  Subsequent boot-health and authenticated running-image digest checks pass.
-  Power on, effect 46, brightness 55, 134 LEDs and midpoint 0 retain their values.
-- On the unchanged direct Wi-Fi route, descriptor, microphone health, compact
-  firmware status, installed-artifact proof, revision and the actual gzip setup
-  page all pass. The 10,951-byte compressed page loads in 1.141 seconds without
-  a lamp-side page buffer. A separate 11,776-byte mapped-page budget fixed the
-  physically observed page-admission timeout; generic mutation and read floors
-  retain their values. Microphone capture is healthy and enabled. Automatic
-  service truthfully reports the existing protocol-2 group hold, with zero
-  Internet attempts; this is not proof of an automatic installation.
-- A full state read can still return bounded HTTP 503 under resource pressure.
-  The retained intermediate failure records are not converted into passes.
-  At 154,603 ms uptime, free heap was 16,336 bytes, largest block 8,180 bytes,
-  lifetime minimum 216 bytes, loop stack minimum 2,728 bytes and cleanup stack
-  minimum 1,268 bytes. The last completed five-second animation window had a
-  20.673 ms maximum gap and no overrun. Lifetime maximum 660.462 ms and one
-  startup overrun remain separate. These are firmware timestamps, not optical
-  or sustained acceptance; the 100 ms target remains unaccepted overall.
-- Coordinated native Settings check: **PENDING**. An earlier reported encryption
-  failure overlapped a follow-up USB backup/reset and is not an isolated
-  firmware or native Bluetooth reproduction.
-- OTA publication and independent public download receipts will be retained
-  under `.build/firmware-1.15.2-release-page-20261011/`. Only the standard
-  application and its matching manifest are release assets.
+- Application: **2,029,600 bytes**, SHA-256
+  `bf2231e38467dccf51b022624af2b10f90d2b059cc578f056282452a6f3955ec`.
+  Matching 120-byte manifest SHA-256:
+  `81fd42c3fcaad32a29e9f960876147db01b60f712f7fb790d7f8441236734d14`.
+- Pinned Arduino ESP32 core **3.3.11**, FastLED **3.10.5**,
+  ESP32RotaryEncoder **1.2.0**, ESP32-C3 CDC/no_fs public build.
+  Program size **2,029,454**, static globals **94,348 bytes**.
+  The application has only **2,016 bytes** of OTA-slot margin. Per-function
+  stack estimates exclude SDK call chains; measured loop/HTTP-cleanup minima
+  were 1,736/1,052 bytes. No partition or bootloader migration is shipped.
+- On CoolLamp 2, identity `f0b950b2f180`, one authenticated Wi-Fi file
+  upload installed this exact artifact. Fresh boot, exact running size/digest,
+  boot-health status and saved-settings hash were verified. The page reported
+  **“Your lamp is updated to 1.15.2.”** The installed page matches the compiled
+  source. Router/network configuration was held constant; no USB flash or
+  automatic upload replay occurred in this check.
+- Browser reconciliation now has a bounded **120-second** window. The previous
+  45-second window expired before the incremental image fingerprint was ready,
+  despite a successful install. Its ambiguous result remains recorded. The final
+  test used the real authenticated page with the exact new reconciliation
+  function injected before its single submission; the new firmware subsequently
+  served that same compiled page. This improves confirmation, not install speed.
+- The only source differences from the physically tested `407483...` image
+  are the page and its generated gzip. That image opened iPhone Settings over
+  Bluetooth on 63.1 with loading visible and animation moving, as observed by
+  the user. Eight two-client slow HTTP profiles retained the boot and added no
+  animation overruns; observed window maximum was **50.998 ms**. One profile
+  returned two initial busy 503s, so raw first-attempt availability failed.
+  The production client transport subsequently recovered from five explicit
+  busy refusals in **8.44 seconds**, on the same target/route/boot, and loaded
+  state plus all 47 effects. This used a Node HTTP adapter, not native iOS HTTP.
+- After the final restart, observed steady animation windows reached **44.919 ms**;
+  a later 38-sample check reached **23.009 ms**, without new overruns. The first
+  startup window contained **685.438 ms** and one overrun. These sampled windows
+  satisfy the 100 ms steady target only where observed. They do not prove every
+  frame, the update renderer's optical continuity, or an all-time/fleet target.
+  Early reconciliation sampled 7,156 free bytes and a 2,548-byte largest block;
+  later sampling reached 11,652/7,668 bytes. The reported lifetime heap minimum
+  was **112 bytes**: sustained resource margin remains a material open limit.
+- The production-handler gate has **41 commands**. Final publication checks run
+  against an isolated immutable source export. Client 64.1's exact source passes
+  **1,446 tests**, production build, native checks and signed TestFlight upload;
+  Apple reports VALID and IN_BETA_TESTING. These do not establish Android or RF
+  acceptance. See [app handoff](app-2.0.5-settings-loading.md).
 
-Publishing this version as GitHub Latest makes it available to existing OTA
-clients and may trigger lamps that opted into automatic updates, subject to
-receiver policy and compatibility. Private backups, ELF/map files, service
-images and signing fixtures are not release assets.
+Exact budget, source hashes, physical records, export gate and independent release
+download receipts are retained under
+`.build/firmware-1.15.2-ota-final-20261012/`. Earlier failed/refused runs remain
+under `.build/firmware-1.15.2-http-admission-20261012/` and
+`.build/firmware-1.15.2-release-page-20261011/`; they are not converted to passes.
 
-The [update/layout integration contract](../update-paths-and-guides.md),
-[microphone contract](../microphone-health.md) and
-[controlled physical acceptance procedure](../experience-physical-acceptance.md)
-describe the migrations, source interfaces and remaining validation steps. Hold
-router settings constant while testing interrupted transfers, final-reply loss,
-all four update routes, on/off admission and recovery.
+Publishing as GitHub Latest makes this version available to existing OTA clients,
+including eligible lamps with automatic updates enabled. The release contains
+only the standard application and its matching manifest. Follow the
+[physical acceptance procedure](../experience-physical-acceptance.md), holding
+router configuration constant. Next: install 64.1, open Settings and Lamp Designs
+without saving, confirm route and animation; then test one Internet update and
+one trusted donor receiver before extending the canary set.

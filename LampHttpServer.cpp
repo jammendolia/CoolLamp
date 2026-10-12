@@ -214,9 +214,27 @@ void LampHttpServer::serviceTransport(){
   unsigned free=MaxClients;for(unsigned i=0;i<MaxClients;++i)if(clients_[i].state==ClientState::Free){free=i;break;}
   if(listener_>=0&&free<MaxClients){
     const int fd=accept(listener_,nullptr,nullptr);
-    if(fd>=0){auto& c=clients_[free];c.fd=fd;c.deadline.begin(millis());c.received=0;c.route=-1;c.parser=new(std::nothrow)LampHttpParser::CompactParser;
+    if(fd>=0){auto& c=clients_[free];c.fd=fd;c.deadline.begin(millis());c.received=0;c.route=-1;
       timeval timeout{0,1000};setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-      if(!c.parser||fcntl(fd,F_SETFL,O_NONBLOCK)<0){increment(metrics_.rejected);release(free);}else{c.state=ClientState::Receive;increment(metrics_.accepted);}
+      if(fcntl(fd,F_SETFL,O_NONBLOCK)<0){increment(metrics_.rejected);release(free);}
+      else {
+        // A retained BLE/HTTP reply is already included in CURRENT heap. Do
+        // not spend the SDK/workspace allowance on another incomplete client.
+        // Budget the compiled parser size plus conservative16-byte allocator
+        // rounding before new; this is admission, not an SDK heap reservation.
+        const size_t allocation=LampControlResourcePolicy::roundedReplyBytes(sizeof(LampHttpParser::CompactParser));
+        constexpr size_t reserve=LampControlResourcePolicy::ReadHeadroomBytes+LampControlResourcePolicy::ReadWorkspaceBytes;
+        if(ESP.getFreeHeap()<allocation+reserve||ESP.getMaxAllocHeap()<allocation){
+          increment(metrics_.rejected);queueError(free,503,"HTTP resources unavailable. No command was executed.");
+        }else {
+          c.parser=new(std::nothrow)LampHttpParser::CompactParser;
+          // SDK allocation can race the preflight. Refuse and release our own
+          // parser immediately if allocation failed or current headroom fell.
+          if(!c.parser||ESP.getFreeHeap()<reserve){
+            clearParser(c);increment(metrics_.rejected);queueError(free,503,"HTTP resources unavailable. No command was executed.");
+          }else {c.state=ClientState::Receive;increment(metrics_.accepted);}
+        }
+      }
     }
   }
   for(unsigned step=0;step<MaxClients;++step){

@@ -4,6 +4,7 @@
 #include "LampUpdatePolicy.h"
 #include "UpdateManifest.h"
 #include "LampUpdateAutomatic.h"
+#include "LampUpdateAttempt.h"
 #include "UpdateHttpDiagnostics.h"
 class LampJsonSink;
 
@@ -39,14 +40,27 @@ bool beginLampBluetoothUpdateRadio();
 void finishLampBluetoothUpdateRadio(bool restarting);
 void getLampUpdatePacket(uint8_t* packet); // Exactly 20 bytes; fits minimum BLE MTU.
 String lampUpdateJson();
+struct LampUpdatePolicyJsonSnapshot {
+  LampUpdatePolicy::Policy policy{};
+  uint32_t revision=0;
+  LampUpdatePolicy::Eligibility eligibility=LampUpdatePolicy::InvalidPolicy;
+  uint8_t coordination=0;
+  bool valid=false;
+};
+static_assert(sizeof(LampUpdatePolicyJsonSnapshot)<=84,"Policy read snapshot must stay bounded");
+LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson();
+void appendLampUpdatePolicyJson(LampJsonSink& out,const LampUpdatePolicyJsonSnapshot& snapshot);
 struct LampUpdateJsonSnapshot {
-  LampUpdateStatus status{};String latest,attempt,policy;
+  LampUpdateStatus status{};
+  LampUpdateAttempt::StatusSnapshot attempt{};
+  LampUpdatePolicyJsonSnapshot policy{};
   UpdateHttpDiagnosticsSnapshot http{};
   LampUpdateAutomatic::Snapshot automaticService{};
   char deviceId[13]{};
   uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
   bool wifi=false,healthy=false,publisher=false;
 };
+static_assert(sizeof(LampUpdateJsonSnapshot)<=256,"Update read snapshot must stay bounded");
 LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic=false);
 void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic=false);
 // Loop-owned durable policy. Automatic and donation admission share this gate;

@@ -3,6 +3,12 @@
 #ifdef COOL_LAMP_PAGE_GZIP
 #include "LampPageCompressed.h"
 #endif
+static constexpr size_t FlightBytes=LampHttpSocketCleanup::MaxTransmitFlightBytes;
+#if defined(LAMP_HTTP_LEGACY_TX_FLIGHT_FIXTURE)
+static_assert(FlightBytes==1024,"Former transmit-flight comparison drifted");
+#else
+static_assert(FlightBytes==384,"Bounded simultaneous TCP/Wi-Fi flight drifted");
+#endif
 #include "LampHttpSocketCleanup.h"
 #include <lwip/sockets.h>
 #include <fcntl.h>
@@ -29,7 +35,12 @@ static_assert(LampHttpSocketCleanup::AckWaitTimeoutMs==5000,"Copied-data idle co
 // Track the real production Parser allocations. This fixture does not infer
 // release from implementation text or substitute a second request processor.
 static void* parserAllocations[64]{};
-static size_t liveParsers=0;
+static uint32_t parserAllocationCosts[64]{};
+static size_t liveParsers=0,totalParsers=0,parserAllocationAttempts=0;
+static bool failParserAllocation=false,accountParserAllocation=false;
+static uint32_t competingAllocationAfterParser=0;
+static const size_t ParserAllocationBytes=LampControlResourcePolicy::roundedReplyBytes(sizeof(LampHttpParser::CompactParser));
+static constexpr size_t ParserReserveBytes=LampControlResourcePolicy::ReadHeadroomBytes+LampControlResourcePolicy::ReadWorkspaceBytes;
 struct BodyAllocation {void* memory=nullptr;size_t bytes=0;};
 static BodyAllocation bodyAllocations[8]{};
 static size_t liveBodies=0,wipedBodies=0,totalBodies=0,lastBodyBytes=0;
@@ -38,10 +49,17 @@ static bool failBodyAllocation=false;
 // CompactParser releases these bytes. It does not bypass server admission.
 static uint32_t parserFreeCredit=0,parserLargestCredit=0;
 void* operator new(std::size_t size){
+  if(size==sizeof(LampHttpParser::CompactParser)){
+    ++parserAllocationAttempts;if(failParserAllocation)throw std::bad_alloc();
+  }
   void* memory=std::malloc(size);if(!memory)throw std::bad_alloc();
   if(size==sizeof(LampHttpParser::CompactParser)){
-    bool recorded=false;for(auto& slot:parserAllocations)if(!slot){slot=memory;recorded=true;break;}
-    assert(recorded);++liveParsers;
+    bool recorded=false;for(size_t i=0;i<std::size(parserAllocations);++i)if(!parserAllocations[i]){
+      parserAllocations[i]=memory;parserAllocationCosts[i]=accountParserAllocation?uint32_t(ParserAllocationBytes):0;
+      assert(fakeFreeHeap>=parserAllocationCosts[i]+competingAllocationAfterParser);
+      fakeFreeHeap-=parserAllocationCosts[i]+competingAllocationAfterParser;recorded=true;break;
+    }
+    assert(recorded);++liveParsers;++totalParsers;
   }
   return memory;
 }
@@ -54,10 +72,10 @@ void* operator new[](std::size_t size){
   return ::operator new(size);
 }
 void operator delete(void* memory)noexcept{
-  for(auto& slot:parserAllocations)if(slot==memory&&memory){
+  for(size_t i=0;i<std::size(parserAllocations);++i)if(parserAllocations[i]==memory&&memory){
     static_assert(std::is_standard_layout<LampHttpParser::CompactParser>::value,"Request metadata is the parser's first member");
     const auto* bytes=static_cast<const uint8_t*>(memory);for(size_t i=0;i<sizeof(LampHttpParser::Request);++i)assert(!bytes[i]);
-    slot=nullptr;--liveParsers;fakeFreeHeap+=parserFreeCredit;fakeLargestFreeBlock+=parserLargestCredit;break;
+    parserAllocations[i]=nullptr;--liveParsers;fakeFreeHeap+=parserFreeCredit+parserAllocationCosts[i];parserAllocationCosts[i]=0;fakeLargestFreeBlock+=parserLargestCredit;break;
   }
   for(auto& slot:bodyAllocations)if(slot.memory==memory&&memory){
     const auto* bytes=static_cast<const uint8_t*>(memory);for(size_t i=0;i<slot.bytes;++i)assert(!bytes[i]);
@@ -88,9 +106,23 @@ struct Socket {
   uint32_t heapCostPerByte=0,retainedHeap=0;
   uint32_t ackDelayMs=0,ackAtMs=0,pendingHeapCost=0;
   size_t unackedBytes=0;uint16_t unackedSegments=0;bool ackBlocked=false;
+  // Host pressure model only: a full immutable reply has already consumed the
+  // large allocation. TCP's payload copy and Wi-Fi's DMA copy must coexist in
+  // the remaining block. SDK may accept TCP bytes before output returns ERR_MEM.
+  uint32_t dmaBlockBytes=0,outputAllocationStarvations=0;
   std::deque<int> accepted;
 };
 static std::map<int,Socket> sockets;
+static uint32_t modeledTcpAllocation(size_t bytes){
+  // Pinned C3 ELF: pbuf16, tcp_seg16. Reserve maximum IPv6 transport/link
+  // prefix74 and a conservative16-byte allocator allowance for each allocation.
+  return uint32_t(bytes)+74+16+16+16+16;
+}
+static uint32_t modeledWifiAllocation(size_t bytes){
+  // This fixture uses IPv4/no timestamps: wire prefix54. Pinned Wi-Fi allocator
+  // adds100+36 descriptor headroom; reserve another16 bytes for its allocator.
+  return uint32_t(bytes)+54+136+16;
+}
 static int nextFd=10;
 int socket(int family,int type,int protocol){assert(family==AF_INET&&type==SOCK_STREAM&&protocol==IPPROTO_TCP);const int fd=nextFd++;sockets[fd].listener=true;lastListener=unsigned(fd);return fd;}
 int setsockopt(int fd,int level,int option,const void* value,socklen_t length){
@@ -124,7 +156,13 @@ int send(int fd,const void* data,size_t size,int flags){
   const size_t n=std::min({size,peer.writeLimit,peer.transmitCapacity-peer.bufferedTransmit});
   const uint32_t cost=uint32_t(n)*peer.heapCostPerByte;assert(fakeFreeHeap>=cost);fakeFreeHeap-=cost;peer.retainedHeap+=cost;peer.bufferedTransmit+=n;
   assert(!peer.unackedBytes&&n<=LampHttpSocketCleanup::MaxTransmitFlightBytes);peer.unackedBytes=n;peer.unackedSegments=1;peer.pendingHeapCost=cost;peer.ackAtMs=millis()+peer.ackDelayMs;
-  peer.outgoing.append(static_cast<const char*>(data),n);turnTx+=n;return int(n);
+  if(peer.dmaBlockBytes&&modeledTcpAllocation(n)+modeledWifiAllocation(n)>peer.dmaBlockBytes){
+    // TCP copy fits, but its Wi-Fi output copy does not. Model accepted-but-
+    // unsent ownership honestly: no body reaches the peer and no ACK can drain.
+    assert(modeledTcpAllocation(n)<=peer.dmaBlockBytes);
+    ++peer.outputAllocationStarvations;peer.ackBlocked=true;
+  }else peer.outgoing.append(static_cast<const char*>(data),n);
+  turnTx+=n;return int(n);
 }
 int close(int fd){assert(inCloseWorker&&!inService&&!inControl);++closeCalls;auto& peer=sockets[fd];peer.closed=true;fakeFreeHeap+=peer.retainedHeap;peer.retainedHeap=0;return 0;}
 struct FakeQueue {size_t length;std::deque<int> values;};
@@ -271,12 +309,70 @@ int main(int argc,char** argv){
   assert(argc==2);const std::string scenario=argv[1];
   memset(bulkPage,'p',sizeof(bulkPage)-1);
 
-  if(scenario=="mapped-page-low-memory-auth-and-no-copy"){
+  if(scenario=="parser-admission-bounds-and-recovery"){
+    Fixture f;accountParserAllocation=true;
+    for(const auto budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
+      fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto attempts=parserAllocationAttempts,allocations=totalParsers;
+      const int denied=connect(f.listener,post("/api/power","on=1"));f.finish(denied);
+      contains(denied,"503 Service Unavailable");contains(denied,"HTTP resources unavailable. No command was executed.");
+      assert(!f.mutations&&!f.reads&&!f.server.metrics().dispatches&&!liveParsers&&parserAllocationAttempts==attempts&&totalParsers==allocations&&sockets[denied].at==0);
+      for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations);
+    }
+    fakeFreeHeap=uint32_t(ParserReserveBytes+ParserAllocationBytes);fakeLargestFreeBlock=uint32_t(ParserAllocationBytes);
+    const int slow=connect(f.listener,"GET /api/st");turn(f.server);
+    assert(liveParsers==1&&fakeFreeHeap==ParserReserveBytes&&f.server.metrics().accepted==1);
+    const auto allocations=totalParsers;
+    const int blocked=connect(f.listener,post("/api/power","on=1"));f.finish(blocked);contains(blocked,"503 Service Unavailable");
+    assert(totalParsers==allocations&&liveParsers==1&&fakeFreeHeap==ParserReserveBytes&&!f.mutations&&!f.reads);
+    sockets[slow].disconnected=true;turn(f.server);runCloser();assert(sockets[slow].closed&&detachedRequests.at(slow).cancelled&&!liveParsers);
+    assert(fakeFreeHeap==ParserReserveBytes+ParserAllocationBytes);
+    fakeFreeHeap=fakeLargestFreeBlock=65536;const int recovered=connect(f.listener,post("/api/power","on=1"));f.finish(recovered);
+    contains(recovered,"200 OK");assert(f.mutations==1&&f.server.metrics().dispatches==1);
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1);
+  }else if(scenario=="parser-admission-retained-ble-pressure"){
+    Fixture f;accountParserAllocation=true;
+    String retainedResponse(std::string("\"")+std::string(6253,'a')+"\"");assert(retainedResponse.length()==6255);
+    const uint32_t retainedBytes=uint32_t(LampControlResourcePolicy::roundedReplyBytes(retainedResponse.length()));
+    // Host budget models an independently retained BLE-like reply. It is
+    // already deducted before socket admission; the real parser observer
+    // charges/frees each actual production parser rather than inferring release.
+    fakeFreeHeap=15560-retainedBytes;fakeLargestFreeBlock=7668-retainedBytes;
+    const uint32_t heldFree=fakeFreeHeap;const auto attempts=parserAllocationAttempts;
+    const int a=connect(f.listener,"GET /api/st"),b=connect(f.listener,"GET /api/state HTTP/1.1\r\nHost: la"),c=connect(f.listener,post("/api/power","on=1"));
+    for(int fd:{a,b,c}){f.finish(fd);contains(fd,"503 Service Unavailable");contains(fd,"No command was executed.");assert(sockets[fd].at==0);}
+    assert(!liveParsers&&!totalParsers&&parserAllocationAttempts==attempts&&fakeFreeHeap==heldFree&&fakeFreeHeap>=ParserReserveBytes);
+    assert(!f.mutations&&!f.reads&&!f.server.metrics().dispatches&&f.server.metrics().rejected==3);
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations);
+    retainedResponse=nullptr;fakeFreeHeap+=retainedBytes;fakeLargestFreeBlock=7668;
+    const int recovered=connect(f.listener,get());f.finish(recovered);contains(recovered,"200 OK");assert(f.reads==1&&!f.mutations&&!liveParsers&&fakeFreeHeap==15560);
+    std::cout<<"MEASURE hostOnly retainedReplyBytes=6255 parserBudgetBytes="<<ParserAllocationBytes<<" reserveBytes="<<ParserReserveBytes<<" rejectedWithoutParser=3\n";
+  }else if(scenario=="parser-admission-cancel-and-close-queue-full"){
+    Fixture f;accountParserAllocation=true;fakeFreeHeap=uint32_t(ParserReserveBytes+ParserAllocationBytes-1);fakeLargestFreeBlock=7668;
+    forceQueueFull=true;const uint32_t began=millis();const int denied=connect(f.listener,post("/api/power","on=1"));sockets[denied].sendBlocked=true;
+    for(unsigned i=0;i<20;++i)turn(f.server);
+    assert(!liveParsers&&!totalParsers&&!f.mutations&&!f.reads&&f.server.metrics().rejected==1&&!sockets[denied].closed);
+    sockets[denied].disconnected=true;turn(f.server);f.server.stop();f.server.stop();
+    assert(f.server.metrics().closeQueueFull&&!sockets[denied].closed&&!liveParsers&&!f.server.metrics().dispatches);
+    forceQueueFull=false;f.server.serviceCleanup();runCloser();assert(sockets[denied].closed);
+    const auto& detached=detachedRequests.at(denied);assert(detached.cancelled&&detached.acceptedAt==began&&detached.absoluteTimeoutMs==5000&&!detached.knownPendingBytes);
+    fakeFreeHeap=fakeLargestFreeBlock=65536;f.server.begin();const int recovered=connect(int(lastListener),post("/api/power","on=1"));f.finish(recovered);
+    contains(recovered,"200 OK");for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1&&f.server.metrics().dispatches==1);
+  }else if(scenario=="parser-admission-allocation-failure-and-race"){
+    Fixture f;accountParserAllocation=true;fakeFreeHeap=65536;fakeLargestFreeBlock=7668;failParserAllocation=true;
+    const int failed=connect(f.listener,post("/api/power","on=1"));f.finish(failed);contains(failed,"503 Service Unavailable");
+    assert(parserAllocationAttempts==1&&!totalParsers&&!liveParsers&&!f.mutations&&!f.reads&&!f.server.metrics().dispatches);
+    failParserAllocation=false;fakeFreeHeap=uint32_t(ParserReserveBytes+ParserAllocationBytes);competingAllocationAfterParser=16;
+    const int raced=connect(f.listener,post("/api/power","on=1"));f.finish(raced);contains(raced,"503 Service Unavailable");
+    assert(totalParsers==1&&!liveParsers&&fakeFreeHeap==ParserReserveBytes+ParserAllocationBytes-16&&!f.mutations&&!f.reads);
+    competingAllocationAfterParser=0;fakeFreeHeap=fakeLargestFreeBlock=65536;
+    const int fresh=connect(f.listener,post("/api/power","on=1"));f.finish(fresh);contains(fresh,"200 OK");
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1&&f.server.metrics().dispatches==1&&!liveParsers);
+  }else if(scenario=="mapped-page-low-memory-auth-and-no-copy"){
     Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
     const auto reservations=fakeStringReserveCalls;fakeStringReserveFailure=true;
     const int page=connect(f.listener,get("/"));f.finish(page);fakeStringReserveFailure=false;
     completeRootPage(page);contains(page,"X-Content-Type-Options: nosniff");contains(page,"X-Frame-Options: DENY");
-    assert(f.reads==1&&!f.mutations&&fakeStringReserveCalls==reservations&&largestWrite<=1024);
+    assert(f.reads==1&&!f.mutations&&fakeStringReserveCalls==reservations&&largestWrite<=FlightBytes);
     const int denied=connect(f.listener,get("/","Basic wrong"));f.finish(denied);contains(denied,"401 Unauthorized");
     contains(denied,"WWW-Authenticate");assert(f.reads==1&&!f.mutations&&!f.server.metrics().deadlines);
     // Only the exact immutable GET route gets this policy. Mutations and
@@ -293,7 +389,8 @@ int main(int argc,char** argv){
     for(const auto budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto began=millis();
       const int page=connect(f.listener,get("/"));f.finish(page,30);contains(page,"503 Service Unavailable");
-      contains(page,"Nothing changed");assert(!f.reads&&!f.mutations&&uint32_t(millis()-began)<100);
+      if(budget.second<ParserAllocationBytes)contains(page,"HTTP resources unavailable. No command was executed.");else contains(page,"Nothing changed");
+      assert(!f.reads&&!f.mutations&&uint32_t(millis()-began)<100);
     }
     fakeFreeHeap=16316;fakeLargestFreeBlock=7668;fakeStringReserveFailure=true;
     const int noCopy=connect(f.listener,get("/?unused=bounded"));f.finish(noCopy);fakeStringReserveFailure=false;
@@ -310,18 +407,19 @@ int main(int argc,char** argv){
       if(heap==queryBudget-1){contains(page,"503 Service Unavailable");assert(!f.reads);}
       else {completeRootPage(page);assert(f.reads==1&&!f.mutations);}
     }
-    fakeFreeHeap=11776;fakeLargestFreeBlock=512;const int floor=connect(f.listener,get("/"));f.finish(floor);completeRootPage(floor);
+    fakeFreeHeap=11776;fakeLargestFreeBlock=512;const int parserDenied=connect(f.listener,get("/"));f.finish(parserDenied);contains(parserDenied,"HTTP resources unavailable. No command was executed.");
+    fakeLargestFreeBlock=ParserAllocationBytes;const int floor=connect(f.listener,get("/"));f.finish(floor);completeRootPage(floor);
     assert(f.reads==2&&!f.mutations&&!f.server.metrics().deadlines);
   }else if(scenario=="mapped-page-low-memory-client-fairness"){
     Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
     const int first=connect(f.listener,get("/"));
     sockets[first].heapCostPerByte=2;sockets[first].ackDelayMs=5;
-    for(unsigned i=0;i<50&&sockets[first].outgoing.size()<1024;++i)turn(f.server,1);
-    sockets[first].ackBlocked=true;assert(sockets[first].unackedBytes==1024&&f.reads==1);
+    for(unsigned i=0;i<50&&sockets[first].unackedBytes!=FlightBytes;++i)turn(f.server,1);
+    sockets[first].ackBlocked=true;assert(sockets[first].unackedBytes==FlightBytes&&f.reads==1);
     const int second=connect(f.listener,get("/"));
     sockets[second].heapCostPerByte=2;sockets[second].ackDelayMs=5;
-    for(unsigned i=0;i<50&&sockets[second].outgoing.size()<1024;++i)turn(f.server,1);
-    sockets[second].ackBlocked=true;assert(sockets[second].unackedBytes==1024&&f.reads==2);
+    for(unsigned i=0;i<50&&sockets[second].unackedBytes!=FlightBytes;++i)turn(f.server,1);
+    sockets[second].ackBlocked=true;assert(sockets[second].unackedBytes==FlightBytes&&f.reads==2);
     assert(fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes&&fakeFreeHeap<16316);
     const auto firstBytes=sockets[first].outgoing.size(),secondBytes=sockets[second].outgoing.size();const uint32_t began=millis();
     const int state=connect(f.listener,get());f.finish(state,40);contains(state,"200 OK");assert(f.reads==3&&!f.mutations&&uint32_t(millis()-began)<100);
@@ -329,7 +427,7 @@ int main(int argc,char** argv){
     sockets[first].disconnected=true;turn(f.server);runCloser();assert(sockets[first].closed&&detachedRequests.at(first).cancelled);
     turn(f.server,5001);runCloser();assert(sockets[second].closed&&detachedRequests.at(second).cancelled);
     assert(fakeFreeHeap==16316&&detachedRequests.at(first).absoluteTimeoutMs==15000&&detachedRequests.at(second).absoluteTimeoutMs==15000);
-    const int fresh=connect(f.listener,get("/"));f.finish(fresh);completeRootPage(fresh);assert(f.reads==4&&!f.mutations&&largestWrite<=1024);
+    const int fresh=connect(f.listener,get("/"));f.finish(fresh);completeRootPage(fresh);assert(f.reads==4&&!f.mutations&&largestWrite<=FlightBytes);
   }else if(scenario=="mapped-page-low-memory-absolute-rollover"){
     Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;clockUs=uint64_t(UINT32_MAX-600)*1000;
     const auto began=millis();const int page=connect(f.listener,get("/"));sockets[page].writeLimit=1;sockets[page].ackDelayMs=1000;
@@ -390,8 +488,8 @@ int main(int argc,char** argv){
   }else if(scenario=="partial-ack-html-progress-beyond-five"){
     Fixture f;clockUs=uint64_t(UINT32_MAX-1500)*1000;const uint32_t began=millis();const int fd=connect(f.listener,get("/setup-page"));auto& peer=sockets[fd];
     for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==1024);const auto copied=peer.outgoing.size();
-    for(size_t pending:{896U,768U,640U,512U,384U}){peer.unackedBytes=pending;turn(f.server,1000);runCloser();assert(!peer.closed&&peer.outgoing.size()==copied);}
+    turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==FlightBytes);const auto copied=peer.outgoing.size();
+    for(size_t pending:{FlightBytes*7/8,FlightBytes*6/8,FlightBytes*5/8,FlightBytes*4/8,FlightBytes*3/8}){peer.unackedBytes=pending;turn(f.server,1000);runCloser();assert(!peer.closed&&peer.outgoing.size()==copied);}
     turn(f.server,600);runCloser();assert(!peer.closed);peer.unackedBytes=0;peer.unackedSegments=0;peer.ackBlocked=false;
     turn(f.server,400);f.finish(fd);const auto body=peer.outgoing.find("\r\n\r\n")+4;
     assert(peer.outgoing.substr(body)==LAMP_PAGE&&uint32_t(millis()-began)>6000&&uint32_t(millis()-began)<15000&&f.reads==1&&!f.server.metrics().deadlines);
@@ -485,7 +583,7 @@ int main(int argc,char** argv){
     static_assert(LampHttpServer::StaticPageHeapFloorBytes==LampControlResourcePolicy::MappedPageSendHeapBytes);
     static_assert(LampHttpServer::StaticPageHeapFloorBytes==11776);
     static_assert(LampHttpServer::DispatchHeapFloorBytes==24576);
-    Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=250;
+    Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=100;
     for(unsigned i=0;i<12&&!f.reads;++i)turn(f.server);assert(f.reads==1&&sockets[page].outgoing.empty());
     for(uint32_t heap:{10240u,11775u}){
       fakeFreeHeap=heap;for(unsigned i=0;i<10;++i)turn(f.server,10);
@@ -494,7 +592,7 @@ int main(int argc,char** argv){
     fakeFreeHeap=11776;f.finish(page,2000,10);completeMappedPage(page);
     assert(f.reads==1&&!f.mutations&&!f.server.metrics().deadlines);
   }else if(scenario=="static-page-receiving-priority"){
-    Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=250;
+    Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=100;
     for(unsigned i=0;i<12&&sockets[page].outgoing.empty();++i)turn(f.server);
     const auto pageBytes=sockets[page].outgoing.size();assert(pageBytes&&f.reads==1);
     const auto full=get();const int pending=connect(f.listener,full.substr(0,full.size()-2));
@@ -536,7 +634,7 @@ int main(int argc,char** argv){
     Fixture f;fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes+4096;const int a=connect(f.listener,get("/bulk-page")),b=connect(f.listener,get("/bulk-page"));
     for(int fd:{a,b}){sockets[fd].heapCostPerByte=2;sockets[fd].transmitCapacity=5744;sockets[fd].ackBlocked=true;}
     for(unsigned i=0;i<30;++i)turn(f.server);
-    assert(fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes&&!sockets[a].closed&&!sockets[b].closed&&sockets[a].unackedBytes<=1024&&sockets[b].unackedBytes<=1024);
+    assert(fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes&&!sockets[a].closed&&!sockets[b].closed&&sockets[a].unackedBytes<=FlightBytes&&sockets[b].unackedBytes<=FlightBytes);
     const auto beforeA=sockets[a].outgoing.size(),beforeB=sockets[b].outgoing.size();
     // Additional modeled SDK pressure leaves the ordinary request below its
     // admission floor. A page cannot enqueue again to consume that headroom.
@@ -635,7 +733,7 @@ int main(int argc,char** argv){
     Fixture f;const uint32_t initialHeap=LampHttpServer::DispatchHeapFloorBytes+4096;fakeFreeHeap=initialHeap;
     const int slow=connect(f.listener,get("/full-json"));sockets[slow].heapCostPerByte=3;sockets[slow].transmitCapacity=5744;sockets[slow].ackBlocked=true;
     for(unsigned i=0;i<30;++i)turn(f.server);
-    assert(f.reads==1&&!sockets[slow].closed&&fakeFreeHeap>=LampHttpServer::DispatchHeapFloorBytes&&sockets[slow].unackedBytes<=1024);
+    assert(f.reads==1&&!sockets[slow].closed&&fakeFreeHeap>=LampHttpServer::DispatchHeapFloorBytes&&sockets[slow].unackedBytes<=FlightBytes);
     const int healthy=connect(f.listener,get());for(unsigned i=0;i<12;++i)turn(f.server);
     f.finish(healthy);contains(healthy,"503 Service Unavailable");contains(healthy,"This request was not executed");assert(f.reads==1);
     turn(f.server,5001);runCloser();assert(sockets[slow].closed&&fakeFreeHeap==initialHeap);
@@ -732,27 +830,64 @@ int main(int argc,char** argv){
     const int busy=connect(f.listener,post("/api/power","on=1"));f.finish(busy);contains(busy,"503 Service Unavailable");assert(!f.mutations);
     turn(f.server,1501);runCloser();assert(sockets[fd].closed);
     const int giant=connect(f.listener,get("/giant"));f.finish(giant);contains(giant,"507 Insufficient Storage");assert(f.server.metrics().responseFailures>=1);
-  }else if(scenario=="mapped-page-delayed-ack"){
-    Fixture f;const uint32_t began=millis();const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=250;
+  }else if(scenario=="owned-state-two-copy-dma-pressure"){
+    Fixture f;f.requireParserReleased=true;const uint32_t began=millis();
+    const int state=connect(f.listener,get("/full-json"));auto& peer=sockets[state];peer.dmaBlockBytes=1380;
+    // These are an explicit allocator/coexistence fixture, not a physical heap
+    // guarantee. A former1024-byte copied flight cannot fit both buffers, while
+    // the production384-byte cap leaves modeled allowance in this same block.
+    assert(modeledTcpAllocation(1024)+modeledWifiAllocation(1024)>peer.dmaBlockBytes);
+    assert(modeledTcpAllocation(384)+modeledWifiAllocation(384)<=peer.dmaBlockBytes);
+    f.finish(state,1000,10);contains(state,"200 OK");contains(state,"Content-Length: 6000");
+    const size_t body=peer.outgoing.find("\r\n\r\n")+4;
+    if(FlightBytes==1024){
+      assert(peer.outputAllocationStarvations==1&&peer.outgoing.size()==body);
+      assert(f.server.metrics().deadlines==1&&f.server.metrics().blockedSends&&detachedRequests.at(state).cancelled);
+      assert(uint32_t(millis()-began)>=5000&&uint32_t(millis()-began)<5020);
+    }else {
+      assert(!peer.outputAllocationStarvations&&peer.outgoing.size()-body==6000);
+      assert(peer.outgoing.substr(body)==std::string("\"")+std::string(5998,'a')+"\"");
+      assert(!f.server.metrics().deadlines&&!detachedRequests.at(state).cancelled&&uint32_t(millis()-began)<1000);
+    }
+    for(unsigned i=0;i<20;++i)turn(f.server);
+    assert(f.reads==1&&!f.mutations&&f.server.metrics().dispatches==1&&largestWrite<=FlightBytes);
+    std::cout<<"MEASURE hostOnly twoCopyFlightBytes="<<FlightBytes<<" dmaBlockBytes="<<peer.dmaBlockBytes<<" outputAllocationStarvations="<<peer.outputAllocationStarvations<<" bodyBytes="<<peer.outgoing.size()-body<<"\n";
+  }else if(scenario=="mapped-page-delayed-ack"||scenario=="mapped-page-fast-delayed-ack"||scenario=="mapped-root-delayed-ack"){
+    Fixture f;const bool root=scenario=="mapped-root-delayed-ack",fast=scenario=="mapped-page-fast-delayed-ack";
+    const uint32_t began=millis();const int page=connect(f.listener,get(root?"/":"/setup-page"));sockets[page].ackDelayMs=fast?100:250;
     f.finish(page,2000,10);contains(page,"200 OK");const auto body=sockets[page].outgoing.find("\r\n\r\n");assert(body!=std::string::npos);
     std::cout<<"MEASURE actual mappedHTMLbytes="<<sizeof(LAMP_PAGE)-1<<" received="<<sockets[page].outgoing.size()-body-4<<" elapsedMs="<<uint32_t(millis()-began)<<std::endl;
-    assert(sockets[page].outgoing.substr(body+4)==LAMP_PAGE&&!f.server.metrics().deadlines&&f.reads==1);
-    assert(detachedRequests.at(page).absoluteTimeoutMs==LampHttpServer::MappedHtmlTimeoutMs&&!detachedRequests.at(page).cancelled&&detachedRequests.at(page).acceptedAt>=began);
+    bool completed=fast;
+#ifdef COOL_LAMP_PAGE_GZIP
+    completed=completed||root;
+#endif
+    if(completed){
+      if(root)completeRootPage(page);else completeMappedPage(page);
+      assert(!f.server.metrics().deadlines&&!detachedRequests.at(page).cancelled);
+    }else {
+      // At384-byte flights, raw32KiB plus250-ms ACKs cannot fit the unchanged
+      //15s lifetime. It must end honestly; the release's compressed root page
+      // is exercised at this same delayed-ACK cadence by the gzip build.
+      const auto sent=sockets[page].outgoing.substr(body+4);assert(!sent.empty()&&sent.size()<sizeof(LAMP_PAGE)-1);
+      assert(std::string(LAMP_PAGE).compare(0,sent.size(),sent)==0&&f.server.metrics().deadlines==1&&detachedRequests.at(page).cancelled);
+      assert(uint32_t(millis()-began)>=15000&&uint32_t(millis()-began)<15020);
+    }
+    assert(f.reads==1&&detachedRequests.at(page).absoluteTimeoutMs==LampHttpServer::MappedHtmlTimeoutMs&&detachedRequests.at(page).acceptedAt>=began);
   }else if(scenario=="single-data-ack-loss-recovers-at-three-seconds"){
     Fixture f;const uint32_t began=millis();const int state=connect(f.listener,get("/full-json"));
     // Allow the initial HTTP header ACK, then delay exactly one data ACK to
     // the pinned SDK's initial3s retransmission boundary. Later ACKs are normal.
     for(unsigned i=0;i<30&&sockets[state].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
     assert(sockets[state].outgoing.find("\r\n\r\n")!=std::string::npos&&f.reads==1);
-    sockets[state].ackDelayMs=3000;turn(f.server);assert(sockets[state].unackedBytes==1024);sockets[state].ackDelayMs=0;
+    sockets[state].ackDelayMs=3000;turn(f.server);assert(sockets[state].unackedBytes==FlightBytes);sockets[state].ackDelayMs=0;
     turn(f.server,1501);runCloser();assert(!sockets[state].closed);
     f.finish(state,1000,10);contains(state,"200 OK");const auto body=sockets[state].outgoing.find("\r\n\r\n");assert(sockets[state].outgoing.size()-body-4==6000);
     assert(uint32_t(millis()-began)>=3000&&uint32_t(millis()-began)<5000&&!f.server.metrics().deadlines&&f.reads==1);
   }else if(scenario=="partial-ack-progress-before-drain-and-rollover"){
     Fixture f;clockUs=uint64_t(UINT32_MAX-1500)*1000;const uint32_t began=millis();const int state=connect(f.listener,get("/full-json"));
     for(unsigned i=0;i<30&&sockets[state].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    auto& peer=sockets[state];turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==1024);const size_t copied=peer.outgoing.size();
-    for(size_t pending:{768U,512U,256U}){peer.unackedBytes=pending;turn(f.server,1000);runCloser();assert(!peer.closed&&peer.outgoing.size()==copied);}
+    auto& peer=sockets[state];turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==FlightBytes);const size_t copied=peer.outgoing.size();
+    for(size_t pending:{FlightBytes*3/4,FlightBytes/2,FlightBytes/4}){peer.unackedBytes=pending;turn(f.server,1000);runCloser();assert(!peer.closed&&peer.outgoing.size()==copied);}
     // Service while the old complete-drain-only timer would already have
     // expired; jumping directly to the final ACK could hide that defect.
     turn(f.server,600);runCloser();assert(!peer.closed&&peer.outgoing.size()==copied);
@@ -762,14 +897,14 @@ int main(int argc,char** argv){
   }else if(scenario=="partial-ack-equal-contention-and-fd-reuse"){
     Fixture f;const int state=connect(f.listener,get("/full-json"));
     for(unsigned i=0;i<30&&sockets[state].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    auto& peer=sockets[state];turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==1024);
+    auto& peer=sockets[state];turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==FlightBytes);
     for(unsigned i=0;i<6;++i){turn(f.server,500);runCloser();assert(!peer.closed);}
     turn(f.server,2001);runCloser();assert(peer.closed&&detachedRequests.at(state).cancelled&&f.reads==1);
     // Reusing both a slot and fd must start a fresh observed-flight baseline.
     sockets[state]=Socket{};sockets[state].incoming=get("/full-json");sockets[int(f.listener)].accepted.push_back(state);
     for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==1024&&f.reads==2);
-    peer.unackedBytes=768;turn(f.server,1000);assert(!peer.closed);
+    turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==FlightBytes&&f.reads==2);
+    peer.unackedBytes=FlightBytes*3/4;turn(f.server,1000);assert(!peer.closed);
     // The PCB may have changed while the core lock cannot be observed. An
     // unavailable snapshot grants neither a new write nor synthetic progress.
     creditContended=true;peer.unackedBytes=0;peer.unackedSegments=0;turn(f.server,3000);runCloser();assert(!peer.closed);
@@ -784,17 +919,17 @@ int main(int argc,char** argv){
     peer.unackedBytes=0;peer.unackedSegments=0;peer.ackBlocked=false;turn(f.server,400);f.finish(state);assert(f.reads==1&&!f.server.metrics().deadlines);
     const uint32_t accepted=millis();const int total=connect(f.listener,get("/full-json"));
     for(unsigned i=0;i<30&&sockets[total].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    turn(f.server);sockets[total].ackBlocked=true;assert(sockets[total].unackedBytes==1024);
+    turn(f.server);sockets[total].ackBlocked=true;assert(sockets[total].unackedBytes==FlightBytes);
     for(unsigned i=0;i<4;++i){--sockets[total].unackedBytes;turn(f.server,1000);runCloser();assert(!sockets[total].closed);}
     --sockets[total].unackedBytes;turn(f.server,1000);runCloser();assert(sockets[total].closed&&uint32_t(millis()-accepted)>=5000&&detachedRequests.at(total).cancelled&&f.reads==2);
     const int cancelled=connect(f.listener,get("/full-json"));
     for(unsigned i=0;i<30&&sockets[cancelled].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
-    turn(f.server);sockets[cancelled].ackBlocked=true;sockets[cancelled].unackedBytes=768;turn(f.server,1000);assert(!sockets[cancelled].closed);
+    turn(f.server);sockets[cancelled].ackBlocked=true;sockets[cancelled].unackedBytes=FlightBytes*3/4;turn(f.server,1000);assert(!sockets[cancelled].closed);
     sockets[cancelled].disconnected=true;turn(f.server);runCloser();assert(sockets[cancelled].closed&&detachedRequests.at(cancelled).cancelled&&f.reads==3);
   }else if(scenario=="final-flight-baseline-close-backpressure"){
     Fixture f;const int state=connect(f.listener,get("/full-json"));forceQueueFull=true;
     for(unsigned i=0;i<100;++i)turn(f.server);
-    const uint16_t finalFlight=uint16_t(sockets[state].unackedBytes);assert(finalFlight&&finalFlight<=1024&&!sockets[state].closed&&f.reads==1);
+    const uint16_t finalFlight=uint16_t(sockets[state].unackedBytes);assert(finalFlight&&finalFlight<=FlightBytes&&!sockets[state].closed&&f.reads==1);
     // Clearing response/ACK state and repeated stop retries must not erase the
     // original successful response's known last flight or make it a cancel.
     f.server.stop();f.server.stop();forceQueueFull=false;f.server.serviceCleanup();runCloser();
@@ -805,7 +940,7 @@ int main(int argc,char** argv){
     const int cancelled=connect(int(lastListener),get("/full-json"));
     for(unsigned i=0;i<30&&sockets[cancelled].outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
     turn(f.server);sockets[cancelled].ackBlocked=true;sockets[cancelled].disconnected=true;turn(f.server);runCloser();
-    assert(detachedRequests.at(cancelled).cancelled&&detachedRequests.at(cancelled).knownPendingBytes==1024&&f.reads==3);
+    assert(detachedRequests.at(cancelled).cancelled&&detachedRequests.at(cancelled).knownPendingBytes==FlightBytes&&f.reads==3);
   }else if(scenario=="mapped-page-deadline-rollover-and-cleanup"){
     Fixture f;clockUs=uint64_t(UINT32_MAX-600)*1000;const uint32_t began=millis();const int page=connect(f.listener,get("/setup-page"));sockets[page].writeLimit=1;sockets[page].ackDelayMs=1000;
     for(unsigned i=0;i<12;++i)turn(f.server);assert(f.reads==1&&!sockets[page].outgoing.empty());
@@ -836,11 +971,15 @@ int main(int argc,char** argv){
     sockets[reset].disconnected=true;turn(f.server);runCloser();assert(sockets[reset].closed&&detachedRequests.at(reset).cancelled&&detachedRequests.at(reset).absoluteTimeoutMs==15000);
     fakeFreeHeap=12000;const unsigned reads=f.reads;const int waiting=connect(f.listener,get("/setup-page"));for(unsigned i=0;i<12;++i)turn(f.server);
     turn(f.server,5000);runCloser();assert(sockets[waiting].closed&&f.reads==reads&&detachedRequests.at(waiting).absoluteTimeoutMs==5000);
-  }else if(scenario=="transmit-credit-delayed-ack-and-deadline"){
-    Fixture f;fakeFreeHeap=12000;const uint32_t accepted=millis();const int full=connect(f.listener,get("/max-json"));sockets[full].ackDelayMs=250;
+  }else if(scenario=="transmit-credit-delayed-ack-and-deadline"||scenario=="transmit-credit-delayed-ack-reachable"){
+    const bool reachable=scenario=="transmit-credit-delayed-ack-reachable";
+    Fixture f;fakeFreeHeap=12000;const uint32_t accepted=millis();const int full=connect(f.listener,get("/max-json"));sockets[full].ackDelayMs=reachable?100:250;
     for(unsigned i=0;i<12;++i)turn(f.server);turn(f.server,2250);assert(!f.reads&&!sockets[full].closed);
     fakeFreeHeap=fakeLargestFreeBlock=65536;f.finish(full,1000,10);contains(full,"200 OK");contains(full,"Content-Length: 8192");
-    assert(f.reads==1&&uint32_t(millis()-accepted)>4000&&uint32_t(millis()-accepted)<5000&&!f.server.metrics().deadlines);
+    const auto body=sockets[full].outgoing.find("\r\n\r\n")+4;
+    if(reachable)assert(sockets[full].outgoing.size()-body==8192&&uint32_t(millis()-accepted)>4000&&uint32_t(millis()-accepted)<5000&&!f.server.metrics().deadlines);
+    else assert(sockets[full].outgoing.size()-body<8192&&uint32_t(millis()-accepted)>=5000&&uint32_t(millis()-accepted)<5020&&f.server.metrics().deadlines==1&&detachedRequests.at(full).cancelled);
+    assert(f.reads==1);
     const int mutation=connect(f.listener,post("/api/power","on=1"));creditContended=true;
     for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1&&sockets[mutation].outgoing.empty());
     turn(f.server,1501);runCloser();assert(sockets[mutation].closed&&f.mutations==1);creditContended=false;
@@ -860,7 +999,7 @@ int main(int argc,char** argv){
     const int a=connect(f.listener,post("/api/power","on=1&padding="+std::string(900,'a'))),b=connect(f.listener,get("/large")),c=connect(f.listener,get("/large"));
     for(unsigned i=0;i<100;++i){turn(f.server);runCloser();}
     assert(sockets[a].closed&&sockets[b].closed&&sockets[c].closed);
-    assert(largestRead<=512&&largestWrite<=1024&&f.server.metrics().maxServiceUs<=LampHttpServer::TurnBudgetUs+200);
+    assert(largestRead<=512&&largestWrite<=FlightBytes&&f.server.metrics().maxServiceUs<=LampHttpServer::TurnBudgetUs+200);
   }else if(scenario=="close-queue-full"){
     Fixture f;forceQueueFull=true;const int a=connect(f.listener,"G"),b=connect(f.listener,"G"),c=connect(f.listener,"G"),pending=connect(f.listener,get());
     for(unsigned i=0;i<6;++i)turn(f.server);sockets[a].disconnected=sockets[b].disconnected=sockets[c].disconnected=true;

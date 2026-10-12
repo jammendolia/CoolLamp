@@ -30,6 +30,7 @@
 #include "LampWifiSetup.h"
 #include "AudioAnalysis.h"
 #include <new>
+#include "LampPlatformLogPriming.h"
 SET_LOOP_TASK_STACK_SIZE(6144);
 
 // ESP32-C3 Mini wiring.
@@ -120,6 +121,9 @@ static LampRuntimeMetrics::Tracker lampRuntimeMetrics;
 void setup() {
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0); // USB diagnostic replies must never stall rendering.
+  // Allocate SDK console locks before Wi-Fi/BLE can exhaust transient heap.
+  // The calls write zero bytes and leave the USB diagnostic transport intact.
+  primeLampPlatformLogLocks();
   delay(3000); // Allow time for boot recovery before driving the strip.
 
   if(!recoverLampFactoryReset()) {

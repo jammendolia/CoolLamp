@@ -459,7 +459,10 @@ String lampSyncIncarnation(){
   return out;
 }
 LampSyncJsonSnapshot captureLampSyncJson(uint32_t now){
-  return {now,LampEspNow::status(),lampGroupVisual(),lampSyncIncarnation()};
+  LampSyncJsonSnapshot snapshot{now,LampEspNow::status(),lampGroupVisual()};
+  const String incarnation=lampSyncIncarnation();
+  if(incarnation.length()==32)memcpy(snapshot.incarnation,incarnation.c_str(),33);
+  return snapshot;
 }
 bool appendLampSyncJson(LampJsonSink& s,uint8_t peerCursor,uint8_t peerLimit,const LampSyncJsonSnapshot& snapshot){
   const uint32_t now=snapshot.now;
@@ -476,7 +479,7 @@ bool appendLampSyncJson(LampJsonSink& s,uint8_t peerCursor,uint8_t peerLimit,con
   add(",\"session\":");quoted(sessionText);add(",\"dissolutionV1\":true");
   // The random group key identifies the group incarnation across reboot/prune.
   // Publish a domain-separated one-way fingerprint, never reusable authority.
-  const String& incarnation=snapshot.incarnation;if(incarnation.length()){add(",\"incarnation\":");quoted(incarnation.c_str());}else if(config.role)good=false;
+  if(snapshot.incarnation[0]){add(",\"incarnation\":");quoted(snapshot.incarnation);}else if(config.role)good=false;
   add(",\"membershipLocked\":");add(lampRolloutPinsMembership()?"true":"false");
   add(",\"role\":");add(config.role);add(",\"leader\":");quoted(config.leader);add(",\"paused\":");add(paused?"true":"false");add(",\"active\":");add(lampSyncFollowing()?"true":"false");add(",\"members\":");add(members);add(",\"peers\":[");
   unsigned peerTotal=0,peerReturned=0;

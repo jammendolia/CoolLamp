@@ -42,6 +42,7 @@ with tempfile.TemporaryDirectory(prefix='http-cleanup-',dir=ROOT/'.build') as fo
                 policyComparisonCasesPassed=2*len(POLICY_SCENARIOS),currentCopiedIdleMs=5000,
                 formerCopiedIdleMs=3500,originalApiTotalMs=5000,htmlTotalMs=15000,uploadTotalMs=180000,
                 pinnedCore='3.3.11',pinnedIdf='5.5.5',pinnedEspLwipCommit='fd432e4ee2cfb7f7f1c7eb7227e0173412e7b84e',
+                currentApplicationFlightBytes=384,legacyInjectedPendingBytesPreserved=1024,
                 noPhysicalAttribution=True,notGuaranteedTcpRetry=True,
                 sources={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in
                          ('LampHttpSocketCleanup.h','LampHttpSocketCleanup.cpp','tests/http-socket-cleanup-runtime.cpp')})

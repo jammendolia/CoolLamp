@@ -22,7 +22,14 @@ fixture=r'''
 #include <time.h>
 #include <stdlib.h>
 #include <vector>
+#include <new>
+#include <cstdlib>
 #include <iostream>
+bool allocationForbidden=false;
+void* operator new(size_t size){assert(!allocationForbidden);if(void* p=std::malloc(size))return p;throw std::bad_alloc();}
+void* operator new[](size_t size){return ::operator new(size);}
+void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
+void operator delete(void* p,size_t)noexcept{std::free(p);}void operator delete[](void* p,size_t)noexcept{std::free(p);}
 #ifdef _WIN32
 int setenv(const char* key,const char* value,int){return _putenv_s(key,value);}
 tm* localtime_r(const time_t* value,tm* out){const tm* converted=localtime(value);if(!converted)return nullptr;*out=*converted;return out;}
@@ -72,7 +79,7 @@ int mux=0;void startReceiverCue(){}
 #define portENTER_CRITICAL(value) ((void)(value))
 #define portEXIT_CRITICAL(value) ((void)(value))
 LampUpdateStatus getLampUpdateStatus(){return status;}
-time_t clockUnix=0;time_t fakeTime(time_t*){return clockUnix;}
+unsigned clockReads=0;time_t clockUnix=0;time_t fakeTime(time_t*){++clockReads;return clockUnix;}
 #define time fakeTime
 '''
 test=r'''
@@ -82,13 +89,21 @@ void pureStatus(){
  const auto revision=policyRevision,lastUse=lastUserUse;
  const bool used=userUseObserved,readable=policyReadable,uncertain=policySaveUncertain,reconcile=policyNeedsReconcile;
  const bool attempted=policyReconcileAttempted;const auto attemptedAt=policyReconcileAttemptAt;
- const auto json=lampUpdatePolicyJson();assert(!json.empty());
+ const auto beforeClock=clockReads;
+ allocationForbidden=true;const auto snapshot=captureLampUpdatePolicyJson();LampJsonSink count;appendLampUpdatePolicyJson(count,snapshot);allocationForbidden=false;
+ assert(clockReads==beforeClock+(readable?1:0)&&count.okay()&&count.size());
+ const auto afterCaptureClock=clockReads;String encoded;assert(encoded.reserve(count.size()));LampJsonSink write(&encoded,count.size());
+ allocationForbidden=true;appendLampUpdatePolicyJson(write,snapshot);allocationForbidden=false;
+ assert(clockReads==afterCaptureClock&&write.okay()&&write.size()==count.size());
+ const auto json=lampUpdatePolicyJson();assert(!json.empty()&&json==encoded);
+ LampJsonSink tooSmall(nullptr,count.size()-1);appendLampUpdatePolicyJson(tooSmall,snapshot);assert(!tooSmall.okay());
  assert(opens==Preferences::opens&&reads==Preferences::reads&&writes==Preferences::writes&&zones==timezoneChanges);
  assert(revision==policyRevision&&lastUse==lastUserUse&&used==userUseObserved&&readable==policyReadable&&uncertain==policySaveUncertain&&reconcile==policyNeedsReconcile);
  assert(attempted==policyReconcileAttempted&&attemptedAt==policyReconcileAttemptAt&&!memcmp(&oldPolicy,&updatePolicy,sizeof(oldPolicy)));
 }
 int main(){
  status.automatic=true;assert(lampAutomaticUpdateAllowed());pureStatus();
+ assert(lampUpdatePolicyJson()=="{\"version\":1,\"valid\":true,\"revision\":1,\"window\":false,\"startMinute\":0,\"endMinute\":0,\"timezone\":\"UTC0\",\"deferDuringUse\":false,\"idleSeconds\":300,\"eligibility\":0,\"groupCoordination\":0,\"automaticEligible\":true,\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}");
  for(uint8_t reason=1;reason<=4;++reason){coordinationReason=reason;assert(!lampAutomaticUpdateAllowed());
   const auto json=lampUpdatePolicyJson();assert(json.find("\"groupCoordination\":"+String(reason))!=String::npos&&json.find("\"automaticEligible\":false")!=String::npos);}
  coordinationReason=0;assert(lampAutomaticUpdateAllowed());
@@ -150,7 +165,14 @@ int main(){
  Preferences::failOpen=false;Preferences::failWrite=false;Preferences::failReadOpenAfterWrite=false;
  assert(setLampUpdatePolicy(next,policyRevision)&&!lampUpdatePolicySaveUncertain()&&policyReadable);
  pureStatus();
- std::cout<<"PASS production policy: pure status without NVS/TZ/use mutation, throttled loop recovery/rollover, revision CAS, NVS prior/new/ambiguous readback, commit-then-failure, recovery/repair, clock/DST/opt-out/use rollover, staged group admission\n";
+ // Count/write use only one frozen eligibility/clock/group observation. A
+ // concurrent later owner change must not alter the already captured reply.
+ const auto captured=captureLampUpdatePolicyJson();const auto frozen=lampUpdatePolicyJson();
+ updatePolicy={};policyRevision=UINT32_MAX;policyReadable=false;coordinationReason=255;clockUnix=0;status.automatic=false;
+ const auto unchangedClockReads=clockReads;String output=lampJsonReply([&](LampJsonSink& out){appendLampUpdatePolicyJson(out,captured);});
+ assert(output==frozen&&clockReads==unchangedClockReads);
+ auto malformed=captured;memset(malformed.policy.timezone,'x',sizeof(malformed.policy.timezone));LampJsonSink invalid;appendLampUpdatePolicyJson(invalid,malformed);assert(!invalid.okay());
+ std::cout<<"PASS production policy: pure status without NVS/TZ/use mutation, allocation-free frozen<=84B snapshot/count/write, exact legacy JSON, one clock/group observation and bounded failures, throttled loop recovery/rollover, revision CAS, NVS prior/new/ambiguous readback, commit-then-failure, recovery/repair, clock/DST/opt-out/use rollover, staged group admission\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='update-policy-',dir=ROOT/'.build') as directory:

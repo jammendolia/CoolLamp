@@ -54,8 +54,10 @@ class ControlHttpAdapterTests(unittest.TestCase):
         definitions = '\n'.join(function(source, signature) for signature in [
             'String jsonText(', 'bool authorizedLampRequest(', 'bool readNumber(', 'String lampEffectCatalogEntry(',
             'String lampRuntimeTimingJson()', 'String lampDiagnosticsJson()',
+            'bool captureLampNetworkText(', 'bool captureLampNetworkAddress(',
             'void sendLampState()', 'LampControlReply lampControlRequest(',
             'String lampControlSnapshotJson()', 'void saveLampConfiguration()'])
+        definitions=function(source,'struct LampNetworkAddressWriter ')+';\n'+definitions
         definitions='template<class HttpMetrics>\n'+function(source,'void appendLampRuntimeTimingJson(')+'\n'+definitions
         audio_source = (ROOT/'LampAudio.cpp').read_text()
         audio_settings = '\n'.join(function(audio_source, signature) for signature in [
@@ -66,13 +68,17 @@ class ControlHttpAdapterTests(unittest.TestCase):
         # Hardware/numeric snapshots are mocked; current serializer logic is real.
         update_source = (ROOT/'LampUpdate.cpp').read_text()
         current_status = '\n'.join(function(update_source, signature) for signature in [
-            'String versionText(', 'String lampUpdatePolicyJson()', 'LampUpdateJsonSnapshot captureLampUpdateJson(',
+            'String versionText(', 'LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson()',
+            'void appendLampUpdatePolicyJson(', 'String lampUpdatePolicyJson()', 'LampUpdateJsonSnapshot captureLampUpdateJson(',
             'void appendLampUpdateJson(', 'String lampUpdateJson()'])
         current_status += '\n' + '\n'.join(function(audio_source,signature) for signature in [
             'LampAudioJsonSnapshot captureLampAudioJson()', 'void appendLampAudioJson(', 'String lampAudioJson()'])
         current_status += '\n' + function((ROOT/'UpdateHttp.cpp').read_text(), 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()')
         current_status += '\n' + function((ROOT/'UpdateHttpDiagnostics.cpp').read_text(), 'void appendUpdateHttpDiagnostics(')
-        attempt_json = function((ROOT/'LampUpdateAttempt.cpp').read_text(), 'String statusJson(const FirmwareManifest& image)')
+        attempt_source = (ROOT/'LampUpdateAttempt.cpp').read_text()
+        attempt_json = '\n'.join(function(attempt_source, signature) for signature in [
+            'StatusSnapshot captureStatus(', 'void appendStatus(',
+            'String statusJson(const FirmwareManifest& image)'])
         sync_json = '\n'.join(function(sync_source,signature) for signature in [
             'LampSyncJsonSnapshot captureLampSyncJson(',
             'bool appendLampSyncJson(LampJsonSink& s,', 'bool appendLampSyncJson(LampJsonSink& reply,',
@@ -150,7 +156,7 @@ uint8_t lampRolloutAutomaticAdmissionReason(){return 4;}
 uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){return 4;}
 String lampUpdatePolicyJson();String updateHttpDiagnostics();
 std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tlsError{INT32_MIN},tlsFlags{INT32_MIN},transportError{INT32_MIN};
-namespace LampUpdateAttempt {constexpr unsigned Capacity=4;unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
+namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
 }
 constexpr int WL_CONNECTED=3;
@@ -159,8 +165,18 @@ int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}
 int esp_reset_reason(){return INT32_MIN;}
 bool setupAP=false,scanActive=false;unsigned scanStartedAt=0,scanDuration=UINT32_MAX,scanPolls=UINT32_MAX;int scanCount=INT32_MIN;
 String lampTemperatureJson(){return "{\"supported\":true,\"valid\":true,\"celsius\":125.00,\"peakCelsius\":125.00,\"sampleAgeMs\":4294967295,\"error\":null}";}
-struct Address {String toString(){return worstStatus?"192.168.255.254":"0.0.0.0";}};
-struct {int status(){return 0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int){return {};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
+const char* dnsText[2]={nullptr,nullptr};
+struct Print {virtual size_t write(uint8_t)=0;virtual ~Print()=default;};
+struct IPAddress {
+ const char* text=nullptr;size_t size=0;bool mismatchedCount=false;
+ const char* fixtureText()const{return text?text:worstStatus?"192.168.255.254":"0.0.0.0";}
+ String toString()const{return fixtureText();}
+ size_t printTo(Print& out)const{const auto* value=fixtureText();size_t written=0;
+  for(size_t i=0,count=size?size:strlen(value);i<count;++i)written+=out.write(uint8_t(value[i]));
+  return mismatchedCount?written+1:written;}
+};
+using Address=IPAddress;
+struct {int status(){return 0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int index){return {dnsText[index]};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
 struct {void addServiceTxt(const char*,const char*,const char*,const String&) {}} MDNS;
 using namespace LampSyncWire;
 struct {uint8_t role=1;char leader[13]="aabbccddeeff",key[33]="0123456789abcdef0123456789abcdef";} config;
@@ -203,6 +219,64 @@ int main(int argc,char** argv){
  lampServer.on("/api/config",HTTP_POST,saveLampConfiguration);
  registerRoutes();
  beginLampStyle();assert(lampStyleCode()==0);
+ // Captured update fields are immutable between count and write. The real
+ // capture/append functions must not re-read time, quarantine or policy state.
+ const auto updateWrites=Preferences::writes;const auto updateReserves=String::reserveCalls;
+ const auto capturedUpdate=captureLampUpdateJson(true);
+ assert(String::reserveCalls==updateReserves&&Preferences::writes==updateWrites);
+ const auto frozenUpdate=lampJsonReply([&](LampJsonSink& out){appendLampUpdateJson(out,capturedUpdate,true);});
+ assert(!frozenUpdate.isEmpty()&&!strcmp(capturedUpdate.deviceId,"aabbccddeeff"));
+ const auto savedPolicy=updatePolicy;const auto savedAutomatic=automaticView;
+ const auto savedPolicyRevision=policyRevision,savedMillis=fakeMillis;
+ const auto savedPolicyReadable=policyReadable,savedAttemptReadable=LampUpdateAttempt::readable;
+ const auto savedAttemptCount=LampUpdateAttempt::count;
+ policyRevision=7;policyReadable=true;strcpy(updatePolicy.timezone,"UTC0");
+ LampUpdateAttempt::readable=true;LampUpdateAttempt::count=0;fakeMillis+=999999;
+ automaticView.state=LampUpdateAutomatic::Waiting;automaticView.reason=LampUpdateAutomatic::InternetUnavailable;
+ const auto writtenUpdate=lampJsonReply([&](LampJsonSink& out){appendLampUpdateJson(out,capturedUpdate,true);});
+ assert(writtenUpdate==frozenUpdate&&Preferences::writes==updateWrites);
+ updatePolicy=savedPolicy;automaticView=savedAutomatic;policyRevision=savedPolicyRevision;fakeMillis=savedMillis;
+ policyReadable=savedPolicyReadable;LampUpdateAttempt::readable=savedAttemptReadable;LampUpdateAttempt::count=savedAttemptCount;
+ // Real bounded text capture rejects truncation and embedded NULs, without
+ // touching either output or surrounding bytes on failure.
+ struct {char before='L';char text[64]{};char after='R';} textGuard;
+ assert(captureLampNetworkText(textGuard.text,sizeof(textGuard.text),"A")&&!strcmp(textGuard.text,"A"));
+ const String maxText(63,'x');assert(captureLampNetworkText(textGuard.text,sizeof(textGuard.text),maxText));
+ assert(!strcmp(textGuard.text,maxText.c_str())&&textGuard.before=='L'&&textGuard.after=='R');
+ char capturedBytes[64];memcpy(capturedBytes,textGuard.text,sizeof(capturedBytes));
+ for(const auto& malformed:{String(),String(64,'x'),String(std::string("a\0b",3))}){
+  assert(!captureLampNetworkText(textGuard.text,sizeof(textGuard.text),malformed));
+  assert(!memcmp(capturedBytes,textGuard.text,sizeof(capturedBytes))&&textGuard.before=='L'&&textGuard.after=='R');
+ }
+ assert(!captureLampNetworkText(textGuard.text,0,"A")&&!memcmp(capturedBytes,textGuard.text,sizeof(capturedBytes)));
+ // The fixed Print destination never allocates an SDK String. A formatter
+ // overflow, embedded NUL, empty output or dishonest byte count fails closed.
+ assert(captureLampNetworkAddress(textGuard.text,sizeof(textGuard.text),IPAddress{maxText.c_str()}));
+ assert(!strcmp(textGuard.text,maxText.c_str())&&textGuard.before=='L'&&textGuard.after=='R');
+ const String overlongAddress(64,'x');
+ for(const auto& malformed:{IPAddress{""},IPAddress{overlongAddress.c_str()},IPAddress{"ab\0cd",5},IPAddress{"127.0.0.1",0,true}}){
+  assert(!captureLampNetworkAddress(textGuard.text,sizeof(textGuard.text),malformed));
+  assert(textGuard.before=='L'&&textGuard.after=='R');
+ }
+ assert(!captureLampNetworkAddress(textGuard.text,0,IPAddress{"127.0.0.1"})&&textGuard.before=='L'&&textGuard.after=='R');
+ // SDK DNS addresses may be IPv6. Complete state preserves exact strings;
+ // failed captures return 503 without any saved or live lamp mutation.
+ const auto networkWrites=Preferences::writes;const auto networkStorage=Preferences::storage;
+ const String savedHost=lampHost;
+ dnsText[0]="2001:db8:0123:4567:89ab:cdef:0123:4567";dnsText[1]="fe80::abcd:ef12:3456:7890%12";
+ const auto ipv6State=lampControlRequest(LampControlEndpoint::State,false,"");
+ assert(ipv6State.status==200&&ipv6State.body.find("\"dns\":[\"2001:db8:0123:4567:89ab:cdef:0123:4567\",\"fe80::abcd:ef12:3456:7890%12\"]")!=String::npos);
+ for(const char* invalid:{"","xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}){
+  dnsText[0]=invalid;const auto denied=lampControlRequest(LampControlEndpoint::State,false,"");
+  assert(denied.status==503&&!lampServer.controlActive());
+ }
+ dnsText[0]=dnsText[1]=nullptr;
+ lampHost=String(57,'h');assert(lampControlRequest(LampControlEndpoint::State,false,"").status==200);
+ lampHost=String(58,'h');assert(lampControlRequest(LampControlEndpoint::State,false,"").status==503);
+ lampHost=String();assert(lampControlRequest(LampControlEndpoint::State,false,"").status==503);
+ lampHost=String(std::string("host\0tail",9));assert(lampControlRequest(LampControlEndpoint::State,false,"").status==503);
+ lampHost=savedHost;
+ assert(Preferences::writes==networkWrites&&Preferences::storage==networkStorage&&Mode==4&&Brightness==55&&PowerOn&&!restartAt);
  // The shared trusted BLE/mesh entry point refuses before form allocation,
  // decode, handler state, or NVS ownership. Recovery never replays a denial.
  static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);
@@ -632,6 +706,11 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
                                           'lampDiagnosticsJson', 'lampRuntimeTimingJson'],
                 'controlResponseLimit': 8192, 'directHttpStateBytes': len((ROOT/'.build/experience-complete-state.json').read_bytes()),
                 'countedExactStateReservation':True, 'initialReservationFailureBeforeSerialization': True,
+                'immutableTypedFirmwareSnapshot':True,
+                'boundedNetworkTextCapture':{'capacityBytes':64,'maxAcceptedTextBytes':63,
+                    'emptyOversizedEmbeddedNulRejected':True,'failureLeavesCanariesUntouched':True,
+                    'ipv6DnsTextPreserved':True,'invalidCaptureReturns503WithoutMutation':True,
+                    'addressFormatterUsesFixedPrintDestination':True,'addressFormatterByteCountChecked':True},
                 'countedExactDiagnosticReservation':True,'directHttpDiagnosticBytes':len(diagnostic.read_bytes()),
                 'appearanceArrayCountsFenced':True,'checkedArrayAppendFailureCases':5,
                 'safeReadAdmissionFreeHeapBytes':16316,'safeReadAdmissionLargestBlockBytes':7668,

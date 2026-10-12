@@ -17,8 +17,10 @@ class BleControlTests(unittest.TestCase):
 #include <string>
 #include <cassert>
 #include <utility>
-inline bool failNextReserve=false;
+inline bool failNextReserve=false,failNextConcat=false;
 inline bool failNextText=false,failNextOwnedCopy=false;
+inline bool failNextReadRetain=false;
+inline unsigned textConstructionAttempts=0,reserveAttempts=0;
 inline unsigned wipedBufferReleases=0;
 inline size_t wipedBytes=0;
 inline uint32_t fakeFreeHeap=50000,fakeLargestBlock=24000;
@@ -27,15 +29,19 @@ inline Esp ESP;
 struct String:std::string {
  using std::string::operator=;
  String()=default;
- String(const char* text):std::string(failNextText?"":text){failNextText=false;}
+ String(const char* text):std::string(failNextText?"":text){++textConstructionAttempts;failNextText=false;}
  String(const std::string& s):std::string(s){}
  String(const String& s):std::string(s){}
  String(String&& s)noexcept:std::string(std::move(s)){}
  String& operator=(const String& text){
   if(failNextOwnedCopy&&text=="Saved"){failNextOwnedCopy=false;std::string::clear();return *this;}
+  if(failNextReadRetain&&!text.empty()&&text[0]=='s'){failNextReadRetain=false;std::string::clear();return *this;}
   std::string::operator=(text);return *this;
  }
- String& operator=(String&& text)noexcept{std::string::operator=(std::move(text));return *this;}
+ String& operator=(String&& text)noexcept{
+  if(failNextReadRetain&&!text.empty()&&text[0]=='s'){failNextReadRetain=false;std::string::clear();return *this;}
+  std::string::operator=(std::move(text));return *this;
+ }
  String& operator=(const char* text){
   if(text){if(failNextText){failNextText=false;std::string::clear();}else std::string::operator=(text);return *this;}
   // Model the pinned core's null-assignment invalidation, and verify the
@@ -46,8 +52,9 @@ struct String:std::string {
   }
   clear();shrink_to_fit();return *this;
  }
- bool reserve(size_t n){if(failNextReserve){failNextReserve=false;return false;}std::string::reserve(n);return true;}
- bool concat(const char* p,size_t n){append(p,n);return true;}
+ bool isEmpty()const{return empty();}
+ bool reserve(size_t n){++reserveAttempts;if(failNextReserve){failNextReserve=false;return false;}std::string::reserve(n);return true;}
+ bool concat(const char* p,size_t n){if(failNextConcat){failNextConcat=false;append(p,n/2);return false;}append(p,n);return true;}
 };
 uint32_t millis();
 '''
@@ -69,13 +76,14 @@ uint32_t clockMs=100;uint32_t millis(){return clockMs;}
 bool updating=false;bool lampUpdateOwnsResources(){return updating;}
 unsigned calls=0;uint8_t lastEndpoint=0;bool lastMutation=false;String lastForm;
 unsigned stateBytes=2049,firmwareBytes=0;
+uint16_t handlerStatus=200;
 const char* lastHandlerBody=nullptr;
 String lampControlSnapshotJson(){return "{}";}
 namespace LampFirmwareRelay {LampControlReply control(bool,const String&){return {200,"{}"};}}
 LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){
  assert(confidential);
  ++calls;lastEndpoint=endpoint;lastMutation=mutation;lastForm=form;
- LampControlReply reply;reply.status=200;
+ LampControlReply reply;reply.status=handlerStatus;
  if(endpoint==3)reply.body="CL1-aabbccddeeff-0123456789abcdef0123456789abcdef";
  else if(endpoint==1)reply.body=std::string(stateBytes,'s');
  else if(endpoint==18)reply.body=firmwareBytes?String(std::string(firmwareBytes,'f')):String("{\"version\":\"1.10.0\",\"phase\":0}");
@@ -151,7 +159,8 @@ int main(){
  // Failure before dispatch consumes this transfer, but never calls a setter
  // or read handler; retrying Commit cannot execute anything.
  assert(send(begin(7,1,Read),8)==0);failNextReserve=true;
- assert(send(commit(7),8)==4&&calls==readCalls+1&&u16(out+1)==0);
+ assert(send(commit(7),8)==0&&calls==readCalls+1&&u16(out+1)==7&&u16(out+4)==503);
+ assert(payload()=="Read resources unavailable. Nothing changed.");
  assert(send(commit(7),8)==2&&calls==readCalls+1);
  // An oversized reply becomes an honest bounded failure and stays cached.
  stateBytes=MaxResponse+1;
@@ -279,7 +288,96 @@ int main(){
  fakeFreeHeap=13600;fakeLargestBlock=1040;submitForm(formSequence);
  assert(u16(out+4)==200&&calls==formCalls+1&&lastForm==maximumForm&&send(commit(formSequence),15)==2);
  resetLampBleControlTransfer(16);
- std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/mutation admission, tiny/error allocation failures, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
+ // Known read admission failure must explain itself with no String or wire
+ // allocation at all, even when every allocator fault is armed. Only this
+ // exact read classification receives the immutable resource-refusal owner.
+ constexpr const char* refused="Read resources unavailable. Nothing changed.";
+ const auto refusalCalls=calls;
+ fakeFreeHeap=0;fakeLargestBlock=0;failNextText=true;failNextReserve=true;
+ const auto beforeStaticText=textConstructionAttempts,beforeStaticReserve=reserveAttempts;
+ const auto beforeStaticMalloc=wireMallocAttempts;
+ assert(send(begin(1,LampControlEndpoint::State,Read),16)==0&&send(commit(1),16)==0);
+ assert(u16(out+1)==1&&out[3]==LampControlEndpoint::State&&u16(out+4)==503&&payload()==refused);
+ assert(calls==refusalCalls&&textConstructionAttempts==beforeStaticText&&reserveAttempts==beforeStaticReserve&&wireMallocAttempts==beforeStaticMalloc);
+ assert(failNextText&&failNextReserve&&retainedResponse.empty());
+ for(uint16_t offset:{uint16_t(0),uint16_t(7),uint16_t(sizeof("Read resources unavailable. Nothing changed.")-1),uint16_t(0)}){
+  assert(send(page(1,offset),16)==0&&u16(out+8)==offset&&u16(out+4)==503&&outSize<=MaxPage);
+  assert(payload()==std::string(refused).substr(offset));
+ }
+ assert(send(commit(1),16)==2&&calls==refusalCalls);
+ assert(send(begin(1,0,0),16)==0&&u16(out+1)==0);
+ assert(send(page(1),16)==2&&send(commit(1),16)==2&&calls==refusalCalls);
+ assert(std::strcmp(readRefusal,refused)==0); // cleanup must never wipe flash bytes
+ failNextText=failNextReserve=false;fakeFreeHeap=50000;fakeLargestBlock=24000;
+ // The form-reservation failure is a pre-dispatch read refusal. It consumes
+ // the transaction once, but does not call a handler or fake a saved setting.
+ assert(send(begin(2,LampControlEndpoint::State,Read),16)==0);failNextReserve=true;
+ assert(send(commit(2),16)==0&&u16(out+4)==503&&payload()==refused&&calls==refusalCalls);
+ assert(send(commit(2),16)==2&&calls==refusalCalls);
+ // Successful read retention failures use the same cached503. A handler was
+ // evaluated once; paging and repeated Commit never evaluate it again.
+ for(const auto bytes:{1u,32u}){
+  stateBytes=bytes;const auto tx=uint16_t(bytes==1?3:4);const auto evaluations=calls;
+  assert(send(begin(tx,LampControlEndpoint::State,Read),16)==0);failNextReadRetain=true;
+  assert(send(commit(tx),16)==0&&!failNextReadRetain&&u16(out+4)==503&&payload()==refused&&calls==evaluations+1);
+  assert(send(page(tx),16)==0&&payload()==refused&&send(commit(tx),16)==2&&calls==evaluations+1);
+ }
+ // A known503 with an empty body can result from error-text allocation
+ // failure. Preserve503; don't classify empty success or other errors as it.
+ stateBytes=0;handlerStatus=503;
+ assert(send(begin(5,LampControlEndpoint::State,Read),16)==0&&send(commit(5),16)==0&&u16(out+4)==503&&payload()==refused);
+ assert(send(page(5),16)==0&&send(commit(5),16)==2);
+ handlerStatus=200;
+ assert(send(begin(6,LampControlEndpoint::State,Read),16)==0&&send(commit(6),16)==0&&u16(out+4)==200&&outSize==Header);
+ handlerStatus=404;
+ assert(send(begin(7,LampControlEndpoint::State,Read),16)==0&&send(commit(7),16)==0&&u16(out+4)==404&&outSize==Header);
+ stateBytes=32;
+ assert(send(begin(8,LampControlEndpoint::State,Read),16)==0&&send(commit(8),16)==0&&u16(out+4)==404&&payload()==std::string(32,'s'));
+ assert(send(begin(9,LampControlEndpoint::State,Read),16)==0);failNextReadRetain=true;
+ assert(send(commit(9),16)==4&&!failNextReadRetain&&u16(out+1)==0);
+ assert(send(commit(9),16)==2);handlerStatus=200;
+ // A failed mutation form allocation and failed post-execution reply retain
+ // legacy ACK4; there is no cached503 claiming a setter never ran.
+ const auto mutationCalls=calls;
+ assert(send(begin(10,LampControlEndpoint::Config,Mutation),16)==0);failNextReserve=true;
+ assert(send(commit(10),16)==4&&u16(out+1)==0&&calls==mutationCalls&&send(commit(10),16)==2);
+ assert(send(begin(11,LampControlEndpoint::Config,Mutation),16)==0);failNextOwnedCopy=true;
+ assert(send(commit(11),16)==4&&u16(out+1)==0&&calls==mutationCalls+1&&send(commit(11),16)==2);
+ // A static read owner uses the same rollover-safe timeout and authorization,
+ // generation and update cleanup. No logical reply outlives its session.
+ uint16_t refusalTx=12;
+ for(const auto cleanup:{0,1,2,3}){
+  fakeFreeHeap=0;assert(send(begin(refusalTx,LampControlEndpoint::State,Read),16)==0&&send(commit(refusalTx),16)==0&&payload()==refused);
+  if(cleanup==0){clockMs=UINT32_MAX-10;resetLampBleControlTransfer(16);assert(send(begin(++refusalTx,LampControlEndpoint::State,Read),16)==0&&send(commit(refusalTx),16)==0);clockMs+=Timeout;assert(serviceLampBleControlTransfer(16,true,false));}
+  if(cleanup==1)assert(serviceLampBleControlTransfer(16,false,false));
+  if(cleanup==2){assert(serviceLampBleControlTransfer(17,true,false));resetLampBleControlTransfer(16);}
+  if(cleanup==3)assert(serviceLampBleControlTransfer(16,true,true));
+  assert(send(page(refusalTx),16)==2&&send(commit(refusalTx),16)==2&&std::strcmp(readRefusal,refused)==0);
+  ++refusalTx;
+ }
+ assert(wireMallocAttempts==beforeStaticMalloc);
+ resetLampBleControlTransfer(18);
+ // A GET that is not on the resource policy's read allowlist keeps legacy
+ // error handling, even though its wire method is Read.
+ const auto unpermittedCalls=calls;failNextText=true;
+ assert(send(begin(1,LampControlEndpoint::Bluetooth,Read),18)==0&&send(commit(1),18)==4&&u16(out+1)==0);
+ assert(!failNextText&&calls==unpermittedCalls&&send(commit(1),18)==2);
+ fakeFreeHeap=50000;fakeLargestBlock=24000;
+ // A whitelisted read POST can fail halfway through copying its form. The
+ // partial String and wire staging bytes are wiped before static503 paging.
+ const std::string readForm="offset=0&kind=effects&count=1";
+ assert(send(begin(2,LampControlEndpoint::SchemaPage,Mutation,readForm.size()),18)==0);
+ for(size_t offset=0;offset<readForm.size();offset+=13){
+  std::vector<uint8_t> frame{1,2,Chunk,2,0,uint8_t(offset),uint8_t(offset>>8)};
+  frame.insert(frame.end(),readForm.begin()+offset,readForm.begin()+std::min(offset+13,readForm.size()));assert(send(frame,18)==0);
+ }
+ const auto copiedFormWipes=wipedBytes;failNextConcat=true;
+ assert(send(commit(2),18)==0&&!failNextConcat&&u16(out+4)==503&&payload()==refused&&calls==unpermittedCalls);
+ assert(wipedBytes>=copiedFormWipes+readForm.size()/2);
+ for(size_t i=0;i<MaxRequest+1;++i)assert(transfer.body()[i]==0);
+ assert(send(page(2),18)==0&&send(commit(2),18)==2&&calls==unpermittedCalls);
+ resetLampBleControlTransfer(19);
+ std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/mutation admission, allocation-free immutable503 read refusals, unchanged mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-control-') as directory:

@@ -74,7 +74,7 @@ async function inspectBrowserFirmware(file,current){
 }
 let browserUploadGeneration=0,browserUploadXhr=null;
 async function reconcileBrowserUpload(image,target,boot,current){
- const until=Date.now()+45000;status('File sent. Checking that your lamp restarted successfully…','file');
+ const until=Date.now()+120000;status('File sent. Checking your lamp’s restart and software…','file');
  while(current()&&Date.now()<until){
   try{const r=await fetch('/api/firmware/upload/status',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(r.ok){const s=await r.json();if(s.deviceId!==target)throw Error('A different lamp answered. Installation could not be confirmed.');if(/^[a-f0-9]{16}$/.test(s.boot)&&s.boot!==boot&&s.installedKnown&&s.healthy&&!s.receiving&&s.version===image.version&&s.size===image.size&&s.sha256===image.sha256){status('Your lamp is updated to '+image.version+'.','file');return;}}}catch(e){if(e.message?.startsWith('A different lamp')){status(e.message,'file');return;}}
   await new Promise(resolve=>setTimeout(resolve,1000));

@@ -12,6 +12,13 @@ String retainedResponse;
 LampBleControlWire::Transfer transfer;
 constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\",\"descriptor-v2\",\"effect-schema-v2\",\"partial-state-v1\",\"appearance-v2\",\"receipts-v1\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"maxEndpoint\":52,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
 static_assert(sizeof(metadata)-1<=LampBleControlWire::PageBytes,"BLE capabilities must fit one metadata page");
+// A refused read needs no heap allocation to explain itself. These immutable
+// bytes contain no lamp/private data; its owner only fences the normal transfer
+// lifetime. Durable mutation replies continue to use their original owner.
+constexpr char readRefusal[]="Read resources unavailable. Nothing changed.";
+static_assert(sizeof(readRefusal)-1<=LampBleControlWire::PageBytes,"Read refusal must fit one BLE page");
+uint8_t readRefusalOwner=0;
+void releaseReadRefusal(void*,size_t){}
 void clearText(String& text){
   if(text.length())LampBleControlWire::zero(const_cast<char*>(text.c_str()),text.length());
   // Core 3.3.11's empty String move can retain an allocated buffer. Release the
@@ -33,6 +40,14 @@ bool retainResponse(uint16_t status,String& body){
   if(!complete){clearText(retainedResponse);return false;}
   if(transfer.finishOwned(status,reinterpret_cast<const uint8_t*>(retainedResponse.c_str()),size,&retainedResponse,releaseResponse))return true;
   clearText(retainedResponse);return false;
+}
+uint8_t readRefusalReply(uint8_t* reply,size_t capacity,size_t& replySize){
+  clearText(retainedResponse);
+  if(!transfer.finishOwned(503,reinterpret_cast<const uint8_t*>(readRefusal),sizeof(readRefusal)-1,
+                           &readRefusalOwner,releaseReadRefusal)){
+    transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
+  }
+  replySize=transfer.page(0,reply,capacity);return replySize?0:4;
 }
 }
 size_t lampBleControlMetadata(uint8_t* out,size_t capacity){
@@ -65,6 +80,7 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
     const bool read=LampControlResourcePolicy::readEndpoint(transfer.endpointId(),transfer.mutation());
     if(!(read?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),transfer.bodySize(),true):
               LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))){
+      if(read)return readRefusalReply(reply,capacity,replySize);
       constexpr char denied[]="Control resources unavailable. No command executed.";
       String body=denied;
       const bool saved=body.length()==sizeof(denied)-1&&retainResponse(503,body);
@@ -74,18 +90,25 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
     }
     String form;
     if(!form.reserve(transfer.bodySize())||!form.concat(reinterpret_cast<const char*>(transfer.body()),transfer.bodySize())){
-      clearText(form);transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
+      clearText(form);
+      if(read)return readRefusalReply(reply,capacity,replySize);
+      transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
     }
     LampControlReply response=transfer.endpointId()==LampControlEndpoint::FirmwareFleet?LampFirmwareRelay::control(transfer.mutation(),form):lampControlRequest(transfer.endpointId(),transfer.mutation(),form,true);
     clearText(form);
+    if(read&&response.status==503&&response.body.isEmpty())return readRefusalReply(reply,capacity,replySize);
     const bool sizeOkay=response.body.length()<=MaxResponse&&(!updating||response.body.length()<=PageBytes);
     if(!sizeOkay){
       constexpr char exceeded[]="Control response exceeds the bounded Bluetooth transfer.";
       clearText(response.body);response.status=507;response.body=exceeded;
       if(response.body.length()!=sizeof(exceeded)-1){clearText(response.body);transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;}
     }
+    const bool successfulRead=read&&response.status>=200&&response.status<300;
     const bool saved=retainResponse(response.status,response.body);
-    if(!saved){transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;}
+    if(!saved){
+      if(successfulRead)return readRefusalReply(reply,capacity,replySize);
+      transfer.clearPayload();replySize=lampBleControlMetadata(reply,capacity);return 4;
+    }
     replySize=transfer.page(0,reply,capacity);return replySize?0:4;
   }
   if(frame[2]==Page){

@@ -522,25 +522,22 @@ void getLampUpdatePacket(uint8_t* out) {
 LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
   LampUpdateJsonSnapshot snapshot;snapshot.status=getLampUpdateStatus();
   FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
-  snapshot.latest=versionText(snapshot.status.latest);snapshot.attempt=LampUpdateAttempt::statusJson(offered);
-  snapshot.policy=lampUpdatePolicyJson();snapshot.http=captureUpdateHttpDiagnostics();
-  const char* const attemptKeys[]={"version","storageReady","unconfirmedArtifacts","capacity","candidateReason","sameArtifactRequiresManual","rollbackProven"};
-  const char* const policyKeys[]={"version","valid","revision","window","startMinute","endMinute","timezone","deferDuringUse","idleSeconds","eligibility","groupCoordination","automaticEligible","unknownTime","restartResume","automaticRadioRollout"};
-  char latest[18];snprintf(latest,sizeof(latest),"%u.%u.%u",unsigned(snapshot.status.latest[0]),unsigned(snapshot.status.latest[1]),unsigned(snapshot.status.latest[2]));
-  if(snapshot.latest!=latest||!LampHttpJson::requiredKeys(snapshot.attempt.c_str(),snapshot.attempt.length(),attemptKeys,sizeof(attemptKeys)/sizeof(attemptKeys[0]))||
-     !LampHttpJson::requiredKeys(snapshot.policy.c_str(),snapshot.policy.length(),policyKeys,sizeof(policyKeys)/sizeof(policyKeys[0])))snapshot.latest=String();
+  snapshot.attempt=LampUpdateAttempt::captureStatus(offered);
+  snapshot.policy=captureLampUpdatePolicyJson();snapshot.http=captureUpdateHttpDiagnostics();
   snapshot.heap=ESP.getFreeHeap();snapshot.largest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
   snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):0;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
   snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
   if(includeAutomatic){
     snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
     snapshot.automaticService.retryInMs=timing.retryInMs;snapshot.automaticService.donorWaitMs=timing.donorWaitMs;
-    const String identity=lampIdentity();if(identity.length()==12)memcpy(snapshot.deviceId,identity.c_str(),13);
+    // Same immutable 48-bit hardware identity as lampIdentity(), without a
+    // String allocation retained while the complete reply is reserved.
+    const uint64_t mac=ESP.getEfuseMac();const char hex[]="0123456789abcdef";
+    for(unsigned i=0;i<12;++i)snapshot.deviceId[i]=hex[(mac>>(44-i*4))&15];
   }
   return snapshot;
 }
 void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic) {
-  if(!snapshot.latest.length()||!snapshot.attempt.length()||!snapshot.policy.length()){out.fail();return;}
   const auto& s=snapshot.status;const auto add=[&](const auto& value){out.concat(value);};
   add("{\"version\":\"");
   add(LAMP_FIRMWARE_VERSION);add("\",\"build\":\"");
@@ -549,21 +546,19 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
 #else
   add("COOLLAMP-LOCAL-" LAMP_FIRMWARE_VERSION);
 #endif
-  add("\",\"latest\":\"");add(snapshot.latest);
-  add("\",\"phase\":");add(String(s.phase));add(",\"progress\":");add(String(s.progress));add(",\"error\":");add(String(s.error));
+  add("\",\"latest\":\"");add(s.latest[0]);add('.');add(s.latest[1]);add('.');add(s.latest[2]);
+  add("\",\"phase\":");add(s.phase);add(",\"progress\":");add(s.progress);add(",\"error\":");add(s.error);
   add(",\"automatic\":");add((s.automatic?"true":"false"));add(",\"available\":");add((s.available?"true":"false"));
   add(",\"wifi\":");add((snapshot.wifi?"true":"false"));
-  add(",\"updateContractVersion\":2,\"route\":");add(String(s.route));add(",\"checkedAt\":");add(String(s.checkedAt));
-  add(",\"receiver\":");add((s.receiving?"true":"false"));add(",\"writtenOffset\":");add(String(s.writtenOffset));add(",\"totalBytes\":");add(String(s.totalBytes));
-  add(",\"freeHeap\":");add(String(snapshot.heap));add(",\"largestBlock\":");add(String(snapshot.largest));
-  add(",\"workerStackFree\":");add(String(snapshot.workerStack));add(",\"loopStackFree\":");add(String(snapshot.loopStack));
+  add(",\"updateContractVersion\":2,\"route\":");add(s.route);add(",\"checkedAt\":");add(s.checkedAt);
+  add(",\"receiver\":");add((s.receiving?"true":"false"));add(",\"writtenOffset\":");add(s.writtenOffset);add(",\"totalBytes\":");add(s.totalBytes);
+  add(",\"freeHeap\":");add(snapshot.heap);add(",\"largestBlock\":");add(snapshot.largest);
+  add(",\"workerStackFree\":");add(snapshot.workerStack);add(",\"loopStackFree\":");add(snapshot.loopStack);
   add(",\"bootHealthy\":");add((snapshot.healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
   add(",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
-  // End each nested builder's lifetime before creating the next one. Returning
-  // the named String also avoids copying a full StringSumHelper result.
-  add(snapshot.attempt);
+  LampUpdateAttempt::appendStatus(out,snapshot.attempt);
   add(",\"policy\":");
-  add(snapshot.policy);
+  appendLampUpdatePolicyJson(out,snapshot.policy);
   appendUpdateHttpDiagnostics(out,snapshot.http);
   if(includeAutomatic){
     if(strlen(snapshot.deviceId)!=12){out.fail();return;}
@@ -712,15 +707,26 @@ bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& next,uint32_t expectedR
   if(!saved)return false;
   updatePolicy=next;policyReadable=true;++policyRevision;setenv("TZ",updatePolicy.timezone,1);tzset();return true;
 }
-String lampUpdatePolicyJson(){
-  const auto eligibility=policyEligibility();const uint8_t coordination=lampRolloutAutomaticAdmissionSnapshotReason();
-  return lampJsonReply([&](LampJsonSink& out){
+LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson(){
+  LampUpdatePolicyJsonSnapshot snapshot;
+  snapshot.policy=updatePolicy;snapshot.revision=policyRevision;snapshot.valid=policyReadable;
+  snapshot.eligibility=policyEligibility();snapshot.coordination=lampRolloutAutomaticAdmissionSnapshotReason();
+  return snapshot;
+}
+void appendLampUpdatePolicyJson(LampJsonSink& out,const LampUpdatePolicyJsonSnapshot& snapshot){
+  // Production policies are validated before entering loop-owned memory. Keep
+  // malformed/nonterminated captured data from publishing incomplete JSON.
+  if(!memchr(snapshot.policy.timezone,0,sizeof(snapshot.policy.timezone))){out.fail();return;}
+  const auto& policy=snapshot.policy;
   const auto add=[&](const auto& value){out.concat(value);};
   add("{\"version\":1,\"valid\":");
-  add((policyReadable?"true":"false"));add(",\"revision\":");add(String(policyRevision));add(",\"window\":");add((updatePolicy.window?"true":"false"));
-  add(",\"startMinute\":");add(String(updatePolicy.startMinute));add(",\"endMinute\":");add(String(updatePolicy.endMinute));add(",\"timezone\":\"");add(updatePolicy.timezone);
-  add("\",\"deferDuringUse\":");add((updatePolicy.deferDuringUse?"true":"false"));add(",\"idleSeconds\":");add(String(updatePolicy.idleSeconds));
-  add(",\"eligibility\":");add(String(uint8_t(eligibility)));add(",\"groupCoordination\":");add(String(coordination));
-  add(",\"automaticEligible\":");add((eligibility==LampUpdatePolicy::Ready&&coordination==0?"true":"false"));add(",\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}");
-  });
+  add((snapshot.valid?"true":"false"));add(",\"revision\":");add(snapshot.revision);add(",\"window\":");add((policy.window?"true":"false"));
+  add(",\"startMinute\":");add(policy.startMinute);add(",\"endMinute\":");add(policy.endMinute);add(",\"timezone\":");out.quote(policy.timezone);
+  add(",\"deferDuringUse\":");add((policy.deferDuringUse?"true":"false"));add(",\"idleSeconds\":");add(policy.idleSeconds);
+  add(",\"eligibility\":");add(uint8_t(snapshot.eligibility));add(",\"groupCoordination\":");add(snapshot.coordination);
+  add(",\"automaticEligible\":");add((snapshot.eligibility==LampUpdatePolicy::Ready&&snapshot.coordination==0?"true":"false"));add(",\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}");
+}
+String lampUpdatePolicyJson(){
+  const auto snapshot=captureLampUpdatePolicyJson();
+  return lampJsonReply([&](LampJsonSink& out){appendLampUpdatePolicyJson(out,snapshot);});
 }

@@ -51,10 +51,17 @@ function proof(bytes,session=nextBoot){return{deviceId:identity,boot:session,ins
  xhr.upload.onprogress({lengthComputable:true,loaded:100,total:100});assert.match(successful.el('status').textContent,/verifying/);assert(!successful.el('status').textContent.includes('is updated'));
  // Same-version reinstall must see a fresh boot, not the old healthy image.
  successful.control.statuses=[proof(bytes,boot),proof(bytes,nextBoot)];xhr.status=200;xhr.onload();for(let i=0;i<5;i++)await settle();assert.match(successful.el('status').textContent,/updated to 1.15.1/);assert.equal(successful.requests.filter(r=>r.path.endsWith('status')).length,2);assert.equal(successful.xhrs.length,1);
+ // Real C3 postboot measurement starts after35s and hashes512-byte slices.
+ // A responsive lamp with a not-yet-known fingerprint is still being checked.
+ const delayed=fixture();await settle();await submit(delayed,file(bytes));
+ delayed.control.statuses=[...Array.from({length:70},()=>({...proof(bytes),installedKnown:false,size:0,sha256:''})),proof(bytes)];
+ delayed.xhrs[0].status=200;delayed.xhrs[0].onload();for(let i=0;i<55;i++)await settle();
+ assert.match(delayed.el('status').textContent,/Checking/);assert.doesNotMatch(delayed.el('status').textContent,/updated to|could not be confirmed/);assert(delayed.el('upload').disabled);
+ for(let i=0;i<30;i++)await settle();assert.match(delayed.el('status').textContent,/updated to/);assert.equal(delayed.xhrs.length,1);assert.equal(delayed.requests.filter(r=>r.path.endsWith('prepare')).length,1);
  for(const problem of ['error','timeout','abort','boot-write-uncertain']){
   const lost=fixture();await settle();await submit(lost,file(bytes));lost.control.offline=true;const transfer=lost.xhrs[0];
   if(problem==='boot-write-uncertain'){transfer.status=400;transfer.responseText='Installation result is unconfirmed. Keep the lamp powered.';transfer.onload();}else transfer['on'+problem]();
-  for(let i=0;i<100;i++)await settle();assert.match(lost.el('status').textContent,/Installation could not be confirmed/);assert(lost.el('upload').disabled);assert.equal(lost.xhrs.length,1);assert(lost.requests.filter(r=>r.path.endsWith('status')).length<=45);assert.equal(lost.requests.filter(r=>r.path.endsWith('prepare')).length,1);
+  for(let i=0;i<140;i++)await settle();assert.match(lost.el('status').textContent,/Installation could not be confirmed/);assert(lost.el('upload').disabled);assert.equal(lost.xhrs.length,1);assert(lost.requests.filter(r=>r.path.endsWith('status')).length<=120);assert.equal(lost.requests.filter(r=>r.path.endsWith('prepare')).length,1);
  }
  const foreign=fixture();await settle();foreign.control.prepareTarget='aabbccddeeff';await submit(foreign,file(bytes));assert.equal(foreign.xhrs.length,0);assert.match(foreign.el('status').textContent,/approval could not be verified/);
  const mismatch=fixture();await settle();await submit(mismatch,file(bytes),{size:10,text:async()=> 'wrong metadata'});assert.equal(mismatch.xhrs.length,0);assert.match(mismatch.el('status').textContent,/does not match/);
