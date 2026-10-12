@@ -53,11 +53,13 @@ export class BluetoothGroups {
     if(!target.lamp.initialization)throw Error('Bluetooth radio is not ready. Reconnect this lamp.');
     const lease=this.acquire?await this.acquire(entry.id,{entry,readOnly,purpose:'offline-groups'}):null;
     const link=lease?.lamp||this.createTransport({sharedInitialization:target.lamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
-    const cleanup=lease?lease.release:()=>link.disconnect();
+    let cleanupRun;
+    const cleanup=()=>cleanupRun??=Promise.resolve().then(()=>lease?lease.release():link.disconnect());
     const owned={disconnect:cleanup};this.links.add(owned);
     try{
       if(!lease)await link.connect({...entry,lampId:entry.id});
-      this.guard(target,generation);await link.enqueue(()=>link.refresh(entry.id));this.guard(target,generation);
+      const readGuard=readOnly?()=>this.guard(target,generation):null;
+      this.guard(target,generation);await link.enqueue(()=>{this.guard(target,generation);return link.refresh(entry.id,true,readGuard);});this.guard(target,generation);
       if(!link.supportsOfflineGroups||link.identity!==entry.id)throw Error('Update the coordinator to firmware 1.10.0 for offline groups.');
       if(link.raw?.sync?.role!==1)throw Object.assign(Error('This lamp is not a coordinator.'),{notCoordinator:true});
       return await action(link);
@@ -65,7 +67,8 @@ export class BluetoothGroups {
   }
   async scan() {
     const target=this.snapshot(),generation=++this.generation,results=[];
-    await target.lamp.enqueue(()=>target.lamp.refresh(target.id));this.guard(target,generation);
+    const readGuard=()=>this.guard(target,generation);
+    await target.lamp.enqueue(()=>{readGuard();return target.lamp.refresh(target.id,true,readGuard);});this.guard(target,generation);
     for(const entry of this.candidates(target)){
       this.guard(target,generation);
       const publish=value=>{this.guard(target,generation);const status={id:entry.id,name:entry.name||'CoolLamp',...value};results.push(status);this.onStatus(entry.id,status);};

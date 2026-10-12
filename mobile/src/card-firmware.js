@@ -24,9 +24,14 @@ export function availableCardRelease(installed,manifest){
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
- attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,onFailure=()=>{}}){
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{}}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
+ if(exactReinstall&&!allowReinstall)throw Object.assign(Error('Confirm a reinstall before sending firmware.'),{confirmed:true,installationNotStarted:true,uncertain:false});
+ const verifyReinstallVersion=installed=>{
+  if(exactReinstall&&installed.version!==release.version)throw Object.assign(Error('The lamp’s software changed. Nothing was sent. Check its current software before reinstalling.'),
+   {confirmed:true,installationNotStarted:true,uncertain:false,stale:true,staleVersion:true,expectedVersion:release.version,installedVersion:installed.version});
+ };
  const reportFailure=(error,stage)=>{try{Promise.resolve(onFailure(error,Object.freeze({stage}))).catch(()=>{});}catch{}};
  current();
  // A new, explicitly approved retry may prefer its saved nearby route after
@@ -56,7 +61,9 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   if(attemptJournal&&reconcile)return checkResult(error);
   throw error;
  };
- if(entry.address&&!preferBluetoothRetry){
+ // A strict reinstall needs protected target proof before any update mutation.
+ // The existing allowReinstall repair mode keeps its prior route semantics.
+ if(entry.address&&!preferBluetoothRetry&&!exactReinstall){
   onProgress({stage:'wifi',progress:0});
   try{const result=await wifi(entry,release.version);current();
    if(attemptJournal){
@@ -86,6 +93,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   const observed=attemptJournal?await preflight.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
   const installed=observed?.firmware||initialFirmware;current();
   if(firmwareMayInstall(installed))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
+  verifyReinstallVersion(installed);
   if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
    finish({...classifyFirmwareSnapshot(latest(),observed),path:'bluetooth',state:'ready'}):
    {path:'bluetooth',state:'ready',version:installed.version,installedVersion:installed.version,message:'Your lamp is up to date.'};
@@ -119,6 +127,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   const observed=attemptJournal?await lease.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
   const installed=observed?.firmware||initialFirmware;current();
   if(firmwareMayInstall(installed))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
+  verifyReinstallVersion(installed);
   if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
    finish({...classifyFirmwareSnapshot(latest(),observed),path:'bluetooth',state:'ready'}):
    {path:'bluetooth',state:'ready',version:installed.version,installedVersion:installed.version,message:'Your lamp is up to date.'};
@@ -137,6 +146,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    if(reconcile&&attemptJournal)return checkResult(null);
    return {...result,path:'bluetooth',state:'restarting',message:'Checking that your lamp finished updating…'};
   }
+  if(failure?.staleVersion)return stopUnstarted(failure);
   const noFrames=!(latest()?.metadataIssued||latest()?.beginAttempted||latest()?.commitAttempted);
   if(connectionAttempt===0&&noFrames&&(!attemptJournal?failure?.installationNotStarted:true)&&
    !failure?.cancelled&&!failure?.identity&&!failure?.stale&&!failure?.receiverBusy&&!failure?.bootstrapRequired&&!failure?.journalFailure&&!failure?.firmwareBusy)continue;

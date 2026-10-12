@@ -6,75 +6,111 @@ import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
 
 export class WifiTransport {
-  constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
-  async request(path, data, epoch=this.epoch, beforeWrite=null) {
+  constructor(http, callbacks = {}, {backgroundAllowed=()=>true,backgroundGeneration=()=>0}={}) {
+    this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve();
+    this.backgroundAllowed=backgroundAllowed;this.backgroundGeneration=backgroundGeneration;
+  }
+  readFence(epoch,guard=null) {
+    if(!guard){if(epoch!==this.epoch)throw Error('Connection changed.');return;}
+    try{if(epoch!==this.epoch||guard()===false)throw Error();}
+    catch{throw Object.assign(Error('Background lamp read cancelled.'),{confirmed:true,cancelled:true,backgroundCancelled:true});}
+  }
+  backgroundFence(epoch=this.epoch) {
+    let generation,valid=true;
+    try{generation=this.backgroundGeneration();}catch{valid=false;}
+    return (expectedEpoch=epoch)=>{if(!valid||expectedEpoch!==this.epoch||this.backgroundAllowed()!==true||this.backgroundGeneration()!==generation)
+      throw Object.assign(Error('Background lamp read cancelled.'),{confirmed:true,cancelled:true,backgroundCancelled:true});};
+  }
+  async request(path, data, epoch=this.epoch, beforeWrite=null, readGuard=null) {
     let response;
+    this.readFence(epoch,readGuard);
     beforeWrite?.();
+    this.readFence(epoch,readGuard);
     try { response = await this.http.request({url:this.base+path,method:data===undefined?'GET':'POST',
       headers:{Authorization:this.authorization,...(data===undefined?{}:{'X-Lamp-Token':this.raw.token,'Content-Type':'application/x-www-form-urlencoded'})},
       ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
-    catch { throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
-    if (epoch!==this.epoch) throw new Error('Connection changed.');
+    catch { this.readFence(epoch,readGuard);throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
+    this.readFence(epoch,readGuard);
     if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true});
     if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true});
     return response.data;
   }
-  async connect(address,password,expectedId) {
+  async connect(address,password,expectedId,{guard=null}={}) {
+    this.readFence(this.epoch,guard);
     await this.disconnect(); this.base=lampAddress(address);
+    const epoch=this.epoch;
     this.authorization='Basic '+btoa(unescape(encodeURIComponent('lamp:'+password)));
-    try { await this.refresh(expectedId); this.schedule(); return this.raw; }
-    catch(e) { await this.disconnect(); throw e; }
+    try { this.readFence(epoch,guard);await this.refresh(expectedId,true,guard);this.readFence(epoch,guard);this.schedule();return this.raw; }
+    catch(e) { if(epoch===this.epoch)await this.disconnect();throw e; }
   }
-  async refresh(expectedId,retryCatalog=true) {
-    const result=await this.request('/api/state');
+  async refresh(expectedId,retryCatalog=true,guard=null) {
+    const epoch=this.epoch;
+    const result=await this.request('/api/state',undefined,epoch,null,guard);
+    this.readFence(epoch,guard);
     const raw=typeof result==='string'?JSON.parse(result):result;
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
     const identity=raw.deviceId || raw.hostname.replace(/\.local$/,'');
     const legacyIdentity=raw.hostname.replace(/\.local$/,'');
     if (expectedId && identity!==expectedId && expectedId!==legacyIdentity) throw new Error('This address belongs to a different lamp. Find your lamp again.');
     if (this.identity && identity!==this.identity) throw new Error('Lamp identity changed. Reconnect before controlling it.');
-    if (!this.catalog || this.raw?.token!==raw.token || this.catalog.length!==raw.effects.length) {
+    let catalog=this.catalog;
+    if (!catalog || this.raw?.token!==raw.token || catalog.length!==raw.effects.length) {
       if (raw.catalogVersion===1) {
-        const data=await this.request('/api/effects');
+        const data=await this.request('/api/effects',undefined,epoch,null,guard);
+        this.readFence(epoch,guard);
         const entries=typeof data==='string'?JSON.parse(data):data;
-        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false);
-        this.catalog=validateCatalog(entries,raw.effects.length);
-      } else this.catalog=legacyCatalog(raw.effects);
+        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard);}
+        catalog=validateCatalog(entries,raw.effects.length);
+      } else catalog=legacyCatalog(raw.effects);
     }
-    if(this.catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
-    this.identity=identity; this.raw=raw;
+    if(catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
+    this.readFence(epoch,guard);this.catalog=catalog;this.identity=identity;this.raw=raw;
     const c=raw.colors?.[raw.mode-1];
     this.state={...raw,effectCount:raw.effects.length,capabilities:4|(c?2:0)|(raw.effectOptions?8:0)|(raw.factoryReset?128:0),supportsColor:Boolean(c),color:c?{enabled:Boolean(c[0]),r:c[1],g:c[2],b:c[3]}:null};
-    this.callbacks.onState?.(this.state); this.callbacks.onFirmware?.(raw.firmware);
+    this.readFence(epoch,guard);this.callbacks.onState?.(this.state);
+    this.readFence(epoch,guard);this.callbacks.onFirmware?.(raw.firmware);
     const o=raw.effectOptions?.[raw.mode-1];
-    this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
+    this.readFence(epoch,guard);this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
     return raw;
   }
-  async refreshFirmware() {
-    const result=await this.request('/api/firmware');
+  async refreshFirmware(guard=null) {
+    const epoch=this.epoch;
+    const result=await this.request('/api/firmware',undefined,epoch,null,guard);
+    this.readFence(epoch,guard);
     const next=typeof result==='string'?JSON.parse(result):result;
     if(!next || typeof next.version!=='string' || typeof next.latest!=='string' || !Number.isInteger(next.phase) || next.phase<0 || next.phase>5 ||
        !Number.isInteger(next.progress) || next.progress<0 || next.progress>100 ||
        !Number.isInteger(next.error) || next.error<0 || next.error>8 || typeof next.wifi!=='boolean' ||
        typeof next.available!=='boolean' || typeof next.automatic!=='boolean')throw Error('Invalid firmware status from lamp.');
     // A restart requires a fresh identity, token and catalog before controls.
-    if(next.version!==this.raw?.firmware?.version){await this.refresh();return this.raw.firmware;}
+    if(next.version!==this.raw?.firmware?.version){await this.refresh(undefined,true,guard);this.readFence(epoch,guard);return this.raw.firmware;}
+    this.readFence(epoch,guard);
     this.raw.firmware=next;this.state.firmware=next;
-    this.callbacks.onFirmware?.(next);return next;
+    this.readFence(epoch,guard);this.callbacks.onFirmware?.(next);return next;
   }
-  async poll() {
+  async poll(guard=this.backgroundFence()) {
+    const epoch=this.epoch;this.readFence(epoch,guard);
     if(Number.isInteger(this.raw?.firmware?.phase)) {
       const version=this.raw.firmware.version;
-      const next=await this.refreshFirmware();
+      const next=await this.refreshFirmware(guard);this.readFence(epoch,guard);
       if([1,3,4].includes(next.phase)||next.version!==version)return;
     }
-    await this.refresh();
+    await this.refresh(undefined,true,guard);this.readFence(epoch,guard);
   }
   schedule() {
-    const epoch=this.epoch;
+    clearTimeout(this.timer);
+    const epoch=this.epoch,guard=this.backgroundFence(epoch);
     this.timer=setTimeout(async()=>{
-      try { await this.enqueue(()=>this.poll()); if(epoch===this.epoch)this.schedule(); }
-      catch(e) { if(epoch===this.epoch){await this.disconnect();this.callbacks.onError?.(e);} }
+      try { this.readFence(epoch,guard);await this.enqueue(()=>this.poll(guard));this.readFence(epoch,guard);if(epoch===this.epoch)this.schedule(); }
+      catch(e) {
+        if(epoch!==this.epoch)return;
+        try{this.readFence(epoch,guard);}catch{this.schedule();return;}
+        if(e.backgroundCancelled){this.schedule();return;}
+        const disconnectedEpoch=this.epoch+1;
+        await this.disconnect();
+        try{guard(disconnectedEpoch);}catch{return;}
+        this.callbacks.onError?.(e);
+      }
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }

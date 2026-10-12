@@ -21,7 +21,7 @@ const id='aabbccddeeff',other='112233445566';
 for(const mode of ['offline-fleet','healthy-wifi','active-bridge'])test('bounded mesh recovery prioritizes '+mode+' without starving a saved Bluetooth bridge',async()=>{
  const entries=Array.from({length:20},(_,index)=>({id:(index+1).toString(16).padStart(12,'0'),address:'http://bridge-'+index+'.local',deviceId:'peripheral-'+index,accessoryManaged:true,firmwareVersion:'1.15.0'}));
  const active=mode==='active-bridge'?{identity:other,epoch:3}:null;
- const context={entries,active,selectMeshRecoveryCandidates,phonePlatform:'ios',lamp:active,groupRemovedIds:new Set(),
+ const context={entries,active,selectMeshRecoveryCandidates,phonePlatform:'ios',lamp:active,groupRemovedIds:new Set(),firmwareBackgroundWorkAllowed:()=>true,firmwareBackgroundGeneration:0,
   fleetLampInstalling:()=>false,compareFirmwareVersions:()=>0,mergedLampEntries:()=>entries,meshBridgeSupported:()=>true,
   connectivity:{get:()=>({wifi:{fresh:mode==='healthy-wifi',state:mode==='healthy-wifi'?'connected':'disconnected'}})},
   acquireMeshLamp:async options=>options};
@@ -165,7 +165,7 @@ test('actual paired settings reconnect passes read-only mode, exact identity and
  assert.equal(f.calls.filter(call=>call.kind==='pair').length,0);
  const {options,id:targetId}=f.calls.find(call=>call.kind==='connect');
  assert.equal(targetId,id);assert.equal(options.expectedId,id);assert.equal(options.readOnlyReconnect,true);
- assert.equal(options.automaticReconnect,true);assert.equal(options.navigate,false);assert.equal(options.preserveWifiIntent,true);
+ assert.equal(options.automaticReconnect,false);assert.equal(options.navigate,false);assert.equal(options.preserveWifiIntent,true);
  assert.equal(options.signal,f.controller.signal);assert.equal(options.isCurrent(),true);
 });
 

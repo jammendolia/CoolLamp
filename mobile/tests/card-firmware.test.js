@@ -11,6 +11,23 @@ function setup(){
 }
 test('badge requires valid known installed version and strictly newer release',()=>{assert(availableCardRelease('1.11.0',manifest));for(const version of ['1.12.0','1.13.0',undefined,'bad'])assert.equal(availableCardRelease(version,manifest),null);assert.equal(availableCardRelease('1.11.0',null),null);});
 test('Wi-Fi is preferred without connecting Bluetooth or downloading image',async()=>{const {calls,options}=setup();assert.equal((await updateCardFirmware(options)).path,'wifi');assert.deepEqual(calls,['wifi']);});
+test('strict reinstall skips a supplied Wi-Fi route and proves the current receiver over Bluetooth',async()=>{
+ const {calls,options,lamp}=setup();lamp.refreshFirmware=async()=>({version:manifest.version});
+ const result=await updateCardFirmware({...options,allowReinstall:true,exactReinstall:true});assert.equal(result.path,'bluetooth');
+ assert.deepEqual(calls,['ble','release','download','ble','transfer','release']);
+});
+test('strict reinstall requires explicit reinstall consent before any route or intent',async()=>{
+ const {calls,options}=setup();await assert.rejects(updateCardFirmware({...options,exactReinstall:true}),failure=>failure.confirmed&&failure.installationNotStarted&&!failure.uncertain);
+ assert.deepEqual(calls,[]);
+});
+test('legacy allowReinstall repair retains its Wi-Fi route semantics',async()=>{
+ const {calls,options}=setup();assert.equal((await updateCardFirmware({...options,allowReinstall:true})).path,'wifi');assert.deepEqual(calls,['wifi']);
+});
+test('strict protected version mismatch is confirmed and never starts or retries an installation',async()=>{
+ const {calls,options}=setup();await assert.rejects(updateCardFirmware({...options,allowReinstall:true,exactReinstall:true}),failure=>
+  failure.staleVersion&&failure.confirmed&&failure.installationNotStarted&&!failure.uncertain&&failure.expectedVersion===manifest.version&&failure.installedVersion==='1.11.0');
+ assert.deepEqual(calls,['ble','release']);
+});
 test('confirmed pre-install Wi-Fi failure releases preflight before download and reacquires the intended lamp',async()=>{const {calls,options}=setup();options.wifi=async()=>{calls.push('wifi');throw Object.assign(Error('TLS failed'),{safeBluetoothFallback:true});};assert.equal((await updateCardFirmware(options)).path,'bluetooth');assert.deepEqual(calls,['wifi','ble','release','download','ble','transfer','release']);});
 test('uncertain, wrong identity, stale, or rejected Wi-Fi installation never falls back',async()=>{for(const fields of [{uncertain:true,safeBluetoothFallback:true},{identity:true,safeBluetoothFallback:true},{stale:true,safeBluetoothFallback:true},{}]){const {calls,options}=setup();options.wifi=async()=>{throw Object.assign(Error('failure'),fields);};await assert.rejects(updateCardFirmware(options));assert.deepEqual(calls,[]);}});
 test('offline entry uses Bluetooth; wrong protected identity sends nothing',async()=>{const {calls,options,lamp}=setup();delete options.entry.address;lamp.identity='different';await assert.rejects(updateCardFirmware(options),error=>error.identity===true);assert.deepEqual(calls,['ble','release']);});

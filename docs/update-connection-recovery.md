@@ -220,15 +220,38 @@ minimum-version checks. Pending or possibly executed installations cannot use
 this preference. After a confirmed installation, a later release follows the
 normal Wi-Fi-first policy again; no persistent transport setting is introduced.
 
-Starting a card or legacy Bluetooth update cancels passive fleet refresh. Later
-inventory refreshes exclude its target while continuing reads for other lamps;
-the complete inventory remains available to target/route fencing. An already
-issued native HTTP GET may still finish, but its cancelled result cannot start
-another request or change app state. Explicit update reconciliation retains its
-own required reads. A selected Wi-Fi or mesh transport for that same target is
-disconnected before private Bluetooth acquisition, fencing its late poll results.
-Reconnection after update obtains fresh state; unrelated selected routes remain
-available. This does not claim every user-triggered read is suppressed.
+The unpublished follow-up now pauses **all passive** fleet, discovery, group,
+catalog/schema and selected-lamp telemetry while any firmware task owns the
+operation. A generation fence stops late pagination, retries and snapshot
+adoption, including requests queued before acquisition. An already-issued native
+read may still finish. The inventory remains available for identity and route
+fencing; explicit update reconciliation retains its required protected reads.
+Automatic bridge discovery no longer provisions fleet authority. The selected
+target's normal transport is retired before private Bluetooth acquisition;
+reconnect always reads fresh target state after update ownership ends. Explicit
+user mutations retain their execution/uncertainty rules.
+
+Foreground **Cancel** is visible on the card during Bluetooth download/transfer.
+It stops additional data and joins one same-session Cancel attempt while retaining
+the owner for a bounded receipt and read-only reconciliation. Duplicate clicks
+join that attempt. A lost Cancel receipt remains uncertain. Cancellation is
+closed once verification or possible boot selection starts. Native background
+lifetime does not promise delivery of a Cancel receipt. The production sender
+bounds its diagnostic read to 1.2 seconds, durable observer to 3 seconds, Cancel
+write to 3 seconds, and post-write proof window to 1.2 seconds; connection cleanup
+and reconciliation retain their existing separate deadlines.
+
+Explicit saved Bluetooth reconnect is distinct from quiet automatic reconnect.
+A confirmed control-resource refusal is visible on the target card. A separately
+confirmed **Reinstall current software** action may use the saved authorized
+target's protected firmware-only connection without settings/catalog reads.
+It pins the matching fresh public artifact and does not clear pending attempts.
+Both protected preflights must report that exact installed version. A stale card
+or a receiver version change during download stops with confirmed no-start;
+there is no silent upgrade, Wi-Fi mutation or automatic reconnect retry.
+Equal version alone cannot settle a same-version reinstall with a lost final
+receipt. The action is a service/test path, not a claim that reinstalling repairs
+the firmware's rich-response memory shortage.
 
 ## Software validation and pending physical test
 
@@ -237,9 +260,16 @@ export under ignored `.build/coollamp2-update-diagnosis-20261011`. Tests exercis
 the production transport, sender, card acquisition handler, native initializer,
 Wi-Fi preflight and passive inventory with malformed/unauthorized targets,
 cancellation, late responses, unrelated legacy cards, reused-connection owner
-loss and lost final acknowledgements. All 125 firmware sources and the frozen
-1.15.1 artifacts remain unchanged. No new firmware version is needed for this
-phone recovery change.
+loss and lost final acknowledgements. That earlier client-only validation kept
+all 125 firmware sources unchanged. The frozen 1.15.1 published artifacts remain
+unchanged. The newer client continuation has
+**1,138 passing tests and a passing production build**, with no native publication
+yet. Its source hashes and staged evidence are recorded in
+`.build/wireless-update-58-failure-20261011/root-final-client-validation.json`,
+`card-service-validation.json` and `background-isolation-validation.json`.
+Firmware reply-memory work now changes
+the working source separately; its tests, build limits and physical gates must
+be verified before a successor firmware release.
 
 The user authorized corrective TestFlight publication. Builds 56.1 and 57.1
 passed signing/upload and exact Apple availability checks; 57.1 did not complete
@@ -256,10 +286,16 @@ an uncertain outcome. Then exercise a subsequent phone-driven update with the
 lamp in place, without USB. Native throughput and complete wireless success are
 pending until these steps run on the real phone/lamp.
 
-The concrete first acceptance is CoolLamp 2 from public 1.13.0 to the unchanged
-standard 1.15.1 image: 2,020,592 bytes, SHA-256
+The first 59.1 wireless acceptance attempt, CoolLamp 2 from public 1.13.0 to
+standard 1.15.1, advanced to a user-reported 32% before an explicitly requested
+USB bootstrap. It was not a completed wireless installation. USB subsequently
+installed the unchanged standard 1.15.1 image: 2,020,592 bytes, SHA-256
 `10218a28628724c2f4fca45b670e28ea2d6d4fab276eeb51197dc199e780bb9d`.
-Record the exact TestFlight build, phone download completion, first/last written
+See `coollamp2-update-bench-2026-10-11.md` for the application-only write,
+protected-prefix preservation, boot observation and unresolved control-read
+availability. A separately confirmed exact-version phone reinstall can exercise
+the new receiver without publishing a dummy release. Record the exact TestFlight
+build, phone download completion, first/last written
 offset, acknowledged Finish, native disconnect/reconnect and protected target
 identity/version after restart. Observe control and animation beyond the
 30-second firmware health gate and compare saved lamp settings without a save.

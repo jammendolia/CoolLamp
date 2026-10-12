@@ -18,7 +18,8 @@ function transport(id,{gate,unsupported=false,afterQueue,refreshError=false}={})
  const started=deferred(),requests=[],writes=[];
  return {identity:id,name:id,epoch:1,raw:{token:'token-'+id},catalog:[{id:4}],requests,writes,started,
   enqueue(action){return Promise.resolve().then(action).then(value=>{afterQueue?.();return value;});},
-  async request(path,fields){
+  async request(path,fields,epoch,beforeWrite){
+   beforeWrite?.();
    requests.push(path);
    if(path==='/api/descriptor'){started.resolve();if(gate)await gate.promise;if(unsupported)throw Error('Unsupported descriptor');return descriptor(id);}
    if(path==='/api/revision')return descriptor(id).state;
@@ -29,7 +30,7 @@ function transport(id,{gate,unsupported=false,afterQueue,refreshError=false}={})
 }
 function harness(){
  const elements=new Map(),messages=[];
- const context={LampExperienceSession,messages,console,confirm:()=>true,
+ const context={LampExperienceSession,messages,console,confirm:()=>true,firmwareBackgroundWorkAllowed:()=>true,firmwareBackgroundGeneration:0,
   adaptiveEffectModel:(entry,options)=>({entry,...options}),
   $:id=>{if(!elements.has(id))elements.set(id,{hidden:false,value:'#ff0088'});return elements.get(id);},
   renderOptions:()=>{},status:message=>messages.push(message),updatingLamp:()=>false,independentLightingAllowed:()=>true};

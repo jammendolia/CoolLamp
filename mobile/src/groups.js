@@ -216,7 +216,7 @@ export class Groups {
     return typeof context.lamp.enqueue === 'function' ? context.lamp.enqueue(run) : run();
   }
   async fresh(context) {
-    const result=await this.queued(context,lamp=>lamp.refresh(context.id));
+    const result=await this.queued(context,lamp=>lamp.refresh(context.id,true,()=>this.guard(context)));
     const raw=validate(result || context.lamp.raw,context.id);this.remember(raw,context.id,this.entries.get(context.id));return raw;
   }
   async scanRead(entry,run){

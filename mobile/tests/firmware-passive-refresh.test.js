@@ -8,22 +8,22 @@ const start=source.indexOf('function refreshLampFirmware(');
 const end=source.indexOf('\nasync function updateAllLamps(',start);
 assert(start>=0&&end>start);
 const handler=source.slice(start,end);
+const policy=source.slice(source.indexOf('function firmwareBackgroundWorkAllowed('),source.indexOf('function pauseFirmwareBackgroundWork('));
 function fixture({cards=[],bluetooth=null,updating=false,pending=null}={}){
  const calls=[],context={Set,firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),cardFirmwareTasks:new Map(cards.map(id=>[id,{}])),
   bluetoothFirmwareTask:bluetooth?{id:bluetooth}:null,fleetUpdating:updating,
   fleetRefreshRun:pending,fleetRefreshQueued:false,fleetSummary:'',renderFleetControls(){},
   fleet:{refresh(options){calls.push([...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}}};
- runInNewContext(handler+';globalThis.refresh=refreshLampFirmware;',context);
+ runInNewContext(policy+handler+';globalThis.refresh=refreshLampFirmware;',context);
  return {context,calls,refresh:()=>context.refresh()};
 }
-test('production passive refresh excludes only card update targets',async()=>{
- const f=fixture({cards:['f0b950b2f180']});f.refresh();await f.context.fleetRefreshRun;
- assert.deepEqual(f.calls,[['f0b950b2f180']]);
+test('production passive refresh pauses all lamps during a card update',()=>{
+ const f=fixture({cards:['f0b950b2f180']});f.refresh();assert.deepEqual(f.calls,[]);
 });
-test('production passive refresh excludes legacy Bluetooth update owner and deduplicates reused card owner',()=>{
+test('production passive refresh pauses for either a legacy or private Bluetooth update owner',()=>{
  const f=fixture({cards:['f0b950b2f180'],bluetooth:'f0b950b2f180'});f.refresh();
- assert.deepEqual(f.calls,[['f0b950b2f180']]);
- const legacy=fixture({bluetooth:'aabbccddeeff'});legacy.refresh();assert.deepEqual(legacy.calls,[['aabbccddeeff']]);
+ assert.deepEqual(f.calls,[]);
+ const legacy=fixture({bluetooth:'aabbccddeeff'});legacy.refresh();assert.deepEqual(legacy.calls,[]);
 });
 test('ordinary passive refresh has no excluded lamps; a pending or fleet update starts no extra refresh',()=>{
  const f=fixture();f.refresh();assert.deepEqual(f.calls,[[]]);

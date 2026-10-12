@@ -17,10 +17,10 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,insta
  let inventory=[entry],running=installed;
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)});
  const tasks=new Map(),cardMessages=new Map();
- const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,
+ const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
   firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
-  cardFirmwareUnconfirmed:new Map(),groupRemovedIds:new Set(),entry,calls,messages,
+  cardFirmwareUnconfirmed:new Map(),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
   powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>installed,
   mergedLampEntries:()=>inventory,renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},refreshLampFirmware:()=>{},
   refreshPublicFirmware:async options=>{calls.push(['check',options.force]);await onCheck?.(()=>{inventory=[];});return available;},

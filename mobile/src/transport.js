@@ -30,7 +30,8 @@ function publicControlSync(value){
 export class LampTransport {
   constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
     selectDevice = null, onRadioReady = () => {}, onDeviceSelected = () => {}, sharedInitialization = null,
-    expectedDeviceIdentity = null, controlOnly = false, firmwareOnly = false, firmwareBulkWrites = false } = {}) {
+    expectedDeviceIdentity = null, controlOnly = false, firmwareOnly = false, firmwareBulkWrites = false,
+    backgroundAllowed = () => true, backgroundGeneration = () => 0 } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
     this.onFirmware = onFirmware;
     this.onOptions = onOptions;
@@ -42,6 +43,7 @@ export class LampTransport {
     this.controlOnly=controlOnly;
     this.firmwareOnly=firmwareOnly===true;this.firmwareReady=false;this.firmwareConnectionGuard=null;
     this.firmwareBulkWrites=firmwareBulkWrites===true;
+    this.backgroundAllowed=backgroundAllowed;this.backgroundGeneration=backgroundGeneration;this.controlRefreshOwner=null;
     this.control=null;this.raw=null;this.controlSequence=0;this.controlTail=Promise.resolve();this.actionTail=Promise.resolve();
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
@@ -49,13 +51,16 @@ export class LampTransport {
     this.bluetoothUpdate?.recordStop?.(reason);
     if(confirmedId)this.connectionAttempts.delete(confirmedId);
     const hadConnection = this.id !== null;
-    clearTimeout(this.controlTimer);this.controlTimer=null;
+    clearTimeout(this.controlTimer);this.controlTimer=null;this.controlRefreshOwner=null;
     this.epoch++; this.id = null; this.state = null; this.catalog = null; this.deviceIdentity=null;this.control=null;this.raw=null;
     this.firmwareReady=false;this.firmwareConnectionGuard=null;
     if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
     if (hadConnection) this.onDisconnect();
   }
   receive(data) {
+    if(this.pending?.readGuard){try{this.pending.readGuard();}catch(error){
+      const pending=this.pending;this.pending=null;clearTimeout(pending.timer);clearTimeout(pending.probeTimer);pending.reject(error);return;
+    }}
     let state;
     try { state = decodeState(data); } catch (error) {
       if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = null; }
@@ -199,26 +204,27 @@ export class LampTransport {
       if(this.controlOnly){
         if(!protectedIdentity)throw Error('Could not verify this lamp’s Bluetooth identity.');
         this.deviceIdentity=protectedIdentity;
-        try{this.control=await this.readControlCapabilities(epoch);}
-        catch(error){if(epoch!==this.epoch)throw error;throw Object.assign(Error('Update this lamp to firmware 1.10.0 for offline Bluetooth group controls.'),{incompatible:true,code:'OFFLINE_CONTROL_UNAVAILABLE'});}
-        if(epoch!==this.epoch)throw Error('Connection changed.');
-        await this.refresh(this.expectedDeviceIdentity||this.deviceIdentity);return device;
+        try{this.control=await this.readControlCapabilities(epoch,current);}
+        catch(error){current();if(epoch!==this.epoch)throw error;throw Object.assign(Error('Update this lamp to firmware 1.10.0 for offline Bluetooth group controls.'),{incompatible:true,code:'OFFLINE_CONTROL_UNAVAILABLE'});}
+        current();
+        await this.refresh(this.expectedDeviceIdentity||this.deviceIdentity,true,current);current();return device;
       }
       if(readOnlyReconnect){
         // A saved lamp already negotiated its effects during setup. Its protected
         // control snapshots supply the current catalog without replaying setup.
         let capabilities;
-        try{capabilities=await this.readControlCapabilities(epoch);}
+        try{capabilities=await this.readControlCapabilities(epoch,current);}
         catch(error){
+          current();
           if(epoch!==this.epoch||!/^Characteristic not found\.?$/i.test(error.message||''))throw error;
           // Firmware before 1.10 has no optional control characteristic.
         }
-        if(epoch!==this.epoch)throw Error('Connection changed.');
+        current();
         if(capabilities){
           if(!protectedIdentity)throw Error('Could not verify this lamp’s Bluetooth control identity.');
           this.deviceIdentity=protectedIdentity;this.control=capabilities;
-          await this.refresh(expectedReconnectIdentity||protectedIdentity);
-          if(epoch!==this.epoch)throw Error('Connection changed.');
+          await this.refresh(expectedReconnectIdentity||protectedIdentity,true,current);
+          current();
           this.scheduleControlRefresh();return device;
         }
       }
@@ -294,16 +300,18 @@ export class LampTransport {
     this.disconnected(null,reason);
     if (id) { try { await this.ble.disconnect(id);this.connectionAttempts.delete(id); } catch {} }
   }
-  command(operation, value = 0, responseCharacteristic = null, beforeWrite = null) {
+  command(operation, value = 0, responseCharacteristic = null, beforeWrite = null, readGuard = null) {
     if(this.firmwareOnly)return Promise.reject(Object.assign(Error('This Bluetooth connection is reserved for firmware updates.'),{confirmed:true,firmwareOnly:true}));
     if(this.bluetoothUpdate)return Promise.reject(Error('Finish or cancel the Bluetooth firmware transfer before changing this lamp.'));
     const fence=()=>{try{beforeWrite?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Connection changed.'),{confirmed:true,cancelled:true});}};
+    const readFence=()=>{try{readGuard?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Background read stopped.'),{readAdmission:true,cancelled:true});}};
     if(operation==='effect'&&this.supportsOfflineControl&&this.raw?.sync?.role===1&&this.raw.sync.scene){
       try{fence();}catch(error){return Promise.reject(error);}
-      return this.configureGroupScene({scene:0}).then(()=>this.command(operation,value,responseCharacteristic,beforeWrite));
+      return this.configureGroupScene({scene:0}).then(()=>this.command(operation,value,responseCharacteristic,beforeWrite,readGuard));
     }
     const epoch = this.epoch;
     const run = async () => {
+      readFence();
       if(this.bluetoothUpdate)throw Object.assign(Error('Bluetooth firmware transfer owns this connection.'),{confirmed:true});
       if (!this.id || epoch !== this.epoch) throw new Error('Connect to your lamp first.');
       if(operation.startsWith('control')&&!this.supportsOfflineControl)throw Error('Update this lamp to firmware 1.10.0 or newer for full Bluetooth settings.');
@@ -317,15 +325,18 @@ export class LampTransport {
       if (['checkFirmware','installFirmware','autoUpdate'].includes(operation) && !(this.state?.capabilities & 4)) throw new Error('Install the updater firmware using the lamp’s Wi-Fi page first.');
       const id = this.sequence = this.sequence % 255 + 1;
       const frame = encodeCommand(id, operation, value, this.state.effectCount);
+      readFence();
       fence();
       // Install the listener BEFORE writing: notifications may precede the write response.
-      let settle;
+      let settle,nativeAttempted=false;
       const response = new Promise((resolve, reject) => {
-        this.pending = settle = { id, resolve, reject, timer:null, probeTimer:null };
+        this.pending = settle = { id, resolve, reject, timer:null, probeTimer:null,readGuard:readGuard?readFence:null };
       });
       try {
         const deviceId = this.id;
+        nativeAttempted=true;
         const write = this.ble.write(deviceId, SERVICE, COMMAND, frame).then(() => {
+          readFence();
           if(this.pending!==settle||epoch!==this.epoch)return;
           // The native plugin queues every device's radio calls together.
           // Begin the acknowledgment window after our queued write completes;
@@ -337,22 +348,28 @@ export class LampTransport {
           // Read the lamp's exact acknowledgment once; never resend the command.
           settle.probeTimer = setTimeout(async () => {
             if(this.pending!==settle||epoch!==this.epoch)return;
+            try{readFence();}catch(error){settle.reject(error);return;}
             try {
               const data=await this.ble.read(deviceId,SERVICE,STATE,{timeout:this.timeout/2});
+              try{readFence();}catch(error){settle.reject(error);return;}
               if(this.pending===settle&&epoch===this.epoch&&decodeState(data).id===id)this.receive(data);
             } catch { /* The original deadline still bounds an unconfirmed write. */ }
           },this.timeout/2);
         });
         const [, state] = await Promise.all([write, response]);
+        readFence();
         if(responseCharacteristic) {
+          readFence();
           const data=await this.ble.read(this.id,SERVICE,responseCharacteristic);
+          readFence();
           if(epoch!==this.epoch)throw Error('Connection changed.');
           return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(new Uint8Array(data.buffer,data.byteOffset,data.byteLength)));
         }
         return state;
       } catch (error) {
+        if(error.readAdmission){error.confirmed=!nativeAttempted;error.uncertain=nativeAttempted;}
         // An uncertain command must not be replayed after reconnect or ID wraparound.
-        if (!error.confirmed) await this.disconnect(); throw error;
+        if (!error.confirmed&&!error.readAdmission&&epoch===this.epoch) await this.disconnect(); throw error;
       } finally {
         clearTimeout(settle.timer);
         clearTimeout(settle.probeTimer);
@@ -365,6 +382,7 @@ export class LampTransport {
   }
   get supportsWifiSetup() { return Boolean(!this.firmwareOnly&&this.id&&this.state?.capabilities&WIFI_SETUP_CAPABILITY); }
   async readControlCapabilities(epoch,guard=()=>{if(epoch!==this.epoch)throw Error('Connection changed.');}) {
+    guard();
     const first=await this.ble.read(this.id,SERVICE,CONTROL,{timeout:this.timeout});guard();
     if(epoch!==this.epoch)throw Error('Connection changed.');
     try{return decodeControlCapabilities(first);}catch(error){
@@ -379,14 +397,17 @@ export class LampTransport {
   receiveFirmware(next) {
     if(this.raw)this.raw.firmware=next;if(this.state)this.state.firmware=next;this.onFirmware(next);
   }
-  async refreshFirmware() {
+  async refreshFirmware(readGuard=null) {
+    const guard=()=>{try{readGuard?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Firmware status read stopped.'),{confirmed:true,cancelled:true,readAdmission:true});}};
+    guard();
     if(!this.id||!(this.state?.capabilities&4))throw Error('Firmware status is unavailable over Bluetooth.');
     if(this.firmwareOnly&&!this.firmwareConnectionGuard?.())throw Object.assign(Error('Firmware connection changed or cancelled.'),{confirmed:true,cancelled:true});
     const epoch=this.epoch,id=this.id;
     const value=await this.ble.read(id,SERVICE,FIRMWARE,{timeout:this.timeout});
+    guard();
     if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');
     if(this.firmwareOnly&&!this.firmwareConnectionGuard?.())throw Object.assign(Error('Firmware connection changed or cancelled.'),{confirmed:true,cancelled:true});
-    const status=decodeFirmware(value);this.receiveFirmware(status);return status;
+    const status=decodeFirmware(value);guard();this.receiveFirmware(status);return status;
   }
   async readFirmwareUpdateSnapshot({signal,isCurrent=()=>true,expectedSession=null}={}) {
     if(this.bluetoothUpdate)throw Object.assign(Error('The active firmware sender owns its receiver status.'),{confirmed:true,firmwareBusy:true});
@@ -416,7 +437,7 @@ export class LampTransport {
     if(resumeLease&&resumeLease.identity!==identity)throw Error('The original firmware lease belongs to a different verified lamp.');
     const transfer=new BluetoothFirmwareTransfer({ble:this.ble,deviceId:id,isCurrent:()=>this.epoch===epoch&&this.id===id&&this.deviceIdentity===identity&&ownsUpdate(),onProgress,allowBulkWrites:this.firmwareBulkWrites});
     // Close all normal command lanes before taking ownership of the radio.
-    clearTimeout(this.controlTimer);this.controlTimer=null;
+    clearTimeout(this.controlTimer);this.controlTimer=null;this.controlRefreshOwner=null;
     await Promise.all([this.actionTail,this.controlTail,this.tail]);
     if(signal?.aborted)throw Error('Bluetooth update cancelled. No firmware was sent.');
     if(this.bluetoothUpdate||epoch!==this.epoch||id!==this.id||!ownsUpdate())throw Error('The Bluetooth connection changed.');
@@ -456,33 +477,41 @@ export class LampTransport {
     });
     this.controlTail=result.catch(()=>{});return result;
   }
-  request(path,data,epoch=this.epoch,beforeWrite=null) {
+  request(path,data,epoch=this.epoch,beforeWrite=null,readGuard=null) {
     if(this.firmwareOnly)return Promise.reject(Object.assign(Error('This Bluetooth connection is reserved for firmware updates.'),{confirmed:true,firmwareOnly:true}));
     const endpoint=controlPaths[path];
     if(!endpoint)return Promise.reject(Error('This setting is unavailable over Bluetooth.'));
     if(path==='/api/bluetooth/forget')data={...data,action:'forget'};
-    return this.controlRequest(endpoint,data===undefined?1:2,data,()=>{if(this.epoch!==epoch)throw Error('Bluetooth control connection changed.');beforeWrite?.();});
+    return this.controlRequest(endpoint,data===undefined?1:2,data,()=>{if(this.epoch!==epoch)throw Error('Bluetooth control connection changed.');beforeWrite?.();},readGuard);
   }
-  controlRequest(endpoint,method,data,beforeWrite=null) {
+  controlRequest(endpoint,method,data,beforeWrite=null,readGuard=null) {
     if(this.firmwareOnly)return Promise.reject(Object.assign(Error('This Bluetooth connection is reserved for firmware updates.'),{confirmed:true,firmwareOnly:true}));
     const body=new TextEncoder().encode(data===undefined?'':new URLSearchParams(data).toString());
     if(body.length>1024){body.fill(0);return Promise.reject(Error('Bluetooth settings exceed the supported size.'));}
+    readGuard??=method===1?beforeWrite:null;
     return this.controlJob(async epoch=>{
       const deviceId=this.id,identity=this.deviceIdentity,tx=this.controlSequence=this.controlSequence%65535+1;
-      const guard=()=>{if(epoch!==this.epoch||this.id!==deviceId||this.deviceIdentity!==identity)throw Error('Bluetooth control connection changed.');};
-      let responseBytes;
+      let mutationMayHaveExecuted=false;
+      const guard=()=>{
+        if(epoch!==this.epoch||this.id!==deviceId||this.deviceIdentity!==identity)throw Error('Bluetooth control connection changed.');
+        try{readGuard?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Background read stopped.'),
+          {readAdmission:true,cancelled:true,confirmed:!mutationMayHaveExecuted,uncertain:mutationMayHaveExecuted});}
+      };
+      let responseBytes,requestFailed=false;
       try{
+        guard();
         beforeWrite?.();
-        await this.command('controlBegin',{tx,endpoint,method,length:body.length});guard();
+        await this.command('controlBegin',{tx,endpoint,method,length:body.length},null,null,guard);guard();
         for(let offset=0;offset<body.length;offset+=13){
-          await this.command('controlChunk',{tx,offset,bytes:body.slice(offset,offset+13)});guard();
+          guard();await this.command('controlChunk',{tx,offset,bytes:body.slice(offset,offset+13)},null,null,guard);guard();
         }
         // A consumed commit is never resent. The existing command path only
         // reads a matching cached acknowledgment if its notification is lost.
-        beforeWrite?.();await this.command('controlCommit',{tx},null,beforeWrite);guard();
+        guard();beforeWrite?.();await this.command('controlCommit',{tx},null,()=>{beforeWrite?.();mutationMayHaveExecuted=method===2;},guard);guard();
         let offset=0,status,total;
         do{
-          await this.command('controlPage',{tx,offset});guard();
+          guard();await this.command('controlPage',{tx,offset},null,null,guard);guard();
+          guard();
           const data=await this.ble.read(deviceId,SERVICE,CONTROL);guard();
           const page=decodeControlPage(data,{tx,endpoint,offset,...(total===undefined?{}:{total,status})});
           if(total===undefined){total=page.total;status=page.status;responseBytes=new Uint8Array(total);}
@@ -490,27 +519,32 @@ export class LampTransport {
           responseBytes.set(page.bytes,offset);offset+=page.length;
         }while(offset<total);
         const text=new TextDecoder('utf-8',{fatal:true}).decode(responseBytes);
+        guard();
         if(status<200||status>=300)throw Object.assign(new Error(text||'Lamp rejected Bluetooth settings.'),{confirmed:true,status});
         return text;
+      }catch(error){
+        requestFailed=true;
+        if(error.readAdmission){error.uncertain=mutationMayHaveExecuted;error.confirmed=!mutationMayHaveExecuted;}
+        throw error;
       }finally{
         body.fill(0);responseBytes?.fill(0);
         if(epoch===this.epoch&&this.id===deviceId){
-          try{await this.command('controlBegin',{tx,endpoint:0,method:0,length:0});}catch{ /* No request replay. */ }
+          try{guard();await this.command('controlBegin',{tx,endpoint:0,method:0,length:0},null,null,guard);guard();}
+          catch(error){if(error.readAdmission&&!requestFailed){error.uncertain=mutationMayHaveExecuted;error.confirmed=!mutationMayHaveExecuted;throw error;} /* Preserve the original failure; never replay it. */ }
         }
       }
     });
   }
-  async refresh(expectedId=this.deviceIdentity,retryCatalog=true) {
+  async refresh(expectedId=this.deviceIdentity,retryCatalog=true,readGuard=null) {
     if(!this.supportsOfflineControl)throw Error('Update this lamp to firmware 1.10.0 or newer for full Bluetooth settings.');
-    const epoch=this.epoch,text=await this.request('/api/state');
-    if(epoch!==this.epoch)throw Error('Connection changed.');
+    const epoch=this.epoch,guard=()=>{if(epoch!==this.epoch)throw Error('Connection changed.');readGuard?.();};
+    guard();const text=await this.request('/api/state',undefined,epoch,null,guard);guard();
     let raw;try{raw=JSON.parse(text);}catch{throw Error('Invalid Bluetooth settings snapshot.');}
     if(raw?.deviceId!==expectedId||raw.deviceId!==this.deviceIdentity||!Array.isArray(raw.effects))throw Error('Invalid Bluetooth settings snapshot.');
     let catalog=this.catalog;
     if(!catalog||catalog.length!==raw.effects.length){
-      const entries=JSON.parse(await this.request('/api/effects'));
-      if(epoch!==this.epoch)throw Error('Connection changed.');
-      if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false);
+      guard();const entries=JSON.parse(await this.request('/api/effects',undefined,epoch,null,guard));guard();
+      if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false,readGuard);
       catalog=validateCatalog(entries,raw.effects.length);
     }
     if(
@@ -524,25 +558,33 @@ export class LampTransport {
       if(raw[field]!==undefined)snapshot[field]=raw[field];
     if(snapshot.sync)snapshot.sync=publicControlSync(snapshot.sync);
     const design=raw.lampStyle&&typeof raw.lampStyle==='object'&&!Array.isArray(raw.lampStyle)?normalizeLampStyle(raw.lampStyle):null;if(design)snapshot.lampStyle=design;
-    this.catalog=catalog;this.raw=snapshot;
+    guard();this.catalog=catalog;this.raw=snapshot;
     const color=raw.colors?.[raw.mode-1],binary=this.state;
     this.state={...snapshot,id:binary.id,result:binary.result,revision:binary.revision,capabilities:binary.capabilities,
       mode:raw.mode,brightness:raw.brightness,power:raw.power,
       effectCount:this.catalog.length,supportsColor:binary.supportsColor,color:color?{enabled:Boolean(color[0]),r:color[1],g:color[2],b:color[3]}:binary.color};
-    this.onState(this.state,{freshControl:true});if(raw.firmware)this.receiveFirmware(raw.firmware);
+    guard();this.onState(this.state,{freshControl:true});guard();if(raw.firmware)this.receiveFirmware(raw.firmware);
     const options=raw.effectOptions?.[raw.mode-1];
-    if(options)this.onOptions({mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});
+    guard();if(options)this.onOptions({mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});
     return snapshot;
   }
   scheduleControlRefresh() {
     if(this.firmwareOnly)return;
-    clearTimeout(this.controlTimer);const epoch=this.epoch;
+    clearTimeout(this.controlTimer);const epoch=this.epoch,owner={};this.controlRefreshOwner=owner;
+    let generation;try{generation=this.backgroundGeneration();}catch{}
+    const readGuard=()=>{let admitted=false;
+      try{admitted=this.backgroundAllowed()&&generation!==undefined&&generation===this.backgroundGeneration();}catch{}
+      if(!admitted||this.controlRefreshOwner!==owner||epoch!==this.epoch)
+        throw Object.assign(Error('Automatic Bluetooth reads are paused.'),{confirmed:true,cancelled:true,readAdmission:true,backgroundPaused:true});
+    };
+    const rearm=()=>{if(this.controlRefreshOwner===owner&&epoch===this.epoch&&this.supportsOfflineControl&&!this.bluetoothUpdate)this.scheduleControlRefresh();};
     this.controlTimer=setTimeout(async()=>{
-      if(epoch!==this.epoch||!this.supportsOfflineControl||this.bluetoothUpdate)return;
+      if(this.controlRefreshOwner!==owner||epoch!==this.epoch||!this.supportsOfflineControl||this.bluetoothUpdate)return;
+      try{readGuard();}catch{rearm();return;}
       try{
-        if(![1,3,4].includes(this.raw?.firmware?.phase))await this.enqueue(()=>this.refresh());
+        if(![1,3,4].includes(this.raw?.firmware?.phase))await this.enqueue(()=>{readGuard();return this.refresh(this.deviceIdentity,true,readGuard);});
       }catch{ /* Radio loss/legacy control handles connection state independently. */ }
-      if(epoch===this.epoch&&this.supportsOfflineControl)this.scheduleControlRefresh();
+      rearm();
     },2500);
   }
   factoryReset() { return this.command('factoryReset',0xa5); }

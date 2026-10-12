@@ -199,8 +199,10 @@ export class BluetoothFirmwareTransfer {
   const record={owner:this,current:this.isCurrent,pending:true,stopping:false,closed:false,start:null,cleanup:null};
   owners.set(key,record);this.notificationRecord={record,owners,key};this.notificationMode='notifications';
   const callback=bytes=>{
-   if(record.closed||owners.get(key)!==record||this.notificationMode!=='notifications'||!this.isCurrent()||this.cancelSent)return;
-   try{const value=decodeBleUpdate(bytes);if(this.rememberStatus(value)){
+   if(record.closed||owners.get(key)!==record||this.notificationMode!=='notifications'||!this.isCurrent())return;
+   try{const value=decodeBleUpdate(bytes);
+    if(this.cancelSent){this.observeCancellation(value);return;}
+    if(this.rememberStatus(value)){
     this.notificationStatus={...value};const waiter=this.notificationWaiter;
     if(waiter&&(value.phase===5||value.ack===waiter.ack&&(waiter.offset===undefined||value.offset===waiter.offset)&&(waiter.phase===undefined||value.phase===waiter.phase)))waiter.resolve(true);
    }}catch{ /* Invalid/stale notification never becomes an application ACK. */ }
@@ -309,17 +311,67 @@ export class BluetoothFirmwareTransfer {
   this.current();
   if(this.notificationStatus?.phase===5)this.receiverRejected(this.notificationStatus);
  }
+ cancellationCurrent(){try{return this.isCurrent()===true;}catch{return false;}}
+ observeCancellation(value){
+  const probe=this.cancelProbe;
+  if(!probe?.active||!probe.allowReceipt||!this.cancelSent||!this.cancellationCurrent()||this.commitAttempted||
+   value.session!==probe.session||value.ack!==probe.ack||value.phase!==5||value.error!==8||value.committed!==false||
+   ![0,probe.size].includes(value.size)||value.offset>value.size||value.maxData<1||value.maxData>232)return null;
+  const receipt=Object.freeze({...value});probe.receipt=receipt;probe.resolve?.(receipt);return receipt;
+ }
+ async cancellationStatus(probe){
+  for(let attempt=0;attempt<3;++attempt){
+   if(!probe.active||!this.cancellationCurrent())return null;
+   if(probe.receipt)return probe.receipt;
+   let bytes;try{bytes=await this.readStatus(1200);}catch{return probe.receipt??null;}
+   if(!probe.active||!this.cancellationCurrent())return null;
+   try{const receipt=this.observeCancellation(decodeBleUpdate(bytes));if(receipt)return receipt;}catch{}
+   if(attempt<2)await this.delay(40);
+  }
+  return probe.receipt??null;
+ }
  async cancel(reason='cancelled'){
   if(this.cancelPromise)return this.cancelPromise;
+  // UI cancellation is closed before the durable Finish observer runs. Cleanup
+  // after an observer failure may still abort, but can never cancel a native
+  // Finish or bypass the journal's own commit fence.
+  if(this.commitAttempted||reason!=='cleanup'&&this.stage==='verifying')
+   return Object.freeze({cancelled:false,confirmed:false,tooLate:true,verificationRequired:true});
   if(reason!=='cleanup')this.recordStop(reason);
   this.cancelled=true;
-  if(!this.session||!this.issuedOrder||this.commitAttempted||!this.isCurrent())return;
-  this.cancelPromise=(async()=>{await this.captureFailureStatus();if(!this.isCurrent()||this.commitAttempted)return;
-   const frame=this.frame(5);try{await this.beforeWrite(frame);}catch{return;}
-   if(!this.isCurrent()||this.commitAttempted)return;
-   this.cancelSent=true;this.noteIssued(frame);++this.writeCalls;
-   await this.ble.write(this.deviceId,SERVICE,OTA_WRITE,frame,{timeout:3000}).catch(()=>{});
-  })();
+  const result=(fields={})=>Object.freeze({cancelled:true,confirmed:false,uncertain:this.writeCalls>0,cancelSent:Boolean(this.cancelSent),...fields});
+  if(!this.session||!this.issuedOrder){this.cancelPromise=Promise.resolve(result({confirmed:true,uncertain:false,installationNotStarted:true}));return this.cancelPromise;}
+  if(!this.cancellationCurrent()){this.cancelPromise=Promise.resolve(result({ownerLost:true}));return this.cancelPromise;}
+  // Publish the shared promise before native reads can synchronously trigger
+  // another cancellation callback; every caller must join one Cancel attempt.
+  this.cancelPromise=Promise.resolve().then(async()=>{
+   await this.captureFailureStatus();if(!this.cancellationCurrent()||this.commitAttempted)return result({ownerLost:!this.cancellationCurrent()});
+   const frame=this.frame(5);try{await this.beforeWrite(frame);}catch{return result({journalFailure:true});}
+   if(!this.cancellationCurrent()||this.commitAttempted)return result({ownerLost:!this.cancellationCurrent()});
+   const probe={active:true,allowReceipt:reason==='user'||reason==='cancelled',session:this.session,ack:frame.getUint16(6,true),size:this.total,receipt:null,resolve:null};
+   const notified=new Promise(resolve=>{probe.resolve=resolve;});this.cancelProbe=probe;
+   try{
+    const native=Promise.resolve().then(()=>{
+     if(!probe.active||!this.cancellationCurrent()||this.commitAttempted)throw error('Cancellation connection changed.');
+     this.cancelSent=true;this.noteIssued(frame);++this.writeCalls;
+     return this.ble.write(this.deviceId,SERVICE,OTA_WRITE,frame,{timeout:3000});
+    });
+    try{await boundedNotification(native,3000);}catch{
+     if(probe.receipt&&this.cancellationCurrent())return result({confirmed:true,uncertain:false,receipt:probe.receipt});
+     return result({writeUnconfirmed:true});
+    }
+    if(!this.cancellationCurrent())return result({ownerLost:true});
+    // Error cleanup preserves its original single diagnostic snapshot. Native
+    // background lifetime is not a foreground receipt guarantee either. Only
+    // explicit foreground cancellation waits for proof that the lamp stopped.
+    if(!probe.allowReceipt)return result(reason==='app-hidden'?{lifetimeEnded:true}:{cleanup:true});
+    let receipt=probe.receipt;
+    if(!receipt)try{receipt=await boundedNotification(Promise.race([this.cancellationStatus(probe),notified]),1200);}catch{}
+    if(!this.cancellationCurrent())return result({ownerLost:true});
+    receipt??=probe.receipt;
+    return receipt?result({confirmed:true,uncertain:false,receipt}):result({ackUnconfirmed:true});
+   }finally{probe.active=false;probe.resolve=null;}
+  });
   return this.cancelPromise;
  }
  getResumeLease(){return this.resumable&&!this.commitAttempted&&!this.cancelSent&&this.lastStatus?.phase!==5&&this.session?Object.freeze({session:this.session,version:this.preparedManifest.version,size:this.preparedManifest.size,sha256:this.preparedManifest.sha256}):null;}

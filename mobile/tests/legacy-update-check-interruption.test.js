@@ -12,7 +12,7 @@ test('two interrupted production legacy checks retain the original durable recei
  feedback.update(feedback.begin(identity),{message:'Previous result awaits confirmation.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
  let acquisitions=0,releases=0;const context={AbortController,document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   firmwareAttempts:{get:()=>null,pending:()=>[]},legacyFirmwareReceipts:new Map([[identity,{identity,targetVersion:'1.15.1',outcome:'verification-required'}]]),firmwareFeedback:feedback,
-  mergedLampEntries:()=>[entry],groupRemovedIds:new Set(),fleet:{cancelRefresh(){}},firmwareUpdatePresentation,renderLamps(){},renderFirmware(){},
+  mergedLampEntries:()=>[entry],groupRemovedIds:new Set(),fleet:{cancelRefresh(){}},pauseFirmwareBackgroundWork(){assert.equal(context.cardFirmwareTasks.size,1);},firmwareUpdatePresentation,renderLamps(){},renderFirmware(){},
   reconcileLegacyFirmwareReceipt:options=>reconcileLegacyFirmwareReceipt({...options,maxAttempts:1}),
   acquireCardFirmwareBluetooth:async()=>{acquisitions++;context.cardFirmwareTasks.get(identity).abort.abort('app-hidden');return {lamp:{identity,readFirmwareUpdateSnapshot(){throw Error('Aborted checks must not continue reading.');}},release:async()=>{releases++;}};}};
  runInNewContext(source.slice(start,end)+';globalThis.check=checkLampUpdateResult;',context);

@@ -30,7 +30,7 @@ function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wif
     completeCardSettings:()=>{calls.push({kind:'complete'});return true;},promptWifiPassword:()=>calls.push({kind:'password'}),pairCardBluetooth:async()=>{calls.push({kind:'picker'});return false;},
     renderSettings:()=>calls.push({kind:'render-settings'}),renderOptions:()=>calls.push({kind:'render-options'})};
   context.connectCardWifiAsync=async(value,intent)=>{calls.push({kind:'wifi',id:value.id,intent});const result=wifi?await wifi(value,intent,context.ui):{connected:false,error:Error('Wi-Fi unavailable')};if(result?.connected)context.ui.adopt(value.id,'wifi');return result;};
-  context.connect=async(value,options)=>{calls.push({kind:'bluetooth',id:value.id,options});const result=bluetooth?await bluetooth(value,options,context.ui):{connected:false,error:Error('Bluetooth unavailable')};if(result?.connected)context.ui.adopt(value.id,'bluetooth');return result;};
+  context.connect=async(value,options)=>{assert(options.isCurrent());calls.push({kind:'bluetooth',id:value.id,options});const result=bluetooth?await bluetooth(value,options,context.ui):{connected:false,error:Error('Bluetooth unavailable')};if(result?.connected)context.ui.adopt(value.id,'bluetooth');return result;};
   context.connectMeshCard=async(value,intent)=>{calls.push({kind:'mesh',id:value.id,intent});const result=mesh?await mesh(value,intent,context.ui):{connected:false,error:Error('Mesh unavailable')};if(result?.connected)context.ui.adopt(value.id,'mesh');return result;};
   runInNewContext(`let busy=false,connecting=false,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3;
     let selected={...entry},state=null,settingsView='network',verified=false;
@@ -49,7 +49,7 @@ test('actual automatic card recovery prefers saved Bluetooth over stale-offline 
   const f=cardHarness({wifi:async()=>({connected:false,error:Object.assign(Error('Read reply lost'),{uncertain:true})}),bluetooth:async()=>({connected:true})});
   const controller=new AbortController(),result=await f.open(f.entry,{section:'network',automaticReconnect:true,signal:controller.signal,isCurrent:()=>true});
   assert.equal(result.connected,true);assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth']);
-  const call=f.calls.find(value=>value.kind==='bluetooth');assert.equal(call.options.expectedId,id);assert.equal(call.options.automaticReconnect,true);assert.equal(call.options.signal,controller.signal);assert.equal(call.options.navigate,false);assert(call.options.isCurrent());
+  const call=f.calls.find(value=>value.kind==='bluetooth');assert.equal(call.options.expectedId,id);assert.equal(call.options.automaticReconnect,true);assert.equal(call.options.signal,controller.signal);assert.equal(call.options.navigate,false);assert.equal(call.options.isCurrent(),false); // Completed intent cannot authorize late work.
   assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.scope().section,'network');assert.equal(f.scope().navigation,7);assert.equal(f.intent(),null);assert.equal(f.posts.length,0);
 });
 
@@ -101,7 +101,7 @@ function bluetoothHarness({gate=null,error=null,actualConnected=false}={}){
   const ble={identity:id,epoch:1,expectedDeviceIdentity:null,raw:null,catalog:null,
     async connect(saved){calls.push({kind:'connect',saved,expected:this.expectedDeviceIdentity});if(gate)await gate.promise;if(error)throw error;context.ui.radioState();return {...saved,lampId:id,bluetoothName:'CoolLamp-A',accessoryName:'Reading lamp'};},
     async disconnect(){calls.push({kind:'disconnect-ble'});this.epoch++;}};
-  const context={AbortController,console,...view,calls,posts,bleLamp:ble,
+  const context={AbortController,console,...view,calls,posts,bleLamp:ble,cardConnectionMessages:new Map(),
     store:{items:[entry],upsert(value){calls.push({kind:'save-card',id:value.id});return value;},rememberFirmware(){}},
     bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionNotice:()=>{},cancelMeshSelection:()=>{},
     stopGroupInspection:async()=>{},status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),

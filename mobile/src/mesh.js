@@ -45,23 +45,27 @@ export class MeshInventorySession {
 // One accepted bridge owns each request. Only result pages are retried/polled;
 // an uncertain target mutation is never submitted again on this or another path.
 export class MeshTransport extends WifiTransport {
- constructor({callbacks={},timeout=6000,pollInterval=120,now=Date.now,id=randomId}={}){
-  super(null,callbacks);Object.assign(this,{timeout,pollInterval,now,nextId:id,isMesh:true});this.usedIds=new Set();
+ constructor({callbacks={},timeout=6000,pollInterval=120,now=Date.now,id=randomId,backgroundAllowed=()=>true,backgroundGeneration=()=>0}={}){
+  super(null,callbacks,{backgroundAllowed,backgroundGeneration});Object.assign(this,{timeout,pollInterval,now,nextId:id,isMesh:true});this.usedIds=new Set();
  }
  guard(epoch=this.epoch){
   if(epoch!==this.epoch||!this.bridge||this.signal?.aborted||!this.isCurrent())throw cancelled();
   if(this.bridge.epoch!==this.bridgeEpoch||this.bridge.identity!==this.bridgeIdentity)throw Object.assign(Error('Mesh bridge connection changed. Refresh this lamp.'),{confirmed:true,cancelled:true});
  }
- async bounded(action,deadline,epoch,mutation=false){
-  this.guard(epoch);const remaining=deadline-this.now();if(remaining<=0)throw unconfirmed();
+ readScope(epoch,readGuard=null){this.readFence(epoch,readGuard);this.guard(epoch);}
+ async bounded(action,deadline,epoch,mutation=false,readGuard=null){
+  this.readScope(epoch,readGuard);const remaining=deadline-this.now();if(remaining<=0)throw unconfirmed();
   let timer,abort;
-  try{return await Promise.race([Promise.resolve().then(action),new Promise((_,reject)=>{
+  try{const result=await Promise.race([Promise.resolve().then(()=>{this.readScope(epoch,readGuard);return action();}),new Promise((_,reject)=>{
    timer=setTimeout(()=>reject(unconfirmed()),remaining);
    abort=()=>reject(mutation?Object.assign(unconfirmed(),{cancelled:true}):cancelled());
    this.signal?.addEventListener('abort',abort,{once:true});
-  })]);}finally{clearTimeout(timer);this.signal?.removeEventListener('abort',abort);}
+  })]);this.readScope(epoch,readGuard);return result;}
+  catch(error){this.readFence(epoch,readGuard);throw error;}
+  finally{clearTimeout(timer);this.signal?.removeEventListener('abort',abort);}
  }
- async request(path,data,epoch=this.epoch,beforeWrite=null){
+ async request(path,data,epoch=this.epoch,beforeWrite=null,readGuard=null){
+  this.readScope(epoch,readGuard);
   const endpoint=endpoints[path];
   const direct=()=>Object.assign(Error('Use a direct Wi-Fi or Bluetooth connection to this lamp for this setting.'),{confirmed:true,needsDirectConnection:true});
   if(!endpoint||[19,20,22,24].includes(endpoint))throw direct();
@@ -74,14 +78,14 @@ export class MeshTransport extends WifiTransport {
   if(this.bridge?.control&&new TextEncoder().encode(new URLSearchParams(fields).toString()).length>1024)throw Object.assign(Error('These settings exceed the Bluetooth bridge request limit.'),{confirmed:true});
   this.usedIds.add(requestId);const deadline=this.now()+this.timeout,target=this.target;
   let reply,submitted=false,resultPolling=false,confirmedReply=false;
-  const read=async action=>{const value=parse(await this.bounded(action,deadline,epoch,mutation&&submitted));this.guard(epoch);
+  const read=async action=>{const value=parse(await this.bounded(action,deadline,epoch,mutation&&submitted,readGuard));this.readScope(epoch,readGuard);
    if(value?.version!==1||value.target!==target||value.requestId!==requestId||!['pending','ok','no-route','rejected'].includes(value.status)||typeof value.executed!=='boolean')throw unconfirmed();return value;};
   try{
-   this.guard(epoch);beforeWrite?.();submitted=true;
-   reply=await read(()=>this.bridge.request('/api/mesh/request',fields,this.bridgeEpoch,()=>{this.guard(epoch);if(this.now()>=deadline)throw unconfirmed();beforeWrite?.();}));
+   this.readScope(epoch,readGuard);beforeWrite?.();submitted=true;
+   reply=await read(()=>this.bridge.request('/api/mesh/request',fields,this.bridgeEpoch,()=>{this.readScope(epoch,readGuard);if(this.now()>=deadline)throw unconfirmed();beforeWrite?.();},readGuard));
    let bytes,total,status,targetBoot,offset=0;
    for(;;){
-    this.guard(epoch);
+    this.readScope(epoch,readGuard);
     if(reply.uncertain===true)throw unconfirmed();
     if(reply.status==='no-route'){if(reply.executed||offset)throw unconfirmed();confirmedReply=true;throw noRoute();}
     if(reply.status==='rejected'){
@@ -96,41 +100,44 @@ export class MeshTransport extends WifiTransport {
      if(total===undefined){total=reply.total;status=reply.httpStatus;bytes=new Uint8Array(total);}
      if(total!==reply.total||status!==reply.httpStatus)throw unconfirmed();
      bytes.set(page,offset);offset+=page.length;
-     if(offset===total){const result=new TextDecoder('utf-8',{fatal:true}).decode(bytes);bytes.fill(0);this.targetBoot=targetBoot;confirmedReply=true;
+     if(offset===total){const result=new TextDecoder('utf-8',{fatal:true}).decode(bytes);bytes.fill(0);this.readScope(epoch,readGuard);this.targetBoot=targetBoot;confirmedReply=true;
       if(status<200||status>=300)throw Object.assign(Error(result||'Lamp rejected the request.'),{confirmed:true,status});return result;}
-    }else await this.bounded(()=>new Promise(resolve=>setTimeout(resolve,this.pollInterval)),deadline,epoch,mutation&&submitted);
-    resultPolling=true;reply=await read(()=>this.bridge.request('/api/mesh/result',{target,requestId,offset}));
+    }else await this.bounded(()=>new Promise(resolve=>setTimeout(resolve,this.pollInterval)),deadline,epoch,mutation&&submitted,readGuard);
+    resultPolling=true;reply=await read(()=>this.bridge.request('/api/mesh/result',{target,requestId,offset},this.bridgeEpoch,()=>this.readScope(epoch,readGuard),readGuard));
    }
   }catch(error){
    if(resultPolling&&!confirmedReply||mutation&&submitted&&(!error.confirmed||error.cancelled)){error.uncertain=true;error.confirmed=false;delete error.noRoute;}
    throw error;
   }
  }
- async connect(target,lease,{signal,isCurrent=()=>true,poll=true}={}){
+ async connect(target,lease,{signal,isCurrent=()=>true,poll=true,guard:readGuard=null}={}){
+  this.readFence(this.epoch,readGuard);
   await this.disconnect();if(!canonical(target)||!meshBridgeSupported(lease?.lamp))throw noRoute();
+  const epoch=this.epoch;
   this.target=target;this.bridge=lease.lamp;this.bridgeIdentity=this.bridge.identity;this.bridgeEpoch=this.bridge.epoch;this.lease=lease;
   this.signal=signal;this.isCurrent=isCurrent;this.base='mesh:'+target+'@'+this.bridgeIdentity;
-  try{await this.refresh(target);this.guard();if(poll)this.schedule();return this.raw;}
-  catch(error){await this.disconnect();throw error;}
+  try{await this.refresh(target,true,readGuard);this.readScope(epoch,readGuard);if(poll)this.schedule();return this.raw;}
+  catch(error){if(epoch===this.epoch)await this.disconnect();throw error;}
  }
- async refresh(expectedId=this.target,retryCatalog=true){
-  const epoch=this.epoch,raw=parse(await this.request('/api/state'));this.guard(epoch);
+ async refresh(expectedId=this.target,retryCatalog=true,readGuard=null){
+  const epoch=this.epoch,raw=parse(await this.request('/api/state',undefined,this.epoch,null,readGuard));this.readScope(epoch,readGuard);
   if(raw?.deviceId!==this.target||raw.deviceId!==expectedId||!Array.isArray(raw.effects)||typeof raw.hostname!=='string'||typeof raw.power!=='boolean'||!Number.isInteger(raw.mode)||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||!Number.isInteger(raw.leds)||raw.leds<1||raw.leds>1024)throw Error('Invalid target lamp snapshot from mesh.');
   let catalog=this.catalog;
   if(!catalog||catalog.length!==raw.effects.length||this.raw?.firmware?.version!==raw.firmware?.version){
-   const entries=parse(await this.request('/api/effects'));this.guard(epoch);
-   if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false);
+   const entries=parse(await this.request('/api/effects',undefined,epoch,null,readGuard));this.readScope(epoch,readGuard);
+   if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false,readGuard);
    catalog=validateCatalog(entries,raw.effects.length);
   }
   if(!catalog.some(entry=>entry.id===raw.mode))throw Error('Invalid target lamp effect from mesh.');
   const snapshot={};for(const field of ['deviceId','hostname','name','ssid','leds','milliamps','midpoint','startupMode','startupBrightness','mode','brightness','power','apiVersion','catalogVersion','effects','colors','effectOptions','vuColors','fountainColors','audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint'])if(raw[field]!==undefined)snapshot[field]=raw[field];
   if(snapshot.sync){snapshot.sync={...snapshot.sync};for(const field of ['key','code','invite'])delete snapshot.sync[field];}
   const design=normalizeLampStyle(raw.lampStyle);if(design)snapshot.lampStyle=design;
-  this.identity=this.target;this.catalog=catalog;this.raw=snapshot;
+  this.readScope(epoch,readGuard);this.identity=this.target;this.catalog=catalog;this.raw=snapshot;
   const color=raw.colors?.[raw.mode-1],options=raw.effectOptions?.[raw.mode-1];
   this.state={...snapshot,effectCount:catalog.length,capabilities:4|(color?2:0)|(raw.effectOptions?8:0)|(raw.factoryReset?128:0),supportsColor:Boolean(color),color:color?{enabled:Boolean(color[0]),r:color[1],g:color[2],b:color[3]}:null};
-  this.callbacks.onState?.(this.state,{freshControl:true});this.callbacks.onFirmware?.(raw.firmware);
-  this.callbacks.onOptions?.(options?{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);return snapshot;
+  this.readScope(epoch,readGuard);this.callbacks.onState?.(this.state,{freshControl:true});
+  this.readScope(epoch,readGuard);this.callbacks.onFirmware?.(raw.firmware);
+  this.readScope(epoch,readGuard);this.callbacks.onOptions?.(options?{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]}:null);return snapshot;
  }
  async disconnect(){const lease=this.lease;this.lease=null;this.bridge=null;this.target=null;this.targetBoot=null;await super.disconnect();await lease?.release?.();}
 }
@@ -141,7 +148,7 @@ export async function acquireMeshLamp({target,candidates,acquireBridge,signal,is
  const current=()=>{if(signal?.aborted||!isCurrent())throw cancelled();if(Date.now()>=deadline)throw timedOut();};let lastError,uncertainError;
  const bounded=async(action,lateRelease=false)=>{
   current();
-  let timer,abort,settled=false;const pending=Promise.resolve().then(action);
+  let timer,abort,settled=false;const pending=Promise.resolve().then(()=>{current();return action();});
   pending.then(value=>{if(settled&&lateRelease)void value?.release?.();},()=>{});
    try{return await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(timedOut()),Math.min(options.timeout??6000,deadline-Date.now()));abort=()=>reject(cancelled());signal?.addEventListener('abort',abort,{once:true});})]);}
   finally{settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);}
@@ -151,7 +158,7 @@ export async function acquireMeshLamp({target,candidates,acquireBridge,signal,is
   try{
    lease=await bounded(()=>acquireBridge(candidate),true);current();if(!meshBridgeSupported(lease?.lamp)&&!modernBridge(lease?.lamp)){await lease?.release?.();lease=null;continue;}
    const bridge=lease.lamp;
-   const inventory=parse(await bounded(()=>bridge.request('/api/mesh/status')));current();
+   const inventory=parse(await bounded(()=>bridge.request('/api/mesh/status',undefined,bridge.epoch,current,current)));current();
    if(!validInventory(inventory,bridge)||inventory.available!==true)throw noRoute();
    verifiedBridges.set(bridge,{identity:bridge.identity,epoch:bridge.epoch});onInventory(inventory,bridge.identity);
    transport=new MeshTransport(options);const owned=lease;lease=null;
