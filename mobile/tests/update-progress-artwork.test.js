@@ -6,6 +6,7 @@ import {runInNewContext} from 'node:vm';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {styleDefinition,styleLabel,resolveLampStyle} from '../src/lamp-style.js';
 import {firmwareUpdatePresentation} from '../src/firmware-update-ui.js';
+import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage} from '../src/update-source.js';
 
 const normalDigests={
  helix:'b96a5ed1279f82009bf515c83a06f8925d437b0a343f583466445512933eefd2',
@@ -57,9 +58,30 @@ const illustration=source.slice(source.indexOf('function lampStyleIllustration('
 const render=source.slice(source.indexOf('function renderLamps()'),source.indexOf('async function discover(',source.indexOf('function renderLamps()')));
 const id='aabbccddeeff',other='112233445566';
 
+test('the production UI model exposes owned IDs from storage without adopting discovery or mesh inventory',()=>{
+ const start=source.indexOf(' model:()=>(',source.indexOf('appV2=mountAppV2(')),end=source.indexOf('\n message:',start);
+ const owned=[{id},{id:'ble:legacy-phone-record'}],discovered=[{id},{id:other}];
+ const context={store:{items:owned},mergedLampEntries:()=>discovered,connectivity:null,groupsSnapshot:{groups:[],lamps:[]},selected:null,firmware:null,connecting:false,verifiedSelectedLamp:()=>false,state:null};
+ runInNewContext('this.model=({'+source.slice(start,end)+'}).model;',context);
+ const model=context.model();assert.deepEqual(Array.from(model.ownedLampIds),[id,'ble:legacy-phone-record']);assert.equal(model.lamps,discovered);
+ assert(!model.ownedLampIds.includes(other));assert.deepEqual(owned,[{id},{id:'ble:legacy-phone-record'}]);
+ assert.equal(model.selectedAutomatic,null);context.verifiedSelectedLamp=()=>true;
+ for(const automatic of [true,false,null,undefined,'true']){context.firmware={automatic};assert.equal(context.model().selectedAutomatic,typeof automatic==='boolean'?automatic:null);}
+ context.verifiedSelectedLamp=()=>false;context.firmware={automatic:true};assert.equal(context.model().selectedAutomatic,null);
+});
+
+test('the production pair adapter retains an immutable connected target rather than a newly selected identity',async()=>{
+ const start=source.indexOf(' pair:',source.indexOf('appV2=mountAppV2(')),end=source.indexOf(',discover:',start);
+ let result={connected:true,id},selected={id:other};const context={connect:async()=>result,selected};
+ runInNewContext('this.pair=({'+source.slice(start,end)+'}).pair;',context);
+ const protectedResult=await context.pair();assert(Object.isFrozen(protectedResult));assert.equal(protectedResult.id,id);assert.notEqual(protectedResult.id,selected.id);
+ result.id=other;assert.equal(protectedResult.id,id);
+ for(const invalid of [{connected:false,id},{connected:true,id:'ble:legacy'},undefined]){result=invalid;assert.equal(await context.pair(),invalid);}
+});
+
 // Run the production card renderer. This small DOM supplies presentation APIs
 // only; no rewritten update logic or connection/firmware handler is substituted.
-function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false}={}){
+function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false,updateSource=null,receiverSnapshot=null,receivedAt=Date.now()}={}){
  let document;
  class Element{
   constructor(tag='div'){this.tag=tag;this.dataset={};this.attributes={};this.children=[];this.className='';this.textContent='';this.innerHTML='';this.value=undefined;this.disabled=false;this.open=false;this.parent=null;
@@ -83,17 +105,18 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
  const roots=new Map(['discover','lampList','emptyLamps','v2LampSearch'].map(name=>[name,new Element()]));roots.get('v2LampSearch').value='';
  document={activeElement:null,createElement:tag=>new Element(tag)};
  const entries=[{id,name:'My lamp',phoneLampStyle:style},...(second?[{id:other,name:'Other lamp',phoneLampStyle:'helix'}]:[])];
- const tasks=new Map(task?[[id,{stage,cancelRequested,reconciling}]]:[]),feedback=new Map([[id,firmwareUpdatePresentation({stage,progress})]]),statuses=new Map(observation?[[id,observation]]:[]);
+ const tasks=new Map(task?[[id,{stage,cancelRequested,reconciling,updateSource}]]:[]),feedback=new Map([[id,firmwareUpdatePresentation({stage,progress})]]),statuses=new Map(observation?[[id,observation]]:[]);
  const cancel=new Element('button');cancel.className='secondary v2-card-update-cancel';cancel.dataset.connection='cancel-update';let cancelClicks=0;cancel.onclick=()=>cancelClicks++;
  if(focusCancel){const old=new Element('article');old.className='lamp-entry';old.dataset.lampId=id;old.append(cancel);document.activeElement=cancel;}
  const control=connection=>{const element=new Element('button');element.dataset.connection=connection;return element;};
- const context={document,$:name=>roots.get(name),discovery:{scanned:true},mergedLampEntries:()=>entries,verifiedSelectedLamp:()=>false,selected:null,
+ const receiverLamp=receiverSnapshot?{raw:receiverSnapshot}:null;
+ const context={document,$:name=>roots.get(name),discovery:{scanned:true},mergedLampEntries:()=>entries,verifiedSelectedLamp:()=>Boolean(receiverSnapshot),selected:receiverSnapshot?entries[0]:null,lamp:receiverLamp,wifiLamp:receiverLamp,
   connectivity:{get:()=>null},fleetStatuses:statuses,cardFirmwareTasks:tasks,firmwareFeedback:{get:key=>feedback.get(key)},cardFirmwareUnconfirmed:new Map(pending?[[id,'1.15.1']]:[]),
-  resolvedStyle:entry=>resolveLampStyle(entry.lampStyle,entry.phoneLampStyle),styleDefinition,styleLabel,lampArtworkSvg,
+  resolvedStyle:entry=>resolveLampStyle(entry.lampStyle,entry.phoneLampStyle),styleDefinition,styleLabel,lampArtworkSvg,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage,
   connecting:false,busy:false,meshSelection:null,fleetLampInstalling:key=>tasks.has(key),firmwareConnectionSelectionAllowed:()=>true,groupsSnapshot:{groups:[]},
   openCardSettings(){},cardPowerButton:()=>control('power'),cardFirmwareButton:()=>control('update'),cardFirmwareReinstallButton:()=>null,
   cardFirmwareCancelButton:entry=>entry.id===id&&task?cancel:null,cardPowerTasks:new Map(),
-  lampFirmwareLabel:()=> 'Firmware 1.15.1',firmware:null,firmwareReceivedAt:0,validFirmwareVersion:()=>false,
+  lampFirmwareLabel:()=> 'Firmware 1.15.1',firmware:receiverSnapshot?.firmware??null,firmwareReceivedAt:receiverSnapshot?receivedAt:0,validFirmwareVersion:()=>false,
   publicFirmwareRun:null,publicFirmwareError:'',publicFirmwareFresh:false,updateDiagnosticDetails:()=>null,
   wifiCardIcon:()=>control('wifi'),bluetoothCardIcon:()=>control('bluetooth'),groupCardIcon:()=>control('group'),bluetoothFirmwareOwner:()=>null,
   removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(),cardFirmwareMessages:new Map(),meshNetworkMessages:new Map(),
@@ -145,9 +168,77 @@ test('theme, clipping, numeric legibility and reduced motion are covered by the 
  const css=readFileSync(new URL('../src/app-v2.css',import.meta.url),'utf8');
  assert.match(css,/\.v2-card-update-art>svg\{[^}]*overflow:hidden/);
  assert.match(css,/\.v2-card-update-art>\.v2-card-update-percent\{[^}]*font-size:1rem[^}]*color:var\(--ink\)/);
- assert.match(css,/\.lamp-artwork-update-fill path\{stroke:var\(--lamp-update-fill,#397963\)/);
- assert.match(css,/html\[data-app-theme=dark\]\{--lamp-update-fill:#b3d4bc\}/);
- assert.match(css,/@media\(prefers-color-scheme:dark\)\{html\[data-app-theme=system\]\{--lamp-update-fill:#b3d4bc\}/);
+ assert.match(css,/\.lamp-artwork-update-fill path\{stroke:var\(--lamp-update-fill,#686868\)/);
+ assert.match(css,/html\[data-app-theme=dark\]\{--lamp-update-fill:#cecece\}/);
+ assert.match(css,/@media\(prefers-color-scheme:dark\)\{html\[data-app-theme=system\]\{--lamp-update-fill:#cecece\}/);
  assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{[^\n]*animation:none!important/);
  assert(!/\.lamp-artwork-update-(?:fill|rest)\{[^}]*animation:/.test(css),'Confirmed progress does not fake movement between acknowledged offsets.');
+});
+
+test('the actual owned progress callback colors only acknowledged pinned phone writes, never download or route suggestions',()=>{
+ const start=source.indexOf('  const progress=value=>',source.indexOf('async function updateLampCard('));
+ const end=source.indexOf('\n  const result=await updateCardFirmware',start),task={abort:new AbortController()},records=[];
+ const context={task,current:()=>true,release:{version:'1.15.1'},bluetoothFirmwareConnectionSerial:0,document:{hidden:false},
+  acknowledgedBluetoothUpdateSource,firmwareUpdatePresentation,firmwareFeedback:{update:(_token,value)=>records.push(value)},renderLamps(){},renderFirmware(){}};
+ runInNewContext(source.slice(start,end)+'\nthis.progress=progress;',context);
+ const ack={stage:'transferring',version:'1.15.1',progress:65,acknowledgedBytes:650,total:1000};
+ context.progress({...ack,stage:'downloading',progress:100});assert.equal(task.updateSource,null);assert.equal(records.at(-1).progress,undefined);
+ context.progress({...ack,stage:'wifi'});assert.equal(task.path,'wifi');assert.equal(task.updateSource,null);
+ context.progress(ack);assert.equal(task.updateSource,'bluetooth');assert.equal(records.at(-1).progress,65);
+ context.progress({...ack,version:'1.15.2'});assert.equal(task.updateSource,null);
+ context.progress({...ack,acknowledgedBytes:649});assert.equal(task.updateSource,null);
+ context.progress({...ack,stage:'restarting',progress:100});assert.equal(task.updateSource,null);assert.equal(records.at(-1).progress,undefined);
+});
+
+test('the production receiving card exposes a plain source label beside decorative blue phone artwork',()=>{
+ const view=fixture({updateSource:'bluetooth'}),art=view.card.querySelector('.v2-card-art');
+ assert.match(art.innerHTML,/data-update-source="bluetooth"/);assert.equal(art.attributes['aria-hidden'],'true');
+ assert.equal(view.card.querySelector('.v2-card-update-source').textContent,'From your phone');
+ assert.match(view.card.querySelector('.lamp-update-progress').attributes['aria-label'],/from your phone/);
+ assert.equal(view.otherCard.querySelector('.v2-card-update-source'),null);
+ for(const options of [{stage:'downloading',progress:100},{stage:'restarting',progress:100},{pending:true},{cancelRequested:true},{reconciling:true}]){
+  const neutral=fixture({...options,updateSource:'bluetooth'});assert.equal(neutral.card.querySelector('.v2-card-update-source'),null);assert(!neutral.card.querySelector('.v2-card-art').innerHTML.includes('data-update-source'));
+ }
+});
+
+test('verified fresh active target snapshots show Internet/donation source; compact missing identity and old snapshots do not',()=>{
+ const firmware={version:'1.15.1',updateContractVersion:2,phase:3,receiver:true,route:1,progress:50,writtenOffset:500,totalBytes:1000};
+ for(const [route,label,color] of [[1,'From the internet','internet'],[3,'From another trusted lamp','donation'],[4,'From your computer','manual-upload']]){
+  const view=fixture({task:false,receiverSnapshot:{deviceId:id,firmware:{...firmware,route}}});
+  assert.match(view.card.querySelector('.v2-card-art').innerHTML,new RegExp(`data-update-source="${color}"`));
+  assert.equal(view.card.querySelector('.v2-card-update-source').textContent,label);assert.equal(view.card.querySelector('.lamp-update-progress').value,50);
+  assert.equal(view.card.querySelector('.v2-card-status').textContent,'Updating your lamp');
+ }
+ for(const snapshot of [{firmware},{deviceId:other,firmware},{deviceId:id,firmware:{...firmware,phase:4}},{deviceId:id,firmware:{...firmware,receiver:false}},{deviceId:id,firmware:{...firmware,totalBytes:0}}]){
+  const view=fixture({task:false,receiverSnapshot:snapshot});assert.equal(view.card.querySelector('.v2-card-update-source'),null);assert(!view.card.querySelector('.v2-card-art').innerHTML.includes('data-update-source'));
+ }
+ const stale=fixture({task:false,receiverSnapshot:{deviceId:id,firmware},receivedAt:Date.now()-5001});assert.equal(stale.card.querySelector('.v2-card-update-source'),null);
+});
+
+test('unknown future and legacy source evidence keeps generic progress without an Internet color',()=>{
+ const firmware={updateContractVersion:2,phase:3,receiver:true,progress:50,writtenOffset:500,totalBytes:1000};
+ for(const route of [0,99,undefined,'internet']){
+  const view=fixture({task:false,receiverSnapshot:{deviceId:id,firmware:{...firmware,route}}});
+  assert.equal(view.card.querySelector('.lamp-update-progress').value,50);assert.equal(view.card.querySelector('.v2-card-update-source'),null);
+  assert(!view.card.querySelector('.v2-card-art').innerHTML.includes('data-update-source'));
+ }
+ const legacy=fixture({updateSource:null});assert.equal(legacy.card.querySelector('.lamp-update-progress').value,65);assert.equal(legacy.card.querySelector('.v2-card-update-source'),null);
+});
+
+test('legacy active computer uploads show their source without an invented percentage',()=>{
+ for(const phase of [0,3]){
+  const view=fixture({task:false,receiverSnapshot:{deviceId:id,firmware:{updateContractVersion:2,receiver:true,route:4,phase,writtenOffset:500,totalBytes:0,progress:0}}});
+  assert.equal(view.card.querySelector('.v2-card-update-source').textContent,'From your computer');assert.equal(view.card.querySelector('.lamp-update-progress').value,undefined);
+  assert(!view.card.querySelector('.v2-card-art').innerHTML.includes('data-update-progress'));
+ }
+});
+
+test('retained automatic attention never competes with a pending receipt or active receiving progress',()=>{
+ const observation={automaticEnabled:true,automaticAttention:{target:id,checkedAt:Date.now(),kind:'attention',offerPhone:true,service:{reason:14,phoneFallback:true}}};
+ const ordinary=fixture({task:false,observation});assert.match(ordinary.card.querySelector('.v2-card-auto-attention').textContent,/Tap Update/);
+ assert.equal(fixture({pending:true,task:false,observation}).card.querySelector('.v2-card-auto-attention'),null);
+ assert.equal(fixture({task:true,observation}).card.querySelector('.v2-card-auto-attention'),null);
+ assert.equal(fixture({task:false,observation:{...observation,automaticEnabled:false}}).card.querySelector('.v2-card-auto-attention'),null);
+ const receiver={deviceId:id,firmware:{updateContractVersion:2,receiver:true,phase:3,route:1,progress:50,writtenOffset:500,totalBytes:1000}};
+ assert.equal(fixture({task:false,observation,receiverSnapshot:receiver}).card.querySelector('.v2-card-auto-attention'),null);
 });

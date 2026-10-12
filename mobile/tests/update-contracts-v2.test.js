@@ -37,6 +37,10 @@ test('unified receiver route/progress remains separate from Wi-Fi association an
  assert.deepEqual(parseUpdateStatusV2({...snapshot,policy:{eligibility:0,groupCoordination:0,automaticEligible:true}}).automaticAdmission,{allowed:true,policyReason:0,groupCoordination:0});
  assert.throws(()=>parseUpdateStatusV2({...snapshot,policy:{eligibility:0,groupCoordination:1,automaticEligible:true}}));
  assert.throws(()=>parseUpdateStatusV2({...snapshot,policy:{eligibility:0,groupCoordination:99,automaticEligible:false}}));
+ assert.equal(parsed.attemptGuard,null);
+ const guard={version:1,storageReady:true,unconfirmedArtifacts:1,capacity:4,candidateReason:1,sameArtifactRequiresManual:true,rollbackProven:false};
+ assert.equal(parseUpdateStatusV2({...snapshot,attemptGuard:guard}).attemptGuard.candidateReason,1);
+ for(const change of [{capacity:5},{unconfirmedArtifacts:5},{candidateReason:9},{rollbackProven:true},{storageReady:false}])assert.throws(()=>parseUpdateStatusV2({...snapshot,attemptGuard:{...guard,...change}}));
  const unknown=parseUpdateStatusV2({...snapshot,route:4,totalBytes:0,progress:0});assert.equal(unknown.totalBytes,null);
  for(const changed of [{route:9},{writtenOffset:2001},{phase:99},{publisherEnforced:'true'},{updateContractVersion:99}])assert.throws(()=>parseUpdateStatusV2({...snapshot,...changed}));
 });

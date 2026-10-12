@@ -18,7 +18,7 @@ function model(count=28){return {deviceId:identity,hostname:'coollamp-test.local
   token:'must-not-retain',sync:{version:2,role:0,active:false,scene:0,key:'private-key',code:'private-code',invite:'private-invite'},
   rotation:{enabled:false,random:true,category:0,seconds:30},audio:{installed:false,gain:8,gate:8,scale:100,liveTuning:true}};}
 class Radio {
-  constructor(){this.model=model();this.writes=[];this.requests=[];this.disconnections=[];this.initializations=0;this.reply=true;this.listeners=new Map();this.last=new Map();this.transactions=new Map();this.response=new Map();}
+  constructor(){this.model=model();this.writes=[];this.requests=[];this.controlReads=[];this.disconnections=[];this.initializations=0;this.reply=true;this.listeners=new Map();this.last=new Map();this.transactions=new Map();this.response=new Map();}
   packet(id=0){return view([1,id,0,4,100,1,28,1,0,0,0,0]);}
   async initialize(){this.initializations++;}
   async requestDevice(){return {deviceId:'target'};}
@@ -32,6 +32,7 @@ class Radio {
     if(char===CONTROL){
       const result=this.response.get(id);if(!result)return envelope(descriptor);
       if(this.holdRead){this.readReady?.();await this.holdRead;}
+      this.controlReads.push({tx:result.tx,endpoint:result.endpoint,status:result.status,offset:result.offset});
       const page=envelope(result.text,result.tx,result.endpoint,result.status,result.offset);
       if(this.badPage)page.setUint16(1,result.tx+1,true);return page;
     }throw Error('not supported');
@@ -48,7 +49,7 @@ class Radio {
       const request=this.transactions.get(id);assert.equal(request.tx,tx);assert.equal(request.body.length,request.length);
       const text=new TextDecoder().decode(Uint8Array.from(request.body));this.requests.push({...request,body:text});
       if(request.endpoint===25&&request.method===2){const code=Number(new URLSearchParams(text).get('style'));this.model.lampStyle={version:1,code,id:['unspecified','helix','large-helix','corkscrew'][code],family:['unspecified','helix','helix','corkscrew'][code]};}
-      let response=request.endpoint===1?JSON.stringify(this.model):request.endpoint===26?JSON.stringify(this.model.effects.map((name,i)=>({id:i+1,name,category:i>=38?'audio':'calm',speed:true}))):this.largeResponse||'Saved';
+      let response=Object.hasOwn(this,'responseText')?this.responseText:request.endpoint===1?JSON.stringify(this.model):request.endpoint===26?JSON.stringify(this.model.effects.map((name,i)=>({id:i+1,name,category:i>=38?'audio':'calm',speed:true}))):this.largeResponse||'Saved';
       this.response.set(id,{tx,endpoint:request.endpoint,status:this.responseStatus||200,text:response,offset:0});
     }else if(op===25){const result=this.response.get(id);assert.equal(result.tx,tx);result.offset=frame.getUint16(5,true);}
     this.last.set(id,this.packet(bytes[1]));
@@ -104,6 +105,102 @@ test('serialized RPC jobs chunk UTF-8 forms and read multiple coherent pages',as
   assert.equal(new URLSearchParams(names[0].body).get('name'),'Café 🌈');
   const begins=radio.writes.filter(write=>write.bytes[2]===22&&write.bytes[5]);assert.equal(new Set(begins.map(write=>write.bytes[3]+256*write.bytes[4])).size,begins.length);
 });
+
+for(const bytes of [0,1,480,481,1024,8192])test(`Commit page zero is consumed directly, response bytes=${bytes}`,async t=>{
+ const {lamp,radio}=await connected(t);radio.responseText='x'.repeat(bytes);
+ const startWrites=radio.writes.length,startReads=radio.controlReads.length,startRequests=radio.requests.length;
+ assert.equal(await lamp.request('/api/audio'),radio.responseText);
+ const writes=radio.writes.slice(startWrites),reads=radio.controlReads.slice(startReads),request=radio.requests.at(-1);
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(request.endpoint,8);assert.equal(request.method,1);
+ assert.equal(writes.filter(write=>write.bytes[2]===24).length,1);
+ const selected=writes.filter(write=>write.bytes[2]===25).map(write=>write.bytes[5]+256*write.bytes[6]);
+ const expected=[];for(let offset=480;offset<bytes;offset+=480)expected.push(offset);
+ assert.deepEqual(selected,expected);assert.deepEqual(reads.map(read=>read.offset),[0,...expected]);
+ assert(reads.every(read=>read.tx===request.tx&&read.endpoint===8&&read.status===200));
+ assert.equal(writes.filter(write=>write.bytes[2]===22&&write.bytes[5]===0).length,1);
+ assert.equal(radio.response.has('target'),false);assert.equal(lamp.id,'target');
+});
+
+test('a shortened cached first page selects remaining offsets from received length',async t=>{
+ const {lamp,radio}=await connected(t);radio.responseText='x'.repeat(1200);
+ const read=radio.read.bind(radio);radio.read=async(...args)=>{
+  const page=await read(...args);if(args[2]!==CONTROL||page.getUint16(8,true)!==0)return page;
+  const first=new DataView(new ArrayBuffer(12+73));
+  new Uint8Array(first.buffer).set(new Uint8Array(page.buffer,page.byteOffset,12+73));first.setUint16(10,73,true);return first;
+ };
+ const start=radio.writes.length;assert.equal(await lamp.request('/api/audio'),radio.responseText);
+ assert.deepEqual(radio.writes.slice(start).filter(write=>write.bytes[2]===25).map(write=>write.bytes[5]+256*write.bytes[6]),[73,553,1033]);
+ assert.equal(radio.requests.at(-1).method,1);assert.equal(radio.response.has('target'),false);
+});
+
+for(const [status,text] of [[503,'Read resources unavailable. Nothing changed.'],[404,'Endpoint unavailable.'],[409,'Another request owns this lamp.'],[507,'Control response exceeds the bounded Bluetooth transfer.']])
+test(`Commit-cached error page preserves status ${status} without a page-zero command`,async t=>{
+ const {lamp,radio}=await connected(t);radio.responseStatus=status;radio.responseText=text;
+ const startWrites=radio.writes.length,startRequests=radio.requests.length,startReads=radio.controlReads.length;
+ const token=lamp.settingsConnectionProofToken=Object.freeze({});lamp.expectedDeviceIdentity=identity;
+ await assert.rejects(lamp.request('/api/state'),error=>error.confirmed===true&&error.status===status&&error.message===text&&
+  error.verifiedSettingsRead?.target===identity&&error.verifiedSettingsRead?.endpoint===1&&error.verifiedSettingsRead?.method===1&&error.verifiedSettingsRead?.attempt===token);
+ const writes=radio.writes.slice(startWrites);
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(writes.filter(write=>write.bytes[2]===24).length,1);
+ assert.equal(writes.filter(write=>write.bytes[2]===25).length,0);assert.deepEqual(radio.controlReads.slice(startReads).map(read=>read.offset),[0]);
+ assert.equal(writes.filter(write=>write.bytes[2]===22&&write.bytes[5]===0).length,1);
+ assert.equal(radio.response.has('target'),false);assert.equal(lamp.id,'target');
+});
+
+for(const mismatch of ['transaction','endpoint','offset'])test(`a stale Commit-cached first page rejects ${mismatch} without selection or replay`,async t=>{
+ const {lamp,radio}=await connected(t);radio.responseText='reply';
+ const read=radio.read.bind(radio);radio.read=async(...args)=>{
+  const result=await read(...args);if(args[2]===CONTROL){
+   if(mismatch==='transaction')result.setUint16(1,(result.getUint16(1,true)+1)%65536,true);
+   if(mismatch==='endpoint')result.setUint8(3,18);
+   if(mismatch==='offset')result.setUint16(8,1,true);
+  }return result;
+ };
+ const startWrites=radio.writes.length,startRequests=radio.requests.length;
+ await assert.rejects(lamp.request('/api/audio'),/Invalid Bluetooth control response/);
+ const writes=radio.writes.slice(startWrites);
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(writes.filter(write=>write.bytes[2]===24).length,1);
+ assert.equal(writes.filter(write=>write.bytes[2]===25).length,0);
+ assert.equal(writes.filter(write=>write.bytes[2]===22&&write.bytes[5]===0).length,1);
+ assert.equal(radio.response.has('target'),false);assert.equal(lamp.id,'target');
+});
+
+for(const mutation of [false,true])test(`cancellation after cached first-page read preserves ${mutation?'mutation uncertainty':'read-only cancellation'}`,async t=>{
+ const {lamp,radio}=await connected(t);let cancelled=false;const read=radio.read.bind(radio);
+ radio.read=async(...args)=>{const result=await read(...args);if(args[2]===CONTROL)cancelled=true;return result;};
+ const guard=()=>{if(cancelled)throw Error('Settings scope cancelled.');};
+ const startWrites=radio.writes.length,startRequests=radio.requests.length;
+ await assert.rejects(lamp.request(mutation?'/api/name':'/api/audio',mutation?{name:'Test'}:undefined,lamp.epoch,null,guard),
+  error=>error.readAdmission===true&&error.cancelled===true&&error.uncertain===mutation&&error.confirmed===!mutation);
+ const writes=radio.writes.slice(startWrites);
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(writes.filter(write=>write.bytes[2]===24).length,1);
+ assert.equal(writes.filter(write=>write.bytes[2]===25).length,0);
+ // A cancelled owner sends no cleanup command through that lost scope. The
+ // existing firmware timeout/generation fence remains responsible for it.
+ assert.equal(writes.filter(write=>write.bytes[2]===22&&write.bytes[5]===0).length,0);assert.equal(lamp.id,'target');
+});
+
+test('a first cached page completing after disconnect cannot publish or clean up the retired owner',async t=>{
+ const {lamp,radio}=await connected(t);let release,ready;
+ const read=radio.read.bind(radio),entered=new Promise(resolve=>ready=resolve),held=new Promise(resolve=>release=resolve);
+ radio.read=async(...args)=>{const result=await read(...args);if(args[2]===CONTROL){ready();await held;}return result;};
+ const startWrites=radio.writes.length,startRequests=radio.requests.length;
+ const job=lamp.refresh(),rejected=assert.rejects(job,/connection changed/i);await entered;await lamp.disconnect();release();await rejected;
+ const writes=radio.writes.slice(startWrites);
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(writes.filter(write=>write.bytes[2]===24).length,1);
+ assert.equal(writes.filter(write=>write.bytes[2]===25).length,0);assert.equal(writes.filter(write=>write.bytes[2]===22&&write.bytes[5]===0).length,0);
+ assert.equal(lamp.id,null);assert.equal(lamp.raw,null);assert.equal(lamp.catalog,null);
+});
+
+test('cleanup failure does not erase an acknowledged cached mutation reply or replay Commit',async t=>{
+ const {lamp,radio}=await connected(t);const write=radio.write.bind(radio);
+ radio.write=async(...args)=>{const frame=args[3];if(frame.getUint8(2)===22&&frame.getUint8(5)===0)throw Error('Cleanup disconnected.');return write(...args);};
+ const startWrites=radio.writes.length,startRequests=radio.requests.length;
+ assert.equal(await lamp.request('/api/name',{name:'Test'}),'Saved');
+ assert.equal(radio.requests.length,startRequests+1);assert.equal(radio.requests.at(-1).method,2);
+ assert.equal(radio.writes.slice(startWrites).filter(write=>write.bytes[2]===24).length,1);
+ assert.equal(radio.writes.slice(startWrites).filter(write=>write.bytes[2]===25).length,0);assert.equal(lamp.id,null);
+});
 test('enqueue and domain helpers use fresh normalized state without command queue deadlock',async t=>{
   const {lamp,radio}=await connected(t);await lamp.enqueue(()=>lamp.configureRotation({enabled:true,random:false,category:0,seconds:60}));
   const write=radio.requests.find(request=>request.endpoint===10);assert.equal(new URLSearchParams(write.body).get('seconds'),'60');
@@ -130,7 +227,8 @@ test('queued Bluetooth command rechecks its owner before writing and retains con
 });
 test('lost commit notification reads its exact acknowledgment without replaying COMMIT',async t=>{
   const {lamp,radio}=await connected(t);radio.omitCommitAck=true;const start=radio.writes.length;await lamp.request('/api/name',{name:'Lamp'});
-  assert.equal(radio.writes.slice(start).filter(write=>write.bytes[2]===24).length,1);assert.equal(lamp.id,'target');
+  assert.equal(radio.writes.slice(start).filter(write=>write.bytes[2]===24).length,1);
+  assert.equal(radio.writes.slice(start).filter(write=>write.bytes[2]===25).length,0);assert.equal(lamp.id,'target');
 });
 test('uncertain commit timeout disconnects and never resends the mutation',async t=>{
   const {lamp,radio}=await connected(t);radio.reply=false;radio.read=async()=>{throw Error('lost');};const start=radio.requests.length;

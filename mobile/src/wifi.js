@@ -5,6 +5,32 @@ import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
 import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
 
+// One absolute durable field per request. A lost reply permits a fresh read,
+// never a second POST or automatic route change. Call from the owning queue.
+async function verifiedSetting(lamp,{supported,path,data,matches,message}) {
+  const id=lamp.deviceIdentity||lamp.identity,epoch=lamp.epoch,address=lamp.base;
+  const guard=()=>{if(!/^[0-9a-f]{12}$/.test(id||'')||(lamp.deviceIdentity||lamp.identity)!==id||lamp.epoch!==epoch||lamp.base!==address)throw Error('Connection changed.');};
+  guard();await lamp.refresh(id);guard();
+  if(lamp.raw?.deviceId!==id||!supported(lamp.raw))throw Error('This lamp does not support this setting yet.');
+  let reply,submitted=false,readbackStarted=false;
+  try{
+    guard();reply=await lamp.request(path,data,epoch,()=>{guard();submitted=true;});
+    guard();readbackStarted=true;await lamp.refresh(id);guard();
+    if(!supported(lamp.raw)||!matches(lamp.raw))throw Error('The lamp has not confirmed this setting. Its current settings need to be checked.');
+    return reply;
+  }
+  catch(error){
+    if(!submitted)throw error;
+    const rejected=!readbackStarted&&error.confirmed&&!error.cancelled&&(error.noRoute===true||Number.isInteger(error.status)&&((error.status>=400&&error.status<500)||error.status===503));
+    if(rejected)throw error;
+    const uncertain=Object.assign(error,{uncertain:true,confirmed:false});
+    // At most one fresh readback after a submitted operation. A malformed
+    // snapshot, locator/epoch change or failure after ACK remains uncertainty.
+    if(!readbackStarted)try{guard();readbackStarted=true;await lamp.refresh(id);guard();if(supported(lamp.raw)&&matches(lamp.raw))return message;}catch{}
+    throw uncertain;
+  }
+}
+
 export class WifiTransport {
   constructor(http, callbacks = {}, {backgroundAllowed=()=>true,backgroundGeneration=()=>0}={}) {
     this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve();
@@ -31,8 +57,8 @@ export class WifiTransport {
       ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
     catch { this.readFence(epoch,readGuard);throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
     this.readFence(epoch,readGuard);
-    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true});
-    if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true});
+    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true,status:401});
+    if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true,status:response.status});
     return response.data;
   }
   async connect(address,password,expectedId,{guard=null}={}) {
@@ -216,6 +242,16 @@ export class WifiTransport {
     const message=await this.request('/api/geometry',{midpoint});
     await this.refresh();
     return message;
+  }
+  async configureMotionPath(path) {
+    if(![0,1].includes(path))throw Error('Choose a centered or whole-strip path.');
+    return verifiedSetting(this,{supported:raw=>raw.motionVersion===1&&[0,1].includes(raw.motionPath),
+      path:'/api/geometry',data:{pathVersion:1,path},matches:raw=>raw.motionPath===path,message:'Animation path verified.'});
+  }
+  async setAudioReactionEnabled(enabled) {
+    if(typeof enabled!=='boolean')throw Error('Choose whether the lamp responds to sound.');
+    return verifiedSetting(this,{supported:raw=>raw.audio?.captureVersion===1&&raw.audio.installed===true&&typeof raw.audio.enabled==='boolean',
+      path:'/api/audio',data:{action:'use',useVersion:1,enabled:Number(enabled)},matches:raw=>raw.audio.enabled===enabled,message:'Sound setting verified.'});
   }
   async configureLampStyle(value) {
     const definition=styleDefinition(value);if(!definition)throw Error('Choose a valid lamp design.');

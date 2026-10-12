@@ -39,7 +39,7 @@ function restored(value){
   if(typeof value[field]!=='boolean')throw Error('Invalid update safety boundary.');result[field]=value[field];
  }
  // Additive v1 fields default to false. Unknown fields are never exposed/stored.
- for(const field of ['dataIssued','cancelAttempted','resumeAttempted','wifiCheckAttempted','wifiInstallAttempted','reinstall','commitAcknowledged']){
+ for(const field of ['dataIssued','cancelAttempted','resumeAttempted','wifiCheckAttempted','wifiInstallAttempted','reinstall','commitAcknowledged','commitUnconfirmed']){
   if(value[field]!==undefined&&typeof value[field]!=='boolean')throw Error('Invalid update safety boundary.');result[field]=value[field]??false;
  }
  if(result.session!==null&&!integer(result.session,1,0xffffffff)||!integer(result.offset,0,parsed.size)||
@@ -47,7 +47,8 @@ function restored(value){
   !outcomes.has(result.outcome)||result.lastOperation!==null&&!([1,2,3,4,5,6,7,'wifi-check','wifi-install'].includes(result.lastOperation))||
   result.commitAttempted&&!result.beginAttempted||result.dataIssued&&!result.beginAttempted||
   result.beginAttempted&&result.session===null||result.wifiInstallAttempted&&result.beginAttempted||
-  result.commitAcknowledged&&!result.commitAttempted||result.commitSequence!==null&&(!result.commitAttempted||!integer(result.commitSequence,1,65535)))
+  result.commitAcknowledged&&!result.commitAttempted||result.commitUnconfirmed&&terminal.has(result.outcome)||
+  result.commitSequence!==null&&(!result.commitAttempted||!integer(result.commitSequence,1,65535)))
   throw Error('Invalid update attempt.');
  return result;
 }
@@ -102,7 +103,7 @@ export class FirmwareAttemptJournal {
   const bytes=crypto.getRandomValues(new Uint8Array(16)),attemptId=Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('');
   const result={identity,attemptId,...parsed,session:null,metadataIssued:false,beginAttempted:false,commitAttempted:false,
    dataIssued:false,cancelAttempted:false,resumeAttempted:false,wifiCheckAttempted:false,wifiInstallAttempted:false,
-   offset:0,outcome:'pending',safetyVersion:0,writes:1,checkpoint:0,lastOperation:null,reinstall,commitAcknowledged:false,commitSequence:null};
+   offset:0,outcome:'pending',safetyVersion:0,writes:1,checkpoint:0,lastOperation:null,reinstall,commitAcknowledged:false,commitSequence:null,commitUnconfirmed:false};
   records.set(identity,result);this.persist(records);return copy(result);
  }
  beforeWrite(attempt,operation,session){
@@ -112,6 +113,7 @@ export class FirmwareAttemptJournal {
    event.version!==undefined&&event.version!==value.version||event.size!==undefined&&event.size!==value.size||
    event.sha256!==undefined&&event.sha256!==value.sha256||value.session!==null&&value.session!==event.session)
    throw failure('The original lamp or firmware attempt changed. The next update step was not sent.',{beforeMutation:true});
+  if(value.commitUnconfirmed)throw failure('The final installation needs confirmation before another update can start.',{requiresReconciliation:true,uncertain:true,commitUnconfirmed:true,beforeMutation:true});
   if(value.wifiInstallAttempted)throw failure('The Wi-Fi installation needs confirmation before another update route can start.',{requiresReconciliation:true,beforeMutation:true});
   if(value.commitAttempted||value.cancelAttempted)throw failure('This firmware attempt has already ended. Check your lamp before trying again.',{requiresReconciliation:true,beforeMutation:true});
   if(op===1&&value.beginAttempted||[2,6].includes(op)&&(!value.metadataIssued||value.beginAttempted)||
@@ -133,7 +135,7 @@ export class FirmwareAttemptJournal {
  }
  beforeWifi(attempt,path){
   const value=this.require(attempt);
-  if(!['/api/firmware/check','/api/firmware/install'].includes(path)||value.beginAttempted||value.commitAttempted||value.wifiInstallAttempted)
+  if(!['/api/firmware/check','/api/firmware/install'].includes(path)||value.commitUnconfirmed||value.beginAttempted||value.commitAttempted||value.wifiInstallAttempted)
    throw failure('The original update route needs confirmation. Nothing was sent.',{requiresReconciliation:true,beforeMutation:true});
   const install=path==='/api/firmware/install';
   if(!install&&value.wifiCheckAttempted)throw failure('The update check was already sent. Check your lamp before trying again.',{requiresReconciliation:true,beforeMutation:true});
@@ -151,6 +153,15 @@ export class FirmwareAttemptJournal {
   catch(error){throw failure('Your lamp confirmed the update, but this phone could not save that confirmation. Check your lamp before another update.',
    {journalFailure:true,commitAcknowledged:true,beforeMutation:false,cause:error});}
  }
+ noteCommitUnconfirmed(attempt){
+  const value=this.require(attempt);
+  if(value.commitUnconfirmed)return copy(value);
+  // Like a terminal receipt, this safety observation may use the final bounded
+  // write after normal progress checkpoints have consumed their allowance.
+  try{return this.save(value,{...value,commitUnconfirmed:true,safetyVersion:value.safetyVersion+1},{terminalWrite:true});}
+  catch(error){throw failure('The final installation is not confirmed, and this phone could not save that status. Keep your lamp powered while we check it.',
+   {journalFailure:true,uncertain:true,commitUnconfirmed:true,requiresReconciliation:true,beforeMutation:false,cause:error});}
+ }
  noteProgress(attempt,progress){
   const value=this.require(attempt),offset=typeof progress==='number'?progress:progress?.acknowledgedBytes??progress?.offset;
   if(!integer(offset,0,value.size)||offset<value.offset||!value.beginAttempted)return copy(value);
@@ -161,7 +172,7 @@ export class FirmwareAttemptJournal {
  }
  abandonUnstarted(attempt){
   const value=this.require(attempt);
-  if(['metadataIssued','beginAttempted','commitAttempted','wifiCheckAttempted','wifiInstallAttempted','dataIssued','cancelAttempted','resumeAttempted'].some(field=>value[field]))
+  if(['metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','wifiCheckAttempted','wifiInstallAttempted','dataIssued','cancelAttempted','resumeAttempted'].some(field=>value[field]))
    throw failure('This update needs a lamp status check before another attempt.',{requiresReconciliation:true});
   const saved=this.save(value,{...value,outcome:'installationNotStarted'},{terminalWrite:true});
   return Object.freeze({...saved,pending:false,safeRetry:true,safeExplicitRetry:true,message:'Nothing was sent to your lamp.'});
@@ -170,9 +181,9 @@ export class FirmwareAttemptJournal {
   const value=this.require(attempt);
   if(!result||!outcomes.has(result.outcome)||result.attemptId!==value.attemptId||result.identity!==value.identity||
    result.safetyVersion!==value.safetyVersion)throw failure('This lamp check belongs to an older update attempt.',{stale:true});
-  if(!terminal.has(result.outcome))return copy(value);
+  if(!terminal.has(result.outcome))return result.commitUnconfirmed===true?this.noteCommitUnconfirmed(value):copy(value);
   const installed=result.outcome==='installed';
-  if(!result.controlResponsive||!version(result.installedVersion)||result.firmwareMayInstall===true||
+  if(value.commitUnconfirmed||result.commitUnconfirmed===true||!result.controlResponsive||!version(result.installedVersion)||result.firmwareMayInstall===true||
    installed&&(result.installedVersion!==value.version||result.receiverInactive!==true||value.reinstall&&!value.commitAcknowledged)||
    !installed&&(value.commitAttempted||value.wifiInstallAttempted||result.receiverInactive!==true||
     (compareFirmwareVersions(result.installedVersion,value.version)>=0&&!(value.reinstall&&result.installedVersion===value.version))||
@@ -190,18 +201,26 @@ function snapshot(value,attempt){
   fw.automatic!==undefined&&typeof fw.automatic!=='boolean'||fw.available!==undefined&&typeof fw.available!=='boolean'||
   fw.latest!==undefined&&!version(fw.latest)||
   !receiver||!integer(receiver.phase,0,5)||!integer(receiver.error,0,9)||typeof receiver.committed!=='boolean'||
+  receiver.commitUnconfirmed!==undefined&&typeof receiver.commitUnconfirmed!=='boolean'||
   !integer(receiver.session,0,0xffffffff)||!integer(receiver.size,0,2031616)||!integer(receiver.offset,0,receiver.size)||
-  receiver.committed&&receiver.phase!==4||receiver.phase===4&&(!receiver.committed||receiver.size===0||receiver.offset!==receiver.size))
+  receiver.committed&&receiver.phase!==4||receiver.phase===4&&(!receiver.committed||receiver.size===0||receiver.offset!==receiver.size)||
+  receiver.commitUnconfirmed&&(receiver.phase!==5||receiver.error!==6||receiver.committed||receiver.session===0||receiver.size<288||receiver.offset!==receiver.size))
   throw failure('The lamp’s update status could not be verified.',{invalidRead:true});
  return value;
 }
 function outcome(attempt,value){
  const base={identity:attempt.identity,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,
   outcome:'unresolved',pending:true,safeRetry:false,safeExplicitRetry:false,controlResponsive:Boolean(value),
-  installedVersion:value?.firmware.version??null,receiverInactive:Boolean(value&&[0,5].includes(value.receiver.phase)),
+  installedVersion:value?.firmware.version??null,commitUnconfirmed:Boolean(attempt.commitUnconfirmed||value?.receiver.commitUnconfirmed),
+  receiverInactive:Boolean(value&&!attempt.commitUnconfirmed&&!value.receiver.commitUnconfirmed&&[0,5].includes(value.receiver.phase)),
   firmwareMayInstall:Boolean(value&&firmwareMayInstall(value.firmware)),
   message:'The connection was lost. We’ll check your lamp when it is available.'};
  if(!value)return Object.freeze(base);
+ // Binary BLE status supplies no boot nonce, running image digest or health
+ // proof. Keep this additive fence even after a reboot clears the receiver;
+ // version equality alone cannot resolve a possibly executed boot selection.
+ if(base.commitUnconfirmed)return Object.freeze({...base,
+  message:'The final installation is not confirmed. Keep your lamp powered while we check which software is installed.'});
  if(value.firmware.phase===2&&base.firmwareMayInstall)return Object.freeze({...base,receiverInactive:false,automaticInstallPossible:true,
   message:'Your lamp may start its automatic update. We’ll check its status before another update.'});
  const busy=[1,3,4].includes(value.firmware.phase),inactive=base.receiverInactive&&!busy;
@@ -250,19 +269,23 @@ export async function reconcileFirmwareAttempt({attempt,...options}={}){
 function legacyReceipt(receipt){
  const identity=receipt?.identity??receipt?.id;
  if(!canonical(identity)||receipt.identity!==undefined&&receipt.id!==undefined&&receipt.identity!==receipt.id||
-  !version(receipt?.targetVersion)||!['verified-restarting','verification-required'].includes(receipt?.outcome))
+  !version(receipt?.targetVersion)||!['verified-restarting','verification-required'].includes(receipt?.outcome)||
+  receipt.commitUnconfirmed!==undefined&&typeof receipt.commitUnconfirmed!=='boolean')
   throw failure('This older update needs its original saved receipt before checking the lamp.',{invalidReceipt:true});
  // Old feedback did not pin an artifact/session. Never invent either here.
- return Object.freeze({identity,targetVersion:receipt.targetVersion,outcome:receipt.outcome});
+ return Object.freeze({identity,targetVersion:receipt.targetVersion,outcome:receipt.outcome,...(receipt.commitUnconfirmed===true?{commitUnconfirmed:true}:{})});
 }
 function legacyOutcome(receipt,value){
  const base={identity:receipt.identity,targetVersion:receipt.targetVersion,legacyReceipt:true,
   outcome:'unresolved',pending:true,safeRetry:false,safeExplicitRetry:false,controlResponsive:Boolean(value),
-  installedVersion:value?.firmware.version??null,receiverInactive:Boolean(value&&[0,5].includes(value.receiver.phase)),
+  installedVersion:value?.firmware.version??null,commitUnconfirmed:Boolean(receipt.commitUnconfirmed||value?.receiver.commitUnconfirmed),
+  receiverInactive:Boolean(value&&!receipt.commitUnconfirmed&&!value.receiver.commitUnconfirmed&&[0,5].includes(value.receiver.phase)),
   firmwareMayInstall:Boolean(value&&firmwareMayInstall(value.firmware)),
   artifactDigestVerified:false,bootHealthVerified:false,
   message:'The earlier update is not confirmed. We’ll check your lamp before another update.'};
  if(!value)return Object.freeze(base);
+ if(base.commitUnconfirmed)return Object.freeze({...base,
+  message:'The final installation is not confirmed. Keep your lamp powered while we check which software is installed.'});
  if(value.firmware.phase===2&&base.firmwareMayInstall)return Object.freeze({...base,receiverInactive:false,automaticInstallPossible:true,
   message:'Your lamp may start its automatic update. We’ll check its status before another update.'});
  if(!base.receiverInactive||[1,3,4].includes(value.firmware.phase))return Object.freeze({...base,outcome:'active',message:'Checking your lamp…'});

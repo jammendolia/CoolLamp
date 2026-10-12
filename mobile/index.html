@@ -685,6 +685,13 @@
 </p>
 </section>
 <section id="geometrySettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="motionPathForm" hidden>
+<h3>Animation path</h3>
+<label for="motionPath">How centered effects travel</label>
+<select id="motionPath"><option value="0">Meet at the center</option><option value="1">Use the whole strip</option></select>
+<p class="hint">Centered effects use two sides. Whole strip sends movement along the LED strip from one end to the other. Your saved center is kept for switching back. Group scenes and update progress keep the lamp’s physical height.</p>
+<button>Save animation path</button>
+</form>
 <form id="geometryForm">
 <h3>Effect center</h3>
 <label for="midpoint">Center after LED (0 = automatic)</label>
@@ -705,13 +712,20 @@
 </div>
 </section>
 <section id="audioSettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="audioUseForm" hidden>
+<h3>Microphone input</h3>
+<label class="switch-row"><span>Use this lamp’s microphone</span><input id="audioEnabled" type="checkbox" role="switch"></label>
+<p class="hint">Turning this off stops local sound capture and keeps your tuning. Group lamps still follow their main lamp’s sound response. No audio recordings are saved or sent to the Internet; nearby group lamps share sound levels and rhythm.</p>
+<button id="saveAudioUse">Save sound setting</button>
+<p id="audioUseStatus" class="hint" role="status"></p>
+</form>
 <form id="audioForm">
 <h3>Microphone hardware</h3>
 <label class="switch-row">
 <span>Microphone installed</span>
 <input id="microphoneInstalled" type="checkbox" role="switch">
 </label>
-<p class="hint">Enable audio effects on lamps fitted with a microphone. Sound tuning lives with each audio effect.</p>
+<p class="hint">This is a hardware setting for an installed microphone. Sound tuning is shared by this lamp’s audio effects; quiet sound does not prove a microphone is missing.</p>
 <button>Save hardware setting & restart</button>
 </form>
 </section>

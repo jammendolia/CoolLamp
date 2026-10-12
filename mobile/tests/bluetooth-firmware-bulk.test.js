@@ -109,7 +109,7 @@ class Receiver {
 async function failureOf(receiver,transfer=receiver.transfer()) {let failure;try{await transfer.send(receiver.pkg);}catch(value){failure=value;}assert(failure instanceof Error);return failure;}
 
 test('reserved capability flag and committed flag remain independent',()=>{
- const receiver=new Receiver();for(const flags of [0,1,2,3,255]){
+ const receiver=new Receiver();for(const flags of [0,1,2,3,239]){
   const value=receiver.status();value.setUint8(3,flags);const parsed=decodeBleUpdate(value);
   assert.equal(parsed.committed,Boolean(flags&1));assert.equal(parsed.dataWriteWithoutResponseFour,Boolean(flags&2));
  }

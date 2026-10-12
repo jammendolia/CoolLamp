@@ -46,12 +46,15 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  const previous=attemptJournal?.get(entry.id);
  const preferBluetoothRetry=!attempt&&typeof entry.deviceId==='string'&&entry.deviceId.length>0&&
   previous?.outcome==='installationNotStarted'&&
-  ['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','dataIssued','cancelAttempted','resumeAttempted']
+  ['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','dataIssued','cancelAttempted','resumeAttempted']
    .every(field=>previous[field]===false);
  if(attemptJournal){attempt??=attemptJournal.begin(entry.id,release,{reinstall:allowReinstall});onAttempt(attempt);}
  const latest=()=>attemptJournal?.get(entry.id)||attempt;
  const finish=result=>{if(attemptJournal&&attempt)attemptJournal.settle(latest(),result);return result;};
+ const unconfirmedCommit=()=>Object.assign(Error('The final installation is not confirmed. Keep your lamp powered while we check which software is installed.'),
+  {confirmed:false,commitUnconfirmed:true,uncertain:true,verificationRequired:true,receiverBusy:true,installationNotStarted:false,safeBluetoothFallback:false});
  const checkResult=async failure=>{
+  if(failure?.commitUnconfirmed)failure=unconfirmedCommit();
   if(!reconcile||!attemptJournal||!attempt)throw failure;
   current();onProgress({stage:'checking-result'});
   const result=await reconcile(latest(),{entry,signal,isCurrent,onProgress});current();
@@ -59,17 +62,27 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  };
  const stopUnstarted=async error=>{
   const value=latest();
-  if(attemptJournal&&value&&!value.metadataIssued&&!value.wifiCheckAttempted&&!value.wifiInstallAttempted&&!value.beginAttempted&&!value.commitAttempted){
+  if(error?.commitUnconfirmed){if(attemptJournal&&value)attemptJournal.noteCommitUnconfirmed(value);return checkResult(error);}
+  if(attemptJournal&&value&&!value.commitUnconfirmed&&!value.metadataIssued&&!value.wifiCheckAttempted&&!value.wifiInstallAttempted&&!value.beginAttempted&&!value.commitAttempted){
    attemptJournal.abandonUnstarted(value);throw error;
   }
   if(attemptJournal&&reconcile)return checkResult(error);
   throw error;
  };
+ const guardReceiver=observed=>{
+  if(!observed?.receiver?.commitUnconfirmed)return;
+  if(attemptJournal&&attempt)attemptJournal.noteCommitUnconfirmed(latest());
+  throw unconfirmedCommit();
+ };
+ // A receiver may have reached boot selection without this phone sending a
+ // frame. Preserve that target's uncertainty before any new route or download.
+ if(latest()?.commitUnconfirmed)return checkResult(unconfirmedCommit());
  // A strict reinstall needs protected target proof before any update mutation.
  // The existing allowReinstall repair mode keeps its prior route semantics.
  if(entry.address&&!preferBluetoothRetry&&!exactReinstall){
   onProgress({stage:'wifi',progress:0});
   try{const result=await wifi(entry,release.version);current();
+   if(result?.commitUnconfirmed)return stopUnstarted(unconfirmedCommit());
    if(attemptJournal){
     const value=latest();
     if(result.state==='updated'&&result.verified&&result.fresh&&result.id===entry.id&&result.installedVersion===release.version)
@@ -78,7 +91,8 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    }
    return {...result,path:'wifi'};
   }
-  catch(error){reportFailure(error,'wifi-preflight');current();if(!error.safeBluetoothFallback||error.uncertain||error.identity||error.stale||error.cancelled){
+  catch(error){reportFailure(error,'wifi-preflight');current();if(error.commitUnconfirmed)return stopUnstarted(error);
+   if(!error.safeBluetoothFallback||error.uncertain||error.identity||error.stale||error.cancelled){
    if(latest()?.wifiInstallAttempted)return checkResult(error);
    return stopUnstarted(error);
   }}
@@ -96,6 +110,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   if(compareFirmwareVersions(initialFirmware.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
   const observed=attemptJournal?await preflight.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
   const installed=observed?.firmware||initialFirmware;current();
+  guardReceiver(observed);
   if(firmwareMayInstall(installed))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
   verifyReinstallVersion(installed);
   if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
@@ -130,6 +145,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   if(compareFirmwareVersions(initialFirmware.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
   const observed=attemptJournal?await lease.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
   const installed=observed?.firmware||initialFirmware;current();
+  guardReceiver(observed);
   if(firmwareMayInstall(installed))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
   verifyReinstallVersion(installed);
   if(compareFirmwareVersions(release.version,installed.version)<0||!allowReinstall&&compareFirmwareVersions(release.version,installed.version)===0)return attemptJournal?
@@ -146,13 +162,15 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    }catch(error){reportTransfer(error);reportFailure(error,failureStage);failure=error;}
   finally{await lease?.release();}
   current();
+  if(result?.commitUnconfirmed){if(attemptJournal&&attempt)attemptJournal.noteCommitUnconfirmed(latest());return checkResult(unconfirmedCommit());}
   if(result){
    if(attemptJournal&&result.receipt){try{attemptJournal.confirmCommit(latest(),result.receipt);}catch(error){reportFailure(error,'bluetooth-transfer');throw error;}}
    if(reconcile&&attemptJournal)return checkResult(null);
    return {...result,path:'bluetooth',state:'restarting',message:'Checking that your lamp finished updating…'};
   }
   if(failure?.staleVersion)return stopUnstarted(failure);
-  const noFrames=!(latest()?.metadataIssued||latest()?.beginAttempted||latest()?.commitAttempted);
+  if(failure?.commitUnconfirmed){if(attemptJournal&&attempt)attemptJournal.noteCommitUnconfirmed(latest());return checkResult(failure);}
+  const noFrames=!(latest()?.commitUnconfirmed||latest()?.metadataIssued||latest()?.beginAttempted||latest()?.commitAttempted);
   if(connectionAttempt===0&&noFrames&&(!attemptJournal?failure?.installationNotStarted:true)&&
    !failure?.cancelled&&!failure?.identity&&!failure?.stale&&!failure?.receiverBusy&&!failure?.bootstrapRequired&&!failure?.journalFailure&&!failure?.firmwareBusy)continue;
   if(reconcile&&attemptJournal)return checkResult(failure);

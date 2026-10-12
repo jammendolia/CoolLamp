@@ -129,7 +129,7 @@ export class MeshTransport extends WifiTransport {
    catalog=validateCatalog(entries,raw.effects.length);
   }
   if(!catalog.some(entry=>entry.id===raw.mode))throw Error('Invalid target lamp effect from mesh.');
-  const snapshot={};for(const field of ['deviceId','hostname','name','ssid','leds','milliamps','midpoint','startupMode','startupBrightness','mode','brightness','power','apiVersion','catalogVersion','effects','colors','effectOptions','vuColors','fountainColors','audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint'])if(raw[field]!==undefined)snapshot[field]=raw[field];
+  const snapshot={};for(const field of ['deviceId','hostname','name','ssid','leds','milliamps','midpoint','startupMode','startupBrightness','mode','brightness','power','apiVersion','catalogVersion','effects','colors','effectOptions','vuColors','fountainColors','audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint','motionPath','motionVersion'])if(raw[field]!==undefined)snapshot[field]=raw[field];
   if(snapshot.sync){snapshot.sync={...snapshot.sync};for(const field of ['key','code','invite'])delete snapshot.sync[field];}
   const design=normalizeLampStyle(raw.lampStyle);if(design)snapshot.lampStyle=design;
   this.readScope(epoch,readGuard);this.identity=this.target;this.catalog=catalog;this.raw=snapshot;

@@ -84,7 +84,12 @@ export async function downloadSignedPhoneFirmware(http,{publisherTrust,onProgres
 }
 export function decodeBleUpdate(data){
  if(!(data instanceof DataView)||data.byteLength!==20||data.getUint8(0)!==1||data.getUint8(1)>5||data.getUint8(2)>9)throw error('Invalid Bluetooth update status.');
- return {phase:data.getUint8(1),error:data.getUint8(2),committed:Boolean(data.getUint8(3)&1),dataWriteWithoutResponseFour:Boolean(data.getUint8(3)&2),session:data.getUint32(4,true),size:data.getUint32(8,true),offset:data.getUint32(12,true),ack:data.getUint16(16,true),maxData:data.getUint16(18,true)};
+ const flags=data.getUint8(3),value={phase:data.getUint8(1),error:data.getUint8(2),committed:Boolean(flags&1),dataWriteWithoutResponseFour:Boolean(flags&2),commitUnconfirmed:Boolean(flags&16),session:data.getUint32(4,true),size:data.getUint32(8,true),offset:data.getUint32(12,true),ack:data.getUint16(16,true),maxData:data.getUint16(18,true)};
+ // This additive v1 flag means the durable installation fence was entered
+ // and its result is unconfirmed. It is
+ // never a cancellation, a resumable lease, or proof that the old image won.
+ if(value.commitUnconfirmed&&(value.phase!==5||value.error!==6||value.committed||(flags&8)||!value.session||!value.ack||value.size<288||value.size>2031616||value.offset!==value.size||value.maxData<1||value.maxData>232))throw error('The lamp reported an update result that could not be verified. Keep it powered while we check its software.',{invalidRead:true,uncertain:true,verificationRequired:true,receiverBusy:true,commitUnconfirmed:true});
+ return value;
 }
 const receiverErrors=['','secure connection required','another update is active','invalid update metadata','unexpected data offset','image verification failed','flash or boot selection failed','receiver timed out','transfer cancelled','update partition unavailable'];
 const stopReasons=new Set(['user','app-hidden','transport-disconnect','native-disconnect','target-changed','cancelled','connection-changed','receiver-rejected','ack-timeout','native-read-failure','native-write-failure','journal-write-failure','transfer-failed']);
@@ -101,7 +106,7 @@ export function bluetoothFirmwareFailureMessage(failure){
  const bytes=Number.isInteger(value.acknowledgedBytes)&&value.total>0?' '+value.progress+'% ('+value.acknowledgedBytes.toLocaleString('en-US')+' of '+value.total.toLocaleString('en-US')+' bytes confirmed by the lamp).':'';
  const cause=stopMessages[value.stopReason]&&failure.message!==stopMessages[value.stopReason]?' '+stopMessages[value.stopReason]:'';
  const reason=value.error?' Receiver code '+value.error+': '+receiverErrors[value.error]+'.':'';
- const check=failure.uncertain&&!failure.confirmed?' Reconnect and check the installed version before retrying.':'';
+ const check=failure.uncertain&&!failure.confirmed&&!failure.commitUnconfirmed?' Reconnect and check the installed version before retrying.':'';
  return (failure.message||'Bluetooth update failed.')+cause+bytes+reason+check;
 }
 export class BluetoothFirmwareTransfer {
@@ -113,9 +118,10 @@ export class BluetoothFirmwareTransfer {
  }
  describeFailure(failure){
   failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();failure.transferDiagnostic=this.transferDiagnostic();
-  failure.installationNotStarted=this.writeCalls===0;failure.metadataIssued=this.metadataIssued;
+  failure.installationNotStarted=this.writeCalls===0&&!this.receiverCommitUnconfirmed;failure.metadataIssued=this.metadataIssued;
   failure.beginAttempted=this.beginAttempted;failure.commitAttempted=this.commitAttempted;
-  if(!this.writeCalls)failure.uncertain=false;return failure;
+  if(this.receiverCommitUnconfirmed)Object.assign(failure,{confirmed:false,uncertain:true,verificationRequired:true,commitUnconfirmed:true,receiverBusy:true});
+  else if(!this.writeCalls)failure.uncertain=false;return failure;
  }
  current(){
   const connected=this.isCurrent();
@@ -135,6 +141,7 @@ export class BluetoothFirmwareTransfer {
   if(!this.session||value.session!==this.session||(value.size!==0&&value.size!==this.total)||value.offset>value.size||this.cancelSent)return false;
   const issued=this.issuedFrames.find(frame=>frame.ack===value.ack);
   if(!issued||issued.order<this.observedOrder)return false;
+  if(value.commitUnconfirmed&&(issued.op!==4||value.size!==this.total||value.offset!==this.total))return false;
   if(value.phase===5){if(value.offset>issued.offset)return false;}
   else if(value.offset!==issued.offset||issued.op===1&&(value.size!==0||value.phase!==0)||issued.op!==1&&value.size!==this.total||[2,6].includes(issued.op)&&![1,2].includes(value.phase)||[3,7].includes(issued.op)&&value.phase!==2||issued.op===4&&![3,4].includes(value.phase))return false;
   const previous=this.lastStatus;
@@ -142,7 +149,7 @@ export class BluetoothFirmwareTransfer {
   if(previous&&(value.offset<previous.offset||previous.size===this.total&&value.size===0||issued.order===this.observedOrder&&value.phase<previous.phase))return false;
   const changed=!previous||Object.keys(value).some(key=>value[key]!==previous[key]);
   if(!changed)return false;
-  this.observedOrder=issued.order;this.lastStatus={...value};return true;
+  this.observedOrder=issued.order;this.lastStatus={...value};if(value.commitUnconfirmed)this.receiverCommitUnconfirmed=true;return true;
  }
  noteIssued(frame){
   const op=frame.getUint8(1),offset=op===3?frame.getUint32(8,true)+frame.byteLength-12:op===4?this.total:op===7?this.resumeOffset:0;
@@ -230,7 +237,12 @@ export class BluetoothFirmwareTransfer {
   try{await boundedNotification(record.cleanup,1200);}catch{ /* Pending cleanup retains its owner; later callers safely poll. */ }
  }
  receiverRejected(state){
+  if(state.commitUnconfirmed)throw this.commitUnconfirmedFailure();
   this.recordStop('receiver-rejected');throw error('Lamp rejected Bluetooth update (code '+state.error+'). Installed firmware remains selected.',{confirmed:true,stopReason:this.firstStop.reason});
+ }
+ commitUnconfirmedFailure(){
+  this.recordStop('receiver-rejected');
+  return error('Your lamp could not confirm the final update step. Keep it powered while we check which software is installed.',{confirmed:false,uncertain:true,verificationRequired:true,commitUnconfirmed:true,receiverBusy:true,stopReason:this.firstStop.reason});
  }
  matchingStatus(state,ack,offset,phase){
   if(!state||state.session!==this.session||(state.size!==0&&state.size!==this.total)||state.offset>state.size)return null;
@@ -271,7 +283,7 @@ export class BluetoothFirmwareTransfer {
   return Object.freeze({transport:'bluetooth',stage:this.stage,phase:value?.phase??null,error:value?.error??0,ack:value?.ack??null,acknowledgedBytes:known?value.offset:null,total:this.total,progress:known?Math.floor(value.offset*100/this.total):null,
    stopReason:this.firstStop?.reason??null,stopElapsedMs:this.firstStop?.elapsedMs??null,elapsedMs:this.elapsed(),connectionCurrent:Boolean(this.isCurrent()),cancelRequested:this.cancelled,
    mtu:this.mtu,chunkSize:this.chunkSize,mtuFallback:this.mtuFallback,dataFrames:this.dataFrames,dataBytesAttempted:this.dataBytesAttempted,
-   writeCalls:this.writeCalls,writesAttempted:this.writeCalls,metadataIssued:this.metadataIssued,beginAttempted:this.beginAttempted,commitAttempted:this.commitAttempted,installationNotStarted:this.writeCalls===0,
+   writeCalls:this.writeCalls,writesAttempted:this.writeCalls,metadataIssued:this.metadataIssued,beginAttempted:this.beginAttempted,commitAttempted:this.commitAttempted,commitUnconfirmed:Boolean(this.receiverCommitUnconfirmed),installationNotStarted:this.writeCalls===0&&!this.receiverCommitUnconfirmed,
    writeTimeMs:this.writeTimeMs,maxWriteMs:this.maxWriteMs,statusReads:this.statusReads,statusTimeMs:this.statusTimeMs,maxStatusMs:this.maxStatusMs,
    notificationMode:this.notificationMode,notificationFallback:this.notificationFallback,notificationAcks:this.notificationAcks,
    dataWriteMode:this.dataWriteMode,receiverBulkWrites:this.receiverBulkWrites,bulkWriteFallback:this.bulkWriteFallback,bulkWriteCalls:this.bulkWriteCalls,
@@ -352,7 +364,7 @@ export class BluetoothFirmwareTransfer {
   // UI cancellation is closed before the durable Finish observer runs. Cleanup
   // after an observer failure may still abort, but can never cancel a native
   // Finish or bypass the journal's own commit fence.
-  if(this.commitAttempted||reason!=='cleanup'&&this.stage==='verifying')
+  if(this.commitAttempted||this.receiverCommitUnconfirmed||reason!=='cleanup'&&this.stage==='verifying')
    return Object.freeze({cancelled:false,confirmed:false,tooLate:true,verificationRequired:true});
   if(reason!=='cleanup')this.recordStop(reason);
   this.cancelled=true;
@@ -400,7 +412,10 @@ export class BluetoothFirmwareTransfer {
   this.onBeforeWrite=onBeforeWrite;this.preparedManifest=parsed;
   this.beganAt=this.now();this.total=image.length;
   let initial;
-  try{initial=await this.status();}catch(failure){
+  try{initial=await this.status();
+   if(initial.commitUnconfirmed){this.receiverCommitUnconfirmed=true;this.lastStatus={...initial};this.stage='verifying';throw this.commitUnconfirmedFailure();}
+  }catch(failure){
+   if(failure.commitUnconfirmed)this.receiverCommitUnconfirmed=true;
    const missingReceiver=/(?:missing|not found|unavailable|unsupported).*characteristic|characteristic.*(?:missing|not found|unavailable|unsupported)/i.test(failure.message||'');
    if(missingReceiver&&this.isCurrent()&&this.firstStop?.reason==='native-read-failure')failure=error('This lamp needs firmware 1.11.0 or newer installed once over Wi-Fi before it can receive Bluetooth updates.');
    throw this.describeFailure(failure);
@@ -450,7 +465,7 @@ export class BluetoothFirmwareTransfer {
    try{await this.write(finish);const state=await this.wait(this.sequence,image.length,4);if(!state.committed)throw error('The lamp did not confirm its boot selection.');
     const {session,size,offset,ack,phase,error:receiverError,committed}=state;
     return {committed:true,version:manifest.version,receipt:Object.freeze({session,size,offset,ack,phase,error:receiverError,committed}),transferDiagnostic:this.transferDiagnostic()};}
-   catch(failure){if(failure.confirmed||failure.journalFailure||!this.commitAttempted)throw failure;this.recordStop('transfer-failed');return {committed:false,verificationRequired:true,version:manifest.version,updateDiagnostic:this.diagnostic(),transferDiagnostic:this.transferDiagnostic()};}
+   catch(failure){if(failure.confirmed||failure.journalFailure||!this.commitAttempted)throw failure;this.recordStop('transfer-failed');return {committed:false,verificationRequired:true,commitUnconfirmed:Boolean(this.receiverCommitUnconfirmed),version:manifest.version,updateDiagnostic:this.diagnostic(),transferDiagnostic:this.transferDiagnostic()};}
   }catch(failure){this.recordStop('transfer-failed');await this.captureFailureStatus();this.describeFailure(failure);await this.cancel('cleanup');throw failure;}
   finally{await this.endNotifications();}
  }

@@ -8,6 +8,7 @@ import {FirmwareScreenAwake} from '../src/firmware-screen-awake.js';
 import {FirmwareAttemptJournal,reconcileFirmwareAttempt} from '../src/firmware-attempt.js';
 import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
 import {FirmwareUpdateDiagnostics} from '../src/firmware-update-diagnostics.js';
+import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
@@ -18,7 +19,7 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,insta
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)});
  const tasks=new Map(),cardMessages=new Map();
  const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
-  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,rememberVerifiedUpdateResult(){},
+  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
   cardFirmwareUnconfirmed:new Map(),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
   powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>installed,

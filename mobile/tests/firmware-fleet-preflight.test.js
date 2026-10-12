@@ -120,7 +120,8 @@ test('passive exclusions skip only that deduped workload and preserve owned reco
  const previous={state:'updating',verified:true};f.fleet.statuses.set(ids[0],previous);
  const result=await f.fleet.refresh({excludeIds:new Set([ids[0],ids[0]])});
  assert.deepEqual(result.results.map(value=>value.id).sort(),ids.slice(1).sort());assert.equal(f.credentials.length,2);
- assert.equal(f.calls.length,2);assert(f.calls.every(call=>call.method==='GET'&&!call.url.startsWith('http://192.168.1.20/')));
+ assert.equal(f.calls.length,4);assert(f.calls.every(call=>call.method==='GET'&&!call.url.startsWith('http://192.168.1.20/')));
+ assert.equal(f.calls.filter(call=>new URL(call.url).pathname==='/api/firmware').length,2,'one additive compact read per already verified auto-enabled target');
  assert.equal(f.entries().length,4);assert.equal(f.fleet.statuses.get(ids[0]),previous);assert(!f.changes.some(value=>value.id===ids[0]));
 });
 

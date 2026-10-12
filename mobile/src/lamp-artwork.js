@@ -66,7 +66,7 @@ function generic(id,tones){
 }
 
 /** Returns standalone SVG. A unique prefix prevents gradients colliding between cards. */
-export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idPrefix,lit=true,theme='light',updateProgress,decorative=false}={}){
+export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idPrefix,lit=true,theme='light',updateProgress,updateSource,decorative=false}={}){
  const variant=variants.has(style)?style:'unspecified';
  const id=typeof idPrefix==='string'&&/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(idPrefix)?idPrefix:'coollamp-art-'+(++sequence);
  const colors=lit?['#c7dff4','#edd6f7','#bce9df']:['#ced5d8','#e9ece9','#c6d2cb'];
@@ -75,6 +75,7 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  // This is receiver-written progress supplied by the update presentation, not
  // phone download progress. Unknown values retain the ordinary neutral drawing.
  const updating=Number.isInteger(updateProgress)&&updateProgress>=0&&updateProgress<=100;
+ const source=updating&&['bluetooth','internet','donation','manual-upload'].includes(updateSource)?updateSource:null;
  const height=updating?180*updateProgress/100:0;
  const updateClip=updating?`\n <clipPath id="${id}-update-clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="${180-height}" width="120" height="${height}"/></clipPath>`:'';
  // Every trusted drawing ends with its separate base. Its physical light body
@@ -83,7 +84,7 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  const updateBody=updating?`<g class="lamp-artwork-update-fill" clip-path="url(#${id}-update-clip)">${body.slice(0,baseStart)}</g>`:'';
  const rest=updating?`<g class="lamp-artwork-update-rest">${body.slice(0,baseStart)}</g>${body.slice(baseStart)}`:body;
  const semantics=decorative?'aria-hidden="true"':`role="img" aria-label="${escape(label||labels[variant])}"`;
- return `<svg xmlns="http://www.w3.org/2000/svg" class="${escape(className)}" data-lamp-artwork="${variant}"${updating?` data-update-progress="${updateProgress}"`:''} viewBox="0 0 120 200" ${semantics} focusable="false">
+ return `<svg xmlns="http://www.w3.org/2000/svg" class="${escape(className)}" data-lamp-artwork="${variant}"${updating?` data-update-progress="${updateProgress}"`:''}${source?` data-update-source="${source}"`:''} viewBox="0 0 120 200" ${semantics} focusable="false">
  <defs>
  <linearGradient id="${id}-light" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="${colors[0]}"/><stop offset=".5" stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[2]}"/></linearGradient>
  <linearGradient id="${id}-base" x1="0" y1="0" x2="1" y2="0"><stop class="lamp-artwork-base-start" stop-color="${tones?.baseStart||'#161a1c'}"/><stop class="lamp-artwork-base-middle" offset=".52" stop-color="${tones?.baseMiddle||'#383d41'}"/><stop class="lamp-artwork-base-end" offset="1" stop-color="${tones?.baseEnd||'#171b1e'}"/></linearGradient>

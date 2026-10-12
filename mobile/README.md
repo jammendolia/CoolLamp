@@ -103,6 +103,25 @@ References: [Codemagic CLI with GitHub Actions](https://blog.codemagic.io/deploy
 
 ## Verification
 
+Settings entry points use `appV2.openSettings(id, section)` for a single saved
+lamp, or `chooseLight(section)` for the lamp chooser. Both use the same pinned
+selection, 25-second deadline and cancellation lifecycle. The gear immediately
+opens a target-specific loading sheet; a persistent live status and decorative
+spinner stay visible while connecting and reading settings. Close cancels the
+attempt, failures expose Try again, and stale completions cannot open another
+lamp. Reduced-motion preferences stop the spinner. Progress has no invented
+percentage or time estimate.
+
+Settings reuse a verified active connection. Fresh, confirmed Wi-Fi is tried
+first; when Wi-Fi evidence is stale, saved authorized Bluetooth is tried before
+direct Wi-Fi and bounded mesh recovery. Successful direct Wi-Fi settings do not
+require Bluetooth range. Only the explicit Bluetooth action forces that route.
+The loading UI does not change authentication, target verification, route
+selection or provision other lamps. `app-v2-navigation.test.js` exercises the
+actual gear and mounted UI, including a 20-second wait, cancellation, late
+completion, timeout and retry; the route tests cover Wi-Fi priority and fallback.
+These changes require a new native app build and are not in TestFlight 61.1.
+
 pnpm test exercises the actual transport code with a fake radio: input boundaries,
 effect consistency, notifications, reconnect, ordered writes, acknowledgments,
 timeouts, stale callbacks and firmware errors.

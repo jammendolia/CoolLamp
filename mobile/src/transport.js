@@ -539,7 +539,9 @@ export class LampTransport {
         guard();beforeWrite?.();await this.command('controlCommit',{tx},null,()=>{beforeWrite?.();mutationMayHaveExecuted=method===2;},guard);guard();
         let offset=0,status,total;
         do{
-          guard();await this.command('controlPage',{tx,offset},null,null,guard);guard();
+          // Control v1 caches page zero before acknowledging Commit (including
+          // error replies). Select only subsequent pages; never repeat Commit.
+          guard();if(offset){await this.command('controlPage',{tx,offset},null,null,guard);guard();}
           guard();
           const data=await this.ble.read(deviceId,SERVICE,CONTROL);guard();
           const page=decodeControlPage(data,{tx,endpoint,offset,...(total===undefined?{}:{total,status})});
@@ -592,7 +594,7 @@ export class LampTransport {
     const snapshot={};
     for(const field of ['deviceId','hostname','name','ssid','leds','milliamps','midpoint','startupMode','startupBrightness',
       'mode','brightness','power','apiVersion','catalogVersion','colors','effectOptions','vuColors','fountainColors',
-      'audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint'])
+      'audio','rotation','calibration','firmware','sync','factoryReset','usingDefaultPassword','effectiveMidpoint','motionPath','motionVersion'])
       if(raw[field]!==undefined)snapshot[field]=raw[field];
     if(snapshot.sync)snapshot.sync=publicControlSync(snapshot.sync);
     const design=raw.lampStyle&&typeof raw.lampStyle==='object'&&!Array.isArray(raw.lampStyle)?normalizeLampStyle(raw.lampStyle):null;if(design)snapshot.lampStyle=design;
@@ -698,5 +700,5 @@ export class LampTransport {
 // The encrypted adapter uses the same validation and readback as Wi-Fi without
 // importing HTTP tokens or changing the selected lamp's radio connection.
 for(const method of ['configureGroupScene','configureGroupOrder','configureSync','joinCoordinator','syncAction','syncInvite',
- 'calibrateLeds','configureRotation','configureGeometry','configureFountainColors','configureVuColors','tuneAudio','configureAudio','configureLampStyle'])
+ 'calibrateLeds','configureRotation','configureGeometry','configureMotionPath','setAudioReactionEnabled','configureFountainColors','configureVuColors','tuneAudio','configureAudio','configureLampStyle'])
   LampTransport.prototype[method]=WifiTransport.prototype[method];

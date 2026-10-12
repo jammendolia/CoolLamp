@@ -8,6 +8,7 @@ import {FirmwareAttemptJournal,reconcileFirmwareAttempt} from '../src/firmware-a
 import {FirmwareScreenAwake} from '../src/firmware-screen-awake.js';
 import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
 import {validFirmwareVersion} from '../src/lamps.js';
+import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const extract=(start,end)=>{const first=source.indexOf(start),last=source.indexOf(end,first);assert(first>=0&&last>first);return source.slice(first,last);};
@@ -23,7 +24,7 @@ function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVers
  const element=tag=>({tag,dataset:{},attributes:{},children:[],setAttribute(key,value){this.attributes[key]=value;},append(...children){this.children.push(...children);},addEventListener(_event,callback){this.close=callback;},remove(){},
   showModal(){calls.push(['confirmation',this.children[0].children[0].textContent,this.children[0].children[1].textContent]);onConfirm?.(context);queueMicrotask(()=>{this.returnValue=accept?'update':'cancel';this.close();});}});
  const context={AbortController,Error,Map,parsePhoneManifest,compareFirmwareVersions,validFirmwareVersion,availableCardRelease,updateCardFirmware,FirmwareScreenAwake,
-  firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,entry,calls,publicFirmware:publicRelease,publicFirmwareFresh:fresh,publicFirmwareError:'',
+  firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,acknowledgedBluetoothUpdateSource,entry,calls,publicFirmware:publicRelease,publicFirmwareFresh:fresh,publicFirmwareError:'',
   firmwareAttempts:journal,legacyFirmwareReceipts:new Map(),cardFirmwareTasks:tasks,cardFirmwareUnconfirmed:new Map(),cardFirmwareMessages:new Map(),
   groupRemovedIds:new Set(),removedAccessoryIds:new Set(),phonePlatform:platform,store:{items:[saved]},mergedLampEntries:()=>context.store.items,
   cardInstalledVersion:()=>installed,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,

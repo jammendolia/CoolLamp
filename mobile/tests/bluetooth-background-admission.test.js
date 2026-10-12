@@ -31,7 +31,7 @@ function fixture(options={}){
    ack=frame.getUint8(1);lamp.receive(packet());
   },
   async read(device,service,characteristic){
-   assert.equal(device,'target');assert.equal(service,SERVICE);events.push({read:characteristic,endpoint:response?.endpoint});
+   assert.equal(device,'target');assert.equal(service,SERVICE);events.push({read:characteristic,endpoint:response?.endpoint,offset:response?.offset});
    await pause('read:'+characteristic+':'+(response?.endpoint??0));
    if(characteristic===STATE)return packet();
    if(characteristic===identityChar)return new DataView(new TextEncoder().encode(identity).buffer);
@@ -64,7 +64,9 @@ for(const op of [22,24,25])test('admission lost during GET command '+op+' fences
  await gate.started.promise;const native=f.events.length,callbacks=f.callbacks.length,state=f.lamp.state;
  f.setAdmitted(false);gate.finished.resolve();await assert.rejects(pending,error=>heldError(error));
  assert.equal(f.events.length,native);assert.equal(f.callbacks.length,callbacks);assert.equal(f.lamp.state,state);
- assert(!f.events.some(row=>row.read));assert.equal(f.events.filter(row=>row.write===24).length,op===22?0:1);await resume(f);
+ const reads=f.events.filter(row=>row.read);
+ assert.equal(reads.length,op===25?1:0);if(op===25)assert.deepEqual(reads.map(row=>({read:row.read,offset:row.offset})),[{read:CONTROL,offset:0}]);
+ assert.equal(f.events.filter(row=>row.write===24).length,op===22?0:1);await resume(f);
 });
 
 test('explicit fifth guard fences each body chunk of a background relay read before a remote dispatch',async()=>{
@@ -80,8 +82,13 @@ test('a PAGE queued behind another lane checks admission again before its native
  f.radio.write=async(...args)=>{await write(...args);if(args[3].getUint8(2)===24)f.lamp.tail=gate.promise;};
  f.lamp.command=(operation,...args)=>{const result=command(operation,...args);if(operation==='controlPage')queued.resolve();return result;};
  const pending=f.lamp.request('/api/descriptor',undefined,f.lamp.epoch,f.guard);await queued.promise;
- assert(!f.events.some(row=>row.write===25));f.setAdmitted(false);gate.resolve();await assert.rejects(pending,error=>heldError(error));
- assert(!f.events.some(row=>row.write===25||row.read));assert.equal(f.executions.length,1);await resume(f);
+ assert(!f.events.some(row=>row.write===25));
+ // The Commit-cached first page has already been read. This queued selector
+ // is for its next offset; cancellation must prevent that write and all
+ // subsequent reads or cleanup, rather than disallow the earlier valid read.
+ assert.deepEqual(f.events.filter(row=>row.read).map(row=>({read:row.read,offset:row.offset})),[{read:CONTROL,offset:0}]);
+ const native=f.events.length;f.setAdmitted(false);gate.resolve();await assert.rejects(pending,error=>heldError(error));
+ assert.equal(f.events.length,native);assert(!f.events.some(row=>row.write===25));assert.equal(f.executions.length,1);await resume(f);
 });
 
 test('a late CONTROL page read never submits another page or adopts a stale settings snapshot',async()=>{
