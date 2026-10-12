@@ -16,7 +16,7 @@ function descriptor(target){
 }
 function transport(id,{gate,unsupported=false,afterQueue,refreshError=false}={}){
  const started=deferred(),requests=[],writes=[];
- return {identity:id,name:id,epoch:1,raw:{token:'token-'+id},catalog:[{id:4}],requests,writes,started,
+ return {identity:id,name:id,epoch:1,raw:{token:'token-'+id},catalog:[{id:4}],requests,writes,started,refreshCalls:0,
   enqueue(action){return Promise.resolve().then(action).then(value=>{afterQueue?.();return value;});},
   async request(path,fields,epoch,beforeWrite){
    beforeWrite?.();
@@ -25,7 +25,7 @@ function transport(id,{gate,unsupported=false,afterQueue,refreshError=false}={})
    if(path==='/api/revision')return descriptor(id).state;
    writes.push({path,fields});return {version:1,target:id,bootSession:boot,requestBoot:boot,commandId:'0000000000000001',revision:2,executionRevision:2,outcome:path==='/api/appearance/save'?'persisted':'executed',executed:true,persisted:path==='/api/appearance/save',httpStatus:200};
   },
-  async refresh(){if(refreshError)throw Error('Refresh failed');}
+  async refresh(){this.refreshCalls++;if(refreshError)throw Error('State response memory unavailable. Nothing changed.');}
  };
 }
 function harness(){
@@ -42,6 +42,7 @@ function harness(){
  globalThis.ui={
   select(target){lamp=target;selected=target?{id:target.identity,name:target.name}:null;state=target?{mode:4,color:{enabled:true}}:null;},
   mode(value){state.mode=value;},
+  live(value){liveLightSending=value;},
   load:loadApp2Experience,light:app2LightChange,save:saveApp2Appearance,model:app2EffectModel,
   reconcile:()=>$('reconcileApp2').onclick(),retire:()=>$('retireApp2').onclick(),
   remember(id,session){app2Pending.set(id,session);},pending(id){return app2Pending.get(id);}
@@ -76,7 +77,23 @@ test('saving cannot silently capture a different effect after negotiation',async
 test('reconciliation clears a confirmed receipt even if its later refresh fails',async()=>{
  const ui=harness(),first=transport('aabbccddeeff',{refreshError:true});let reads=0;
  ui.select(first);ui.remember(first.identity,{target:first.identity,reconcile:async()=>{reads++;return {outcome:'executed',executed:true};}});
- await ui.reconcile();assert.equal(reads,1);assert.equal(ui.pending(first.identity),undefined);assert.match(ui.messages.at(-1),/Refresh failed/);
+ await ui.reconcile();assert.equal(reads,1);assert.equal(ui.pending(first.identity),undefined);assert.match(ui.messages.at(-1),/State response memory unavailable/);
+});
+
+for(const live of [false,true])test('a validated execution receipt with a later '+(live?'live':'explicit')+' read failure stays applied without retry or false uncertainty',async()=>{
+ const ui=harness(),first=transport('aabbccddeeff',{refreshError:true}),cache=first.raw;
+ ui.select(first);ui.live(live);assert.equal(await ui.light('brightness',42),true);
+ assert.equal(first.writes.length,1);assert.equal(first.writes[0].fields.brightness,42);assert.equal(first.refreshCalls,1);assert.equal(first.raw,cache);
+ assert.equal(ui.pending(first.identity),undefined);assert.equal(ui.messages.at(-1),'Your change was applied. Current settings could not be refreshed.');
+ assert(!ui.messages.some(message=>message.includes('Nothing changed')));
+});
+
+test('a known executed change cannot show stale read-failure feedback on a newly selected lamp',async()=>{
+ const ui=harness(),second=transport('112233445566');let turns=0;
+ const first=transport('aabbccddeeff',{afterQueue:()=>{if(++turns===2)ui.select(second);}});
+ ui.select(first);assert.equal(await ui.light('brightness',42),true);
+ assert.equal(first.writes.length,1);assert.equal(second.writes.length,0);assert.equal(first.refreshCalls,0);
+ assert.equal(ui.pending(first.identity),undefined);assert.equal(ui.messages.length,0);
 });
 
 test('production effect tuning sends one fresh revision and only the changed parameter',async()=>{

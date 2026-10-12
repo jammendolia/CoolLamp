@@ -217,7 +217,14 @@ async function app2LightChange(operation,value,activatePalette,changedOption=nul
   if(result.outcome==='uncertain')throw Object.assign(Error('The lamp did not confirm this change. Check its state before trying again.'),{uncertain:true});
   if(result.outcome==='rejected')throw Error('The lamp rejected this change. Refresh its current settings.');
   if(!result.executed)throw Error('This change was not applied.');
-  await record.target.enqueue(()=>refreshApp2Light(record));if(!liveLightSending)status('Changes confirmed on '+selected.name+'.');return true;
+  try{await record.target.enqueue(()=>refreshApp2Light(record));}
+  catch{
+    // The target already confirmed execution. A later read failure cannot
+    // change that receipt into a failed or uncertain mutation, or replay it.
+    if(app2TargetMatches(record))status('Your change was applied. Current settings could not be refreshed.');
+    return true;
+  }
+  if(!liveLightSending)status('Changes confirmed on '+selected.name+'.');return true;
 }
 async function saveApp2Appearance(){
  if(busy||connecting||updatingLamp()||!independentLightingAllowed())return;busy=true;
