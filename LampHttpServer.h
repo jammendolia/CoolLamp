@@ -22,6 +22,9 @@ public:
   // The legacy mapped setup page is 24 KiB. Stop-and-wait sends can need more
   // than five seconds with healthy delayed ACKs; API/request limits stay fixed.
   static constexpr uint32_t MappedHtmlTimeoutMs=15000;
+  // A large immutable read can need about3s of delayed ACKs plus the pinned
+  // SDK's initial3s retransmission. Parsing/dispatch and mutations stay5s.
+  static constexpr uint32_t LargeReadResponseTimeoutMs=8000;
   // Mapped pages have no page-sized heap buffer. A separate measured-work
   // allowance protects SDK/workspace plus one bounded TCP flight; accepted
   // input and ordinary responses retain priority. Other admission is unchanged.
@@ -51,7 +54,7 @@ private:
     String body;const char* staticBody=nullptr;size_t bodyLength=0, sent=0, headerSent=0;
     char responseHeader[512]{};size_t headerLength=0;uint32_t received=0;
     uint8_t input[128]{};size_t inputAt=0,inputSize=0;
-    int route=-1;bool uploadStarted=false, uploadAccepted=false,staticPage=false;
+    int route=-1;bool uploadStarted=false, uploadAccepted=false,staticPage=false,readResponse=false;
     bool closeAbandoned=false,awaitingAck=false;uint32_t closeTimeoutMs=LampHttpParser::RequestTimeoutMs;
     uint16_t ackPendingBytes=0,ackPendingSegments=0;bool ackObserved=false;
     uint16_t closeKnownPendingBytes=0;
@@ -74,7 +77,8 @@ private:
   static void increment(uint32_t& n){if(n!=UINT32_MAX)++n;}
   static void maximum(uint32_t& n,uint32_t value){if(value>n)n=value;}
   static uint32_t absoluteTimeout(const Slot& slot){return slot.multipart?LampHttpParser::UploadTimeoutMs:
-    slot.state==ClientState::Send&&slot.staticPage?MappedHtmlTimeoutMs:LampHttpParser::RequestTimeoutMs;}
+    slot.state==ClientState::Send&&slot.staticPage?MappedHtmlTimeoutMs:
+    slot.state==ClientState::Send&&slot.readResponse?LargeReadResponseTimeoutMs:LampHttpParser::RequestTimeoutMs;}
   bool beginTransport();void stopTransport();void serviceTransport();
   void clearParser(Slot& slot);
   LampHttpSocketCleanup::TransmitCredit sampleTransmitCredit(unsigned slot);

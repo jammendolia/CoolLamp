@@ -365,6 +365,10 @@ bool captureLampNetworkAddress(char* destination,size_t capacity,const IPAddress
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
+  const String statePath=lampServer.uri();
+  if(statePath.isEmpty()){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  const bool currentView=statePath=="/api/state/current"||(lampServer.controlActive()&&lampServer.hasArg("view"));
+  if(currentView&&!(lampServer.controlActive()?lampServer.controlConfidential()&&lampServer.arg("view")=="current":lampServer.fieldsAllowed(nullptr,0))){lampServer.send(400,"text/plain","Invalid state view.");return;}
   const uint32_t snapshotTime=millis();
   const auto firmwareSnapshot=captureLampUpdateJson();const auto audioSnapshot=captureLampAudioJson();
   const auto syncSnapshot=captureLampSyncJson(snapshotTime);
@@ -384,6 +388,7 @@ void sendLampState()
   if(!lampServer.controlActive()){state.concat(",\"token\":");state.quote(lampToken);}
   state.concat(",\"name\":");state.quote(lampName);state.concat(",\"uptimeMs\":");state.concat(snapshotTime);
   state.concat(",\"controlVersion\":1");
+  if(currentView)state.concat(",\"stateView\":1");
   state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
   state.concat(",\"catalogVersion\":1");
   state.concat(",\"factoryReset\":true");
@@ -419,12 +424,13 @@ void sendLampState()
   state.concat("],\"colors\":[");
   for (uint16_t mode = 1; mode <= lampAvailableEffectCount(); ++mode) {
     if (mode > 1) state.concat(',');
+    if(currentView&&mode!=Mode){state.concat("null");continue;}
     const auto c = getLampColor(mode);
     state.concat("[");state.concat(c.enabled);state.concat(",");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");
   }
   state.concat("],\"effectOptions\":[");
   for (uint16_t mode=1;mode<=lampAvailableEffectCount();++mode) {
-    if(mode>1) state.concat(','); const auto o=getLampEffectOptions(mode);
+    if(mode>1) state.concat(',');if(currentView&&mode!=Mode){state.concat("null");continue;} const auto o=getLampEffectOptions(mode);
     state.concat("[");state.concat(o.speed);state.concat(",");state.concat(o.intensity);state.concat(",");state.concat(o.dual);state.concat(",");state.concat(o.r);state.concat(",");state.concat(o.g);state.concat(",");state.concat(o.b);state.concat("]");
   }
   state.concat("]}");
@@ -740,6 +746,7 @@ void beginLampNetwork()
 #endif
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
+  lampServer.on("/api/state/current", HTTP_GET, sendLampState);
   lampServer.on("/api/descriptor",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
   lampServer.on("/api/revision",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampRevisionJson());});
   lampServer.on("/api/state/patch",HTTP_POST,handleLampStatePatch);

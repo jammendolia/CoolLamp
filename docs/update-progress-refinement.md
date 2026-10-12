@@ -1,5 +1,35 @@
 # Update progress refinement — local implementation
 
+## 1.15.3 whole-lamp background candidate (2026-10-12)
+
+The current candidate separates the two visual layers. A subdued whole-lamp
+color wash slowly cross-fades through a small palette; stateless selection uses
+only cue generation and elapsed time. It does not allocate a frame buffer or
+consume the effects' shared random generator. Confirmed filled positions replace
+that background with the existing brighter, steady route color: blue for phone
+Bluetooth, green for Internet, amber for trusted donation and purple for browser
+upload. Unknown routes remain neutral. Filled pixels never follow the background
+hue or pulse. No transfer percentage is inferred from time.
+
+The calibrated folded-strip mask, 1–1024/odd counts, 10 Hz cadence, brightness and
+current caps, original-frame restoration and on-at-admission latch are retained.
+A one-pixel lamp blends its background toward the route color using confirmed
+written bytes; only complete data reaches the exact completed color. Invalid or
+unavailable counters show background only. The effect remains receiver-only and
+absent from catalogs. No wire structure or NVS record changes.
+
+Public 1.15.2 artifacts remain immutable. Pink's transfer from 1.15.1 uses the
+renderer in that running image; installing a newer renderer cannot change an
+already-running transfer. This 1.15.3 refinement becomes visible on a subsequent
+update started from 1.15.3. Code/build checks and an exact-image authenticated
+browser reinstall are complete. Hardware show counters corroborate the hidden
+renderer during that transfer; optical color/contrast confirmation and native
+Bluetooth cue acceptance remain pending. Exact artifact, settings evidence and
+resource limitations are recorded in `docs/releases/firmware-1.15.3.md`.
+Historical milestones below describe their earlier images.
+
+## Earlier milestones
+
 This follows the physically observed iPhone 60.1 reinstall of the exact standard
 1.15.1 release on CoolLamp 2. The user saw progress, the hidden update animation,
 and **Your lamp is updated**; USB subsequently verified fresh healthy boot,

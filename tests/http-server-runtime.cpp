@@ -31,6 +31,11 @@ static_assert(LampHttpSocketCleanup::AckWaitTimeoutMs==3500,"Legacy policy compa
 #else
 static_assert(LampHttpSocketCleanup::AckWaitTimeoutMs==5000,"Copied-data idle contract drifted");
 #endif
+#ifdef LAMP_HTTP_LEGACY_LARGE_READ_FIXTURE
+static_assert(LampHttpServer::LargeReadResponseTimeoutMs==5000,"Former large-read comparison drifted");
+#else
+static_assert(LampHttpServer::LargeReadResponseTimeoutMs==8000,"Large immutable read bound drifted");
+#endif
 
 // Track the real production Parser allocations. This fixture does not infer
 // release from implementation text or substitute a second request processor.
@@ -226,6 +231,7 @@ struct Fixture {
   LampControlHttpAdapter server{80};
   unsigned listener=0,reads=0,mutations=0,uploadStarts=0,uploadWrites=0,uploadEnds=0,uploadAborts=0,uploadFinalCalls=0,restarts=0;
   bool updateOwned=false,uploadComplete=false,failWrite=false,requireParserReleased=false;
+  size_t currentReadBytes=0;const char* currentReadType="application/json";int currentReadStatus=200;
   std::vector<uint8_t> written;
   void owner(){assert((inService||inControl)&&!inCloseWorker);if(requireParserReleased)assert(!liveParsers&&!liveBodies);}
   bool auth(bool mutation=false){
@@ -234,7 +240,7 @@ struct Fixture {
     if(mutation&&server.header("X-Lamp-Token")!=lampToken){server.send(403,"text/plain","Token required.");return false;}
     return true;
   }
-  Fixture(){
+  explicit Fixture(size_t currentBytes=0):currentReadBytes(currentBytes){
     server.on("/",HTTP_GET,[this](){if(!auth())return;++reads;server.sendHeader("X-Content-Type-Options","nosniff");server.sendHeader("X-Frame-Options","DENY");
 #ifdef COOL_LAMP_PAGE_GZIP
       server.sendHeader("Content-Encoding","gzip");server.send_P(200,"text/html; charset=utf-8",reinterpret_cast<const char*>(LAMP_PAGE_GZIP),LAMP_PAGE_GZIP_SIZE);
@@ -242,11 +248,13 @@ struct Fixture {
       server.send_P(200,"text/html; charset=utf-8",LAMP_PAGE);
 #endif
     });
-    server.on("/api/state",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",server.controlActive()?"{\"deviceId\":\"aabbccddeeff\"}":"{\"deviceId\":\"aabbccddeeff\",\"token\":\"development-token\"}");});
+    const auto stateRead=[this](){if(!auth())return;++reads;if(currentReadBytes&&server.uri()=="/api/state/current"){server.send(currentReadStatus,currentReadType,String(std::string("\"")+std::string(currentReadBytes-2,'a')+"\""));return;}server.send(200,"application/json",server.controlActive()?"{\"deviceId\":\"aabbccddeeff\"}":"{\"deviceId\":\"aabbccddeeff\",\"token\":\"development-token\"}");};
+    server.on("/api/state",HTTP_GET,stateRead);server.on("/api/state/current",HTTP_GET,stateRead);
     for(const char* route:{"/api/effects","/api/descriptor","/api/revision","/api/firmware","/api/diagnostics"})
       server.on(route,HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/effects/schema",HTTP_POST,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/power",HTTP_POST,[this](){if(!auth(true))return;const char* const fields[]={"on"};if(!server.fieldsAllowed(fields,1)||server.arg("on")!="1"){server.send(400,"text/plain","Invalid form.");return;}++mutations;server.send(200,"text/plain","Light on.");});
+    server.on("/api/state/patch",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"application/json","{\"outcome\":\"executed\"}");});
     server.on("/large",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(4000,'a')));});
     server.on("/full-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(5998,'a')+"\""));});
     server.on("/max-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(8190,'a')+"\""));});
@@ -309,7 +317,56 @@ int main(int argc,char** argv){
   assert(argc==2);const std::string scenario=argv[1];
   memset(bulkPage,'p',sizeof(bulkPage)-1);
 
-  if(scenario=="parser-admission-bounds-and-recovery"){
+  if(scenario=="large-read-rto-and-delayed-acks"||scenario=="large-read-rto-and-delayed-acks-rollover"){
+    if(scenario=="large-read-rto-and-delayed-acks-rollover")clockUs=uint64_t(UINT32_MAX-1700)*1000;
+    Fixture f(5551);const uint32_t began=millis();const int fd=connect(f.listener,get("/api/state/current"));auto& peer=sockets[fd];peer.ackDelayMs=200;
+    for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
+    assert(f.reads==1&&peer.outgoing.find("\r\n\r\n")!=std::string::npos);
+    // The header ACK is normal. Exactly one copied data flight then waits for
+    // the pinned3s retransmission; all following ACKs take200ms again.
+    peer.ackDelayMs=3000;turn(f.server,200);assert(peer.unackedBytes==FlightBytes);peer.ackDelayMs=200;
+    f.finish(fd,1000,10);const size_t body=peer.outgoing.find("\r\n\r\n")+4;
+    contains(fd,"200 OK");assert(f.reads==1&&!f.mutations&&f.server.metrics().dispatches==1&&largestWrite<=384);
+#ifdef LAMP_HTTP_LEGACY_LARGE_READ_FIXTURE
+    assert(peer.outgoing.size()-body<5551&&f.server.metrics().deadlines==1&&detachedRequests.at(fd).cancelled);
+    assert(uint32_t(millis()-began)>=5000&&uint32_t(millis()-began)<5020);
+#else
+    assert(peer.outgoing.substr(body)==std::string("\"")+std::string(5549,'a')+"\"");
+    assert(!f.server.metrics().deadlines&&!detachedRequests.at(fd).cancelled&&uint32_t(millis()-began)>5000&&uint32_t(millis()-began)<8000);
+#endif
+    assert(detachedRequests.at(fd).absoluteTimeoutMs==LampHttpServer::LargeReadResponseTimeoutMs);
+    std::cout<<"MEASURE hostOnly largeReadBytes=5551 delayedAckMs=200 oneRtoMs=3000 originalTotalMs="<<LampHttpServer::LargeReadResponseTimeoutMs<<" elapsedMs="<<uint32_t(millis()-began)<<" receivedBodyBytes="<<peer.outgoing.size()-body<<"\n";
+  }else if(scenario=="large-read-absolute-progress-rollover-and-fairness"){
+    clockUs=uint64_t(UINT32_MAX-1700)*1000;Fixture f(5551);const uint32_t began=millis();const int fd=connect(f.listener,get("/api/state/current"));auto& peer=sockets[fd];
+    for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
+    turn(f.server);assert(peer.unackedBytes==FlightBytes);peer.ackBlocked=true;
+    // Observed partial ACKs preserve the copied-data idle fence but never
+    // renew the original8s lifetime or allow another application flight.
+    for(unsigned second=1;second<8;++second){--peer.unackedBytes;turn(f.server,second*1000-uint32_t(millis()-began));runCloser();assert(!peer.closed);
+      if(second==3){const int other=connect(f.listener,get("/api/revision"));const uint32_t queuedAt=millis();f.finish(other,30);contains(other,"503 Service Unavailable");assert(uint32_t(millis()-queuedAt)<100&&f.reads==1);}
+    }
+    turn(f.server,8000-uint32_t(millis()-began));runCloser();assert(peer.closed&&f.server.metrics().deadlines==1&&f.reads==1&&!f.mutations);
+    assert(detachedRequests.at(fd).cancelled&&detachedRequests.at(fd).absoluteTimeoutMs==8000&&uint32_t(millis()-began)>=8000&&uint32_t(millis()-began)<8010);
+    const int recovered=connect(f.listener,get("/api/revision"));f.finish(recovered);contains(recovered,"200 OK");assert(f.reads==2&&detachedRequests.at(recovered).absoluteTimeoutMs==5000);
+  }else if(scenario=="large-read-policy-is-dispatch-content-and-size-bound"){
+    for(unsigned kind=0;kind<5;++kind){
+      Fixture f(kind==0?4096:5551);if(kind==1)f.currentReadType="text/plain";if(kind==2)f.currentReadType="application/jsonp";if(kind==3)f.currentReadStatus=500;
+      if(kind==4)f.server.on("/api/geometry",HTTP_POST,[&](){if(!f.auth(true))return;++f.mutations;f.server.send(200,"application/json",String(std::string("\"")+std::string(5549,'a')+"\""));});
+      const uint32_t began=millis();const int fd=connect(f.listener,kind==4?post("/api/geometry","midpoint=4"):get("/api/state/current"));auto& peer=sockets[fd];
+      for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
+      turn(f.server);peer.ackBlocked=true;assert(peer.unackedBytes==FlightBytes);
+      for(unsigned second=1;second<5;++second){--peer.unackedBytes;turn(f.server,second*1000-uint32_t(millis()-began));runCloser();assert(!peer.closed);}
+      turn(f.server,5000-uint32_t(millis()-began));runCloser();assert(peer.closed&&detachedRequests.at(fd).cancelled&&detachedRequests.at(fd).absoluteTimeoutMs==5000);
+      assert(kind==4?f.mutations==1:f.reads==1);assert(f.server.metrics().dispatches==1);
+    }
+    // A prospective large read cannot borrow8s while still parsing or waiting
+    // in Prepared behind a different request's memory admission.
+    Fixture f(5551);const auto request=get("/api/state/current");const int partial=connect(f.listener,request.substr(0,request.size()-2));
+    for(unsigned i=0;i<10;++i)turn(f.server);turn(f.server,5000);runCloser();assert(sockets[partial].closed&&!f.reads&&detachedRequests.at(partial).absoluteTimeoutMs==5000);
+    fakeFreeHeap=16000;const int waiting=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<10;++i)turn(f.server);
+    const int prepared=connect(f.listener,get("/api/state/current"));for(unsigned i=0;i<10;++i)turn(f.server);
+    turn(f.server,5000);runCloser();assert(sockets[waiting].closed&&sockets[prepared].closed&&!f.reads&&!f.mutations&&detachedRequests.at(prepared).absoluteTimeoutMs==5000);
+  }else if(scenario=="parser-admission-bounds-and-recovery"){
     Fixture f;accountParserAllocation=true;
     for(const auto budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto attempts=parserAllocationAttempts,allocations=totalParsers;
@@ -691,6 +748,36 @@ int main(int argc,char** argv){
     assert(denied.status==503&&f.reads==1&&fakeStringReserveCalls==reserves);
     fakeFreeHeap=12560;inControl=true;const auto admitted=f.server.executeControl(LampControlEndpoint::SchemaPage,true,form.c_str(),true);inControl=false;
     assert(admitted.status==200&&f.reads==2&&!f.mutations&&!f.server.controlActive()&&!f.server.hasArg("f0"));
+  }else if(scenario=="current-state-read-admission"){
+    Fixture f;fakeFreeHeap=14968;fakeLargestFreeBlock=7668;
+    assert(LampControlResourcePolicy::readHttpPath("/api/state/current",false));
+    assert(!LampControlResourcePolicy::readHttpPath("/api/state/current",true));
+    const int fd=connect(f.listener,get("/api/state/current"));f.finish(fd,40);contains(fd,"200 OK");assert(f.reads==1&&!f.mutations);
+    inControl=true;const auto current=f.server.executeControl(LampControlEndpoint::State,false,"view=current",true);inControl=false;
+    assert(current.status==200&&f.reads==2&&!f.mutations&&!f.server.hasArg("view"));
+    for(const bool confidential:{false,true})for(const char* form:{"view=wrong!!","view=current&extra=1"}){
+      inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::State,false,form,confidential);inControl=false;
+      assert(denied.status==400&&f.reads==2&&!f.mutations&&!f.server.controlActive());
+    }
+    fakeFreeHeap=8703;const int denied=connect(f.listener,get("/api/state/current"));f.finish(denied,40);contains(denied,"503 Service Unavailable");assert(f.reads==2&&!f.mutations);
+  }else if(scenario=="compact-state-patch-memory"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=2048;
+    static_assert(LampControlResourcePolicy::ReadHeadroomBytes+LampControlResourcePolicy::ReadWorkspaceBytes==8704);
+    const int fd=connect(f.listener,post("/api/state/patch","brightness=90"));const auto began=millis();f.finish(fd,40);
+    contains(fd,"200 OK");assert(f.mutations==1&&uint32_t(millis()-began)<100);
+    assert(!LampControlResourcePolicy::compactMutationEndpoint(LampControlEndpoint::AppearanceSave,true));
+    assert(!LampControlResourcePolicy::compactMutationHttpPath("/api/state/patch",false));
+    assert(!LampControlResourcePolicy::compactMutationReady(50000,4096,1025));
+    // Exact admission boundary accounts the currently staged form, decoded
+    // Strings, captures and receipt, then rejects before invoking the handler.
+    const std::string form="brightness=91";
+    const uint32_t floor=uint32_t(LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::roundedReplyBytes(form.size())+24*32);
+    fakeFreeHeap=floor-1;const int denied=connect(f.listener,post("/api/state/patch",form));f.finish(denied,40);
+    contains(denied,"503 Service Unavailable");contains(denied,"This request was not executed");assert(f.mutations==1);
+    fakeFreeHeap=floor;const int fresh=connect(f.listener,post("/api/state/patch",form));f.finish(fresh,40);contains(fresh,"200 OK");assert(f.mutations==2);
+    // Legacy/persistent mutations still wait under their unchanged floor.
+    const int legacy=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    assert(f.mutations==2);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==2);
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;

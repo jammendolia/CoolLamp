@@ -20,6 +20,9 @@ extract={}
 exec(compile(ast.Module(body=[n for n in adapter_tree.body if isinstance(n,ast.FunctionDef) and n.name=='function'],type_ignores=[]),'extract','exec'),extract)
 network=(ROOT/'LampNetwork.ino').read_text()
 functions='\n'.join(extract['function'](network,name) for name in ['String jsonText(', 'bool readNumber('])
+sync=(ROOT/'LampSync.cpp').read_text()
+sync_types=sync[sync.index('struct Config {'):sync.index('uint8_t wireVersion=')]
+sync_functions='\n'.join(extract['function'](sync,name) for name in ['bool configureLampSyncPause(', 'void pauseLampSync()', 'uint8_t lampSyncRole()', 'bool lampSyncPaused()'])
 with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
     folder=Path(tmp)
     prefs=(ROOT/'tests/control-stubs/Preferences.h').read_text().replace('  bool begin(','''  size_t getBytesLength(const char* key){return storage[key].size();}
@@ -77,7 +80,11 @@ const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
 bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
-void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}
+void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void syncLampKnob(){}
+using namespace LampSyncWire;
+SYNC_TYPES
+uint8_t wireVersion=ExpandedVersion;bool paused=false;unsigned followerClears=0;
+void clearFollower(){following=false;lampSyncVisual=nullptr;++followerClears;}
 struct CRGB {inline static int Black=0;};int* leds=nullptr;void fill_solid(int*,uint16_t,int){}
 struct {void setBrightness(uint8_t){}} FastLED;
 namespace UpdatePublisher {bool enforced(){return false;}}
@@ -87,6 +94,7 @@ VuColor lampVuColors[3]={{1,2,3},{4,5,6},{7,8,9}};FountainColor lampFountainColo
 uint32_t fixturePolicyRevision=1;unsigned policyAttempts=0;bool policyFail=false,policyUncertain=false;
 uint32_t lampUpdatePolicyRevision(){return fixturePolicyRevision;}bool setLampUpdatePolicy(const LampUpdatePolicy::Policy&,uint32_t revision){++policyAttempts;if(policyFail||revision!=fixturePolicyRevision)return false;++fixturePolicyRevision;return true;}bool lampUpdatePolicySaveUncertain(){return policyUncertain;}String lampUpdatePolicyJson(){return "{\"version\":1,\"revision\":"+String(fixturePolicyRevision)+"}";}
 #include "LampColors.ino"
+SYNC_FUNCTIONS
 #include "LampControl.ino"
 '''+functions+r'''
 #include "LampExperience.ino"
@@ -188,6 +196,44 @@ int main(int argc,char** argv){
  fakeFreeHeap=8703;
  result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==503&&Preferences::writes==descriptorWrites&&controls==descriptorControls);
  fakeFreeHeap=fakeLargestBlock=65536;
+ // Compact light reads capture the selected effect only, including live
+ // palette/tuning, without invoking a mutation, NVS or full state serializer.
+ const auto compactWrites=Preferences::writes;const auto compactUses=uses;
+ setLampColor(4,17,18,19);setLampEffectOptions(4,{23,24,1,25,26,27});observeLampAppearance();
+ fakeFreeHeap=11280;fakeLargestBlock=528;
+ auto light=lampRevisionJson();assert(light.length()<=512&&light.find("\"currentColor\":[1,17,18,19]")!=String::npos&&light.find("\"currentOptions\":[23,24,1,25,26,27]")!=String::npos);
+ assert(Preferences::writes==compactWrites&&uses==compactUses&&lampSettings.startupMode==settings.startupMode&&lampSettings.brightness==settings.brightness);
+ fakeFreeHeap=16316;fakeLargestBlock=2048;
+ auto command=envelope(9,lightCommands.currentRevision())+"&brightness=85";
+ assert(LampControlResourcePolicy::compactMutationReady(fakeFreeHeap,fakeLargestBlock,command.length()));
+ result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==85&&result.body.length()<=512&&Preferences::writes==compactWrites);
+ const auto compactRevision=lightCommands.currentRevision();
+ // A denied admission consumes no ledger ID. The same explicitly denied
+ // request can be submitted once after memory recovers, while duplicates of
+ // its executed command return the original receipt without another setter.
+ command=envelope(10,compactRevision)+"&brightness=86";
+ const size_t compactFloor=LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::roundedReplyBytes(command.length())+24*32;
+ fakeFreeHeap=compactFloor-1;const auto beforeDeniedId=lightCommands.nextId();
+ result=lampServer.executeControl(42,true,command);assert(result.status==503&&Brightness==85&&lightCommands.nextId()==beforeDeniedId);
+ fakeFreeHeap=compactFloor;result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==86&&Preferences::writes==compactWrites);
+ result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==86&&lightCommands.currentRevision()==compactRevision+1);
+ fakeFreeHeap=fakeLargestBlock=65536;
+ // Invoke actual pause persistence as well as the partial handler. An offline
+ // follower cannot implicitly write syncV2 or change light; already-paused
+ // followers retain their local volatile controls without another NVS write.
+ const auto membershipWrites=Preferences::writes;const auto membershipStorage=Preferences::storage;
+ const auto beforeFollowerBrightness=Brightness;const auto beforeFollowerPower=PowerOn;
+ config.role=2;wireVersion=ExpandedVersion;paused=false;following=false;
+ command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
+ result=lampServer.executeControl(42,true,command);assert(result.status==409&&result.body.find("\"outcome\":\"rejected\"")!=String::npos);
+ assert(!paused&&Brightness==beforeFollowerBrightness&&PowerOn==beforeFollowerPower&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
+ const auto rejectionReceipt=result.body;result=lampServer.executeControl(42,true,command);assert(result.status==409&&result.body==rejectionReceipt&&!paused&&Preferences::writes==membershipWrites);
+ paused=true;command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
+ result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==87&&!PowerOn&&paused&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
+ // The old setter still performs its explicit pause behavior unchanged.
+ paused=false;wireVersion=LegacyVersion;assert(setLampControl(Mode,88,false)&&paused&&Brightness==88&&Preferences::writes==membershipWrites);
+ wireVersion=ExpandedVersion;paused=false;assert(configureLampSyncPause(true)&&paused&&Preferences::writes==membershipWrites+1&&Preferences::storage.count("syncV2"));
+ config.role=0;paused=false;Preferences::storage=membershipStorage;Preferences::writes=membershipWrites;observeLampAppearance();
  checkReplyFailures([](){return lampDescriptorJson();});checkReplyFailures([](){return lampRevisionJson();});
  checkReplyFailures([&](){return receiptJson(nullptr,lightCommands.boot(),UINT64_MAX);});
  for(auto outcome:{LampCommands::Outcome::Rejected,LampCommands::Outcome::Executed,LampCommands::Outcome::Persisted,LampCommands::Outcome::SaveFailed,LampCommands::Outcome::Uncertain}){
@@ -201,6 +247,7 @@ int main(int argc,char** argv){
  std::cout<<"PASS real appearance/command handlers, duplicate/loss/reboot/CAS/knob/storage/schema; ledger bytes="<<sizeof(LampCommands::Ledger)<<" counted reply reserve/concat failures="<<replyFailureCases<<"\n";
 }
 '''
+    fixture=fixture.replace('SYNC_TYPES',sync_types).replace('SYNC_FUNCTIONS',sync_functions)
     cpp=folder/'fixture.cpp';cpp.write_text(fixture)
     exe=folder/'fixture.exe';output=folder/'contracts.json'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra',*SANITIZERS,*includes,*define,str(cpp),str(ROOT/'LampModel.cpp'),str(ROOT/'LampUpdatePolicy.cpp'),*objects,'-o',str(exe)],check=True)

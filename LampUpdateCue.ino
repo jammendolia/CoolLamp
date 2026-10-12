@@ -9,9 +9,17 @@ bool renderLampUpdateCue(){
   // Reuse the existing frame scratch buffer and restore every RGB byte. The
   // captured power/brightness belong to admission, never a later state change.
   ::memcpy(originalFrame,leds,NUM_LEDS*sizeof(CRGB));
+  const uint32_t elapsed=uint32_t(now-cadence.started);
+  const auto ambient=LampUpdateCue::ambient(elapsed,update.cueGeneration);
+  const auto filled=LampUpdateCue::color(update.route,48);
   for(uint16_t i=0;i<NUM_LEDS;++i){
-    const uint8_t glow=update.cueOn?LampUpdateCue::level(i,NUM_LEDS,lampMidpoint,uint32_t(now-cadence.started),update.writtenOffset,update.totalBytes):0;
-    const auto color=LampUpdateCue::color(update.route,glow);
+    auto color=update.cueOn?ambient:LampUpdateCue::Color{0,0,0};
+    if(update.cueOn){
+      const uint8_t glow=LampUpdateCue::level(i,NUM_LEDS,lampMidpoint,elapsed,update.writtenOffset,update.totalBytes);
+      if(glow==48)color=filled;
+      else if(NUM_LEDS==1&&update.totalBytes&&update.writtenOffset<=update.totalBytes)
+        color=LampUpdateCue::blend(ambient,filled,update.writtenOffset,update.totalBytes);
+    }
     leds[i]=CRGB(color.r,color.g,color.b);
   }
   lampShowFrame(update.cueOn?min(uint8_t(40),update.cueBrightness):uint8_t(0),LampRuntimeMetrics::FrameKind::Update);

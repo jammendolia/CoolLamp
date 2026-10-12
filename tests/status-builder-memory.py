@@ -186,6 +186,10 @@ struct FixtureServer {
  template<typename F>void on(const char*,int,F handler){catalogRead=handler;}
  const Metrics& metrics(){return measured;}unsigned closeTaskStackMinimumBytes(){return UINT32_MAX;}
  bool privateControl=false;bool controlActive(){return privateControl;}
+ const char* viewPath="/api/state";bool projection=false;
+ String uri(){return viewPath;}bool hasArg(const char*){return projection;}
+ bool controlConfidential(){return privateControl;}String arg(const char*){return "current";}
+ bool fieldsAllowed(const char* const*,size_t){return !projection;}
  void send(int code,const char*,String&& value){status=code;body=std::move(value);}
  void send(int code,const char*,const char* value){status=code;body=value;}
 } lampServer;
@@ -351,6 +355,15 @@ int main(){
   measureLowMemory();
   automaticView.internetAttempts=automaticView.donorOffers=UINT16_MAX;automaticView.state=6;automaticView.reason=24;
   measure("compactUpdate",[]{return lampUpdateJson();});
+  // The physically observed post-update baseline has only14968 bytes free.
+  // This explicit projection preserves every setting, effect name and array
+  // position, but carries only current appearance instead of47 full tuples.
+  heapBudget=14968;largestBudget=7668;accountLiveHeap=true;ipv6Dns=true;
+  lampServer.viewPath="/api/state/current";
+  measureHandler("currentViewHttp",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}assert(stats.peak<=14968-8704);return std::move(lampServer.body);});
+  lampServer.viewPath="/api/state";lampServer.privateControl=true;lampServer.projection=true;
+  measureHandler("currentViewBle",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}assert(stats.peak<=14968-8704);return std::move(lampServer.body);});
+  lampServer.privateControl=lampServer.projection=false;ipv6Dns=false;accountLiveHeap=false;heapBudget=largestBudget=327680;
   std::cout<<"{\"snapshotSizes\":{\"firmware\":"<<sizeof(LampUpdateJsonSnapshot)<<",\"audio\":"<<sizeof(LampAudioJsonSnapshot)<<",\"sync\":"<<sizeof(LampSyncJsonSnapshot)<<",\"runtimeMetrics\":"<<sizeof(LampRuntimeMetrics::Snapshot)<<",\"httpMetrics\":"<<sizeof(decltype(lampServer.measured))<<"},\"hostOnly\":true}\n";
 }
 '''
@@ -467,8 +480,8 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
         rows=[json.loads(line) for line in output.stdout.splitlines()]
         snapshot_sizes=next(row['snapshotSizes'] for row in rows if 'snapshotSizes' in row)
         results = [row for row in rows if 'name' in row]
-        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','connected47StateHttp','connected47StateBle','compactUpdate'])
-        compact=results[-1];self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
+        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','connected47StateHttp','connected47StateBle','compactUpdate','currentViewHttp','currentViewBle'])
+        compact=next(row for row in results if row['name']=='compactUpdate');self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
         self.assertEqual(compact['value']['automaticService'],dict(version=1,state=6,reason=24,retryInMs=21600000,donorWaitMs=30000,internetAttempts=65535,donorOffers=65535,attention=False,phoneFallback=False,newerSeen=False))
         for result in results:
             nested=result['value'].get('firmware') if isinstance(result['value'],dict) else None
@@ -545,6 +558,18 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                     self.assertEqual((value['leds'],value['mode'],value['brightness'],value['power']),(134,46,55,True))
                     self.assertEqual(len(value['effects']),47 if '47' in result['name'] else 38)
                 else:self.assertEqual(value['render']['leds'],134)
+        for result in [row for row in results if row['name'].startswith('currentView')]:
+            current=result['value'];self.assertEqual(current['stateView'],1)
+            legacy=next(row['value'] for row in results if row['name']=='connected47State'+('Http' if result['name'].endswith('Http') else 'Ble'))
+            expected=dict(legacy,stateView=1)
+            for field in ('colors','effectOptions'):
+                expected[field]=[entry if i==legacy['mode']-1 else None for i,entry in enumerate(legacy[field])]
+            # Identical settings/catalog/group/identity; no lost positions or
+            # guessed inactive tuples. Heap/status leaves are captured afresh.
+            expected['firmware']=dict(expected['firmware'],freeHeap=current['firmware']['freeHeap'])
+            expected['audio']=dict(expected['audio'],heap=current['audio']['heap'])
+            self.assertEqual(current,expected,{key:(current.get(key),expected.get(key)) for key in set(current)|set(expected) if current.get(key)!=expected.get(key)})
+            self.assertLessEqual(result['peakStringPayloadBytes'],14968-8704)
         report = dict(hostOnly=True, hardwareTouched=False, pinnedCoreVersion='3.3.11',
                       pinnedStringHashes={name:hashlib.sha256((core/name).read_bytes()).hexdigest() for name in ['WString.cpp','WString.h']},
                       sources={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in sources},
@@ -559,6 +584,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       catalog255FixtureIsHandlerOnly=True,catalog255FixtureStatus=future_catalog['status'],
                       lowMemoryFixture={'freeHeapBytes':16316,'largestBlockBytes':7668,'durableMembers':4},
                       connectedLowMemoryFixture={'freeHeapBytes':15508,'largestBlockBytes':7668,'ipv6DnsPreserved':True,'httpTokenBytes':32,'httpAndPrivateBle':True,'unchangedReplyHeadroomBytes':8704},
+                      currentProjectionLowMemoryFixture={'freeHeapBytes':14968,'largestBlockBytes':7668,'sdkWorkspaceMarginBytes':8704,'arrayIndicesPreserved':True,'allOtherSettingsPreserved':True},
                       targetSsoArrayModelBytes=15,targetSsoModelIsNotPhysicalHeap=True,
                       targetSsoModelResults=[{k:v for k,v in r.items() if k!='value'} for r in target_results],
                       snapshotStructBytesHost=snapshot_sizes,snapshotStructSizesAreNotTargetSizes=True,
@@ -568,7 +594,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       measuredScope='String payload allocation only; host pointer/SSO sizes differ; excludes allocator transient and SDK allocations',
                       results=[dict(**{k:v for k,v in r.items() if k!='value'},
                                     finalReplyReservationBytes=(r['bytes']+16)&~15,
-                                    minimumRemainingModeledHeapBytes=(15508 if r['name'].startswith('connected47') else 16316)-r['peakStringPayloadBytes'] if r in results[9:] else None,
+                                    minimumRemainingModeledHeapBytes=(14968 if r['name'].startswith('currentView') else 15508 if r['name'].startswith('connected47') else 16316)-r['peakStringPayloadBytes'] if r in results[9:] else None,
                                     payloadSha256=hashlib.sha256(json.dumps(r['value'],separators=(',',':')).encode()).hexdigest()) for r in results])
         (ROOT/'.build').mkdir(exist_ok=True)
         report_path=Path(os.environ.get('COOLLAMP_STATUS_BUILDER_REPORT',str(ROOT/'.build/status-builder-memory.json')))

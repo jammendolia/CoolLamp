@@ -77,7 +77,7 @@ class LampControlHttpAdapter : public LampHttpServer {
     if(method==HTTP_POST&&!strcmp(path,"/api/household"))return Household;
     if(method==HTTP_POST&&!strcmp(path,"/api/firmware/rollout"))return Rollout;
     if(method==HTTP_POST&&!strcmp(path,"/api/group/remove"))return GroupRemove;
-    if(method==HTTP_GET){if(!strcmp(path,"/api/state"))return State;if(!strcmp(path,"/api/firmware"))return Firmware;if(!strcmp(path,"/api/bluetooth"))return Bluetooth;if(!strcmp(path,"/api/effects"))return Effects;if(!strcmp(path,"/api/mesh/status"))return MeshStatus;if(!strcmp(path,"/api/mesh/new"))return MeshNew;return 0;}
+    if(method==HTTP_GET){if(!strcmp(path,"/api/state")||!strcmp(path,"/api/state/current"))return State;if(!strcmp(path,"/api/firmware"))return Firmware;if(!strcmp(path,"/api/bluetooth"))return Bluetooth;if(!strcmp(path,"/api/effects"))return Effects;if(!strcmp(path,"/api/mesh/status"))return MeshStatus;if(!strcmp(path,"/api/mesh/new"))return MeshNew;return 0;}
     if(method!=HTTP_POST)return 0;
     const char* paths[]={"/api/sync/invite","/api/sync","/api/sync/scene","/api/sync/order","/api/config","/api/audio","/api/audio/tuning","/api/rotation","/api/geometry","/api/calibration","/api/name","/api/identify","/api/vu-colors","/api/fountain-colors","/api/audio/test"};
     for(unsigned i=0;i<sizeof(paths)/sizeof(paths[0]);++i)if(!strcmp(path,paths[i]))return SyncInvite+i;
@@ -178,14 +178,15 @@ public:
     // reconciliation rather than replay on a different route.
     const bool boundedRead=LampControlResourcePolicy::readEndpoint(id,mutation);
     if(!(boundedRead?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
+                   LampControlResourcePolicy::compactMutationEndpoint(id,mutation)?LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
                    LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap())))
       return {503,"Control resources unavailable. This request was not executed."};
     clearFields();
-    if((!mutation&&!body.isEmpty())||!parse(body)){clearFields();return {400,"Invalid control request form."};}
+    if((!mutation&&!body.isEmpty()&&!(id==LampControlEndpoint::State&&confidential&&body=="view=current"))||!parse(body)){clearFields();return {400,"Invalid control request form."};}
     if(id==LampControlEndpoint::Bluetooth&&mutation){bool forget=false;for(unsigned i=0;i<fieldCount;++i)if(fields[i].key=="action"&&fields[i].value=="forget")forget=true;if(!forget){clearFields();return {400,"Choose a supported Bluetooth action."};}}
     reply.status=500;erase(reply.body);controlUri=route(id,mutation);control=true;privateTransport=confidential;readContext=boundedRead;
     controls[id][mutation?1:0]();
-    control=false;privateTransport=false;readContext=false;controlUri=String();clearFields();
+    control=false;privateTransport=false;readContext=false;erase(controlUri);clearFields();
     LampControlReply result{reply.status,std::move(reply.body)};reply.status=500;return result;
   }
 };

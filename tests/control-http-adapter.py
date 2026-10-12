@@ -500,6 +500,20 @@ int main(int argc,char** argv){
  for(auto& peer:peers){peer.udpKnown=true;peer.radioChannel=14;peer.info.microphone=0;peer.joined=false;peer.seen=peer.subscribed=peer.udpSeen=peer.radioSeen=fakeMillis;}
  lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/state",HTTP_GET);
  const auto completeHttpSnapshot=lampServer.responseBody;
+ // Same source-backed state handler, explicit current appearance only. Every
+ // setting/catalog and all47 tuple positions remain present; unrelated mode
+ // entries are null, never fabricated from another lamp's appearance.
+ lampServer.on("/api/state/current",HTTP_GET,sendLampState);lampServer.arguments.clear();
+ const auto beforeProjectionWrites=Preferences::writes;
+ lampServer.invokeHttp("/api/state/current",HTTP_GET);assert(lampServer.responseStatus==200&&lampServer.responseBody.find("\"stateView\":1")!=String::npos&&Preferences::writes==beforeProjectionWrites);
+ const auto projectedHttp=lampServer.responseBody;
+ auto projectedControl=lampServer.executeControl(LampControlEndpoint::State,false,"view=current",true);assert(projectedControl.status==200&&projectedControl.body.find("\"stateView\":1")!=String::npos&&projectedControl.body.find("\"token\"")==String::npos&&Preferences::writes==beforeProjectionWrites);
+ if(argc>7){std::ofstream file(argv[7]);file<<"["<<completeHttpSnapshot<<","<<projectedHttp<<","<<projectedControl.body<<"]";}
+ for(const char* body:{"view=current","view=future!","view=current&extra=1"})assert(lampServer.executeControl(LampControlEndpoint::State,false,body,false).status==400);
+ for(const char* body:{"view=future!","view=current&extra=1","view=current&view=current"})assert(lampServer.executeControl(LampControlEndpoint::State,false,body,true).status==400);
+ assert(lampServer.executeControl(LampControlEndpoint::Revision,false,"view=current",true).status==404);
+ lampServer.arguments={{"extra","1"}};lampServer.invokeHttp("/api/state/current",HTTP_GET);assert(lampServer.responseStatus==400&&Preferences::writes==beforeProjectionWrites);lampServer.arguments.clear();
+ lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200&&lampServer.responseBody.find("stateView")==String::npos&&lampServer.responseBody==completeHttpSnapshot);
  // Same production serializers in the rich diagnostic reply: full durable
  // order, eight escaped hints and maximum lifetime/timing counters.
  diagnosticMetrics={};
@@ -653,7 +667,15 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
                             '-I'+str(directory), '-I'+str(ROOT/'tests/control-stubs'), '-I'+str(ROOT), *SANITIZERS,
                             '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'),str(ROOT/'LampGeometry.cpp'),str(ROOT/'LampUpdatePolicy.cpp'), '-o', str(binary)], check=True)
             diagnostic=ROOT/'.build/experience-complete-diagnostics.json'
-            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic)], check=True)
+            projection=directory/'projection.json'
+            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic),str(projection)], check=True)
+            legacy,current,private=json.loads(projection.read_text())
+            for value in (current,private):
+                expected=dict(legacy,stateView=1)
+                for field in ('colors','effectOptions'):
+                    expected[field]=[entry if index==legacy['mode']-1 else None for index,entry in enumerate(legacy[field])]
+                if value is private:expected.pop('token')
+                self.assertEqual(value,expected)
             value = json.loads(snapshot.read_text())
             self.assertEqual(value['deviceId'], 'aabbccddeeff')
             self.assertEqual(value['controlVersion'], 1)

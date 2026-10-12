@@ -10,7 +10,7 @@ namespace {
 // Construct before Transfer so its destructor releases this owner first.
 String retainedResponse;
 LampBleControlWire::Transfer transfer;
-constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\",\"descriptor-v2\",\"effect-schema-v2\",\"partial-state-v1\",\"appearance-v2\",\"receipts-v1\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"maxEndpoint\":52,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
+constexpr char metadata[]="{\"version\":1,\"capabilities\":[\"control\",\"groups\",\"espnow\",\"firmware-relay\",\"mesh-control\",\"mesh-onboarding\",\"descriptor-v2\",\"effect-schema-v2\",\"partial-state-v1\",\"appearance-v2\",\"receipts-v1\",\"current-state-v1\"],\"maxRequest\":1024,\"maxResponse\":8192,\"pageBytes\":480,\"maxEndpoint\":52,\"firmware\":\"" LAMP_FIRMWARE_VERSION "\"}";
 static_assert(sizeof(metadata)-1<=LampBleControlWire::PageBytes,"BLE capabilities must fit one metadata page");
 // A refused read needs no heap allocation to explain itself. These immutable
 // bytes contain no lamp/private data; its owner only fences the normal transfer
@@ -79,6 +79,7 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
     if(!transfer.consume(frame,size,generation,millis()))return 2;
     const bool read=LampControlResourcePolicy::readEndpoint(transfer.endpointId(),transfer.mutation());
     if(!(read?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),transfer.bodySize(),true):
+              LampControlResourcePolicy::compactMutationEndpoint(transfer.endpointId(),transfer.mutation())?LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),transfer.bodySize(),true):
               LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))){
       if(read)return readRefusalReply(reply,capacity,replySize);
       constexpr char denied[]="Control resources unavailable. No command executed.";

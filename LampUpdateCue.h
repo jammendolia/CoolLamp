@@ -5,6 +5,26 @@
 namespace LampUpdateCue {
 constexpr uint32_t FrameMs=100;
 struct Color { uint8_t r,g,b; };
+inline Color blend(Color a,Color b,uint32_t part,uint32_t total){
+ if(!total||part>total)return a;
+ const uint32_t remaining=total-part;
+ return {uint8_t((uint64_t(a.r)*remaining+uint64_t(b.r)*part)/total),
+         uint8_t((uint64_t(a.g)*remaining+uint64_t(b.g)*part)/total),
+         uint8_t((uint64_t(a.b)*remaining+uint64_t(b.b)*part)/total)};
+}
+inline Color ambient(uint32_t elapsed,uint32_t generation){
+ // One slow whole-lamp color wash per frame, independent of update route.
+ // Stateless palette selection never consumes the effects' shared RNG state.
+ static constexpr Color palette[]={{18,7,10},{7,14,18},{12,18,7},{18,12,7},
+                                  {12,7,18},{7,18,13},{18,7,16},{7,18,18}};
+ constexpr uint32_t period=6400;
+ const uint32_t epoch=elapsed/period;
+ const auto index=[generation](uint32_t step){
+  uint32_t value=generation*1103515245u+step*1664525u+1013904223u;
+  value^=value>>16;return uint8_t(value&7);
+ };
+ return blend(palette[index(epoch)],palette[index(epoch+1)],elapsed%period,period);
+}
 inline Color color(uint8_t route,uint8_t level){
  // Keep comparable, subdued channel levels across routes. The renderer's
  // existing admission brightness/current cap still governs physical output.

@@ -69,13 +69,24 @@ inline bool readEndpoint(uint8_t id,bool mutation){
 inline bool readHttpPath(const char* path,bool post){
   if(!path)return false;
   if(post)return !strcmp(path,"/api/effects/schema")||!strcmp(path,"/api/receipt")||!strcmp(path,"/api/sync/page");
-  return !strcmp(path,"/api/state")||!strcmp(path,"/api/firmware")||!strcmp(path,"/api/effects")||
+  return !strcmp(path,"/api/state")||!strcmp(path,"/api/state/current")||!strcmp(path,"/api/firmware")||!strcmp(path,"/api/effects")||
     !strcmp(path,"/api/audio")||
     !strcmp(path,"/api/descriptor")||!strcmp(path,"/api/revision")||!strcmp(path,"/api/diagnostics")||
     !strcmp(path,"/api/firmware/upload/status");
 }
 inline bool replyReady(size_t freeHeap,size_t largestBlock){
   return freeHeap>=MinFreeHeapBytes&&largestBlock>=MinLargestBlockBytes;
+}
+// StatePatch has no durable write or full-state serializer: its production
+// handler uses fixed ledger/snapshot storage and one <=512-byte receipt.
+// Preserve the full SDK/workspace margin, capture allowance and decoded form
+// budget. Other mutations retain the legacy 24 KiB admission unchanged.
+constexpr size_t CompactMutationReplyBytes=512;
+inline bool compactMutationEndpoint(uint8_t id,bool mutation){return mutation&&id==LampControlEndpoint::StatePatch;}
+inline bool compactMutationHttpPath(const char* path,bool post){return post&&path&&!strcmp(path,"/api/state/patch");}
+inline bool compactMutationReady(size_t freeHeap,size_t largestBlock,size_t formBytes,bool copyForm=false){
+  const size_t allocation=roundedReplyBytes(CompactMutationReplyBytes);
+  return largestBlock>=allocation&&readReady(freeHeap>=allocation?freeHeap-allocation:0,largestBlock,formBytes,copyForm);
 }
 }
 #endif

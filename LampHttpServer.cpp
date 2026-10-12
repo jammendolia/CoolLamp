@@ -77,7 +77,7 @@ void LampHttpServer::release(unsigned index,bool cancelled){
   // A waiting request owns only this immutable staging record. No adapter
   // fields have been decoded, so cancelling it cannot disturb BLE control.
   if(dispatchContext_==int(index)&&current_!=int(index))clearDispatchRequest();
-  erase(c.body);c.staticBody=nullptr;c.staticPage=false;c.bodyLength=c.sent=c.headerSent=c.headerLength=0;
+  erase(c.body);c.staticBody=nullptr;c.staticPage=c.readResponse=false;c.bodyLength=c.sent=c.headerSent=c.headerLength=0;
   c.awaitingAck=c.ackObserved=false;c.ackPendingBytes=c.ackPendingSegments=0;
   LampHttpParser::wipe(c.input,sizeof(c.input));c.inputAt=c.inputSize=0;
   closeSlot(index);
@@ -87,6 +87,7 @@ bool LampHttpServer::prepareResponse(int code,const char* type,size_t length){
   if(!type||strlen(type)>80||strchr(type,'\r')||strchr(type,'\n'))return false;
   const int n=snprintf(c.responseHeader,sizeof(c.responseHeader),"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n%s\r\n",code,statusText(code),type,unsigned(length),responseHeaders_.length()?responseHeaders_.c_str():"");
   if(n<0||size_t(n)>=sizeof(c.responseHeader))return false;
+  c.readResponse=c.readResponse&&code>=200&&code<300&&length>4096&&!strcmp(type,"application/json");
   c.headerLength=size_t(n);c.bodyLength=length;c.sent=c.headerSent=0;c.state=ClientState::Send;c.awaitingAck=c.ackObserved=false;c.ackPendingBytes=c.ackPendingSegments=0;
   // A complete request may have waited for server RAM. The response's idle
   // interval starts when it exists; the original absolute lifetime never moves.
@@ -283,8 +284,12 @@ void LampHttpServer::serviceTransport(){
         if(!LampControlResourcePolicy::preparationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
           clearDispatchRequest();queueError(index,503,"Upload preparation memory unavailable. Nothing started.");callback=true;continue;
         }
+      }else if(dispatchContext_==int(index)&&LampControlResourcePolicy::compactMutationHttpPath(dispatchRequest_.path,dispatchRequest_.method==LampHttpParser::Method::Post)){
+        if(!LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
+          clearDispatchRequest();queueError(index,503,"Control resources unavailable. This request was not executed.");callback=true;continue;
+        }
       }else if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))continue;
-      dispatch(index);callback=true;continue;
+      c.readResponse=boundedRead;dispatch(index);callback=true;continue;
     }
     if(c.state==ClientState::Receive||c.state==ClientState::Upload){
       while(rx<TurnReceiveBytes&&uint32_t(micros()-began)<TurnBudgetUs){

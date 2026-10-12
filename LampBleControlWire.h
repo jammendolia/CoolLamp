@@ -25,7 +25,7 @@ inline bool validFrame(const uint8_t* frame,size_t size){
   switch(frame[2]){
   case Begin:
     return size==9&&((frame[5]==0&&frame[6]==0&&u16(frame+7)==0)||
-      (tx&&endpoint(frame[5],frame[6])&&u16(frame+7)<=MaxRequest&&(frame[6]!=Read||u16(frame+7)==0)));
+      (tx&&endpoint(frame[5],frame[6])&&u16(frame+7)<=MaxRequest&&(frame[6]!=Read||u16(frame+7)==0||(frame[5]==1&&u16(frame+7)==12))));
   case Chunk:return tx&&size>=8&&u16(frame+5)<MaxRequest&&!memchr(frame+7,0,size-7);
   case Commit:return tx&&size==5;
   case Page:return tx&&size==7&&u16(frame+5)<=MaxResponse;

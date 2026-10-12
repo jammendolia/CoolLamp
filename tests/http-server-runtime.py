@@ -9,12 +9,13 @@ from host_compiler import SANITIZERS
 
 ROOT=Path(__file__).resolve().parents[1]
 POLICY_SCENARIOS=('policy-header-ack-3.6','policy-header-ack-rollover','policy-header-no-progress-absolute','policy-header-no-progress-rollover','policy-header-cancel-uncertain-once')
+LARGE_READ_SCENARIOS=('large-read-rto-and-delayed-acks','large-read-rto-and-delayed-acks-rollover','large-read-absolute-progress-rollover-and-fairness','large-read-policy-is-dispatch-content-and-size-bound')
 SCENARIOS=('mapped-page-low-memory-auth-and-no-copy','mapped-page-low-memory-bounds-and-copy-failure','mapped-page-low-memory-client-fairness','mapped-page-low-memory-absolute-rollover','mapped-page-low-memory-send-allocation-failure','mapped-binary-exact-length','mapped-binary-bounds','browser-preparation-budget','authentication','released-request-metadata','compact-parser-and-exact-bodies','body-allocation-failure-and-cancel','partial-and-cancel','idle-deadlines','absolute-and-rollover',
            'fairness-and-capacity','slow-reader-and-no-replay','trickled-response-hard-deadline','static-page-heap-guard','static-page-priority','static-page-pressure-deadline','ready-memory-before-mutation','stalled-json-memory-recovery','response-budget','household-compatibility','invalid-json-and-allocation-after-mutation','bounded-work',
            'static-page-separate-floor','static-page-receiving-priority','static-page-input-deadline-resumes','static-page-upload-deadline-resumes',
-           'control-memory-before-decode','read-memory-admission-and-immediate-denial','read-form-capture-budget','prepared-releases-before-memory-admission','prepared-raw-form-and-ble-isolation','prepared-single-slot-and-half-close','prepared-form-allocation-failure','prepared-survives-upload-completion','prepared-waits-for-delayed-cleanup','complete-input-total-deadline-and-rollover',
+           'control-memory-before-decode','compact-state-patch-memory','current-state-read-admission','read-memory-admission-and-immediate-denial','read-form-capture-budget','prepared-releases-before-memory-admission','prepared-raw-form-and-ble-isolation','prepared-single-slot-and-half-close','prepared-form-allocation-failure','prepared-survives-upload-completion','prepared-waits-for-delayed-cleanup','complete-input-total-deadline-and-rollover',
            'transmit-credit-delayed-ack-and-deadline','transmit-credit-delayed-ack-reachable','mapped-page-delayed-ack','mapped-page-fast-delayed-ack','mapped-root-delayed-ack','owned-state-two-copy-dma-pressure','single-data-ack-loss-recovers-at-three-seconds','partial-ack-progress-before-drain-and-rollover','partial-ack-equal-contention-and-fd-reuse','partial-ack-segments-total-and-cancel','partial-ack-html-progress-beyond-five','final-flight-baseline-close-backpressure','mapped-page-deadline-rollover-and-cleanup','ack-drain-restores-unsent-idle','mapped-page-idle-cancel-and-request-bound','close-queue-full','stopped-close-queue-full','upload-complete','upload-abort-owner','upload-malformed-and-loss','failed-old-upload-new-owner','upload-final-status-under-response-pressure','fleet-twenty',
-           'parser-admission-bounds-and-recovery','parser-admission-retained-ble-pressure','parser-admission-cancel-and-close-queue-full','parser-admission-allocation-failure-and-race')+POLICY_SCENARIOS
+           'parser-admission-bounds-and-recovery','parser-admission-retained-ble-pressure','parser-admission-cancel-and-close-queue-full','parser-admission-allocation-failure-and-race')+POLICY_SCENARIOS+LARGE_READ_SCENARIOS
 with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as folder:
     binary=Path(folder)/'server.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
@@ -73,14 +74,34 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
                     '-o',str(comparison)],check=True)
     for scenario in POLICY_SCENARIOS:
         subprocess.run([str(comparison),scenario],check=True,timeout=15)
+    # Restore only the former large-read total in temporary production source.
+    # Same handlers/socket fixture must demonstrate its premature5s cutoff.
+    old_large=Path(folder)/'former-large-read';old_large.mkdir()
+    former,count=re.subn(r'(LargeReadResponseTimeoutMs\s*=\s*)8000;',r'\g<1>5000;',
+                        (ROOT/'LampHttpServer.h').read_text());assert count==1
+    (old_large/'LampHttpServer.h').write_text(former)
+    (old_large/'LampHttpServer.cpp').write_bytes((ROOT/'LampHttpServer.cpp').read_bytes())
+    former_binary=old_large/'server.exe'
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
+                    '-DLAMP_HTTP_LEGACY_LARGE_READ_FIXTURE',*SANITIZERS,'-I'+str(old_large),
+                    '-I'+str(ROOT/'tests/http-server-stubs'),'-I'+str(ROOT),
+                    str(ROOT/'tests/http-server-runtime.cpp'),str(old_large/'LampHttpServer.cpp'),
+                    '-o',str(former_binary)],check=True)
+    for scenario in LARGE_READ_SCENARIOS[:2]:
+        subprocess.run([str(former_binary),scenario],check=True,timeout=15)
     report=dict(hostOnly=True,hardwareTouched=False,currentScenariosPassed=len(SCENARIOS),
                 policyComparisonCasesPassed=2*len(POLICY_SCENARIOS),currentCopiedIdleMs=5000,
                 formerCopiedIdleMs=3500,originalApiTotalMs=5000,inputIdleMs=1500,
+                largeReadResponse=dict(originalTotalMs=8000,thresholdBytesExclusive=4096,
+                    successfulReadJsonOnly=True,parsingPreparedSmallAndMutationsStay5000=True,
+                    responseBytes=5551,delayedAckMs=200,oneRecoveryDelayMs=3000,
+                    formerTotalMs=5000,formerBoundedCutoffCasesPassed=2,
+                    absoluteRolloverFairnessAndCancellationPassed=True,physicalCauseConfirmed=False),
                 bulkHtmlSharesControlAdmission=False,mappedPageGetOnly=True,mappedPageSendHeapBytes=11776,
                 mappedPageContiguousWorkspaceBytes=512,mappedPageFlightReserveBytes=3072,
                 mappedPageSingleFlightBytes=384,acceptedReceiveAndUploadHaveBulkPriority=True,
                 lowMemorySafeReadBudget={'freeHeapBytes':16316,'largestBlockBytes':7668},
-                lowMemoryReadDenialImmediate=True,mutationAdmissionUnchanged=True,
+                lowMemoryReadDenialImmediate=True,legacyMutationAdmissionUnchanged=True,compactStatePatchAdmissionMeasuredSeparately=True,
                 bulkHtmlOriginalTotalMs=15000,mappedHtmlByteExact=len((ROOT/'LampPage.h').read_text(encoding='utf-8').split('R"HTML(',1)[1].rsplit(')HTML";',1)[0].encode('utf-8')),
                 mappedGzipLowMemoryScenariosPassed=len(gzip_scenarios),mappedGzip=gzip_report,
                 twoCopyPressure=dict(hostModelOnly=True,physicalCauseConfirmed=False,fixtureDmaBlockBytes=1380,

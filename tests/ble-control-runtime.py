@@ -377,7 +377,35 @@ int main(){
  for(size_t i=0;i<MaxRequest+1;++i)assert(transfer.body()[i]==0);
  assert(send(page(2),18)==0&&send(commit(2),18)==2&&calls==unpermittedCalls);
  resetLampBleControlTransfer(19);
- std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/mutation admission, allocation-free immutable503 read refusals, unchanged mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
+ resetLampBleControlTransfer(19);fakeFreeHeap=16316;fakeLargestBlock=2048;
+ const auto compactCalls=calls;const std::string compactForm="brightness=90";
+ const auto compactSubmit=[&](uint16_t tx){
+  assert(send(begin(tx,LampControlEndpoint::StatePatch,Mutation,compactForm.size()),19)==0);
+  std::vector<uint8_t> frame{1,2,Chunk,uint8_t(tx),uint8_t(tx>>8),0,0};frame.insert(frame.end(),compactForm.begin(),compactForm.end());assert(send(frame,19)==0);
+  assert(send(commit(tx),19)==0);
+ };
+ compactSubmit(1);assert(u16(out+4)==200&&calls==compactCalls+1&&lastEndpoint==42&&lastForm==compactForm&&send(commit(1),19)==2);
+ const auto compactFloor=LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+2*LampControlResourcePolicy::roundedReplyBytes(compactForm.size())+24*32;
+ fakeFreeHeap=compactFloor-1;compactSubmit(2);assert(u16(out+4)==503&&payload()=="Control resources unavailable. No command executed."&&calls==compactCalls+1);
+ fakeFreeHeap=compactFloor;assert(send(page(2),19)==0&&u16(out+4)==503&&send(commit(2),19)==2&&calls==compactCalls+1);
+ compactSubmit(3);assert(u16(out+4)==200&&calls==compactCalls+2);
+ fakeLargestBlock=527;compactSubmit(4);assert(u16(out+4)==503&&calls==compactCalls+2);
+ fakeFreeHeap=16316;fakeLargestBlock=2048;
+ assert(send(begin(5,LampControlEndpoint::AppearanceSave,Mutation),19)==0&&send(commit(5),19)==0&&u16(out+4)==503&&calls==compactCalls+2);
+ // An updater still rejects this ordinary mutation before admission. A new
+ // compact budget never overrides update ownership or replays old Commit.
+ updating=true;assert(send(begin(6,LampControlEndpoint::StatePatch,Mutation),19)==3&&calls==compactCalls+2);updating=false;
+ resetLampBleControlTransfer(20);fakeFreeHeap=16316;fakeLargestBlock=2048;
+ const auto currentCalls=calls;const std::string currentForm="view=current";
+ outSize=lampBleControlMetadata(out,sizeof(out));assert(payload().find("current-state-v1")!=std::string::npos);
+ assert(send(begin(1,LampControlEndpoint::State,Read,currentForm.size()),20)==0);
+ std::vector<uint8_t> currentFrame{1,2,Chunk,1,0,0,0};currentFrame.insert(currentFrame.end(),currentForm.begin(),currentForm.end());assert(send(currentFrame,20)==0);
+ assert(send(commit(1),20)==0&&u16(out+4)==200&&calls==currentCalls+1&&!lastMutation&&lastForm==currentForm);
+ assert(send(commit(1),20)==2&&calls==currentCalls+1);
+ for(uint16_t bytes:{uint16_t(1),uint16_t(11),uint16_t(13),uint16_t(1024)})assert(send(begin(2,LampControlEndpoint::State,Read,bytes),20)==2&&calls==currentCalls+1);
+ assert(send(begin(2,LampControlEndpoint::Firmware,Read,currentForm.size()),20)==2&&calls==currentCalls+1);
+ assert(send(begin(2,LampControlEndpoint::State,Read),20)==0&&send(commit(2),20)==0&&calls==currentCalls+2&&lastForm.empty());
+ std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/compact-patch/legacy-mutation admission, allocation-free immutable503 read refusals, unchanged persistent mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-control-') as directory:

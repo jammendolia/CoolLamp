@@ -64,7 +64,7 @@ uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=100;bool PowerO
 uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
-bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
+bool lampSyncFollowing(){return following;}uint8_t lampSyncRole(){return following?2:0;}bool lampSyncPaused(){return false;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
 bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}
