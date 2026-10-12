@@ -1,5 +1,6 @@
 import {SERVICE} from './protocol.js';
 import {parseSignedManifest,isVerifiedPublisherPackage,verifySignedManifest,prepareSignedPhoneFirmware} from './update-authenticity.js';
+import {safeFirmwareTransferMetrics} from './firmware-update-diagnostics.js';
 export const OTA_WRITE='7b61000b-6e2b-4f3d-9a71-28e45c001001';
 export const OTA_STATUS='7b61000c-6e2b-4f3d-9a71-28e45c001001';
 const root='https://github.com/jammendolia/CoolLamp/releases/';
@@ -104,14 +105,14 @@ export function bluetoothFirmwareFailureMessage(failure){
  return (failure.message||'Bluetooth update failed.')+cause+bytes+reason+check;
 }
 export class BluetoothFirmwareTransfer {
- constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now,allowBulkWrites=false}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now,allowBulkWrites});this.session=0;this.sequence=0;this.cancelled=false;this.metadataIssued=false;this.beginAttempted=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;this.dataWriteMode='with-response';this.receiverBulkWrites=false;this.bulkWriteFallback=null;this.bulkWriteCalls=0;}
+ constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now,monotonicNow=()=>globalThis.performance?.now?.(),allowBulkWrites=false}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now,monotonicNow,allowBulkWrites});this.session=0;this.sequence=0;this.cancelled=false;this.metadataIssued=false;this.beginAttempted=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;this.dataWriteMode='with-response';this.receiverBulkWrites=false;this.bulkWriteFallback=null;this.bulkWriteCalls=0;this.dataWritesPrepared=false;this.dataStartedAt=null;this.dataEndedAt=null;this.dataStartOffset=null;this.dataEndOffset=null;this.dataTimingValid=false;}
  elapsed(start=this.beganAt){return start===null?0:Math.max(0,Math.floor(this.now()-start));}
  recordStop(reason){
   if(!this.firstStop)this.firstStop=Object.freeze({reason:stopReasons.has(reason)?reason:'cancelled',elapsedMs:this.elapsed()});
   this.notificationWaiter?.resolve(false);
  }
  describeFailure(failure){
-  failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();
+  failure.stopReason=this.firstStop?.reason??'transfer-failed';failure.updateDiagnostic=this.diagnostic();failure.transferDiagnostic=this.transferDiagnostic();
   failure.installationNotStarted=this.writeCalls===0;failure.metadataIssued=this.metadataIssued;
   failure.beginAttempted=this.beginAttempted;failure.commitAttempted=this.commitAttempted;
   if(!this.writeCalls)failure.uncertain=false;return failure;
@@ -273,7 +274,23 @@ export class BluetoothFirmwareTransfer {
    writeCalls:this.writeCalls,writesAttempted:this.writeCalls,metadataIssued:this.metadataIssued,beginAttempted:this.beginAttempted,commitAttempted:this.commitAttempted,installationNotStarted:this.writeCalls===0,
    writeTimeMs:this.writeTimeMs,maxWriteMs:this.maxWriteMs,statusReads:this.statusReads,statusTimeMs:this.statusTimeMs,maxStatusMs:this.maxStatusMs,
    notificationMode:this.notificationMode,notificationFallback:this.notificationFallback,notificationAcks:this.notificationAcks,
-   dataWriteMode:this.dataWriteMode,receiverBulkWrites:this.receiverBulkWrites,bulkWriteFallback:this.bulkWriteFallback,bulkWriteCalls:this.bulkWriteCalls});
+   dataWriteMode:this.dataWriteMode,receiverBulkWrites:this.receiverBulkWrites,bulkWriteFallback:this.bulkWriteFallback,bulkWriteCalls:this.bulkWriteCalls,
+   dataStartOffset:this.dataStartOffset,dataEndOffset:this.dataEndOffset,monotonicDataTiming:this.dataTimingValid,
+   dataElapsedMs:this.dataTimingValid?Math.floor(this.dataEndedAt-this.dataStartedAt):null,
+   dataComplete:this.dataEndOffset!==null&&this.dataEndOffset===this.total,commitAcknowledged:Boolean(known&&value.phase===4&&value.error===0&&value.committed)});
+ }
+ transferDiagnostic(){
+  const value=this.diagnostic();return safeFirmwareTransferMetrics({...value,
+   dataWriteMode:this.dataWritesPrepared?value.dataWriteMode:undefined,
+   receiverBulkWrites:this.initialStatusFlags!==undefined?value.receiverBulkWrites:undefined});
+ }
+ monotonicStamp(){
+  try{const value=this.monotonicNow();return typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;}catch{return null;}
+ }
+ noteDataAcknowledged(offset){
+  const at=this.monotonicStamp();
+  if(at===null||this.dataEndedAt===null||at<this.dataEndedAt)this.dataTimingValid=false;
+  this.dataEndedAt=at;this.dataEndOffset=offset;
  }
  async wait(ack,offset,phase){
   if(this.notificationMode==='notifications'){
@@ -400,7 +417,7 @@ export class BluetoothFirmwareTransfer {
   if(!Number.isInteger(mtu)||mtu<23){mtu=23;this.mtuFallback='invalid';}
   const frameLimit=Math.min(244,mtu-3),chunk=Math.min(initial.maxData,frameLimit-12);
   this.mtu=mtu;this.chunkSize=chunk;
-  try{await this.prepareDataWrites(initial);}catch(failure){throw this.describeFailure(failure);}
+  try{await this.prepareDataWrites(initial);this.dataWritesPrepared=true;}catch(failure){throw this.describeFailure(failure);}
   this.session=resumeLease?resumeLease.session:crypto.getRandomValues(new Uint32Array(1))[0]||1;
   this.preparedManifest=parsed;this.resumable=Boolean(resumeLease||enableResume&&resumeSupported);this.resumeOffset=resumeLease?initial.offset:0;
   this.total=image.length;
@@ -415,21 +432,25 @@ export class BluetoothFirmwareTransfer {
     for(let offset=0;offset<text.length;){const bytes=text.subarray(offset,offset+frameLimit-10),frame=this.frame(1,offset,bytes);await this.write(frame);await this.wait(this.sequence);offset+=bytes.length;}
     const start=this.frame(this.resumable?6:2);await this.write(start);await this.wait(this.sequence,0,2);
    }
-   this.stage='transferring';this.onProgress({stage:'transferring',progress:Math.floor(this.resumeOffset*100/image.length),version:manifest.version,acknowledgedBytes:this.resumeOffset,total:image.length});
+    // Measure Begin/Resume ACK to the last proved Data ACK. This optional
+    // monotonic clock is separate from existing command deadlines; a clock
+    // failure cannot change transport behavior or make queued bytes progress.
+    this.dataStartOffset=this.resumeOffset;this.dataEndOffset=this.resumeOffset;this.dataStartedAt=this.monotonicStamp();this.dataEndedAt=this.dataStartedAt;this.dataTimingValid=this.dataStartedAt!==null;
+    this.stage='transferring';this.onProgress({stage:'transferring',progress:Math.floor(this.resumeOffset*100/image.length),version:manifest.version,acknowledgedBytes:this.resumeOffset,total:image.length});
    for(let offset=this.resumeOffset;offset<image.length;){
     // Four copied frames fit the receiver queue. Progress counts written,
     // acknowledged bytes, not ATT acceptance or bytes merely sent by iOS.
     const end=Math.min(image.length,offset+chunk*4);let ack;
     while(offset<end){const bytes=image.subarray(offset,Math.min(end,offset+chunk));const frame=this.frame(3,offset,bytes);await this.write(frame);offset+=bytes.length;ack=this.sequence;}
     const state=await this.wait(ack,offset,2);if(state.size!==image.length)throw error('The lamp’s firmware size changed.');
-    this.onProgress({stage:'transferring',progress:Math.floor(offset*100/image.length),version:manifest.version,acknowledgedBytes:state.offset,total:state.size});
+     this.noteDataAcknowledged(state.offset);this.onProgress({stage:'transferring',progress:Math.floor(offset*100/image.length),version:manifest.version,acknowledgedBytes:state.offset,total:state.size});
    }
    this.stage='verifying';this.onProgress({stage:'verifying',progress:100,version:manifest.version});
    const finish=this.frame(4);
    try{await this.write(finish);const state=await this.wait(this.sequence,image.length,4);if(!state.committed)throw error('The lamp did not confirm its boot selection.');
     const {session,size,offset,ack,phase,error:receiverError,committed}=state;
-    return {committed:true,version:manifest.version,receipt:Object.freeze({session,size,offset,ack,phase,error:receiverError,committed})};}
-   catch(failure){if(failure.confirmed||failure.journalFailure||!this.commitAttempted)throw failure;this.recordStop('transfer-failed');return {committed:false,verificationRequired:true,version:manifest.version,updateDiagnostic:this.diagnostic()};}
+    return {committed:true,version:manifest.version,receipt:Object.freeze({session,size,offset,ack,phase,error:receiverError,committed}),transferDiagnostic:this.transferDiagnostic()};}
+   catch(failure){if(failure.confirmed||failure.journalFailure||!this.commitAttempted)throw failure;this.recordStop('transfer-failed');return {committed:false,verificationRequired:true,version:manifest.version,updateDiagnostic:this.diagnostic(),transferDiagnostic:this.transferDiagnostic()};}
   }catch(failure){this.recordStop('transfer-failed');await this.captureFailureStatus();this.describeFailure(failure);await this.cancel('cleanup');throw failure;}
   finally{await this.endNotifications();}
  }

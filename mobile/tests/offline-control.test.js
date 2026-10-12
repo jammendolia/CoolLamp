@@ -238,6 +238,31 @@ test('saved settings reconnect fails on modern read errors without replaying leg
     assert.equal(radio.writes.length,0);assert.equal(lamp.id,null);assert.equal(lamp.raw,null);
   }
 });
+test('auxiliary Bluetooth control preserves capability read failures without inventing an old firmware version',async t=>{
+ for(const fault of ['timeout','invalid capabilities','authorization','missing characteristic']){
+  const radio=new CatalogRadio(),read=radio.read.bind(radio),lamp=new LampTransport(radio,{timeout:80,controlOnly:true,expectedDeviceIdentity:identity});t.after(()=>lamp.disconnect());
+  radio.read=(id,service,char,options)=>char===CONTROL?(fault==='invalid capabilities'?Promise.resolve(envelope('{}')):
+   Promise.reject(Error(fault==='timeout'?'Reading characteristic timed out.':fault==='authorization'?'Insufficient authentication.':'Characteristic not found.'))):read(id,service,char,options);
+  await assert.rejects(lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true}),error=>{
+   assert(!/firmware 1\.10/.test(error.message));assert.notEqual(error.code,'OFFLINE_CONTROL_UNAVAILABLE');return true;
+  });
+  assert.equal(radio.writes.length,0);assert.equal(lamp.id,null);assert.equal(lamp.raw,null);
+ }
+});
+test('local settings read evidence is limited to a current exact-target State GET',async t=>{
+ const {radio,lamp}=await connected(t);radio.responseStatus=503;
+ lamp.expectedDeviceIdentity=identity;const attempt=Object.freeze({});lamp.settingsConnectionProofToken=attempt;
+ await assert.rejects(lamp.request('/api/state'),error=>{
+  assert(Object.isFrozen(error.verifiedSettingsRead));assert.equal(error.verifiedSettingsRead.attempt,attempt);
+  assert.equal(error.verifiedSettingsRead.target,identity);assert.equal(error.verifiedSettingsRead.epoch,lamp.epoch);return true;
+ });
+ for(const [path,data] of [['/api/effects',undefined],['/api/name',{name:'Lamp'}]])
+  await assert.rejects(lamp.request(path,data),error=>error.status===503&&!error.verifiedSettingsRead);
+ lamp.expectedDeviceIdentity='112233445566';
+ await assert.rejects(lamp.request('/api/state'),error=>error.status===503&&!error.verifiedSettingsRead);
+ lamp.expectedDeviceIdentity=identity;lamp.settingsConnectionProofToken=null;
+ await assert.rejects(lamp.request('/api/state'),error=>error.status===503&&!error.verifiedSettingsRead);
+});
 test('saved settings reconnect rejects protected identity mismatches before sending any commands',async t=>{
   const radio=new CatalogRadio(),lamp=new LampTransport(radio,{timeout:80});radio.protectedIdentity='112233445566';t.after(()=>lamp.disconnect());
   await assert.rejects(lamp.connect({deviceId:'target',lampId:identity,readOnlyReconnect:true}),/identity did not match this lamp/);

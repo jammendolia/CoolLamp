@@ -12,6 +12,7 @@ const policy=source.slice(source.indexOf('function firmwareBackgroundWorkAllowed
 function fixture({cards=[],bluetooth=null,updating=false,pending=null}={}){
  const calls=[],context={Set,firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),cardFirmwareTasks:new Map(cards.map(id=>[id,{}])),
   bluetoothFirmwareTask:bluetooth?{id:bluetooth}:null,fleetUpdating:updating,
+  foregroundConnectionHold:null,connecting:false,
   fleetRefreshRun:pending,fleetRefreshQueued:false,fleetSummary:'',renderFleetControls(){},
   fleet:{refresh(options){calls.push([...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}}};
  runInNewContext(policy+handler+';globalThis.refresh=refreshLampFirmware;',context);

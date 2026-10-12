@@ -23,3 +23,20 @@ test('details remain visible when native clipboard is unavailable',()=>{
  const f=fixture({clipboard:false});f.diagnostics.begin(identity,attempt);f.diagnostics.failure(identity,attempt,Error('Not connected to device.'),{stage:'bluetooth-preflight'});
  const details=f.show();assert.match(details.children[1].textContent,/Connecting to the lamp/);assert(details.children.some(value=>value.tag==='pre'));assert(!details.children.some(value=>value.tag==='button'));
 });
+test('successful measured transfer has neutral details without inventing a failed stage or exposing identifiers',async()=>{
+ const f=fixture();f.diagnostics.begin(identity,attempt);
+ f.diagnostics.transfer(identity,attempt,{mtu:247,chunkSize:232,total:2020592,acknowledgedBytes:2020592,
+  dataStartOffset:0,dataEndOffset:2020592,dataElapsedMs:100000,monotonicDataTiming:true,dataComplete:true,
+  dataWriteMode:'without-response-four',commitAcknowledged:true,session:99,deviceId:'PRIVATE-NATIVE-ID',password:'SECRET'});
+ f.diagnostics.complete(identity,attempt,{outcome:'installed',installedVersion:'1.15.1'});
+ const details=f.show();assert.equal(details.children[1].textContent,'Recorded Bluetooth transfer measurements.');
+ const report=details.children.find(value=>value.tag==='pre').textContent,record=JSON.parse(report).record;
+ assert.deepEqual(record.stages,[]);assert.equal(record.outcome,'installed');assert.equal(record.transfer.dataElapsedMs,100000);
+ assert.equal(record.transfer.commitAcknowledged,true);assert(!report.includes(identity));assert(!report.includes(attempt));
+ assert(!report.includes('PRIVATE-NATIVE-ID'));assert(!report.includes('SECRET'));assert(!report.includes('session'));
+ await details.children.find(value=>value.tag==='button').onclick();assert.deepEqual(f.copied,[report]);
+});
+test('an optional empty record does not show transfer measurements that were never captured',()=>{
+ const f=fixture();f.diagnostics.begin(identity,attempt);f.diagnostics.complete(identity,attempt,{outcome:'installed',installedVersion:'1.15.1'});
+ assert.equal(f.show(),null);
+});

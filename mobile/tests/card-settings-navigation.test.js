@@ -20,6 +20,7 @@ function fixture({address='http://reading-lamp.local',busy=false,connecting=fals
   $:key=>({focus:()=>calls.push({kind:'focus',key})}),
   bluetoothFirmwareOwner:()=>null,firmwareConnectionSelectionAllowed:()=>true,firmwareConnectionNotice(){},fleetLampInstalling:()=>installing,
   status:message=>calls.push({kind:'message',message}),cancelMeshSelection:()=>calls.push({kind:'cancel-selection'}),
+  beginForegroundConnection:()=>()=>{},
   promptWifiPassword:()=>calls.push({kind:'password'}),renderSettings(){},renderOptions(){},
   beforeComplete:(intent)=>beforeComplete?.(context.ui,intent),duringSection:()=>duringSection?.(context.ui),
   connectCardWifiAsync:async()=>{calls.push({kind:'connect-wifi'});throw Error('A verified active route should be reused.');},

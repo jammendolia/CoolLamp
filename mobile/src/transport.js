@@ -14,6 +14,7 @@ const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/a
  '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39,
  '/api/descriptor':40,'/api/effects/schema':41,'/api/state/patch':42,'/api/appearance/save':43,'/api/receipt':44,'/api/revision':45,'/api/firmware/policy':46,'/api/sync/page':47,'/api/household':48,'/api/firmware/rollout':51,'/api/group/remove':52};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
+const consumerCallbacks=Object.freeze({state:'onState',firmware:'onFirmware',options:'onOptions',disconnect:'onDisconnect'});
 function publicControlSync(value){
   const sync=publicFields(value,['version','role','leader','active','paused','members','sceneCount','scene','position','count','sceneSpeed','sceneIntensity','transport','maxMembers','maxSupportedMembers','broadcastFrames','coordinatorMigration','peerTotal','peerCursor','peerNext','peerTruncated','slotSaved','slotSaveFailures','incompatibleSubscriptions','session','dissolutionV1','membershipLocked']);
   if(typeof value?.incarnation==='string'&&/^[0-9a-f]{32}$/.test(value.incarnation))sync.incarnation=value.incarnation;
@@ -31,10 +32,11 @@ export class LampTransport {
   constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
     selectDevice = null, onRadioReady = () => {}, onDeviceSelected = () => {}, sharedInitialization = null,
     expectedDeviceIdentity = null, controlOnly = false, firmwareOnly = false, firmwareBulkWrites = false,
-    backgroundAllowed = () => true, backgroundGeneration = () => 0 } = {}) {
+    backgroundAllowed = () => true, backgroundGeneration = () => 0, onCallbackError = () => {} } = {}) {
     this.ble = ble; this.onState = onState; this.onDisconnect = onDisconnect; this.timeout = timeout;
     this.onFirmware = onFirmware;
     this.onOptions = onOptions;
+    this.onCallbackError=onCallbackError;this.lastCallbackError=null;this.callbackErrorSequence=0;
     this.selectDevice = selectDevice; this.onRadioReady = onRadioReady;
     this.onDeviceSelected = onDeviceSelected;
     this.connectionAttempts = new Set();
@@ -47,6 +49,22 @@ export class LampTransport {
     this.control=null;this.raw=null;this.controlSequence=0;this.controlTail=Promise.resolve();this.actionTail=Promise.resolve();
     this.id = null; this.sequence = 0; this.pending = null; this.epoch = 0; this.tail = Promise.resolve();
   }
+  recordCallbackError(callback,type,epoch){
+    if(epoch!==this.epoch||!Object.hasOwn(consumerCallbacks,callback)||!['threw','rejected'].includes(type))return;
+    const value=Object.freeze({version:1,callback,type,sequence:this.callbackErrorSequence=Math.min(0xffffffff,this.callbackErrorSequence+1)});
+    this.lastCallbackError=value;
+    // No messages, identifiers or protocol payloads leave this optional hook.
+    // Reporting failures must not recurse, hold a command, or become retries.
+    try{Promise.resolve(this.onCallbackError(value)).catch(()=>{});}catch{}
+  }
+  dispatchConsumer(callback,...args){
+    if(!Object.hasOwn(consumerCallbacks,callback))return false;
+    const name=consumerCallbacks[callback],epoch=this.epoch;
+    try{const result=this[name](...args);
+      if(result&&typeof result.then==='function')Promise.resolve(result).catch(()=>this.recordCallbackError(callback,'rejected',epoch));
+      return true;
+    }catch{this.recordCallbackError(callback,'threw',epoch);return false;}
+  }
   disconnected(confirmedId = null,reason='native-disconnect') {
     this.bluetoothUpdate?.recordStop?.(reason);
     if(confirmedId)this.connectionAttempts.delete(confirmedId);
@@ -54,8 +72,9 @@ export class LampTransport {
     clearTimeout(this.controlTimer);this.controlTimer=null;this.controlRefreshOwner=null;
     this.epoch++; this.id = null; this.state = null; this.catalog = null; this.deviceIdentity=null;this.control=null;this.raw=null;
     this.firmwareReady=false;this.firmwareConnectionGuard=null;
-    if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
-    if (hadConnection) this.onDisconnect();
+    this.lastCallbackError=null;
+    if (this.pending) { clearTimeout(this.pending.timer);clearTimeout(this.pending.probeTimer); this.pending.reject(new Error('Lamp disconnected.')); this.pending = null; }
+    if (hadConnection) this.dispatchConsumer('disconnect');
   }
   receive(data) {
     if(this.pending?.readGuard){try{this.pending.readGuard();}catch(error){
@@ -63,7 +82,7 @@ export class LampTransport {
     }}
     let state;
     try { state = decodeState(data); } catch (error) {
-      if (this.pending) { clearTimeout(this.pending.timer); this.pending.reject(error); this.pending = null; }
+      if (this.pending) { clearTimeout(this.pending.timer);clearTimeout(this.pending.probeTimer); this.pending.reject(error); this.pending = null; }
       return;
     }
     if(this.raw){
@@ -71,11 +90,13 @@ export class LampTransport {
       state={...this.raw,...state};
     }
     this.state = state;
-    this.onState(state);
+    // Settle the exact device ACK before any screen observer. Consumer code
+    // cannot lose or alter that receipt, even when native delivery is early.
     if (this.pending && state.id === this.pending.id) {
-      const pending = this.pending; this.pending = null; clearTimeout(pending.timer);
-      if (state.result) pending.reject(Object.assign(new Error(resultError(state.result)), {confirmed:true})); else pending.resolve(state);
+      const pending = this.pending; this.pending = null; clearTimeout(pending.timer);clearTimeout(pending.probeTimer);
+      if (state.result) pending.reject(Object.assign(new Error(resultError(state.result)), {confirmed:true})); else pending.resolve({...state});
     }
+    this.dispatchConsumer('state',state);
   }
   async retrieveSelectedDevice(device,epoch,guard=()=>{if(epoch!==this.epoch)throw Error('Connection changed.');},signal=null) {
     const matches=peripheral=>peripheral?.deviceId?.toLowerCase()===device.deviceId.toLowerCase();
@@ -191,13 +212,13 @@ export class LampTransport {
         this.deviceIdentity=protectedIdentity;this.state=binary;this.sequence=binary.id;
         this.control=await this.readControlCapabilities(epoch,current);current();
         const value=await this.ble.read(this.id,SERVICE,FIRMWARE,{timeout:this.timeout});current();
-        this.receiveFirmware(decodeFirmware(value));
+        this.receiveFirmware(decodeFirmware(value));current();
         this.firmwareConnectionGuard=ownsConnection;this.firmwareReady=true;
         return device;
       }
       await this.ble.startNotifications(this.id, SERVICE, STATE, data => { if (epoch === this.epoch) this.receive(data); });
       if(epoch!==this.epoch)throw Error('Connection changed.');
-      this.receive(initial);
+      this.receive(initial);current();
       // Continue beyond the cached acknowledgment from the previous connection.
       // A readback must never mistake that reply for our first new command.
       this.sequence = this.state.id;
@@ -205,7 +226,9 @@ export class LampTransport {
         if(!protectedIdentity)throw Error('Could not verify this lamp’s Bluetooth identity.');
         this.deviceIdentity=protectedIdentity;
         try{this.control=await this.readControlCapabilities(epoch,current);}
-        catch(error){current();if(epoch!==this.epoch)throw error;throw Object.assign(Error('Update this lamp to firmware 1.10.0 for offline Bluetooth group controls.'),{incompatible:true,code:'OFFLINE_CONTROL_UNAVAILABLE'});}
+        // A timeout, malformed reply or authorization error is not evidence of
+        // old firmware. This short path has not read a fresh firmware version.
+        catch(error){current();throw error;}
         current();
         await this.refresh(this.expectedDeviceIdentity||this.deviceIdentity,true,current);current();return device;
       }
@@ -241,22 +264,24 @@ export class LampTransport {
           this.catalog=validateCatalog(entries,count);
         }
         await this.ble.startNotifications(this.id, SERVICE, EFFECT_OPTIONS, data => {
-          if (epoch === this.epoch) { try { this.onOptions(decodeEffectOptions(data,this.state.effectCount)); } catch {} }
+          if (epoch === this.epoch) { try { this.dispatchConsumer('options',decodeEffectOptions(data,this.state.effectCount)); } catch {} }
         });
         const options = await this.ble.read(this.id, SERVICE, EFFECT_OPTIONS);
         if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
-        this.onOptions(decodeEffectOptions(options,this.state.effectCount));
-      } else this.onOptions(null);
+        this.dispatchConsumer('options',decodeEffectOptions(options,this.state.effectCount));
+      } else this.dispatchConsumer('options',null);
+      current();
       if (this.state.capabilities & 4) {
         const firmware = await this.ble.read(this.id, SERVICE, FIRMWARE);
         if (epoch !== this.epoch) throw new Error('Lamp disconnected.');
-        this.receiveFirmware(decodeFirmware(firmware));
+        this.receiveFirmware(decodeFirmware(firmware));current();
         await this.ble.startNotifications(this.id, SERVICE, FIRMWARE, data => {
           if (epoch === this.epoch) { try { this.receiveFirmware(decodeFirmware(data)); } catch {} }
         });
         const latest = await this.ble.read(this.id, SERVICE, FIRMWARE);
         if (epoch === this.epoch) this.receiveFirmware(decodeFirmware(latest));
-      } else this.onFirmware(null);
+      } else this.dispatchConsumer('firmware',null);
+      current();
       if (!this.catalog) this.catalog=legacyCatalog(effects.slice(0,this.state.effectCount));
       this.deviceIdentity = protectedIdentity;
       if(this.supportsWifiSetup&&!this.deviceIdentity)throw Error('Could not verify this lamp’s Bluetooth identity. Reconnect before setting up Wi-Fi.');
@@ -358,6 +383,7 @@ export class LampTransport {
         });
         const [, state] = await Promise.all([write, response]);
         readFence();
+        if(epoch!==this.epoch||deviceId!==this.id)throw Object.assign(Error('Connection changed after the lamp acknowledged the command.'),{confirmed:true,cancelled:true});
         if(responseCharacteristic) {
           readFence();
           const data=await this.ble.read(this.id,SERVICE,responseCharacteristic);
@@ -395,7 +421,7 @@ export class LampTransport {
     }
   }
   receiveFirmware(next) {
-    if(this.raw)this.raw.firmware=next;if(this.state)this.state.firmware=next;this.onFirmware(next);
+    if(this.raw)this.raw.firmware=next;if(this.state)this.state.firmware=next;this.dispatchConsumer('firmware',next);
   }
   async refreshFirmware(readGuard=null) {
     const guard=()=>{try{readGuard?.();}catch(error){throw Object.assign(error instanceof Error?error:new Error('Firmware status read stopped.'),{confirmed:true,cancelled:true,readAdmission:true});}};
@@ -407,7 +433,8 @@ export class LampTransport {
     guard();
     if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');
     if(this.firmwareOnly&&!this.firmwareConnectionGuard?.())throw Object.assign(Error('Firmware connection changed or cancelled.'),{confirmed:true,cancelled:true});
-    const status=decodeFirmware(value);guard();this.receiveFirmware(status);return status;
+    const status=decodeFirmware(value);guard();this.receiveFirmware(status);guard();
+    if(epoch!==this.epoch||id!==this.id)throw Error('Connection changed.');return status;
   }
   async readFirmwareUpdateSnapshot({signal,isCurrent=()=>true,expectedSession=null}={}) {
     if(this.bluetoothUpdate)throw Object.assign(Error('The active firmware sender owns its receiver status.'),{confirmed:true,firmwareBusy:true});
@@ -449,7 +476,8 @@ export class LampTransport {
     const value=await this.ble.read(id,SERVICE,'7b610006-6e2b-4f3d-9a71-28e45c001001',{timeout:this.timeout});
     const actual=new TextDecoder().decode(new Uint8Array(value.buffer,value.byteOffset,value.byteLength));
     if(epoch!==this.epoch||id!==this.id||actual!==identity)throw Object.assign(Error('The Bluetooth lamp changed. No firmware was sent.'),{identity:actual!==identity});
-    return await transfer.send(packageValue,{enableResume,resumeLease,onBeforeWrite});}
+    const result=await transfer.send(packageValue,{enableResume,resumeLease,onBeforeWrite});
+    return {...result,transferDiagnostic:result.transferDiagnostic??transfer.transferDiagnostic()};}
     catch(failure){
       if(!transfer.firstStop)transfer.recordStop(transfer.isCurrent()?'native-read-failure':'connection-changed');
       if(!failure.updateDiagnostic)transfer.describeFailure(failure);
@@ -491,6 +519,7 @@ export class LampTransport {
     readGuard??=method===1?beforeWrite:null;
     return this.controlJob(async epoch=>{
       const deviceId=this.id,identity=this.deviceIdentity,tx=this.controlSequence=this.controlSequence%65535+1;
+      const settingsAttempt=this.settingsConnectionProofToken;
       let mutationMayHaveExecuted=false;
       const guard=()=>{
         if(epoch!==this.epoch||this.id!==deviceId||this.deviceIdentity!==identity)throw Error('Bluetooth control connection changed.');
@@ -520,7 +549,16 @@ export class LampTransport {
         }while(offset<total);
         const text=new TextDecoder('utf-8',{fatal:true}).decode(responseBytes);
         guard();
-        if(status<200||status>=300)throw Object.assign(new Error(text||'Lamp rejected Bluetooth settings.'),{confirmed:true,status});
+        if(status<200||status>=300){
+          const failure=Object.assign(new Error(text||'Lamp rejected Bluetooth settings.'),{confirmed:true,status});
+          // Local evidence, never decoded from response text. The identity came
+          // from the protected characteristic and the existing guard has just
+          // fenced every page against this connection generation and target.
+          if(method===1&&endpoint===1&&settingsAttempt&&this.settingsConnectionProofToken===settingsAttempt&&
+            /^[0-9a-f]{12}$/.test(identity||'')&&this.expectedDeviceIdentity===identity)
+            Object.defineProperty(failure,'verifiedSettingsRead',{value:Object.freeze({target:identity,endpoint,method,epoch,attempt:settingsAttempt})});
+          throw failure;
+        }
         return text;
       }catch(error){
         requestFailed=true;
@@ -563,9 +601,9 @@ export class LampTransport {
     this.state={...snapshot,id:binary.id,result:binary.result,revision:binary.revision,capabilities:binary.capabilities,
       mode:raw.mode,brightness:raw.brightness,power:raw.power,
       effectCount:this.catalog.length,supportsColor:binary.supportsColor,color:color?{enabled:Boolean(color[0]),r:color[1],g:color[2],b:color[3]}:binary.color};
-    guard();this.onState(this.state,{freshControl:true});guard();if(raw.firmware)this.receiveFirmware(raw.firmware);
+    guard();this.dispatchConsumer('state',this.state,{freshControl:true});guard();if(raw.firmware)this.receiveFirmware(raw.firmware);
     const options=raw.effectOptions?.[raw.mode-1];
-    guard();if(options)this.onOptions({mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});
+    guard();if(options)this.dispatchConsumer('options',{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});guard();
     return snapshot;
   }
   scheduleControlRefresh() {

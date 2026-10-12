@@ -1,5 +1,6 @@
 import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './bluetooth-firmware.js';
 import {classifyFirmwareSnapshot,firmwareMayInstall} from './firmware-attempt.js';
+import {safeFirmwareTransferMetrics} from './firmware-update-diagnostics.js';
 
 // The lamp's installed-version observation is separate from a public release
 // check. A failed or expired release check must never make an old offer fresh.
@@ -24,7 +25,7 @@ export function availableCardRelease(installed,manifest){
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
- attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{}}){
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{}}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
  if(exactReinstall&&!allowReinstall)throw Object.assign(Error('Confirm a reinstall before sending firmware.'),{confirmed:true,installationNotStarted:true,uncertain:false});
@@ -33,6 +34,9 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    {confirmed:true,installationNotStarted:true,uncertain:false,stale:true,staleVersion:true,expectedVersion:release.version,installedVersion:installed.version});
  };
  const reportFailure=(error,stage)=>{try{Promise.resolve(onFailure(error,Object.freeze({stage}))).catch(()=>{});}catch{}};
+ // Optional evidence must never hold the update owner, alter a receipt, or turn
+ // successful installation into a retry. This callback is never awaited.
+ const reportTransfer=result=>{try{const value=safeFirmwareTransferMetrics(Object.getOwnPropertyDescriptor(result,'transferDiagnostic')?.value);if(value)Promise.resolve(onTransferDiagnostic(value)).catch(()=>{});}catch{}};
  current();
  // A new, explicitly approved retry may prefer its saved nearby route after
  // the previous attempt was confirmed as never starting an installation.
@@ -137,8 +141,9 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   result=await lease.lamp.updateOverBluetooth(packageValue,value=>{
    if(attemptJournal&&Number.isInteger(value.acknowledgedBytes)&&value.stage==='transferring')attemptJournal.noteProgress(latest(),{offset:value.acknowledgedBytes});
    onProgress(value);
-  },{signal,isCurrent,...(attemptJournal?{onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)}:{})});
-  }catch(error){reportFailure(error,failureStage);failure=error;}
+   },{signal,isCurrent,...(attemptJournal?{onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)}:{})});
+   reportTransfer(result);
+   }catch(error){reportTransfer(error);reportFailure(error,failureStage);failure=error;}
   finally{await lease?.release();}
   current();
   if(result){

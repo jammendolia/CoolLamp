@@ -9,6 +9,34 @@ function setup(){
  const options={entry,manifest,wifi:async()=>{calls.push('wifi');return {state:'updated'};},acquireBluetooth:async()=>{calls.push('ble');return {lamp,release:async()=>calls.push('release')};},download:async()=>{calls.push('download');return {manifest,image:new Uint8Array(288)};}};
  return {calls,lamp,options};
 }
+
+for(const observer of [()=>{throw Error('Optional diagnostic storage failed');},()=>Promise.reject(Error('Optional async storage failed')),()=>new Promise(()=>{})])test('optional success telemetry observer cannot block or change an update result',async()=>{
+ const {options,lamp,calls}=setup();delete options.entry.address;const transferDiagnostic=Object.freeze({mtu:247,chunkSize:232,commitAcknowledged:true});
+ lamp.updateOverBluetooth=async()=>{calls.push('transfer');return {committed:true,version:'1.12.0',transferDiagnostic};};
+ const result=await updateCardFirmware({...options,onTransferDiagnostic:observer});assert.equal(result.committed,true);assert.equal(result.transferDiagnostic,transferDiagnostic);
+ assert.deepEqual(calls,['ble','release','download','ble','transfer','release']);
+});
+
+test('one optional telemetry callback runs before lease disposal and retains failure without replay',async()=>{
+ const {options,lamp,calls}=setup();delete options.entry.address;const metric=Object.freeze({mtu:247,acknowledgedBytes:232,commitAcknowledged:false});
+ lamp.updateOverBluetooth=async()=>{calls.push('transfer');throw Object.assign(Error('Original transfer error'),{transferDiagnostic:metric,uncertain:true});};
+ let observed=0;await assert.rejects(updateCardFirmware({...options,onTransferDiagnostic:value=>{++observed;assert.deepEqual(value,metric);assert.equal(calls.at(-1),'transfer');throw Error('Optional observer failed');}}),/Original transfer error/);
+ assert.equal(observed,1);assert.equal(calls.filter(value=>value==='transfer').length,1);assert.equal(calls.at(-1),'release');
+});
+
+test('an optional telemetry getter cannot replace the original failed transfer result',async()=>{
+ const {options,lamp}=setup();delete options.entry.address;
+ lamp.updateOverBluetooth=async()=>{const value=Object.assign(Error('Original transfer error'),{uncertain:true});Object.defineProperty(value,'transferDiagnostic',{get(){throw Error('Optional getter failed');}});throw value;};
+ await assert.rejects(updateCardFirmware(options),/Original transfer error/);
+});
+
+test('the optional callback receives only validated scalar metrics from a transfer result',async()=>{
+ const {options,lamp}=setup();delete options.entry.address;let calls=0;
+ lamp.updateOverBluetooth=async()=>({committed:true,transferDiagnostic:{mtu:247,chunkSize:232,commitAcknowledged:true,
+  session:4321,ack:7,deviceId:'private-uuid',body:'private-body',ssid:'private-ssid',name:'private-name',password:'private-password'}});
+ const result=await updateCardFirmware({...options,onTransferDiagnostic:value=>{++calls;assert.deepEqual(value,{mtu:247,chunkSize:232,commitAcknowledged:true});assert(Object.isFrozen(value));}});
+ assert(result.committed);assert.equal(calls,1);
+});
 test('badge requires valid known installed version and strictly newer release',()=>{assert(availableCardRelease('1.11.0',manifest));for(const version of ['1.12.0','1.13.0',undefined,'bad'])assert.equal(availableCardRelease(version,manifest),null);assert.equal(availableCardRelease('1.11.0',null),null);});
 test('Wi-Fi is preferred without connecting Bluetooth or downloading image',async()=>{const {calls,options}=setup();assert.equal((await updateCardFirmware(options)).path,'wifi');assert.deepEqual(calls,['wifi']);});
 test('strict reinstall skips a supplied Wi-Fi route and proves the current receiver over Bluetooth',async()=>{

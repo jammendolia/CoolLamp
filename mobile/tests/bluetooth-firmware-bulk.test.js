@@ -4,6 +4,9 @@ import {createHash} from 'node:crypto';
 import {BluetoothFirmwareTransfer, parsePhoneManifest, decodeBleUpdate, OTA_WRITE, OTA_STATUS} from '../src/bluetooth-firmware.js';
 import {LampTransport} from '../src/transport.js';
 import {SERVICE} from '../src/protocol.js';
+import {updateCardFirmware} from '../src/card-firmware.js';
+import {FirmwareAttemptJournal,classifyFirmwareSnapshot} from '../src/firmware-attempt.js';
+import {FirmwareUpdateDiagnostics,FIRMWARE_UPDATE_DIAGNOSTICS_KEY} from '../src/firmware-update-diagnostics.js';
 
 function packageValue(size=2048) {
  const image=new Uint8Array(size);for(let i=0;i<size;++i)image[i]=(i*29+(i>>>8)*7)&255;
@@ -277,4 +280,45 @@ for(const enabled of [false,true])test(`transport native opt-in ${enabled} is fo
  t.after(()=>clearTimeout(transport.controlTimer));assert.equal((await transport.updateOverBluetooth(receiver.pkg)).committed,true);
  assert.equal(receiver.writes.filter(row=>row.op===3).every(row=>row.kind===(enabled?'bulk':'response')),true);
  assert.equal(receiver.queries,enabled?1:0);assert.equal(transport.bluetoothUpdate,null);
+});
+
+test('owned transport returns negotiated fast-mode telemetry before disposing its sender',async t=>{
+ const receiver=new Receiver(),transport=new LampTransport(receiver,{firmwareBulkWrites:true});
+ transport.id='bulk-target';transport.deviceIdentity='aabbccddeeff';transport.control={capabilities:['control']};t.after(()=>clearTimeout(transport.controlTimer));
+ const result=await transport.updateOverBluetooth(receiver.pkg);assert.equal(transport.bluetoothUpdate,null);
+ assert.equal(result.transferDiagnostic.dataWriteMode,'without-response-four');assert.equal(result.transferDiagnostic.receiverBulkWrites,true);
+ assert.equal(result.transferDiagnostic.mtu,247);assert.equal(result.transferDiagnostic.chunkSize,232);assert.equal(result.transferDiagnostic.bulkWriteCalls,9);
+ assert.equal(result.transferDiagnostic.acknowledgedBytes,2048);assert.equal(result.transferDiagnostic.commitAcknowledged,true);assert.equal(result.transferDiagnostic.notificationMode,'notifications');
+});
+
+test('stale iOS properties are recorded as a response fallback and never guessed as fast-mode success',async()=>{
+ const receiver=new Receiver();receiver.services[0].characteristics[0].properties.writeWithoutResponse=false;
+ const result=await receiver.transfer({monotonicNow:()=>receiver.clock}).send(receiver.pkg);
+ assert.equal(result.transferDiagnostic.dataWriteMode,'with-response');assert.equal(result.transferDiagnostic.bulkWriteFallback,'property-unavailable');
+ assert.equal(result.transferDiagnostic.receiverBulkWrites,true);assert.equal(result.transferDiagnostic.bulkWriteCalls,0);assert(result.transferDiagnostic.commitAcknowledged);
+ assert(receiver.writes.filter(row=>row.op===3).every(row=>row.kind==='response'));
+});
+
+for(const failOptionalStorage of [false,true])test(`production card sender retains success measurements with optional storage denial ${failOptionalStorage}`,async t=>{
+ const receiver=new Receiver(),transport=new LampTransport(receiver,{firmwareBulkWrites:true}),identity='aabbccddeeff';
+ transport.id='bulk-target';transport.deviceIdentity=identity;transport.control={capabilities:['control']};t.after(()=>clearTimeout(transport.controlTimer));
+ const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>{if(failOptionalStorage&&key===FIRMWARE_UPDATE_DIAGNOSTICS_KEY)throw Error('Optional storage denied');values.set(key,value);}};
+ const journal=new FirmwareAttemptJournal(storage),diagnostics=new FirmwareUpdateDiagnostics(storage);let attempt,observations=0,releases=0;
+ const snapshot=(installed='1.12.0')=>({identity,observedAt:Date.now(),firmware:{version:installed,phase:0},
+  state:{mode:1,effectCount:38,brightness:55,power:true},receiver:{phase:0,error:0,session:0,size:0,offset:0,committed:false}});
+ const lamp={identity,refreshFirmware:async()=>({version:'1.12.0',phase:0}),readFirmwareUpdateSnapshot:async()=>snapshot(),
+  updateOverBluetooth:(...args)=>transport.updateOverBluetooth(...args)};
+ const result=await updateCardFirmware({entry:{id:identity,deviceId:'bulk-target'},manifest:receiver.pkg.manifest,attemptJournal:journal,
+  acquireBluetooth:async()=>({lamp,release:async()=>{++releases;}}),download:async()=>receiver.pkg,
+  onAttempt:value=>{attempt=value;diagnostics.begin(identity,value.attemptId);},
+  onTransferDiagnostic:value=>{++observations;assert.equal(releases,1);diagnostics.transfer(identity,attempt.attemptId,value);throw Error('Optional observer failure');},
+  onFailure:(error,context)=>diagnostics.failure(identity,attempt.attemptId,error,context),
+  reconcile:async value=>classifyFirmwareSnapshot(value,snapshot(receiver.pkg.manifest.version))});
+ diagnostics.complete(identity,attempt.attemptId,result);
+ assert.equal(result.outcome,'installed');assert.equal(observations,1);assert.equal(releases,2);assert.equal(journal.get(identity).commitAcknowledged,true);
+ assert.equal(journal.get(identity).outcome,'installed');assert.equal(new FirmwareAttemptJournal(storage).get(identity).commitAcknowledged,true);
+ const record=diagnostics.get(identity);assert.equal(record.outcome,'installed');assert.equal(record.stages.length,0);assert.equal(record.transfer.dataWriteMode,'without-response-four');
+ assert.equal(record.transfer.acknowledgedBytes,2048);assert.equal(record.transfer.commitAcknowledged,true);assert.equal(receiver.writes.filter(row=>row.op===4).length,1);
+ assert(!diagnostics.report(identity).includes(identity));assert(!diagnostics.report(identity).includes(attempt.attemptId));
+ if(!failOptionalStorage)assert.deepEqual(new FirmwareUpdateDiagnostics(storage).get(identity),record);
 });

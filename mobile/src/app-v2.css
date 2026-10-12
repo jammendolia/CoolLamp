@@ -43,6 +43,17 @@ input:not([type=range]):not([type=checkbox]):not([type=color]),select,textarea{b
 .v2-lamp-entry .lamp-connection:hover:not(:disabled),.v2-lamp-entry .lamp-connection:focus-visible{border-color:var(--control-line);background:var(--surface-low);color:var(--accent)}
 .v2-lamp-entry .v2-card-feedback>.lamp-update-status{display:block;margin-top:5px;font-size:.84rem;line-height:1.5;overflow-wrap:anywhere}
 .v2-lamp-entry .v2-card-feedback>.lamp-update-progress{display:block;width:100%;height:6px;margin:10px 0 0;accent-color:var(--accent)}
+/* The familiar lamp shape follows confirmed bytes written to that lamp. The
+   numeric label/bar carry the value; the drawing adds no live announcement. */
+.v2-lamp-entry .v2-lamp-card.has-update-progress:disabled{opacity:1}
+.v2-lamp-entry .lamp-design.v2-card-update-art{display:flex;flex-direction:column;align-items:center;height:134px;max-width:100%;overflow:hidden}
+.v2-lamp-entry .v2-card-update-art>svg{display:block;width:58px;height:96px;flex:none;overflow:hidden}
+.v2-lamp-entry .v2-card-update-art>.v2-card-update-percent{display:block;width:100%;padding:3px 0 0;text-align:center;font-size:1rem;font-weight:700;line-height:1.3;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+[data-lamp-artwork] .lamp-artwork-update-rest{opacity:.3}
+[data-lamp-artwork] .lamp-artwork-update-fill path{stroke:var(--lamp-update-fill,#397963)}
+[data-lamp-artwork] .lamp-artwork-update-fill circle{fill:var(--lamp-update-fill,#397963);stroke:var(--lamp-update-fill,#397963)}
+html[data-app-theme=dark]{--lamp-update-fill:#b3d4bc}
+@media(prefers-color-scheme:dark){html[data-app-theme=system]{--lamp-update-fill:#b3d4bc}}
 .v2-lamp-entry .v2-card-release-status{display:block;margin-top:10px;font-size:.8rem;line-height:1.5;overflow-wrap:anywhere}
 #page-settings[data-connection-recovering=true]>.settings-navigation,#page-settings[data-connection-recovering=true] #settingsHint,#page-settings[data-connection-recovering=true] #settingsLighting,#page-settings[data-connection-recovering=true] [data-settings-panel],#page-settings[data-connection-recovering=true] #defaultPasswordNotice{display:none}
 

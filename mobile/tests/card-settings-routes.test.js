@@ -44,6 +44,7 @@ function routeFixture({active=null,activeId=id,offlineControl=true,paired=true,a
   $:key=>({focus:()=>calls.push({kind:'focus',key})}),bluetoothFirmwareOwner:()=>null,
   firmwareConnectionSelectionAllowed:()=>true,firmwareConnectionNotice(){},fleetLampInstalling:()=>false,
   status:message=>calls.push({kind:'message',message}),cancelMeshSelection:()=>{},
+  beginForegroundConnection:()=>()=>{},
   promptWifiPassword:()=>calls.push({kind:'password'}),renderSettings(){},renderOptions(){},
   invoke:async(kind,target,options)=>{
    calls.push({kind,id:target.id,options});
@@ -116,6 +117,15 @@ test('stale offline inventory cannot suppress direct Wi-Fi after paired Bluetoot
  const f=routeFixture({wifiFresh:false,wifiState:'disconnected',fleetState:'offline',outcomes:{bluetooth:{connected:false}}});
  assert.equal((await f.open())?.connected,true);
  assert.deepEqual(attempts(f).map(call=>call.kind),['bluetooth','wifi']);
+});
+
+for(const wifiFirst of [false,true])test('a verified settings resource refusal ends route recovery after the target answers'+(wifiFirst?' following Wi-Fi':''),async()=>{
+ const error=Object.assign(Error('Control resources unavailable. No command executed.'),{confirmed:true,status:503});
+ const refusal={connected:false,settingsUnavailable:true,error};
+ const f=routeFixture({wifiFresh:wifiFirst,wifiState:wifiFirst?'connected':'unknown',outcomes:{wifi:{connected:false},bluetooth:refusal}});
+ assert.equal(await f.open(),refusal);
+ assert.deepEqual(attempts(f).map(call=>call.kind),wifiFirst?['wifi','bluetooth']:['bluetooth']);
+ assert.equal(f.snapshot().intent,null);assert.equal(f.snapshot().section,'network');
 });
 
 for(const inventoryCount of [1,20]){

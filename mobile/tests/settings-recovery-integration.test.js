@@ -25,6 +25,7 @@ const elements=()=>{const rows=new Map();return {rows,$:key=>{if(!rows.has(key))
 function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wifi,bluetooth,mesh}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',...(saved?{deviceId,accessoryManaged:authorized}:{})};
   const context={AbortController,console,...view,calls,posts,phonePlatform:platform,entry,
+    beginForegroundConnection:()=>()=>{},
     status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
     cancelMeshSelection:()=>{},bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionSelectionAllowed:()=>false,firmwareConnectionNotice:()=>{},
     completeCardSettings:()=>{calls.push({kind:'complete'});return true;},promptWifiPassword:()=>calls.push({kind:'password'}),pairCardBluetooth:async()=>{calls.push({kind:'picker'});return false;},
@@ -102,6 +103,7 @@ function bluetoothHarness({gate=null,error=null,actualConnected=false}={}){
     async connect(saved){calls.push({kind:'connect',saved,expected:this.expectedDeviceIdentity});if(gate)await gate.promise;if(error)throw error;context.ui.radioState();return {...saved,lampId:id,bluetoothName:'CoolLamp-A',accessoryName:'Reading lamp'};},
     async disconnect(){calls.push({kind:'disconnect-ble'});this.epoch++;}};
   const context={AbortController,console,...view,calls,posts,bleLamp:ble,cardConnectionMessages:new Map(),
+    beginForegroundConnection:()=>()=>{},
     store:{items:[entry],upsert(value){calls.push({kind:'save-card',id:value.id});return value;},rememberFirmware(){}},
     bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionNotice:()=>{},cancelMeshSelection:()=>{},
     stopGroupInspection:async()=>{},status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
@@ -159,6 +161,7 @@ function wifiHarness({gate=null,disconnectGate=null}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',deviceId};
   const target={identity:null,epoch:1,async disconnect(){calls.push('disconnect-destination');},schedule(){calls.push('schedule');}};
   const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},...view,calls,posts,entry,wifiLamp:target,
+    beginForegroundConnection:()=>()=>{},
     WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',address,expected});if(gate)await gate.promise;this.base=address;this.identity=expected;this.authorization='fixture';this.raw={deviceId:expected,hostname:'fixture.local',name:'Reading lamp',mode:4,firmware:{},effectOptions:[[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3]]};this.state={mode:4};this.catalog=[];return this.raw;}async disconnect(){calls.push('disconnect-probe');}},
     credential:async()=>({value:'fixture-only'}),bluetoothFirmwareOwner:()=>null,cancelMeshSelection:()=>{},renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},renderSettings:()=>{},status:()=>{},stopGroupInspection:async()=>{},
     store:{items:[entry],upsertWifi(value){calls.push({kind:'adopt',id:value.id});return value;}},groupRemovedIds:new Set(),roomGroups:{allow(){}},wifiFailures:new Map(),
@@ -198,6 +201,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
   const mesh={identity:id,epoch:1,isMesh:true,bridge:{identity:other},lease:{borrowed:false},raw,state:{mode:4},signal:null,isCurrent:null,
     guard(){calls.push('guard-mesh');},schedule(){calls.push('schedule-mesh');}};
   const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},Option:class{},...view,calls,posts,entry,wifiLamp:wifi,meshLamp:mesh,raw,
+    beginForegroundConnection:()=>()=>{},
     phonePlatform:'ios',document:{hidden:false},SettingsConnectionRecovery:class extends SettingsConnectionRecovery{constructor(options){super({...options,timeoutMs:1000,retryDelayMs:0,maxAttempts:1});}},
     WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',expected});Object.assign(this,{base:address,authorization:password,identity:expected,raw,state:{mode:4},catalog:[]});}async disconnect(){calls.push('disconnect-probe');}},
     credential:async()=>({value:route==='wifi'?'fixture-only':null}),bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionBusy:()=>false,

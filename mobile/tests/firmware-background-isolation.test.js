@@ -27,6 +27,7 @@ function fixture(names=[],overrides={}){
  const calls=[],entry={id:other,address:'192.0.2.2',deviceId:'paired-fixture',accessoryManaged:true};
  const context={Error,Map,Set,Promise,AbortController,clearTimeout,setTimeout,JSON,
   firmwareBackgroundGeneration:0,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+  foregroundConnectionHold:null,connecting:false,
   firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),fleetRefreshRun:null,fleetRefreshQueued:false,fleetSummary:'',
   fleet:{cancelRefresh:()=>calls.push('cancel-fleet'),refresh:options=>{calls.push(['fleet',...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}},
   meshOnboarding:{cancelDiscover:()=>calls.push('cancel-mesh'),discover:()=>{calls.push('discover');return Promise.resolve();}},
