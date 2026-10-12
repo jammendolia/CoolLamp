@@ -34,7 +34,7 @@ function harness(){
   adaptiveEffectModel:(entry,options)=>({entry,...options}),
   $:id=>{if(!elements.has(id))elements.set(id,{hidden:false,value:'#ff0088'});return elements.get(id);},
   renderOptions:()=>{},status:message=>messages.push(message),updatingLamp:()=>false,independentLightingAllowed:()=>true};
- runInNewContext(`let lamp=null,selected=null,state=null,busy=false,connecting=false,effectOptions=null;
+ runInNewContext(`let lamp=null,selected=null,state=null,busy=false,connecting=false,effectOptions=null,liveLightSending=false;
  let app2Experience=null,app2ExperienceRun=null;const app2Pending=new Map();
  const verifiedSelectedLamp=()=>Boolean(lamp&&selected&&state&&lamp.identity===selected.id);
  const advancedAvailable=()=>Boolean(state&&lamp?.raw);
@@ -77,4 +77,53 @@ test('reconciliation clears a confirmed receipt even if its later refresh fails'
  const ui=harness(),first=transport('aabbccddeeff',{refreshError:true});let reads=0;
  ui.select(first);ui.remember(first.identity,{target:first.identity,reconcile:async()=>{reads++;return {outcome:'executed',executed:true};}});
  await ui.reconcile();assert.equal(reads,1);assert.equal(ui.pending(first.identity),undefined);assert.match(ui.messages.at(-1),/Refresh failed/);
+});
+
+test('production effect tuning sends one fresh revision and only the changed parameter',async()=>{
+ const ui=harness(),first=transport('aabbccddeeff');ui.select(first);
+ await ui.light('effectOptions',{mode:4,speed:24,intensity:82,dual:1,r:9,g:8,b:7},false,'speed');
+ assert.equal(first.writes.length,1);const patch=first.writes[0].fields;
+ assert.equal(patch.mode,4);assert.equal(patch.speed,24);assert.equal('intensity' in patch,false);assert.equal('dual' in patch,false);
+ for(const field of ['r2','g2','b2'])assert.equal(field in patch,false);
+ assert.equal(first.requests.filter(path=>path==='/api/revision').length,1);assert.equal(ui.pending(first.identity),undefined);
+});
+
+for(const resolved of [true,false])test('production next-effect command '+(resolved?'reconciles a confirmed receipt before a new mutation':'keeps an unknown original receipt without replay'),async()=>{
+ const ui=harness(),first=transport('aabbccddeeff');let receiptReads=0,patchWrites=0;
+ const original=first.request.bind(first);
+ first.request=async(path,fields,epoch,beforeWrite)=>{
+  if(path==='/api/receipt'){
+   first.requests.push(path);receiptReads++;assert.equal(fields.target,first.identity);assert.equal(fields.bootSession,boot);assert.equal(fields.commandId,'0000000000000001');
+   return {version:1,target:first.identity,bootSession:boot,requestBoot:boot,commandId:fields.commandId,revision:2,executionRevision:2,
+    outcome:resolved?'executed':'uncertain',executed:resolved?true:null,persisted:resolved?false:null,httpStatus:200};
+  }
+  if(path==='/api/revision'){
+   first.requests.push(path);return {...descriptor(first.identity).state,revision:receiptReads?2:1,nextCommandId:receiptReads?'0000000000000002':'0000000000000001'};
+  }
+  if(path==='/api/state/patch'){
+   beforeWrite?.();first.requests.push(path);first.writes.push({path,fields});patchWrites++;
+   if(patchWrites===1)throw Error('Lost first mutation reply');
+   return {version:1,target:first.identity,bootSession:boot,requestBoot:boot,commandId:fields.commandId,revision:3,executionRevision:3,outcome:'executed',executed:true,persisted:false,httpStatus:200};
+  }
+  return original(path,fields,epoch,beforeWrite);
+ };
+ ui.select(first);await assert.rejects(ui.light('brightness',33),error=>error.uncertain);const pending=ui.pending(first.identity);assert(pending);
+ if(resolved){
+  assert.equal(await ui.light('effect',46),true);assert.equal(ui.pending(first.identity),undefined);assert.equal(patchWrites,2);
+  assert.equal(first.writes[1].fields.commandId,'0000000000000002');assert.equal(first.writes[1].fields.mode,46);assert.equal('brightness' in first.writes[1].fields,false);
+  assert.deepEqual(first.requests,['/api/descriptor','/api/revision','/api/state/patch','/api/receipt','/api/revision','/api/state/patch']);
+ }else{
+  await assert.rejects(ui.light('effect',46),error=>error.uncertain&&error.requiresReconciliation);assert.equal(ui.pending(first.identity),pending);assert.equal(patchWrites,1);
+  assert.deepEqual(first.requests,['/api/descriptor','/api/revision','/api/state/patch','/api/receipt']);
+ }
+ assert.equal(receiptReads,1);
+});
+
+test('production known preexecution refusal does not leave a false unconfirmed-change UI record',async()=>{
+ const ui=harness(),first=transport('aabbccddeeff'),request=first.request.bind(first);
+ first.request=async(path,fields,epoch,beforeWrite)=>{
+  if(path==='/api/state/patch'){beforeWrite?.();throw Object.assign(Error('Control resources unavailable. This request was not executed.'),{confirmed:true,status:503});}
+  return request(path,fields,epoch,beforeWrite);
+ };
+ ui.select(first);await assert.rejects(ui.light('brightness',22),error=>error.preexecution&&error.uncertain===false);assert.equal(ui.pending(first.identity),undefined);
 });

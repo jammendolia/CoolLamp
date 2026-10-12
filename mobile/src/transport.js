@@ -3,9 +3,10 @@ import { effects, SERVICE, COMMAND, STATE, FIRMWARE, EFFECT_OPTIONS, CONTROL, CO
 import { WIFI_SETUP, WIFI_SETUP_CAPABILITY, wifiCredentials, decodeWifiSetup, wifiSetupMessage } from './wifi-setup.js';
 import { WifiTransport } from './wifi.js';
 import { normalizeLampStyle } from './lamp-style.js';
+import { validCurrentStateView } from './state-current.js';
 import { BluetoothFirmwareTransfer, decodeBleUpdate, OTA_STATUS } from './bluetooth-firmware.js';
 
-const controlPaths={'/api/state':1,'/api/sync/status':2,'/api/sync/invite':3,'/api/sync':4,'/api/sync/scene':5,
+const controlPaths={'/api/state':1,'/api/state/current':1,'/api/sync/status':2,'/api/sync/invite':3,'/api/sync':4,'/api/sync/scene':5,
  '/api/sync/order':6,'/api/config':7,'/api/audio':8,'/api/audio/tuning':9,'/api/rotation':10,'/api/geometry':11,
  '/api/calibration':12,'/api/name':13,'/api/identify':14,'/api/vu-colors':15,'/api/fountain-colors':16,
  '/api/audio/test':17,'/api/firmware':18,'/api/firmware/check':19,'/api/firmware/install':20,
@@ -26,7 +27,6 @@ function publicControlSync(value){
   sync.network=publicFields(value.network,['listening','blocked','received','discoveries','authenticationFailures','subscriptions','frames','clockDrops']);
   return sync;
 }
-
 // Dependency injection keeps reconnect, acknowledgment, and timeout behavior testable without a radio.
 export class LampTransport {
   constructor(ble, { onState = () => {}, onFirmware = () => {}, onOptions = () => {}, onDisconnect = () => {}, timeout = 5000,
@@ -379,7 +379,7 @@ export class LampTransport {
               try{readFence();}catch(error){settle.reject(error);return;}
               if(this.pending===settle&&epoch===this.epoch&&decodeState(data).id===id)this.receive(data);
             } catch { /* The original deadline still bounds an unconfirmed write. */ }
-          },this.timeout/2);
+          },operation.startsWith('control')||operation.startsWith('center')?Math.min(200,this.timeout/2):this.timeout/2);
         });
         const [, state] = await Promise.all([write, response]);
         readFence();
@@ -509,8 +509,13 @@ export class LampTransport {
     if(this.firmwareOnly)return Promise.reject(Object.assign(Error('This Bluetooth connection is reserved for firmware updates.'),{confirmed:true,firmwareOnly:true}));
     const endpoint=controlPaths[path];
     if(!endpoint)return Promise.reject(Error('This setting is unavailable over Bluetooth.'));
+    const method=data===undefined?1:2;
+    if(path==='/api/state/current'){
+      if(data!==undefined||!this.control?.capabilities.includes('current-state-v1'))return Promise.reject(Error('This lamp has not confirmed current settings reads.'));
+      data={view:'current'};
+    }
     if(path==='/api/bluetooth/forget')data={...data,action:'forget'};
-    return this.controlRequest(endpoint,data===undefined?1:2,data,()=>{if(this.epoch!==epoch)throw Error('Bluetooth control connection changed.');beforeWrite?.();},readGuard);
+    return this.controlRequest(endpoint,method,data,()=>{if(this.epoch!==epoch)throw Error('Bluetooth control connection changed.');beforeWrite?.();},readGuard);
   }
   controlRequest(endpoint,method,data,beforeWrite=null,readGuard=null) {
     if(this.firmwareOnly)return Promise.reject(Object.assign(Error('This Bluetooth connection is reserved for firmware updates.'),{confirmed:true,firmwareOnly:true}));
@@ -578,9 +583,10 @@ export class LampTransport {
   async refresh(expectedId=this.deviceIdentity,retryCatalog=true,readGuard=null) {
     if(!this.supportsOfflineControl)throw Error('Update this lamp to firmware 1.10.0 or newer for full Bluetooth settings.');
     const epoch=this.epoch,guard=()=>{if(epoch!==this.epoch)throw Error('Connection changed.');readGuard?.();};
-    guard();const text=await this.request('/api/state',undefined,epoch,null,guard);guard();
+    const path=this.control?.capabilities.includes('current-state-v1')?'/api/state/current':'/api/state';
+    guard();const text=await this.request(path,undefined,epoch,null,guard);guard();
     let raw;try{raw=JSON.parse(text);}catch{throw Error('Invalid Bluetooth settings snapshot.');}
-    if(raw?.deviceId!==expectedId||raw.deviceId!==this.deviceIdentity||!Array.isArray(raw.effects))throw Error('Invalid Bluetooth settings snapshot.');
+    if(raw?.deviceId!==expectedId||raw.deviceId!==this.deviceIdentity||!Array.isArray(raw.effects)||path==='/api/state/current'&&!validCurrentStateView(raw))throw Error('Invalid Bluetooth settings snapshot.');
     let catalog=this.catalog;
     if(!catalog||catalog.length!==raw.effects.length){
       guard();const entries=JSON.parse(await this.request('/api/effects',undefined,epoch,null,guard));guard();
@@ -608,6 +614,32 @@ export class LampTransport {
     guard();if(options)this.dispatchConsumer('options',{mode:raw.mode,speed:options[0],intensity:options[1],dual:options[2],r:options[3],g:options[4],b:options[5]});guard();
     return snapshot;
   }
+  async refreshLight(expectedId=this.deviceIdentity,readGuard=null) {
+    // Protected characteristic reads work on existing firmware too. They do
+    // not allocate/paginate the complete settings tree or download a catalog.
+    // Full settings still require refresh() on connect and after settings saves.
+    const epoch=this.epoch,id=this.id;
+    const guard=()=>{if(epoch!==this.epoch||id!==this.id||expectedId!==this.deviceIdentity||!this.raw||!this.catalog)
+      throw Error('Connection changed.');readGuard?.();};
+    guard();const bytes=await this.ble.read(id,SERVICE,STATE,{timeout:this.timeout});guard();
+    const light=decodeState(bytes);
+    if(light.result||light.effectCount!==this.catalog.length||!this.catalog.some(item=>item.id===light.mode))
+      throw Error('Lamp state changed. Reconnect to read its settings.');
+    let options=null;
+    if(light.capabilities&8){
+      const data=await this.ble.read(id,SERVICE,EFFECT_OPTIONS,{timeout:this.timeout});guard();
+      options=decodeEffectOptions(data,light.effectCount);
+      if(options.mode!==light.mode)throw Object.assign(Error('The effect changed while reading its controls.'),{confirmed:true,conflict:true});
+    }
+    guard();
+    for(const field of ['mode','brightness','power'])this.raw[field]=light[field];
+    if(light.color&&Array.isArray(this.raw.colors))this.raw.colors[light.mode-1]=[Number(light.color.enabled),light.color.r,light.color.g,light.color.b];
+    if(options&&Array.isArray(this.raw.effectOptions))this.raw.effectOptions[light.mode-1]=[options.speed,options.intensity,options.dual,options.r,options.g,options.b];
+    this.state={...this.raw,...light};
+    // This proves light values only; never renew group/hardware freshness.
+    this.dispatchConsumer('state',this.state,{freshLight:true});guard();
+    if(options)this.dispatchConsumer('options',options);guard();return this.state;
+  }
   scheduleControlRefresh() {
     if(this.firmwareOnly)return;
     clearTimeout(this.controlTimer);const epoch=this.epoch,owner={};this.controlRefreshOwner=owner;
@@ -622,22 +654,68 @@ export class LampTransport {
       if(this.controlRefreshOwner!==owner||epoch!==this.epoch||!this.supportsOfflineControl||this.bluetoothUpdate)return;
       try{readGuard();}catch{rearm();return;}
       try{
-        if(![1,3,4].includes(this.raw?.firmware?.phase))await this.enqueue(()=>{readGuard();return this.refresh(this.deviceIdentity,true,readGuard);});
+        if(![1,3,4].includes(this.raw?.firmware?.phase))await this.enqueue(async()=>{readGuard();
+          if(this.raw?.calibration?.active&&this.raw.calibration.kind==='center')await this.calibrateCenter('status',undefined,readGuard);
+          else await this.refreshLight(this.deviceIdentity,readGuard);
+        });
       }catch{ /* Radio loss/legacy control handles connection state independently. */ }
       rearm();
     },2500);
   }
   factoryReset() { return this.command('factoryReset',0xa5); }
-  async calibrateCenter(action,position) {
-    if(this.supportsOfflineControl)return WifiTransport.prototype.calibrateCenter.call(this,action,position);
+  async calibrateCenter(action,position,readGuard=null) {
     const actions={start:0,save:1,cancel:2,status:3};
-    if(!(action in actions)&&action!=='move')throw Error('Choose a valid center action.');
-    const value=await this.command(action==='move'?'centerMove':'centerControl',action==='move'?position:actions[action],
-      '7b610009-6e2b-4f3d-9a71-28e45c001001');
-    if(value?.version!==1||typeof value.active!=='boolean'||!Number.isInteger(value.leds)||value.leds<1||value.leds>1024||
-      !Number.isInteger(value.midpoint)||value.midpoint<0||value.midpoint>=value.leds||
-      !Number.isInteger(value.position)||value.position<1||value.position>Math.max(1,value.leds-1))throw Error('Invalid center adjustment status.');
-    return value;
+    if(!Object.hasOwn(actions,action)&&action!=='move')throw Error('Choose a valid center action.');
+    const epoch=this.epoch,id=this.id,identity=this.deviceIdentity,control=this.control,modern=this.supportsOfflineControl;
+    const guard=()=>{
+      if(!id||this.id!==id||this.epoch!==epoch||this.deviceIdentity!==identity||
+        modern&&(!/^[0-9a-f]{12}$/.test(identity||'')||this.control!==control||this.raw?.deviceId!==identity)||
+        this.expectedDeviceIdentity&&identity!==this.expectedDeviceIdentity)
+        throw Error('Center adjustment connection changed.');
+      readGuard?.();
+    };
+    const valid=value=>{
+      if(value?.version!==1||typeof value.active!=='boolean'||!Number.isInteger(value.leds)||value.leds<1||value.leds>1024||value.active&&value.leds<2||
+        !Number.isInteger(value.midpoint)||value.midpoint<0||value.midpoint>=value.leds||
+        !Number.isInteger(value.position)||value.position<1||value.position>Math.max(1,value.leds-1))throw Error('Invalid center adjustment status.');
+      if(modern&&value.leds!==this.raw.leds)throw Error('The lamp’s LED count changed during center adjustment.');
+      return value;
+    };
+    let saveAttempted=false;
+    const send=async(operation,value,save=false)=>{
+      guard();
+      const result=await this.command(operation,value,'7b610009-6e2b-4f3d-9a71-28e45c001001',()=>{
+        guard();if(save)saveAttempted=true;
+      },guard);
+      guard();return valid(result);
+    };
+    try {
+      let value;
+      if(action==='save') {
+        // The protected status command copies a fresh marker position without
+        // touching its inactivity timer. Never save from an old settings tree.
+        const current=await send('centerControl',actions.status);
+        if(!current.active)throw Object.assign(Error('The center adjustment has ended. Start it again to choose a new center.'),{confirmed:true});
+        value=await send('centerControl',actions.save,true);
+        if(value.active||value.leds!==current.leds||value.midpoint!==current.position||value.position!==current.position)
+          throw Error('The lamp did not confirm this center.');
+      } else value=await send(action==='move'?'centerMove':'centerControl',action==='move'?position:actions[action]);
+      guard();
+      if(modern) {
+        this.raw.midpoint=value.midpoint;
+        this.raw.effectiveMidpoint=value.midpoint||Math.ceil(value.leds/2);
+        this.raw.calibration={...this.raw.calibration,active:value.active,kind:value.active?'center':'leds',position:value.position};
+        this.state={...this.state,midpoint:this.raw.midpoint,effectiveMidpoint:this.raw.effectiveMidpoint,calibration:this.raw.calibration};
+        // This updates only verified center fields. It does not renew complete
+        // settings/group freshness, retrieve catalogs or allocate large replies.
+        this.dispatchConsumer('state',this.state,{freshCenter:true});guard();
+      }
+      return value;
+    } catch(error) {
+      if(saveAttempted)throw Object.assign(error,{uncertain:true,confirmed:false,
+        message:'We could not confirm your new center. The lamp needs to check its settings before you try again.'});
+      throw error;
+    }
   }
   async wifiRequest(operation, value=0) {
     return decodeWifiSetup(await this.command(operation,value,WIFI_SETUP),this.deviceIdentity);

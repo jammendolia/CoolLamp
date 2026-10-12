@@ -3,11 +3,12 @@ import { lampAddress } from './lamps.js';
 import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
 import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
+import {validCurrentStateView} from './state-current.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
 // These GET handlers only read current state. Scan, enrollment, firmware check,
 // installation and every POST are deliberately absent, including receipt reads
 // whose legacy transport uses POST. A confirmed busy reply is not a lost reply.
-const busyReadPaths=new Set(['/api/state','/api/effects','/api/audio','/api/firmware',
+const busyReadPaths=new Set(['/api/state','/api/state/current','/api/effects','/api/audio','/api/firmware',
   '/api/descriptor','/api/revision','/api/diagnostics','/api/firmware/upload/status']);
 const busyReadReplies=new Set(['Another response is pending. This request was not executed.',
   'Read resources unavailable. Nothing changed.']);
@@ -19,16 +20,16 @@ const requestBudgetMs=13000;
 
 // One absolute durable field per request. A lost reply permits a fresh read,
 // never a second POST or automatic route change. Call from the owning queue.
-async function verifiedSetting(lamp,{supported,path,data,matches,message}) {
+async function verifiedSetting(lamp,{supported,path,data,matches,message,refreshBefore=true,unconfirmedMessage}) {
   const id=lamp.deviceIdentity||lamp.identity,epoch=lamp.epoch,address=lamp.base;
   const guard=()=>{if(!/^[0-9a-f]{12}$/.test(id||'')||(lamp.deviceIdentity||lamp.identity)!==id||lamp.epoch!==epoch||lamp.base!==address)throw Error('Connection changed.');};
-  guard();await lamp.refresh(id);guard();
+  guard();if(refreshBefore)await lamp.refresh(id);guard();
   if(lamp.raw?.deviceId!==id||!supported(lamp.raw))throw Error('This lamp does not support this setting yet.');
   let reply,submitted=false,readbackStarted=false;
   try{
     guard();reply=await lamp.request(path,data,epoch,()=>{guard();submitted=true;});
     guard();readbackStarted=true;await lamp.refresh(id);guard();
-    if(!supported(lamp.raw)||!matches(lamp.raw))throw Error('The lamp has not confirmed this setting. Its current settings need to be checked.');
+    if(!supported(lamp.raw)||!matches(lamp.raw))throw Error(unconfirmedMessage||'The lamp has not confirmed this setting. Its current settings need to be checked.');
     return reply;
   }
   catch(error){
@@ -39,6 +40,7 @@ async function verifiedSetting(lamp,{supported,path,data,matches,message}) {
     // At most one fresh readback after a submitted operation. A malformed
     // snapshot, locator/epoch change or failure after ACK remains uncertainty.
     if(!readbackStarted)try{guard();readbackStarted=true;await lamp.refresh(id);guard();if(supported(lamp.raw)&&matches(lamp.raw))return message;}catch{}
+    if(unconfirmedMessage)uncertain.message=unconfirmedMessage;
     throw uncertain;
   }
 }
@@ -97,11 +99,12 @@ export class WifiTransport {
     if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true,status:response.status});
     return response.data;
   }
-  async connect(address,password,expectedId,{guard=null,timeoutMs=null}={}) {
+  async connect(address,password,expectedId,{guard=null,timeoutMs=null,currentStateRead=false}={}) {
     if(timeoutMs!==null&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw Error('Choose a valid connection timeout.');
     const deadline=timeoutMs===null?null:this.now()+timeoutMs;
     this.readFence(this.epoch,guard);
     await this.disconnect(); this.base=lampAddress(address);
+    this.currentStateRead=currentStateRead===true;
     const epoch=this.epoch;
     this.authorization='Basic '+btoa(unescape(encodeURIComponent('lamp:'+password)));
     try { this.readFence(epoch,guard);await this.refresh(expectedId,true,guard,deadline);this.readFence(epoch,guard);this.schedule();return this.raw; }
@@ -109,9 +112,16 @@ export class WifiTransport {
   }
   async refresh(expectedId,retryCatalog=true,guard=null,deadline=null) {
     const epoch=this.epoch;
-    const result=await this.request('/api/state',undefined,epoch,null,guard,deadline);
+    const readDeadline=deadline??this.now()+requestBudgetMs;
+    let current=this.currentStateRead===true||this.raw?.stateView===1;
+    let result;
+    try{result=await this.request(current?'/api/state/current':'/api/state',undefined,epoch,null,guard,readDeadline);}
+    catch(error){if(!current||error.status!==404||!error.confirmed||error.uncertain)throw error;
+      this.currentStateRead=false;current=false;result=await this.request('/api/state',undefined,epoch,null,guard,readDeadline);}
     this.readFence(epoch,guard);
     const raw=typeof result==='string'?JSON.parse(result):result;
+    if(current&&!validCurrentStateView(raw))throw Error('Invalid current settings response.');
+    if(current&&(!/^[a-f0-9]{12}$/.test(raw.deviceId||'')||expectedId&&raw.deviceId!==expectedId))throw Error('This address belongs to a different lamp. Find your lamp again.');
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
     const identity=raw.deviceId || raw.hostname.replace(/\.local$/,'');
     const legacyIdentity=raw.hostname.replace(/\.local$/,'');
@@ -120,10 +130,10 @@ export class WifiTransport {
     let catalog=this.catalog;
     if (!catalog || this.raw?.token!==raw.token || catalog.length!==raw.effects.length) {
       if (raw.catalogVersion===1) {
-        const data=await this.request('/api/effects',undefined,epoch,null,guard,deadline);
+        const data=await this.request('/api/effects',undefined,epoch,null,guard,readDeadline);
         this.readFence(epoch,guard);
         const entries=typeof data==='string'?JSON.parse(data):data;
-        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard,deadline);}
+        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard,readDeadline);}
         catalog=validateCatalog(entries,raw.effects.length);
       } else catalog=legacyCatalog(raw.effects);
     }
@@ -264,6 +274,21 @@ export class WifiTransport {
     if(!this.raw?.calibration?.centerSupported)throw Error('Update this lamp to firmware 1.9.1 or newer to fine-tune its center.');
     if(!['start','move','save','cancel'].includes(action))throw Error('Choose a valid center action.');
     if(action==='move'&&(!Number.isInteger(position)||position<1||position>=this.raw.leds))throw Error('Choose a boundary inside this strip.');
+    if(action==='save') {
+      const leds=this.raw.leds,center=this.raw.calibration.position;
+      if(this.raw.calibration.active!==true||this.raw.calibration.kind!=='center'||!Number.isInteger(leds)||leds<2||leds>1024||
+        !Number.isInteger(center)||center<1||center>=leds)
+        throw Object.assign(Error('The center adjustment has ended. Start it again to choose a new center.'),{confirmed:true});
+      // Save immediately: another full snapshot before this POST can consume
+      // the physical tool's ten-second inactivity window. Its owning queue has
+      // already selected the target; the exact saved boundary is checked after
+      // the one save, including a lost reply. Never replay the save.
+      return verifiedSetting(this,{supported:raw=>raw.leds===leds&&raw.calibration?.centerSupported===true&&Number.isInteger(raw.midpoint)&&raw.midpoint>=0&&raw.midpoint<leds,
+        path:'/api/calibration',data:{action:'save',kind:'center'},refreshBefore:false,
+        matches:raw=>raw.midpoint===center&&raw.calibration.active===false,
+        message:'Center saved and checked. Normal lighting restored.',
+        unconfirmedMessage:'We could not confirm your new center. The lamp needs to check its settings before you try again.'});
+    }
     const message=await this.request('/api/calibration',{action,kind:'center',...(action==='move'?{position}:{})});
     await this.refresh();return message;
   }
@@ -276,10 +301,12 @@ export class WifiTransport {
   }
   async configureGeometry(midpoint) {
     if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');
-    if(!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
-    const message=await this.request('/api/geometry',{midpoint});
-    await this.refresh();
-    return message;
+    if(!Number.isInteger(this.raw.leds)||this.raw.leds<1||this.raw.leds>1024||!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
+    const leds=this.raw.leds;
+    return verifiedSetting(this,{supported:raw=>raw.leds===leds&&Number.isInteger(raw.midpoint)&&raw.midpoint>=0&&raw.midpoint<leds,
+      path:'/api/geometry',data:{midpoint},matches:raw=>raw.midpoint===midpoint,
+      message:'Center saved and checked.',
+      unconfirmedMessage:'We could not confirm your new center. The lamp needs to check its settings before you try again.'});
   }
   async configureMotionPath(path) {
     if(![0,1].includes(path))throw Error('Choose a centered or whole-strip path.');

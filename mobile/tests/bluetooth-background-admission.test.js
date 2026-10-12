@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {LampTransport} from '../src/transport.js';
-import {CONTROL,STATE,COMMAND,SERVICE,FIRMWARE,effects} from '../src/protocol.js';
+import {CONTROL,STATE,COMMAND,SERVICE,FIRMWARE,EFFECT_OPTIONS,effects} from '../src/protocol.js';
 import {legacyCatalog} from '../src/catalog.js';
 
 const identity='aabbccddeeff',deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
@@ -34,6 +34,7 @@ function fixture(options={}){
    assert.equal(device,'target');assert.equal(service,SERVICE);events.push({read:characteristic,endpoint:response?.endpoint,offset:response?.offset});
    await pause('read:'+characteristic+':'+(response?.endpoint??0));
    if(characteristic===STATE)return packet();
+   if(characteristic===EFFECT_OPTIONS)return new DataView(Uint8Array.of(1,4,50,60,0,0,0,0).buffer);
    if(characteristic===identityChar)return new DataView(new TextEncoder().encode(identity).buffer);
    assert.equal(characteristic,CONTROL);if(!response)return page(JSON.stringify({version:1,capabilities:['control','groups'],maxRequest:1024,maxResponse:8192,pageBytes:480,firmware:'1.15.1'}),0,0);
    return page(response.text,response.tx,response.endpoint,response.offset);
@@ -152,6 +153,7 @@ test('admission loss during an ACK probe fences its late state read and callback
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function scheduler(t,options={}){
  t.mock.timers.enable({apis:['setTimeout']});const f=fixture(options);
+ f.lamp.raw={...f.raw,name:'Saved snapshot'};
  t.after(()=>{clearTimeout(f.lamp.controlTimer);f.lamp.controlRefreshOwner=null;});return f;
 }
 test('a globally paused automatic timer reschedules without GATT and resumes with a fresh generation',async t=>{
@@ -159,37 +161,38 @@ test('a globally paused automatic timer reschedules without GATT and resumes wit
  f.lamp.scheduleControlRefresh();allowed=false;generation++;t.mock.timers.tick(2500);await settle();t.mock.timers.tick(2500);await settle();
  assert.deepEqual(f.events,[]);assert.deepEqual(f.callbacks,[]);assert.equal(f.lamp.id,'target');assert(f.lamp.controlTimer);
  allowed=true;generation++;t.mock.timers.tick(2500);await settle();assert.deepEqual(f.events,[]);
- t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshControl));assert.equal(f.lamp.raw.name,'New snapshot');
+ t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshLight));assert.equal(f.lamp.raw.name,'Saved snapshot');
+ assert.deepEqual(f.events.filter(row=>row.read).map(row=>row.read),[STATE,EFFECT_OPTIONS]);assert.deepEqual(f.executions,[]);
  assert(!f.events.some(row=>row.disconnect));
 });
 
 test('automatic refresh queued behind the action lane rechecks the generation before any query',async t=>{
  let allowed=true,generation=0;const f=scheduler(t,{backgroundAllowed:()=>allowed,backgroundGeneration:()=>generation}),gate=deferred();
  f.lamp.actionTail=gate.promise;f.lamp.scheduleControlRefresh();t.mock.timers.tick(2500);await settle();assert.deepEqual(f.events,[]);
- allowed=false;generation++;gate.resolve();await settle();assert.deepEqual(f.events,[]);assert.deepEqual(f.callbacks,[]);assert.equal(f.lamp.raw,null);
+ allowed=false;generation++;gate.resolve();await settle();assert.deepEqual(f.events,[]);assert.deepEqual(f.callbacks,[]);assert.equal(f.lamp.raw.name,'Saved snapshot');
  allowed=true;generation++;t.mock.timers.tick(2500);await settle();t.mock.timers.tick(2500);await settle();
- assert(f.callbacks.some(row=>row.metadata?.freshControl));assert(!f.events.some(row=>row.disconnect));
+ assert(f.callbacks.some(row=>row.metadata?.freshLight));assert(!f.events.some(row=>row.disconnect));
 });
 
-test('a generation change during a native automatic page read prevents late cache, callbacks and further native work',async t=>{
+test('a generation change during an automatic protected light read prevents late cache, callbacks and further native work',async t=>{
  let allowed=true,generation=0;const f=scheduler(t,{backgroundAllowed:()=>allowed,backgroundGeneration:()=>generation}),previous={name:'Saved snapshot',firmware:{phase:0}};
- f.lamp.raw=previous;const gate=f.hold('read:'+CONTROL+':1');f.lamp.scheduleControlRefresh();t.mock.timers.tick(2500);await gate.started.promise;
+ f.lamp.raw=previous;const gate=f.hold('read:'+STATE+':0');f.lamp.scheduleControlRefresh();t.mock.timers.tick(2500);await gate.started.promise;
  const native=f.events.length,callbacks=f.callbacks.length;allowed=false;generation++;gate.finished.resolve();await settle();
  assert.equal(f.events.length,native);assert.equal(f.callbacks.length,callbacks);assert.equal(f.lamp.raw,previous);assert.equal(f.lamp.id,'target');
  t.mock.timers.tick(2500);await settle();assert.equal(f.events.length,native);assert(!f.events.some(row=>row.disconnect));
 });
 
 test('a late scheduler callback cannot rearm or clear a replacement timer owner',async t=>{
- const f=scheduler(t),gate=f.hold('read:'+CONTROL+':1');f.lamp.scheduleControlRefresh();t.mock.timers.tick(2500);await gate.started.promise;
+ const f=scheduler(t),gate=f.hold('read:'+STATE+':0'),previous=f.lamp.raw;f.lamp.scheduleControlRefresh();t.mock.timers.tick(2500);await gate.started.promise;
  const native=f.events.length;f.lamp.scheduleControlRefresh();const replacement=f.lamp.controlRefreshOwner,timer=f.lamp.controlTimer;
- gate.finished.resolve();await settle();assert.equal(f.events.length,native);assert.equal(f.lamp.controlRefreshOwner,replacement);assert.equal(f.lamp.controlTimer,timer);assert.equal(f.lamp.raw,null);
- t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshControl));
+ gate.finished.resolve();await settle();assert.equal(f.events.length,native);assert.equal(f.lamp.controlRefreshOwner,replacement);assert.equal(f.lamp.controlTimer,timer);assert.equal(f.lamp.raw,previous);
+ t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshLight));
 });
 
 test('throwing automatic policy callbacks fail closed without disconnecting or blocking future admitted refreshes',async t=>{
  let broken=true;const f=scheduler(t,{backgroundAllowed:()=>{if(broken)throw Error('Private callback details.');return true;}});
  f.lamp.scheduleControlRefresh();t.mock.timers.tick(5000);await settle();assert.deepEqual(f.events,[]);assert.deepEqual(f.callbacks,[]);
- broken=false;t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshControl));assert(!f.events.some(row=>row.disconnect));
+ broken=false;t.mock.timers.tick(2500);await settle();assert(f.callbacks.some(row=>row.metadata?.freshLight));assert(!f.events.some(row=>row.disconnect));
 });
 
 test('private firmware-only connections never arm automatic control timers or consult their policy',async t=>{

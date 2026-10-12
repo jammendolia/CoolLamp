@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {SettingsConnectionRecovery} from '../src/settings-recovery.js';
+import {validFirmwareVersion} from '../src/lamps.js';
+import {compareFirmwareVersions} from '../src/bluetooth-firmware.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const extract=(start,end)=>{const offset=source.indexOf(start);assert(offset>=0,start+' exists');const limit=source.indexOf(end,offset+start.length);assert(limit>offset,end+' exists');return source.slice(offset,limit);};
@@ -160,7 +162,7 @@ test('actual connected callback hides reconnect and keeps the requested settings
 function wifiHarness({gate=null,disconnectGate=null}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',deviceId};
   const target={identity:null,epoch:1,async disconnect(){calls.push('disconnect-destination');},schedule(){calls.push('schedule');}};
-  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},...view,calls,posts,entry,wifiLamp:target,
+  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},validFirmwareVersion,compareFirmwareVersions,...view,calls,posts,entry,wifiLamp:target,
     beginForegroundConnection:()=>()=>{},
     WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',address,expected});if(gate)await gate.promise;this.base=address;this.identity=expected;this.authorization='fixture';this.raw={deviceId:expected,hostname:'fixture.local',name:'Reading lamp',mode:4,firmware:{},effectOptions:[[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3]]};this.state={mode:4};this.catalog=[];return this.raw;}async disconnect(){calls.push('disconnect-probe');}},
     credential:async()=>({value:'fixture-only'}),bluetoothFirmwareOwner:()=>null,cancelMeshSelection:()=>{},renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},renderSettings:()=>{},status:()=>{},stopGroupInspection:async()=>{},
@@ -214,7 +216,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
     invalidateGroupTasks:()=>{},hideWifiPassword:()=>{},
     status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
     queueMicrotask:action=>{calls.push('queued-disconnect-check');queueMicrotask(action);},disconnectGate};
-  runInNewContext(`let busy=false,connecting=false,meshSelection=null,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3;
+  runInNewContext(`let busy=false,connecting=false,meshSelection=null,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3,liveLight={cancel(){calls.push('cancel-live-light');}};
     let selected={...entry},state=null,settingsView='network',settingsRecovery=null,styleSaving=false,settingsRestartWaitUntil=0;
     let wifiScanning=false,wifiScanSerial=0,centerTimer=null,centerStatus=null,centerWasActive=false,centerSerial=0,resetTarget=null;
     let wifiSetupAbort=null,bleWifiStatus=null,wifiSetupSerial=0,firmware=null,firmwareReceivedAt=0,effectOptions=null,vuDirty=false,fountainDirty=false,audioDirty=false,paneMode=null,editingBrightness=false,savedDevice=entry;

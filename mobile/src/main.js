@@ -33,6 +33,7 @@ import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pa
 import { mountAppV2 } from './app-v2.js';
 import { adaptiveEffectModel, effectDisplayName } from './app-v2-effects.js';
 import { LampExperienceSession } from './experience-contracts.js';
+import { LiveLightQueue } from './live-light.js';
 import { SettingsConnectionRecovery, settingsConnectionMessage, selectMeshRecoveryCandidates } from './settings-recovery.js';
 import { lampArtworkSvg } from './lamp-artwork.js';
 import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage} from './update-source.js';
@@ -136,7 +137,7 @@ $('page-light').querySelector('.section-title').remove();
 $('page-light').dataset.settingsPanel='lighting';$('settingsLighting').append($('page-light'));
 let toastTimer;
 const status = message => { message=settingsConnectionMessage(message,{active:!$('page-settings').hidden,connected:verifiedSelectedLamp(),name:selected?.name,unconfirmed:settingsUnconfirmedIds.has(selected?.id)});$('status').textContent = message; $('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,5000); };
-let state = null, editingBrightness = false, busy = false;
+let state = null, editingBrightness = false, busy = false, liveLightSending=false,liveLight=null;
 let firmware = null;
 let firmwareReceivedAt = 0;
 let effectOptions = null, editingOptions = false;
@@ -148,6 +149,21 @@ function app2TargetMatches(record){
 }
 function assertApp2Target(record){
   if(!app2TargetMatches(record)||!verifiedSelectedLamp())throw Error('The selected lamp changed.');
+}
+async function refreshApp2Light(record){
+ assertApp2Target(record);
+ if(typeof record.target.refreshLight==='function')await record.target.refreshLight(record.id);
+ else await record.target.refresh(record.id);
+ assertApp2Target(record);
+}
+async function reconcileApp2Pending(record){
+ const original=app2Pending.get(record.id);if(!original)return;
+ assertApp2Target(record);
+ const receipt=await original.reconcile(record.transport,{reuseDescriptor:original===record.session});
+ assertApp2Target(record);
+ if(receipt.outcome!=='uncertain')app2Pending.delete(record.id);
+ else throw Object.assign(Error('We couldn’t confirm the earlier change. Check the current light to continue.'),{uncertain:true,requiresReconciliation:true});
+ return receipt;
 }
 async function loadApp2Experience(){
   if(!firmwareBackgroundWorkAllowed()||!verifiedSelectedLamp()||!advancedAvailable()||updatingLamp()||!(/^[a-f0-9]{12}$/.test(selected.id)))return null;
@@ -168,7 +184,9 @@ async function loadApp2Experience(){
   }};
   record.session=new LampExperienceSession(transport,id);
   record.transport=transport;
-  const run={id,target,epoch,token:record.token,promise:target.enqueue(async()=>{operationGuard();try{await record.session.negotiate();operationGuard();record.supported=true;}catch(error){operationGuard();record.error=error.message;}app2Experience=record;return record;})};
+  const run={id,target,epoch,token:record.token,promise:target.enqueue(async()=>{operationGuard();try{await record.session.negotiate();operationGuard();record.supported=true;}catch(error){operationGuard();record.error=error.message;}
+   if(record.supported&&app2Pending.has(id))try{record.reconciledReceipt=await reconcileApp2Pending(record);operationGuard();}catch(error){operationGuard();record.reconcileError=error.message;}
+   app2Experience=record;return record;})};
   app2ExperienceRun=run;
   try{return await run.promise;}finally{if(app2ExperienceRun===run)app2ExperienceRun=null;}
 }
@@ -191,16 +209,15 @@ async function app2LightChange(operation,value,activatePalette,changedOption=nul
   const scope={id:selected?.id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token};
   const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported)return false;
   assertApp2Target(record);
-  if(app2Pending.has(record.id))throw Object.assign(Error('Check the previous unconfirmed change before making another.'),{uncertain:true});
   const patch=operation==='power'?{power:Number(value)}:operation==='brightness'?{brightness:value}:operation==='effect'?{mode:value}:operation==='color'?{mode:value.mode,r:value.r,g:value.g,b:value.b}:operation==='resetColor'?{mode:value,resetPalette:1}:operation==='effectOptions'?{mode:value.mode,speed:value.speed,intensity:value.intensity,dual:value.dual,r2:value.r,g2:value.g,b2:value.b}:null;
   if(!patch)return false;
   if(operation==='effectOptions'&&changedOption){for(const key of ['speed','intensity','dual','r2','g2','b2'])if(!(changedOption===key||changedOption==='secondaryColor'&&['r2','g2','b2'].includes(key)))delete patch[key];}
   if(activatePalette&&!state.color?.enabled){const hex=$('color').value.slice(1);Object.assign(patch,{r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)});}
-  let result;try{result=await record.target.enqueue(async()=>{const snapshot=await record.session.fresh();if(['color','effectOptions','resetColor'].includes(operation)&&snapshot.mode!==patch.mode)throw Error('The effect changed while you were editing. Review its current controls.');return record.session.patch(record.session.draft(snapshot,patch));});}finally{if(record.session.pending)app2Pending.set(record.id,record.session);}
+  let result;try{result=await record.target.enqueue(async()=>{assertApp2Target(record);await reconcileApp2Pending(record);return record.session.change(patch,{expectedMode:['color','effectOptions','resetColor'].includes(operation)?patch.mode:null});});}finally{if(record.session.pending)app2Pending.set(record.id,record.session);}
   if(result.outcome==='uncertain')throw Object.assign(Error('The lamp did not confirm this change. Check its state before trying again.'),{uncertain:true});
   if(result.outcome==='rejected')throw Error('The lamp rejected this change. Refresh its current settings.');
   if(!result.executed)throw Error('This change was not applied.');
-  await record.target.enqueue(async()=>{assertApp2Target(record);await record.target.refresh(record.id);assertApp2Target(record);});status('Changes confirmed on '+selected.name+'.');return true;
+  await record.target.enqueue(()=>refreshApp2Light(record));if(!liveLightSending)status('Changes confirmed on '+selected.name+'.');return true;
 }
 async function saveApp2Appearance(){
  if(busy||connecting||updatingLamp()||!independentLightingAllowed())return;busy=true;
@@ -216,9 +233,9 @@ $('saveAppearance').onclick=saveApp2Appearance;
 $('reconcileApp2').onclick=async()=>{
  const id=selected?.id,original=app2Pending.get(id);if(!original||busy)return;busy=true;
  const scope={id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token};
- try{const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported||original.target!==id)throw Error('Reconnect to this lamp to check the previous change.');assertApp2Target(record);const receipt=await record.target.enqueue(()=>original.reconcile(record.transport));
+ try{const record=await loadApp2Experience();if(!app2TargetMatches(scope))throw Error('The selected lamp changed.');if(!record?.supported||original.target!==id)throw Error('Reconnect to this lamp to check the previous change.');assertApp2Target(record);const receipt=!app2Pending.has(id)&&record.reconciledReceipt?record.reconciledReceipt:await record.target.enqueue(()=>original.reconcile(record.transport));
   if(receipt.outcome!=='uncertain')app2Pending.delete(id);
-  await record.target.enqueue(async()=>{assertApp2Target(record);await record.target.refresh(id);assertApp2Target(record);});
+  await record.target.enqueue(()=>refreshApp2Light(record));
   if(receipt.outcome==='uncertain'){$('retireApp2').hidden=false;status('Current light verified. The earlier change remains unconfirmed. Review this light before continuing.');}
   else{$('retireApp2').hidden=true;status(receipt.outcome==='persisted'?'Previous save confirmed.':receipt.executed?'Previous change confirmed.':'Previous change was rejected.');}
  }catch(error){status(error.message);}finally{busy=false;renderOptions();}
@@ -244,7 +261,7 @@ function renderEffectPane() {
   $('effectPane').hidden=!entry||groupActive;
   $('saveAppearance').hidden=true;$('appearanceSaveStatus').hidden=true;
   if(!entry||groupActive)return null;
-  const model=app2EffectModel(entry),blocked=busy||connecting||updatingLamp()||app2Pending.has(selected?.id);
+  const model=app2EffectModel(entry),blocked=busy&&!liveLightSending||connecting||updatingLamp()||app2Pending.has(selected?.id);
   void loadApp2EffectSchema().catch(()=>{});
   if(paneMode!==entry.id){effectTab=model.audio.visible?'sound':'look';paneMode=entry.id;}
   const speed=model.controls.find(control=>control.key==='speed'),intensity=model.controls.find(control=>control.key==='intensity');
@@ -368,8 +385,8 @@ function renderPower() {
   $('power').textContent='Turn '+scope+(state?.power?' off':' on');
   $('power').setAttribute('aria-pressed',String(Boolean(state?.power)));
   $('power').disabled=!state||busy||connecting||updatingLamp()||!independentLightingAllowed()||Boolean(state?.calibration?.active);
-  $('brightness').disabled=!state||busy||connecting||updatingLamp()||!independentLightingAllowed()||Boolean(sync?.active)||Boolean(state?.calibration?.active);
-  $('controls').disabled=!state||busy||connecting||updatingLamp()||!independentLightingAllowed()||Boolean(state?.calibration?.active);
+  $('brightness').disabled=!state||busy&&!liveLightSending||connecting||updatingLamp()||!independentLightingAllowed()||Boolean(sync?.active)||Boolean(state?.calibration?.active);
+  $('controls').disabled=!state||busy&&!liveLightSending||connecting||updatingLamp()||!independentLightingAllowed()||Boolean(state?.calibration?.active);
   document.querySelector('.light-hero').classList.toggle('following',Boolean(sync?.active));
   $('lightEmpty').hidden=Boolean(state);
   document.querySelector('.light-hero').hidden=!state;
@@ -614,7 +631,7 @@ const callbacks = {
     if(verifiedSelectedLamp()&&lamp.raw?.lampStyle)rememberLampStyle(selected.id,lamp.raw.lampStyle);
     if(lamp===wifiLamp&&verifiedSelectedLamp())observeLampWifi(selected.id,next.connected,'state');
     $('defaultPasswordNotice').hidden=next.usingDefaultPassword!==true;
-    $('controls').disabled=busy||!independentLightingAllowed()||Boolean(next.sync?.active)||Boolean(next.calibration?.active);
+    $('controls').disabled=busy&&!liveLightSending||!independentLightingAllowed()||Boolean(next.sync?.active)||Boolean(next.calibration?.active);
     filterEffects();
     $('colorControls').hidden = !next.supportsColor;
     $('colorUpgrade').hidden = next.supportsColor;
@@ -634,6 +651,7 @@ const callbacks = {
     renderOptions();
   },
   onDisconnect() {
+    liveLight?.cancel();
     const settingsOpen=!$('page-settings').hidden&&Boolean(selected);
     if(settingsOpen&&[3,4].includes(firmware?.phase))settingsRestartWaitUntil=Date.now()+3000;
     if(settingsOpen&&busy&&!connecting&&!meshSelection&&!wifiSetupAbort&&!firmwareConnectionBusy())settingsUnconfirmedIds.add(selected.id);
@@ -738,10 +756,10 @@ $('page-groups').append($('groupCoordinatorPasswordDialog'));
 $('groupRecovery').ontoggle=()=>{if($('groupRecovery').open){renderSync();refreshGroupCoordinators();}};
 
 function brightnessLabel() { $('brightnessValue').value = Math.round(Number($('brightness').value) * 100 / 255) + '%';paintRanges(); }
-async function change(operation, value, activatePalette = false,changedOption=null) {
+async function change(operation, value, activatePalette = false,changedOption=null,live=false) {
   if (busy||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id) return;
   if(['power','brightness','effect','saveDefaults','color','resetColor','effectOptions'].includes(operation)&&!independentLightingAllowed()){status('Use Groups for grouped lighting, or connect over Wi-Fi to verify this lamp’s membership.');return;}
-  busy = true; $('controls').disabled = true; renderPower(); renderFirmware();
+  busy = true; $('controls').disabled = !live; renderPower(); renderFirmware();
   try {
     if(['power','brightness','effect','color','resetColor','effectOptions'].includes(operation)&&await app2LightChange(operation,value,activatePalette,changedOption))return;
     if(activatePalette && !state.color?.enabled){
@@ -749,8 +767,24 @@ async function change(operation, value, activatePalette = false,changedOption=nu
       await lamp.command('color',{mode:value.mode,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)});
     }
     await lamp.command(operation, value); status(operation === 'saveDefaults' ? 'Startup settings saved.' : 'Connected • Changes applied.'); }
-  catch (error) { status(error.message); }
+  catch (error) { if(live)throw error;status(error.message); }
   finally { busy = false; $('controls').disabled = !state || Boolean(state?.sync?.active); renderFirmware();renderOptions(); }
+}
+liveLight=new LiveLightQueue({
+ current:scope=>app2TargetMatches(scope)&&state?.mode===scope.mode&&verifiedSelectedLamp()&&!updatingLamp()&&independentLightingAllowed(),
+ ready:()=>!busy&&!connecting,
+ send:async item=>{liveLightSending=true;try{await change(item.operation,item.value,false,item.option,true);}finally{liveLightSending=false;}},
+ error:error=>status(error.preexecution?'Your lamp couldn’t apply that adjustment. Try again in a moment.':error.message),
+ settled:()=>{editingBrightness=false;editingOptions=false;if(state){$('brightness').value=state.brightness;brightnessLabel();}renderOptions();}
+});
+function scheduleLiveLight(operation,value,option=null){
+ liveLight.schedule({id:selected?.id,target:lamp,epoch:lamp?.epoch,token:lamp?.raw?.token,mode:state?.mode},operation,value,option);
+}
+function currentOptionChange(id){
+ if(!state||effectOptions?.mode!==state.mode)return null;
+ const hex=$('secondaryColor').value.slice(1);
+ return {mode:state.mode,speed:Number($('speed').value),intensity:Number($('intensity').value),
+  dual:id==='dual'?Number($('dual').checked):effectOptions.dual,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)};
 }
 async function connect(saved = null,{expectedId=null,preserveWifiIntent=false,navigate=true,automaticReconnect=false,readOnlyReconnect=false,isCurrent=()=>true,signal=null}={}) {
   cancelMeshSelection();
@@ -867,7 +901,7 @@ async function connectWifi(entry,password,{navigate=true,settingsIntent=null}={}
     await lamp.disconnect(); lamp=wifiLamp;
     if(password===undefined && entry.id) password=(await credential(entry.id)).value;
     if(!password)throw Object.assign(new Error('Enter the lamp access password to connect over Wi-Fi.'),{needsPassword:true});
-    const raw=await wifiLamp.connect(entry.address,password,entry.id);
+    const raw=await wifiLamp.connect(entry.address,password,entry.id,{currentStateRead:entry.firmwareVersion&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.15.3')>=0});
     const id=raw.deviceId||raw.hostname.replace(/\.local$/,'');
     const prior=store.items.find(x=>x.id===id || x.id===entry.id);
     selected=store.upsertWifi({...prior,id,address:lampAddress(entry.address),hostname:raw.hostname,name:raw.name||prior?.name||entry.name||'CoolLamp'},entry.id);
@@ -894,8 +928,8 @@ $('reconnect').onclick=()=>connect(savedDevice);
 $('disconnect').onclick=()=>{if(bluetoothFirmwareOwner()){firmwareConnectionNotice();return;}page('lamps');return lamp.disconnect();};
 $('power').onclick = () => { if(state&&!connecting&&!state.calibration?.active)change('power', state.power ? 0 : 1); };
 $('effect').onchange = () => change('effect', Number($('effect').value));
-$('brightness').oninput = () => { editingBrightness = true; brightnessLabel(); };
-$('brightness').onchange = async () => { const value = Number($('brightness').value); editingBrightness = false; await change('brightness', value); };
+$('brightness').oninput = () => { editingBrightness = true; brightnessLabel();scheduleLiveLight('brightness',Number($('brightness').value)); };
+$('brightness').onchange = () => { editingBrightness=true;scheduleLiveLight('brightness',Number($('brightness').value)); };
 $('save').onclick = () => change('saveDefaults');
 $('color').onchange = () => {
   const hex = $('color').value.slice(1);
@@ -953,12 +987,12 @@ $('installBluetoothFirmware').onclick=async()=>{
 // iOS may suspend Bluetooth operations in the background. Abort an incomplete
 // image rather than leave a phone pretending its transfer is still progressing.
 document.addEventListener('visibilitychange',()=>{if(document.hidden){void cancelBluetoothFirmware('app-hidden');for(const task of cardFirmwareTasks.values())if(task.path!=='wifi'&&!task.transport?.bluetoothUpdate?.commitAttempted)task.abort.abort('app-hidden');}});
-for (const id of ['speed','intensity']) $(id).oninput = () => { editingOptions=true; $(id+'Value').value = $(id).value + '%';paintRanges(); };
+for (const id of ['speed','intensity']) $(id).oninput = () => { editingOptions=true; $(id+'Value').value = $(id).value + '%';paintRanges();const value=currentOptionChange(id);if(value)scheduleLiveLight('effectOptions',value,id); };
 for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange = async () => {
   if (!state || effectOptions?.mode !== state.mode) return;
-  const hex = $('secondaryColor').value.slice(1);
-  await change('effectOptions', {mode:state.mode, speed:Number($('speed').value), intensity:Number($('intensity').value),
-    dual:id==='dual'?Number($('dual').checked):effectOptions.dual,r:parseInt(hex.slice(0,2),16),g:parseInt(hex.slice(2,4),16),b:parseInt(hex.slice(4,6),16)},id==='dual'&&$('dual').checked,id);
+  const value=currentOptionChange(id);
+  if(['speed','intensity'].includes(id)){editingOptions=true;scheduleLiveLight('effectOptions',value,id);return;}
+  await change('effectOptions',value,id==='dual'&&$('dual').checked,id);
   editingOptions=false;
   renderOptions();
 };
@@ -1452,7 +1486,7 @@ const entries=mergedLampEntries().filter(entry=>entry.id!==id&&!groupRemovedIds.
     const entry=candidate.entry;
     if(candidate.kind==='wifi'){
       const bridge=new WifiTransport(CapacitorHttp);
-      try{const savedPassword=(await credential(entry.id)).value;guard();if(recoveryOnly&&!savedPassword)throw Error('No saved access for this connection.');const password=savedPassword||'coollamp';await bridge.connect(entry.address,password,entry.id,{guard});guard();clearTimeout(bridge.timer);return {lamp:bridge,release:()=>bridge.disconnect()};}
+      try{const savedPassword=(await credential(entry.id)).value;guard();if(recoveryOnly&&!savedPassword)throw Error('No saved access for this connection.');const password=savedPassword||'coollamp';await bridge.connect(entry.address,password,entry.id,{guard,currentStateRead:entry.firmwareVersion&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.15.3')>=0});guard();clearTimeout(bridge.timer);return {lamp:bridge,release:()=>bridge.disconnect()};}
       catch(error){await bridge.disconnect();throw error;}
     }
     await initializeGroupRadio({transport:bleLamp,ble:BleClient,platform:phonePlatform,pairing,accessories:accessoryNative,knownDevices:()=>recoveryOnly?[entry]:[...store.items,savedDevice].filter(Boolean),onAuthorized:devices=>rememberAccessories(store,devices,removedAccessoryIds)});guard();
@@ -1493,7 +1527,9 @@ async function connectCardWifiAsync(entry,intent){
   try{
     const password=(await credential(entry.id)).value;if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});
     if(!password)throw Object.assign(Error('Enter the lamp access password to connect over Wi-Fi.'),{needsPassword:true});
-    const pending=probe.connect(entry.address,password,entry.id,{guard:current,timeoutMs:9000});
+    // The saved version only chooses which read to try first. The response's
+    // explicit projection marker and canonical identity negotiate the contract.
+    const pending=probe.connect(entry.address,password,entry.id,{guard:current,timeoutMs:9000,currentStateRead:validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.15.3')>=0});
     await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Lamp did not respond over Wi-Fi.')),9000);abort=()=>reject(Object.assign(Error('Lamp selection changed.'),{cancelled:true}));task.abort.signal.addEventListener('abort',abort,{once:true});})]);
     if(!current())throw Object.assign(Error('Lamp selection changed.'),{cancelled:true});clearTimeout(probe.timer);
     const value={base:probe.base,authorization:probe.authorization,identity:probe.identity,raw:probe.raw,state:probe.state,catalog:probe.catalog};
@@ -2004,7 +2040,7 @@ function renderCenterTool(){
   $('startCenter').hidden=active;$('saveCenter').hidden=!active;$('cancelCenter').hidden=!active;
   $('centerPosition').hidden=!active;$('centerPosition').textContent=active?'Center after LED '+value.position+' of '+value.leds:'';
   $('midpoint').disabled=active||busy;
-  if(centerWasActive&&!active)$('centerFeedback').textContent='Adjustment ended. Normal lighting restored.';
+  if(centerWasActive&&!active)$('centerFeedback').textContent='The center adjustment ended. Check the saved center below; inactivity cancels without saving.';
   centerWasActive=active;
   if(state&&!supported)$('centerFeedback').textContent='Update this lamp to firmware 1.9.1 or newer to use the blinking center marker.';
   if(supported&&value?.leds===1)$('centerFeedback').textContent='A single-LED strip has no adjustable center.';
@@ -2036,7 +2072,8 @@ async function centerAction(action){
     if(target!==lamp||epoch!==lamp.epoch)return;
     if(target===bleLamp&&!advancedAvailable())setCenterStatus(result);
     else if(action==='save')$('midpoint').value=lamp.raw.midpoint;
-    $('centerFeedback').textContent=action==='save'?'Center saved. Normal lighting restored.':action==='cancel'?'Previous center kept. Normal lighting restored.':'Turn the knob to move the blinking white marker.';
+    const active=target===bleLamp&&!advancedAvailable()?centerStatus?.active:lamp.raw?.calibration?.active&&lamp.raw.calibration.kind==='center';
+    $('centerFeedback').textContent=action==='save'?'Center saved and checked. Normal lighting restored.':action==='cancel'?'Previous center kept. Normal lighting restored.':active?'Turn the knob to move the blinking white marker.':'The adjustment ended before it was ready. Start again; stopping for ten seconds keeps the previous center.';
   }catch(e){$('centerFeedback').textContent=e.message;}
   finally{busy=false;renderOptions();if(lamp===bleLamp&&!advancedAvailable()&&centerStatus?.active)pollCenter();}
 }
@@ -2264,7 +2301,7 @@ async function createGroupLampLease(id,{entry,readOnly=false,signal,isCurrent=()
       const savedPassword=(await credential(id)).value;guard();
       if(readOnly&&!savedPassword)throw Object.assign(Error('This lamp needs its saved access password before discovery.'),{needsPassword:true,confirmed:true});
       const password=savedPassword||'coollamp';
-      await transport.connect(entry.address,password,id,{guard});guard();clearTimeout(transport.timer);
+      await transport.connect(entry.address,password,id,{guard,currentStateRead:entry.firmwareVersion&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.15.3')>=0});guard();clearTimeout(transport.timer);
       return {lamp:transport,release:()=>transport.disconnect()};
     }catch(error){wifiError=error;await transport.disconnect();guard();if(error.cancelled||readOnly&&error.needsPassword)throw error;}
   }
@@ -2718,7 +2755,7 @@ $('applyGroupAudio').onclick=()=>groupSceneAction(async target=>{
 var playbackIdentity=null, rotationDirty=false;
 function renderPlaybackTools() {
   renderPower();
-  $('controls').disabled=busy||updatingLamp()||!state||!independentLightingAllowed()||Boolean(state?.sync?.active)||Boolean(state?.calibration?.active);
+  $('controls').disabled=busy&&!liveLightSending||updatingLamp()||!state||!independentLightingAllowed()||Boolean(state?.sync?.active)||Boolean(state?.calibration?.active);
   const raw=groupsAvailable()?state:null;
   const identity=raw?lamp.identity:null;
   if(playbackIdentity!==identity){playbackIdentity=identity;rotationDirty=false;$('rotationFeedback').textContent='';$('calibrationFeedback').textContent='';}
