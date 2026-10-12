@@ -15,4 +15,6 @@ bool copyFleetKey(uint8_t* out);
 bool provisionFleetKey(const uint8_t* key);
 String fleetId();
 bool runningManifest(FirmwareManifest& out); // False until incrementally measured and validated.
+struct DiscoverySnapshot {uint8_t state=0;bool paired=false,radioAvailable=false;uint32_t retryInMs=0;};
+DiscoverySnapshot discoverySnapshot(uint32_t now); // Pure bounded local evidence; no scan or credentials.
 }

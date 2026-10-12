@@ -5,9 +5,16 @@
 #include <Update.h>
 #include <esp_app_format.h>
 #include <esp_app_desc.h>
+#include <esp_ota_ops.h>
+#include <mbedtls/sha256.h>
+#include <new>
 #include <freertos/task.h>
 #include "LampFactory.h"
+#ifdef COOL_LAMP_PAGE_GZIP
+#include "LampPageGzip.generated.h"
+#else
 #include "LampPage.h"
+#endif
 #include "LampWifiSetup.h"
 #include "LampControlHttpAdapter.h"
 #include "LampWifiRecoveryPolicy.h"
@@ -20,6 +27,8 @@
 #include "LampRollout.h"
 #include "LampRuntimeDiagnostic.h"
 #include "LampHttpJson.h"
+#include "LampJsonSink.h"
+#include "LampUpdateAttempt.h"
 
 LampSettings lampSettings;
 LampControlHttpAdapter lampServer(80);
@@ -48,6 +57,9 @@ bool mdnsStarted = false;
 bool otaActive = false;
 bool otaAccepted = false;
 bool otaComplete = false;
+bool browserUploadReplyRejected = false;
+bool browserUploadCommitUncertain = false;
+uint64_t browserUploadBootSession = 0;
 bool lampMeshEnrollmentEligible(){
   uint8_t key[16]{};
   const bool paired=LampFirmwareRelay::copyFleetKey(key);
@@ -67,6 +79,22 @@ constexpr size_t IMAGE_PREFIX_SIZE = sizeof(esp_image_header_t) + sizeof(esp_ima
 uint8_t imagePrefix[IMAGE_PREFIX_SIZE];
 size_t imagePrefixUsed = 0;
 bool imageValidated = false;
+
+// One boot-bound, one-use browser file admission. Firmware bytes remain in
+// the existing 512-byte multipart chunks, never in an application-sized buffer.
+struct LampBrowserUpload {
+  bool prepared=false,accepted=false,hashing=false,publisher=false,markerFound=false;
+  uint32_t preparedAt=0,written=0,epoch=0;
+  size_t markerAt=0;
+  char ticket[33]{},bootToken[33]{},text[UpdatePublisher::ManifestCapacity]{},marker[64]{};
+  FirmwareManifest image{};
+  const esp_partition_t* partition=nullptr;
+  esp_ota_handle_t handle=0;
+  mbedtls_sha256_context hash{};
+};
+static_assert(sizeof(LampBrowserUpload)<=640,"Keep browser preparation memory bounded");
+LampBrowserUpload* browserUpload=nullptr;
+constexpr uint32_t BrowserUploadPrepareMs=30000;
 
 const char* const effectNames[] = {
   "Pacifica", "Aurora", "Rain", "Fire", "Split fire - rising", "Split fire - falling",
@@ -229,57 +257,68 @@ String lampEffectCatalogEntry(uint8_t mode)
 
 // Read-only support snapshot. Deliberately excludes session tokens, SSIDs,
 // passwords, group invitation keys and raw microphone samples.
-String lampRuntimeTimingJson()
+template<class HttpMetrics>
+void appendLampRuntimeTimingJson(LampJsonSink& out,const LampRuntimeMetrics::Snapshot& m,const HttpMetrics& h)
 {
-  const auto& m=getLampRuntimeMetrics();const auto& h=lampServer.metrics();
-  const auto windowJson=[](const LampRuntimeMetrics::Window& w){
-    String text="{\"sequence\":"+String(w.sequence)+",\"startUs\":"+String(w.startUs)+",\"endUs\":"+String(w.endUs)+",\"observedThroughUs\":"+String(w.observedThroughUs);
-    text+=",\"observations\":"+String(w.observations)+",\"animationFrames\":"+String(w.animationFrames)+",\"maxAnimationGapUs\":"+String(w.maxAnimationGapUs)+",\"animationGapOverruns\":"+String(w.animationGapOverruns)+"}";
-    return text;
+  const auto windowJson=[&](const LampRuntimeMetrics::Window& w){
+    out.concat("{\"sequence\":");out.concat(w.sequence);out.concat(",\"startUs\":");out.concat(w.startUs);out.concat(",\"endUs\":");out.concat(w.endUs);out.concat(",\"observedThroughUs\":");out.concat(w.observedThroughUs);
+    out.concat(",\"observations\":");out.concat(w.observations);out.concat(",\"animationFrames\":");out.concat(w.animationFrames);out.concat(",\"maxAnimationGapUs\":");out.concat(w.maxAnimationGapUs);out.concat(",\"animationGapOverruns\":");out.concat(w.animationGapOverruns);out.concat("}");
   };
-  String out="{\"version\":1,\"animationGapTargetUs\":"+String(LampRuntimeMetrics::AnimationGapTargetUs);
-  out+=",\"loops\":"+String(m.loops)+",\"shows\":"+String(m.shows)+",\"animationShows\":"+String(m.animationShows);
-  out+=",\"maxLoopUs\":"+String(m.maxLoopUs)+",\"maxLoopGapUs\":"+String(m.maxLoopGapUs);
-  out+=",\"maxNetworkServiceUs\":"+String(m.maxNetworkServiceUs)+",\"maxBluetoothServiceUs\":"+String(m.maxBluetoothServiceUs)+",\"maxBeforeRenderUs\":"+String(m.maxBeforeRenderUs);
-  out+=",\"maxShowUs\":"+String(m.maxShowUs)+",\"maxFrameGapUs\":"+String(m.maxFrameGapUs)+",\"maxAnimationFrameGapUs\":"+String(m.maxAnimationFrameGapUs)+",\"animationGapOverruns\":"+String(m.animationGapOverruns);
-  out+=",\"windows\":{\"durationUs\":"+String(LampRuntimeMetrics::WindowUs)+",\"current\":"+windowJson(m.currentWindow)+",\"last\":"+windowJson(m.lastWindow)+"}";
-  out+=",\"http\":{\"accepted\":"+String(h.accepted)+",\"rejected\":"+String(h.rejected)+",\"deadlines\":"+String(h.deadlines)+",\"cancelled\":"+String(h.cancelled)+",\"blockedSends\":"+String(h.blockedSends);
-  out+=",\"responses\":"+String(h.responses)+",\"responseFailures\":"+String(h.responseFailures)+",\"dispatches\":"+String(h.dispatches)+",\"maxServiceUs\":"+String(h.maxServiceUs)+",\"maxDispatchUs\":"+String(h.maxDispatchUs);
-  out+=",\"maxReceiveBytes\":"+String(h.maxReceiveBytes)+",\"maxSendBytes\":"+String(h.maxSendBytes)+",\"closeQueueFull\":"+String(h.closeQueueFull)+",\"maxConnectionMs\":"+String(h.maxConnectionMs)+",\"maxIdleMs\":"+String(h.maxIdleMs)+"}}";
-  return out;
+  out.concat("{\"version\":1,\"animationGapTargetUs\":");out.concat(LampRuntimeMetrics::AnimationGapTargetUs);
+  out.concat(",\"loops\":");out.concat(m.loops);out.concat(",\"shows\":");out.concat(m.shows);out.concat(",\"animationShows\":");out.concat(m.animationShows);
+  out.concat(",\"maxLoopUs\":");out.concat(m.maxLoopUs);out.concat(",\"maxLoopGapUs\":");out.concat(m.maxLoopGapUs);
+  out.concat(",\"maxNetworkServiceUs\":");out.concat(m.maxNetworkServiceUs);out.concat(",\"maxBluetoothServiceUs\":");out.concat(m.maxBluetoothServiceUs);out.concat(",\"maxBeforeRenderUs\":");out.concat(m.maxBeforeRenderUs);
+  out.concat(",\"maxShowUs\":");out.concat(m.maxShowUs);out.concat(",\"maxFrameGapUs\":");out.concat(m.maxFrameGapUs);out.concat(",\"maxAnimationFrameGapUs\":");out.concat(m.maxAnimationFrameGapUs);out.concat(",\"animationGapOverruns\":");out.concat(m.animationGapOverruns);
+  out.concat(",\"windows\":{\"durationUs\":");out.concat(LampRuntimeMetrics::WindowUs);out.concat(",\"current\":");windowJson(m.currentWindow);out.concat(",\"last\":");windowJson(m.lastWindow);out.concat("}");
+  out.concat(",\"http\":{\"accepted\":");out.concat(h.accepted);out.concat(",\"rejected\":");out.concat(h.rejected);out.concat(",\"deadlines\":");out.concat(h.deadlines);out.concat(",\"cancelled\":");out.concat(h.cancelled);out.concat(",\"blockedSends\":");out.concat(h.blockedSends);
+  out.concat(",\"responses\":");out.concat(h.responses);out.concat(",\"responseFailures\":");out.concat(h.responseFailures);out.concat(",\"dispatches\":");out.concat(h.dispatches);out.concat(",\"maxServiceUs\":");out.concat(h.maxServiceUs);out.concat(",\"maxDispatchUs\":");out.concat(h.maxDispatchUs);
+  out.concat(",\"maxReceiveBytes\":");out.concat(h.maxReceiveBytes);out.concat(",\"maxSendBytes\":");out.concat(h.maxSendBytes);out.concat(",\"closeQueueFull\":");out.concat(h.closeQueueFull);out.concat(",\"maxConnectionMs\":");out.concat(h.maxConnectionMs);out.concat(",\"maxIdleMs\":");out.concat(h.maxIdleMs);out.concat("}}");
 }
+String lampRuntimeTimingJson(){
+  const auto snapshot=getLampRuntimeMetrics();const auto http=lampServer.metrics();
+  return lampJsonReply([&](LampJsonSink& out){appendLampRuntimeTimingJson(out,snapshot,http);});
+}
+
 String lampDiagnosticsJson()
 {
+  const uint32_t snapshotTime=millis();const auto firmwareSnapshot=captureLampUpdateJson();const auto audioSnapshot=captureLampAudioJson();
+  const auto syncSnapshot=captureLampSyncJson(snapshotTime);const auto timingSnapshot=getLampRuntimeMetrics();const auto httpSnapshot=lampServer.metrics();
   const bool connected = WiFi.status() == WL_CONNECTED;
   wifi_ps_type_t sleepMode = WIFI_PS_NONE;
   const int powerSave = esp_wifi_get_ps(&sleepMode) == ESP_OK ? static_cast<int>(sleepMode) : -1;
-  String out;
-  if(!out.reserve(6144))return String();
-  out = "{\"diagnosticsVersion\":1,\"deviceId\":" + jsonText(lampIdentity());
-  out += ",\"hostname\":" + jsonText(lampHost + ".local");
-  out += ",\"uptimeMs\":" + String(millis()) + ",\"resetReason\":" + String(static_cast<int>(esp_reset_reason()));
-  out += ",\"freeHeap\":" + String(ESP.getFreeHeap()) + ",\"minFreeHeap\":" + String(ESP.getMinFreeHeap());
-  out += ",\"largestFreeBlock\":" + String(ESP.getMaxAllocHeap());
-  out += ",\"loopStackMinimumBytes\":" + String(uxTaskGetStackHighWaterMark(nullptr));
-  out += ",\"httpCloseStackMinimumBytes\":" + String(lampServer.closeTaskStackMinimumBytes());
-  out += ",\"chipTemperature\":";out += lampTemperatureJson();
-  out += ",\"wifi\":{\"connected\":" + String(connected ? "true" : "false");
-  out += ",\"address\":" + jsonText(WiFi.localIP().toString());
-  out += ",\"rssi\":" + String(connected ? WiFi.RSSI() : 0) + ",\"channel\":" + String(WiFi.channel());
-  out += ",\"powerSave\":" + String(powerSave);
-  out += ",\"accessPoint\":" + jsonText(connected ? WiFi.BSSIDstr() : String());
-  out += ",\"subnet\":" + jsonText(WiFi.subnetMask().toString()) + ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
-  out += ",\"setupAP\":" + String(setupAP ? "true" : "false") + ",\"apClients\":" + String(WiFi.softAPgetStationNum()) + "}";
-  out += ",\"scan\":{\"active\":" + String(scanActive ? "true" : "false") + ",\"count\":" + String(scanCount);
-  out += ",\"durationMs\":" + String(scanActive ? millis() - scanStartedAt : scanDuration) + ",\"polls\":" + String(scanPolls) + "}";
-  out += ",\"render\":{\"frames\":" + String(lampRenderedFrames) + ",\"maxRenderUs\":" + String(lampMaxRenderUs);
-  out += ",\"power\":" + String(PowerOn ? "true" : "false") + ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
-  out += ",\"leds\":" + String(NUM_LEDS) + ",\"midpoint\":" + String(lampMidpoint) + "}";
-  out += ",\"timing\":";out += lampRuntimeTimingJson();
-  out += ",\"firmware\":";out += lampUpdateJson();
-  out += ",\"audio\":";out += lampAudioJson();
-  out += ",\"sync\":";if(!appendLampSyncJson(out))return String();
-  out += ",\"lampStyle\":";out += lampStyleJson();out += '}';
+  const uint32_t freeHeap=ESP.getFreeHeap(),minFreeHeap=ESP.getMinFreeHeap(),largestBlock=ESP.getMaxAllocHeap(),loopStack=uxTaskGetStackHighWaterMark(nullptr);
+  const uint32_t closeStack=lampServer.closeTaskStackMinimumBytes(),channel=WiFi.channel(),apClients=WiFi.softAPgetStationNum();
+  const int rssi=connected?WiFi.RSSI():0,resetReason=static_cast<int>(esp_reset_reason());
+  const String identitySnapshot=lampIdentity(),hostname=lampHost+".local",address=WiFi.localIP().toString(),accessPoint=connected?WiFi.BSSIDstr():String(),subnet=WiFi.subnetMask().toString(),gateway=WiFi.gatewayIP().toString();
+  const String temperatureSnapshot=lampTemperatureJson(),styleSnapshot=lampStyleJson();
+  if(identitySnapshot.length()!=12||hostname.length()!=lampHost.length()+6||address.isEmpty()||subnet.isEmpty()||gateway.isEmpty()||(connected&&accessPoint.length()!=17)||temperatureSnapshot.isEmpty()||styleSnapshot.isEmpty())return String();
+  String out=lampJsonReply([&](LampJsonSink& out){
+  out.concat("{\"diagnosticsVersion\":1,\"deviceId\":");out.quote(identitySnapshot);
+  out.concat(",\"hostname\":");out.quote(hostname);
+  out.concat(",\"uptimeMs\":");out.concat(snapshotTime);out.concat(",\"resetReason\":");out.concat(resetReason);
+  out.concat(",\"freeHeap\":");out.concat(freeHeap);out.concat(",\"minFreeHeap\":");out.concat(minFreeHeap);
+  out.concat(",\"largestFreeBlock\":");out.concat(largestBlock);
+  out.concat(",\"loopStackMinimumBytes\":");out.concat(loopStack);
+  out.concat(",\"httpCloseStackMinimumBytes\":");out.concat(closeStack);
+  out.concat(",\"chipTemperature\":");out.concat(temperatureSnapshot);
+  out.concat(",\"wifi\":{\"connected\":");out.concat(connected ? "true" : "false");
+  out.concat(",\"address\":");out.quote(address);
+  out.concat(",\"rssi\":");out.concat(rssi);out.concat(",\"channel\":");out.concat(channel);
+  out.concat(",\"powerSave\":");out.concat(powerSave);
+  out.concat(",\"accessPoint\":");out.quote(connected ? accessPoint : String());
+  out.concat(",\"subnet\":");out.quote(subnet);out.concat(",\"gateway\":");out.quote(gateway);
+  out.concat(",\"setupAP\":");out.concat(setupAP ? "true" : "false");out.concat(",\"apClients\":");out.concat(apClients);out.concat("}");
+  out.concat(",\"scan\":{\"active\":");out.concat(scanActive ? "true" : "false");out.concat(",\"count\":");out.concat(scanCount);
+  out.concat(",\"durationMs\":");out.concat(scanActive ? snapshotTime - scanStartedAt : scanDuration);out.concat(",\"polls\":");out.concat(scanPolls);out.concat("}");
+  out.concat(",\"render\":{\"frames\":");out.concat(lampRenderedFrames);out.concat(",\"maxRenderUs\":");out.concat(lampMaxRenderUs);
+  out.concat(",\"power\":");out.concat(PowerOn ? "true" : "false");out.concat(",\"mode\":");out.concat(Mode);out.concat(",\"brightness\":");out.concat(Brightness);
+  out.concat(",\"leds\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat("}");
+  out.concat(",\"timing\":");appendLampRuntimeTimingJson(out,timingSnapshot,httpSnapshot);
+  out.concat(",\"firmware\":");appendLampUpdateJson(out,firmwareSnapshot);
+  out.concat(",\"audio\":");appendLampAudioJson(out,audioSnapshot);
+  out.concat(",\"sync\":");if(!appendLampSyncJson(out,0,8,syncSnapshot)){out.fail();return;}
+  out.concat(",\"lampStyle\":");out.concat(styleSnapshot);out.concat('}');
+  });
   // An allocation failure can omit an entire append while leaving valid JSON.
   // Require the support snapshot's fields before reporting a successful read.
   const char* const keys[]={"diagnosticsVersion","deviceId","uptimeMs","freeHeap","minFreeHeap","largestFreeBlock","loopStackMinimumBytes","httpCloseStackMinimumBytes","chipTemperature","wifi","scan","render","timing","firmware","audio","sync","lampStyle"};
@@ -303,56 +342,66 @@ void sendLampDiagnostics()
 void sendLampState()
 {
   if (!authorizedLampRequest(false)) return;
-  String state;
-  // Reserve the common complete reply without demanding a contiguous 8 KiB
-  // block. Larger replies may grow within the unchanged transport bound.
-  if(!state.reserve(6144)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
-  state = "{\"deviceId\":" + jsonText(lampIdentity());
-  if(!lampServer.controlActive())state += ",\"token\":" + jsonText(lampToken);
-  state += ",\"name\":" + jsonText(lampName) + ",\"uptimeMs\":" + String(millis());
-  state += ",\"controlVersion\":1";
-  state += ",\"apiVersion\":2,\"startupMode\":" + String(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE) + ",\"startupBrightness\":" + String(lampSettings.brightness);
-  state += ",\"catalogVersion\":1";
-  state += ",\"factoryReset\":true";
-  state += ",\"usingDefaultPassword\":" + String(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
-  state += ",\"protocol\":" + String(LAMP_PROTOCOL_VERSION);
-  state += ",\"firmware\":";state += lampUpdateJson();
-  state += ",\"audio\":";state += lampAudioJson();
+  const uint32_t snapshotTime=millis();
+  const auto firmwareSnapshot=captureLampUpdateJson();const auto audioSnapshot=captureLampAudioJson();
+  const auto syncSnapshot=captureLampSyncJson(snapshotTime);
+  const String identitySnapshot=lampIdentity(),styleSnapshot=lampStyleJson();
+  const char* const styleKeys[]={"version","code","id","family"};
+  if(identitySnapshot.length()!=12||!LampHttpJson::requiredKeys(styleSnapshot.c_str(),styleSnapshot.length(),styleKeys,4)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  const bool wifiConnected=WiFi.status()==WL_CONNECTED;
+  const String address=WiFi.localIP().toString(),gateway=WiFi.gatewayIP().toString(),dns0=WiFi.dnsIP(0).toString(),dns1=WiFi.dnsIP(1).toString();
+  const String hostname=lampHost+".local";
+  if(address.isEmpty()||gateway.isEmpty()||dns0.isEmpty()||dns1.isEmpty()||hostname.length()!=lampHost.length()+6){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+  String state=lampJsonReply([&](LampJsonSink& state){
+  state.concat("{\"deviceId\":");state.quote(identitySnapshot);
+  if(!lampServer.controlActive()){state.concat(",\"token\":");state.quote(lampToken);}
+  state.concat(",\"name\":");state.quote(lampName);state.concat(",\"uptimeMs\":");state.concat(snapshotTime);
+  state.concat(",\"controlVersion\":1");
+  state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
+  state.concat(",\"catalogVersion\":1");
+  state.concat(",\"factoryReset\":true");
+  state.concat(",\"usingDefaultPassword\":");state.concat(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
+  state.concat(",\"protocol\":");state.concat(LAMP_PROTOCOL_VERSION);
+  state.concat(",\"firmware\":");appendLampUpdateJson(state,firmwareSnapshot);
+  state.concat(",\"audio\":");appendLampAudioJson(state,audioSnapshot);
   // Keep the complete lighting/settings/status reply within the shared 8 KiB
   // bound. Route hints continue on /api/sync/page; durable order is never cut.
-  state += ",\"sync\":";if(!appendLampSyncJson(state,0,1)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
-  state += ",\"lampStyle\":";state += lampStyleJson();
-  state += ",\"calibration\":{\"active\":"+String(lampCalibrationActive()?"true":"false")+",\"position\":"+String(lampCalibrationPosition())+",\"kind\":\""+(lampCalibrationCenter()?"center":"leds")+"\",\"centerSupported\":true}";
-  state += ",\"rotation\":{\"enabled\":"+String(lampRotation.enabled?"true":"false")+",\"random\":"+String(lampRotation.random?"true":"false")+",\"category\":"+String(lampRotation.category)+",\"seconds\":"+String(lampRotation.seconds)+"}";
-  state += ",\"fountainColors\":[";
-  for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=fountainPaletteColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
-  state += "]";
-  state += ",\"vuColors\":[";
-  for(unsigned i=0;i<3;++i){if(i)state+=',';const auto c=renderVuColor(i);state+="["+String(c.r)+","+String(c.g)+","+String(c.b)+"]";}
-  state += "]";
-  state += ",\"midpoint\":" + String(lampMidpoint) + ",\"effectiveMidpoint\":" + String(lampSplitCount(NUM_LEDS, lampMidpoint));
-  state += ",\"mode\":" + String(Mode) + ",\"brightness\":" + String(Brightness);
-  state += ",\"leds\":" + String(NUM_LEDS) + ",\"milliamps\":" + String(lampSettings.milliAmps);
-  state += ",\"power\":" + String(PowerOn ? "true" : "false");
-  state += ",\"ssid\":" + jsonText(lampSettings.ssid);
-  state += ",\"connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
-  state += ",\"address\":" + jsonText(WiFi.localIP().toString());
-  state += ",\"gateway\":" + jsonText(WiFi.gatewayIP().toString());
-  state += ",\"dns\":[" + jsonText(WiFi.dnsIP(0).toString()) + "," + jsonText(WiFi.dnsIP(1).toString()) + "]";
-  state += ",\"hostname\":" + jsonText(lampHost + ".local") + ",\"effects\":[";
-  for (size_t i = 0; i < lampAvailableEffectCount(); i++) { if (i) state += ','; state += jsonText(effectNames[i]); }
-  state += "],\"colors\":[";
-  for (uint8_t mode = 1; mode <= lampAvailableEffectCount(); ++mode) {
-    if (mode > 1) state += ',';
+  state.concat(",\"sync\":");if(!appendLampSyncJson(state,0,1,syncSnapshot)){state.fail();return;}
+  state.concat(",\"lampStyle\":");state.concat(styleSnapshot);
+  state.concat(",\"calibration\":{\"active\":");state.concat(lampCalibrationActive()?"true":"false");state.concat(",\"position\":");state.concat(lampCalibrationPosition());state.concat(",\"kind\":\"");state.concat((lampCalibrationCenter()?"center":"leds"));state.concat("\",\"centerSupported\":true}");
+  state.concat(",\"rotation\":{\"enabled\":");state.concat(lampRotation.enabled?"true":"false");state.concat(",\"random\":");state.concat(lampRotation.random?"true":"false");state.concat(",\"category\":");state.concat(lampRotation.category);state.concat(",\"seconds\":");state.concat(lampRotation.seconds);state.concat("}");
+  state.concat(",\"fountainColors\":[");
+  for(unsigned i=0;i<3;++i){if(i)state.concat(',');const auto c=fountainPaletteColor(i);state.concat("[");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");}
+  state.concat("]");
+  state.concat(",\"vuColors\":[");
+  for(unsigned i=0;i<3;++i){if(i)state.concat(',');const auto c=renderVuColor(i);state.concat("[");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");}
+  state.concat("]");
+  state.concat(",\"midpoint\":");state.concat(lampMidpoint);state.concat(",\"effectiveMidpoint\":");state.concat(lampSplitCount(NUM_LEDS, lampMidpoint));
+  state.concat(",\"motionVersion\":1,\"motionPath\":");if(lampMotionPathSaveUncertain())state.concat("null");else state.concat(lampMotionPath);
+  state.concat(",\"mode\":");state.concat(Mode);state.concat(",\"brightness\":");state.concat(Brightness);
+  state.concat(",\"leds\":");state.concat(NUM_LEDS);state.concat(",\"milliamps\":");state.concat(lampSettings.milliAmps);
+  state.concat(",\"power\":");state.concat(PowerOn ? "true" : "false");
+  state.concat(",\"ssid\":");state.quote(lampSettings.ssid);
+  state.concat(",\"connected\":");state.concat(wifiConnected ? "true" : "false");
+  state.concat(",\"address\":");state.quote(address);
+  state.concat(",\"gateway\":");state.quote(gateway);
+  state.concat(",\"dns\":[");state.quote(dns0);state.concat(",");state.quote(dns1);state.concat("]");
+  state.concat(",\"hostname\":");state.quote(hostname);state.concat(",\"effects\":[");
+  for (size_t i = 0; i < lampAvailableEffectCount(); i++) { if (i) state.concat(','); state.quote(effectNames[i]); }
+  state.concat("],\"colors\":[");
+  for (uint16_t mode = 1; mode <= lampAvailableEffectCount(); ++mode) {
+    if (mode > 1) state.concat(',');
     const auto c = getLampColor(mode);
-    state += "[" + String(c.enabled) + "," + String(c.r) + "," + String(c.g) + "," + String(c.b) + "]";
+    state.concat("[");state.concat(c.enabled);state.concat(",");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");
   }
-  state += "],\"effectOptions\":[";
-  for (uint8_t mode=1;mode<=lampAvailableEffectCount();++mode) {
-    if(mode>1) state+=','; const auto o=getLampEffectOptions(mode);
-    state += "["+String(o.speed)+","+String(o.intensity)+","+String(o.dual)+","+String(o.r)+","+String(o.g)+","+String(o.b)+"]";
+  state.concat("],\"effectOptions\":[");
+  for (uint16_t mode=1;mode<=lampAvailableEffectCount();++mode) {
+    if(mode>1) state.concat(','); const auto o=getLampEffectOptions(mode);
+    state.concat("[");state.concat(o.speed);state.concat(",");state.concat(o.intensity);state.concat(",");state.concat(o.dual);state.concat(",");state.concat(o.r);state.concat(",");state.concat(o.g);state.concat(",");state.concat(o.b);state.concat("]");
   }
-  state += "]}";
+  state.concat("]}");
+  });
+  if(state.isEmpty()){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
   const char* const stateKeys[]={"deviceId","name","uptimeMs","controlVersion","apiVersion","startupMode","startupBrightness","catalogVersion","factoryReset","usingDefaultPassword","protocol","firmware","audio","sync","lampStyle","calibration","rotation","fountainColors","vuColors","midpoint","effectiveMidpoint","mode","brightness","leds","milliamps","power","ssid","connected","address","gateway","dns","hostname"};
   const char* const appearanceKeys[]={"effects","colors","effectOptions"};
   const auto firmware=LampHttpJson::member(state.c_str(),state.length(),"firmware");
@@ -429,17 +478,164 @@ void saveLampConfiguration()
   restartAt = millis() + 1200;
 }
 
+void clearLampBrowserUpload(bool release)
+{
+  if(!browserUpload)return;
+  if(browserUpload->handle)esp_ota_abort(browserUpload->handle);
+  if(browserUpload->hashing)mbedtls_sha256_free(&browserUpload->hash);
+  if(release&&browserUpload->accepted)releaseLampManualUpdate();
+  volatile uint8_t* bytes=reinterpret_cast<volatile uint8_t*>(browserUpload);
+  for(size_t i=0;i<sizeof(*browserUpload);++i)bytes[i]=0;
+  delete browserUpload;browserUpload=nullptr;
+}
+
+void serviceLampBrowserUpload(uint32_t now)
+{
+  if(browserUpload&&browserUpload->prepared&&!browserUpload->accepted&&uint32_t(now-browserUpload->preparedAt)>=BrowserUploadPrepareMs)clearLampBrowserUpload(false);
+}
+
+void prepareLampBrowserUpload()
+{
+  if(!authorizedLampRequest(true))return;
+  serviceLampBrowserUpload(millis());
+  const char* const fields[]={"deviceId","manifest"};
+  if(!lampServer.fieldsAllowed(fields,2)||lampServer.arg("deviceId")!=lampIdentity()){
+    lampServer.send(400,"text/plain","The selected lamp could not be verified. Nothing started.");return;
+  }
+  if(browserUpload||otaActive||otaComplete||restartAt||lampUpdateOwnsResources()||!lampRolloutAllowsUnpinnedUpdate()){
+    lampServer.send(409,"text/plain","Another update or saved group update is pending. Nothing started.");return;
+  }
+  String text=lampServer.arg("manifest");
+  if(text.isEmpty()||text.length()>=UpdatePublisher::ManifestCapacity||strlen(text.c_str())!=text.length()){
+    lampServer.send(400,"text/plain","Choose a matching CoolLamp firmware file and release information. Nothing started.");return;
+  }
+  // Shared form decoding deliberately rejects control bytes. This endpoint's
+  // printable wire separators reconstruct canonical signed LF bytes exactly;
+  // none of the strict manifest fields can contain a literal '|'.
+  unsigned lines=0;
+  for(size_t i=0;i<text.length();++i){
+    const uint8_t byte=text[i];
+    if(byte<32||byte>=127){lampServer.send(400,"text/plain","Invalid release information. Nothing started.");return;}
+    if(byte=='|'){text[i]='\n';++lines;}
+  }
+  if((lines!=6&&lines!=9)||text[text.length()-1]!='\n'){lampServer.send(400,"text/plain","Invalid release information separators. Nothing started.");return;}
+  browserUpload=new(std::nothrow)LampBrowserUpload;
+  if(!browserUpload){lampServer.send(503,"text/plain","Upload memory unavailable. Nothing started.");return;}
+  memcpy(browserUpload->text,text.c_str(),text.length()+1);
+  bool valid=false;
+  if(!strncmp(browserUpload->text,"COOLLAMP-OTA-2\n",15)){
+    UpdatePublisher::Manifest signedImage{};
+    valid=UpdatePublisher::verifyProvisioned(browserUpload->text,text.length(),signedImage);
+    if(valid){browserUpload->image=signedImage.image;browserUpload->epoch=signedImage.epoch;browserUpload->publisher=true;}
+  }else if(!UpdatePublisher::enforced()){
+    // The legacy parser modifies its input. Preserve the original metadata.
+    char copy[UpdatePublisher::ManifestCapacity];memcpy(copy,browserUpload->text,text.length()+1);
+    valid=parseFirmwareManifest(copy,browserUpload->image);
+    const uint16_t current[]={LAMP_VERSION_MAJOR,LAMP_VERSION_MINOR,LAMP_VERSION_PATCH};
+    valid=valid&&!firmwareIsNewer(current,browserUpload->image.version);
+  }
+  if(!valid){clearLampBrowserUpload(false);lampServer.send(400,"text/plain","Release information was invalid, older than this lamp, or not signed by its publisher. Nothing started.");return;}
+  snprintf(browserUpload->ticket,sizeof(browserUpload->ticket),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
+  strlcpy(browserUpload->bootToken,lampToken.c_str(),sizeof(browserUpload->bootToken));
+  snprintf(browserUpload->marker,sizeof(browserUpload->marker),"COOLLAMP-PUBLIC-%u.%u.%u",browserUpload->image.version[0],browserUpload->image.version[1],browserUpload->image.version[2]);
+  browserUpload->prepared=true;browserUpload->preparedAt=millis();
+  char boot[17];snprintf(boot,sizeof(boot),"%016llx",(unsigned long long)browserUploadBootSession);
+  lampServer.send(200,"application/json",String("{\"deviceId\":")+jsonText(lampIdentity())+",\"boot\":\""+boot+"\",\"ticket\":\""+browserUpload->ticket+"\"}");
+}
+
+void sendLampBrowserUploadStatus()
+{
+  if(!authorizedLampRequest(false))return;
+  FirmwareManifest installed{};const bool known=LampFirmwareRelay::runningManifest(installed);
+  char digest[65]{};
+  if(known)for(unsigned i=0;i<32;++i)snprintf(digest+2*i,3,"%02x",installed.sha256[i]);
+  char boot[17];snprintf(boot,sizeof(boot),"%016llx",(unsigned long long)browserUploadBootSession);
+  const auto update=getLampUpdateStatus();
+  lampServer.send(200,"application/json",String("{\"deviceId\":")+jsonText(lampIdentity())+",\"boot\":\""+boot+"\",\"version\":\""+LAMP_FIRMWARE_VERSION+"\",\"healthy\":"+(lampBootHealthy()?"true":"false")+",\"receiving\":"+(update.receiving?"true":"false")+",\"installedKnown\":"+(known?"true":"false")+",\"size\":"+String(known?installed.size:0)+",\"sha256\":\""+digest+"\"}");
+}
+
 void failLampUpdate(const String& message)
 {
+  clearLampBrowserUpload(false);
   if (Update.isRunning()) Update.abort();
-  releaseLampManualUpdate();
+  finishLampManualUpdate(false);
   otaAccepted = false; otaActive = false; otaComplete = false; otaMessage = message; lampServer.acceptUpload(false);
+}
+
+void receiveLampPinnedBrowserUpdate()
+{
+  auto& upload=lampServer.upload();
+  if(upload.status==UPLOAD_FILE_START){
+    browserUploadReplyRejected=true;
+    // A duplicate, foreign or expired start never reserves the updater or
+    // tears down another admitted receiver. The server has one upload owner.
+    serviceLampBrowserUpload(millis());
+    const bool proof=browserUpload&&browserUpload->prepared&&!browserUpload->accepted&&strlen(upload.name.c_str())==41&&
+      !strcmp(upload.name.c_str()+9,browserUpload->ticket)&&!strcmp(browserUpload->bootToken,lampToken.c_str());
+    if(!proof||!lampServer.authenticate("lamp",lampSettings.adminPassword)||lampServer.header("X-Lamp-Token")!=lampToken){otaMessage="Upload approval expired or belongs to another lamp. Nothing started.";return;}
+    if(!lampRolloutAllowsUnpinnedUpdate()||restartAt||!reserveLampManualUpdate()){clearLampBrowserUpload(false);otaMessage="Another update operation is active. Nothing started.";return;}
+    browserUpload->prepared=false;browserUpload->accepted=true;browserUploadReplyRejected=false;
+    otaComplete=false;otaAccepted=true;otaActive=true;otaLastActivity=millis();imagePrefixUsed=0;imageValidated=false;
+    beginLampManualUpdateCue();setLampManualUpdateCueProgress(0,browserUpload->image.size);
+    browserUpload->partition=esp_ota_get_next_update_partition(nullptr);
+    if(!browserUpload->partition||browserUpload->partition==esp_ota_get_running_partition()||browserUpload->partition->size<2031616||esp_ota_begin(browserUpload->partition,OTA_WITH_SEQUENTIAL_WRITES,&browserUpload->handle)!=ESP_OK){failLampUpdate("This lamp could not prepare its update slot. Existing software remains selected.");return;}
+    mbedtls_sha256_init(&browserUpload->hash);browserUpload->hashing=true;
+    if(mbedtls_sha256_starts(&browserUpload->hash,0)){failLampUpdate("Could not verify this file. Existing software remains selected.");return;}
+    lampServer.acceptUpload(true);return;
+  }
+  if(!browserUpload||!browserUpload->accepted)return;
+  if(upload.status==UPLOAD_FILE_ABORTED){failLampUpdate("Upload interrupted before installation. Existing software remains selected.");return;}
+  if(upload.status==UPLOAD_FILE_WRITE){
+    const size_t size=upload.currentSize;
+    if(!size||size>512||size>browserUpload->image.size-browserUpload->written||mbedtls_sha256_update(&browserUpload->hash,upload.buf,size)){failLampUpdate("File size or verification failed. Existing software remains selected.");return;}
+    const size_t markerLength=strlen(browserUpload->marker)+1;
+    for(size_t i=0;i<size;++i){
+      if(upload.buf[i]==uint8_t(browserUpload->marker[browserUpload->markerAt])){if(++browserUpload->markerAt==markerLength){browserUpload->markerFound=true;browserUpload->markerAt=0;}}
+      else browserUpload->markerAt=upload.buf[i]==uint8_t(browserUpload->marker[0])?1:0;
+    }
+    size_t consumed=0;
+    if(!imageValidated){
+      const size_t take=min(size,IMAGE_PREFIX_SIZE-imagePrefixUsed);memcpy(imagePrefix+imagePrefixUsed,upload.buf,take);imagePrefixUsed+=take;consumed=take;
+      if(imagePrefixUsed==IMAGE_PREFIX_SIZE){
+        esp_image_header_t header;esp_app_desc_t app;memcpy(&header,imagePrefix,sizeof(header));memcpy(&app,imagePrefix+sizeof(header)+sizeof(esp_image_segment_header_t),sizeof(app));
+        if(header.magic!=ESP_IMAGE_HEADER_MAGIC||header.chip_id!=CONFIG_IDF_FIRMWARE_CHIP_ID||app.magic_word!=ESP_APP_DESC_MAGIC_WORD||esp_ota_write(browserUpload->handle,imagePrefix,IMAGE_PREFIX_SIZE)!=ESP_OK){failLampUpdate("Choose the matching ESP32-C3 CoolLamp application file. Existing software remains selected.");return;}
+        imageValidated=true;
+      }
+    }
+    if(imageValidated&&consumed<size&&esp_ota_write(browserUpload->handle,upload.buf+consumed,size-consumed)!=ESP_OK){failLampUpdate("Firmware write failed. Existing software remains selected.");return;}
+    browserUpload->written+=size;otaLastActivity=millis();
+    setLampManualUpdateCueProgress(imageValidated?browserUpload->written:0,browserUpload->image.size);return;
+  }
+  if(upload.status==UPLOAD_FILE_END){
+    uint8_t digest[32];
+    if(browserUpload->written!=browserUpload->image.size||!imageValidated||!browserUpload->markerFound||mbedtls_sha256_finish(&browserUpload->hash,digest)||memcmp(digest,browserUpload->image.sha256,32)){failLampUpdate("File verification failed. Existing software remains selected.");return;}
+    mbedtls_sha256_free(&browserUpload->hash);browserUpload->hashing=false;
+    const auto handle=browserUpload->handle;browserUpload->handle=0;
+    if(esp_ota_end(handle)!=ESP_OK||
+       (browserUpload->publisher&&(!UpdatePublisher::retainManifest(browserUpload->text,strlen(browserUpload->text))||!UpdatePublisher::recordEpoch(browserUpload->epoch)))||
+       !LampUpdateAttempt::prepare(browserUpload->image,true)){failLampUpdate("Installation could not be committed. Existing software remains selected.");return;}
+    browserUploadCommitUncertain=true;
+    if(esp_ota_set_boot_partition(browserUpload->partition)!=ESP_OK){
+      // A failed boot-metadata write may have taken effect. Keep the single
+      // updater reservation until reboot; never authorize a cross-route retry.
+      clearLampBrowserUpload(false);otaActive=false;otaAccepted=false;lampServer.acceptUpload(false);
+      finishLampManualUpdate(false,true);
+      otaMessage="Installation result is unconfirmed. Keep the lamp powered and check its installed software; do not resend this file.";return;
+    }
+    browserUploadCommitUncertain=false;
+    // The exact verified artifact was boot-selected once. Retain update
+    // ownership until restart; a lost final reply must only reconcile it.
+    clearLampBrowserUpload(false);otaComplete=true;otaActive=false;otaAccepted=false;finishLampManualUpdate(true);otaMessage="File verified. The lamp is restarting; installation will be checked afterward.";
+  }
 }
 
 void receiveLampUpdate()
 {
   auto& upload = lampServer.upload();
+  if(!strncmp(upload.name.c_str(),"firmware-",9)){receiveLampPinnedBrowserUpdate();return;}
   if (upload.status == UPLOAD_FILE_START) {
+    if(otaComplete||browserUploadCommitUncertain){browserUploadReplyRejected=true;return;}
+    browserUploadReplyRejected=false;
     otaComplete = false; otaAccepted = false; otaMessage = "Update did not finish.";
     imagePrefixUsed = 0; imageValidated = false;
     if (!lampServer.authenticate("lamp", lampSettings.adminPassword) || lampServer.header("X-Lamp-Token") != lampToken) {
@@ -448,6 +644,7 @@ void receiveLampUpdate()
     if(UpdatePublisher::enforced()){otaMessage="This lamp requires a publisher-signed update. Use the verified internet or phone update path.";return;}
     if(!lampRolloutAllowsUnpinnedUpdate()){otaMessage="This group has a pinned staged update. Finish or reconcile its rollout before using an unpinned service upload.";return;}
     if (!reserveLampManualUpdate()) { otaMessage = "Another update operation is active. Try again when it finishes."; return; }
+    clearLampBrowserUpload(false);
     beginLampManualUpdateCue();
     otaAccepted = true; otaActive = true; otaLastActivity = millis(); lampServer.acceptUpload(true);
   } else if (upload.status == UPLOAD_FILE_WRITE && otaAccepted) {
@@ -475,9 +672,15 @@ void receiveLampUpdate()
     }
     if(otaAccepted&&imageValidated)setLampManualUpdateCueProgress(Update.progress());
   } else if (upload.status == UPLOAD_FILE_END && otaAccepted) {
-    if (!imageValidated || !Update.end(true)) { failLampUpdate("Firmware verification failed. Existing firmware remains selected."); return; }
-    otaComplete = true; otaActive = false; otaMessage = "Firmware verified. Restarting…";
-  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    if (!imageValidated) { failLampUpdate("Firmware verification failed. Existing firmware remains selected."); return; }
+    if(!Update.end(true)){
+      // Core3.3.11 end() can fail after attempting boot-metadata activation.
+      // Keep the owner and reconcile after reboot rather than replaying it.
+      browserUploadCommitUncertain=true;otaAccepted=false;otaActive=false;lampServer.acceptUpload(false);
+      finishLampManualUpdate(false,true);otaMessage="Installation result is unconfirmed. Keep the lamp powered and check its installed software; do not resend this file.";return;
+    }
+    otaComplete=true;otaActive=false;otaAccepted=false;finishLampManualUpdate(true);otaMessage="Firmware verified. Restarting…";
+  } else if (upload.status == UPLOAD_FILE_ABORTED && otaAccepted) {
     failLampUpdate("Upload interrupted. Existing firmware remains selected.");
   }
 }
@@ -485,6 +688,7 @@ void receiveLampUpdate()
 void beginLampNetwork()
 {
   beginLampWifiSetupDiagnostics();
+  browserUploadBootSession=(uint64_t(esp_random())<<32)|esp_random();if(!browserUploadBootSession)browserUploadBootSession=1;
   const uint64_t mac = ESP.getEfuseMac();
   char suffix[7]; snprintf(suffix, sizeof(suffix), "%02X%02X%02X", static_cast<uint8_t>(mac >> 24), static_cast<uint8_t>(mac >> 32), static_cast<uint8_t>(mac >> 40));
   lampHost = String("coollamp-") + suffix; lampHost.toLowerCase();
@@ -500,7 +704,12 @@ void beginLampNetwork()
     if (!authorizedLampRequest(false)) return;
     lampServer.sendHeader("X-Content-Type-Options", "nosniff");
     lampServer.sendHeader("X-Frame-Options", "DENY");
+#ifdef COOL_LAMP_PAGE_GZIP
+    lampServer.sendHeader("Content-Encoding","gzip");
+    lampServer.send_P(200,"text/html; charset=utf-8",reinterpret_cast<const char*>(LAMP_PAGE_GZIP),LAMP_PAGE_GZIP_SIZE);
+#else
     lampServer.send_P(200, "text/html; charset=utf-8", LAMP_PAGE);
+#endif
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
   lampServer.on("/api/descriptor",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
@@ -526,7 +735,10 @@ void beginLampNetwork()
     if(!authorizedLampRequest(true))return;uint32_t offset=0,count=0;
     const String kind=lampServer.arg("kind");const char* const fields[]={"kind","offset","count"};
     if(!lampServer.fieldsAllowed(fields,3)||(kind!="effects"&&kind!="scenes")||!readNumber("offset",0,46,offset)||!readNumber("count",1,4,count)){lampServer.send(400,"text/plain","Invalid schema page.");return;}
-    const String page=lampEffectSchemaPage(offset,count,kind=="scenes");lampServer.send(page.length()?200:400,"application/json",page.length()?page:"{\"error\":\"page-unavailable\"}");
+    if(offset>=(kind=="scenes"?33:lampAvailableEffectCount())){lampServer.send(400,"application/json","{\"error\":\"page-unavailable\"}");return;}
+    String page=lampEffectSchemaPage(offset,count,kind=="scenes");
+    if(page.isEmpty())lampServer.send(503,"text/plain","Schema response memory unavailable. Nothing changed.");
+    else lampServer.send(200,"application/json",std::move(page));
   });
   lampServer.on("/api/sync/page",HTTP_POST,[](){
     if(!authorizedLampRequest(true))return;uint32_t cursor=0;const char* const fields[]={"cursor"};
@@ -609,6 +821,16 @@ void beginLampNetwork()
   lampServer.on("/api/geometry", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    if(lampServer.hasArg("pathVersion")||lampServer.hasArg("path")) {
+      const char* const fields[]={"pathVersion","path"};uint32_t version,path;
+      if(!lampServer.fieldsAllowed(fields,2)||!readNumber("pathVersion",1,1,version)||!readNumber("path",0,1,path)){
+        lampServer.send(400,"text/plain","Choose one supported animation path. Save the center separately.");return;
+      }
+      if(lampCalibrationActive()||lampFactoryResetPending()){lampServer.send(409,"text/plain","Finish setup first.");return;}
+      if(!saveLampMotionPath(path)){lampServer.send(500,"text/plain",lampMotionPathSaveUncertain()?"Animation path save is unconfirmed. Check this lamp's current settings; do not repeat the save.":"Animation path was not saved. Previous settings are kept.");return;}
+      memset(splitHeat,0,NUM_LEDS);splitHeat[0]=200;const uint16_t split=lampMotionSplitCount(NUM_LEDS,lampMidpoint);if(split<NUM_LEDS)splitHeat[split]=200;
+      lampServer.send(200,"text/plain","Animation path saved. Your center is kept.");return;
+    }
     uint32_t midpoint;
     if (!readNumber("midpoint",0,NUM_LEDS-1,midpoint)) {
       lampServer.send(400,"text/plain","Center must be 0 (automatic) or a boundary before the last LED."); return;
@@ -616,7 +838,7 @@ void beginLampNetwork()
     if (!saveLampGeometry(midpoint,NUM_LEDS)) { lampServer.send(500,"text/plain","Could not save center point."); return; }
     memset(splitHeat,0,NUM_LEDS);
     splitHeat[0] = 200;
-    if (NUM_LEDS > 1) splitHeat[lampSplitCount(NUM_LEDS,lampMidpoint)] = 200;
+    const uint16_t split=lampMotionSplitCount(NUM_LEDS,lampMidpoint);if(split<NUM_LEDS)splitHeat[split]=200;
     lampServer.send(200,"text/plain","Center point saved and applied.");
   });
   lampServer.on("/api/fountain-colors", HTTP_POST, []() {
@@ -652,6 +874,15 @@ void beginLampNetwork()
   lampServer.on("/api/audio", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
+    if(lampServer.hasArg("action")||lampServer.hasArg("useVersion")) {
+      const char* const fields[]={"action","useVersion","enabled"};uint32_t version,nextEnabled;
+      if(!lampServer.fieldsAllowed(fields,3)||lampServer.arg("action")!="use"||!readNumber("useVersion",1,1,version)||!readNumber("enabled",0,1,nextEnabled)){
+        lampServer.send(400,"text/plain","Choose one supported microphone input setting. Save tuning separately.");return;
+      }
+      if(!lampHasMicrophone()||lampFactoryResetPending()){lampServer.send(409,"text/plain","Use a lamp fitted with a microphone and finish setup first.");return;}
+      if(!saveLampMicrophoneEnabled(nextEnabled)){lampServer.send(500,"text/plain",lampAudioSaveUncertain()||!lampMicrophoneEnabledKnown()?"Microphone input save is unconfirmed. Check this lamp's current settings; do not repeat the save.":"Microphone input was not saved. Previous settings are kept.");return;}
+      lampServer.send(200,"text/plain",nextEnabled?"Microphone input enabled. Your tuning is kept.":"Microphone input disabled. Your tuning is kept.");return;
+    }
     uint32_t enabled, gain, gate, scale = lampAudioScale();
     if (!readNumber("enabled",0,1,enabled) || !readNumber("gain",1,64,gain) || !readNumber("gate",0,1024,gate) || (lampServer.hasArg("scale") && !readNumber("scale",100,400,scale))) {
       lampServer.send(400,"text/plain","Invalid microphone settings."); return;
@@ -672,7 +903,7 @@ void beginLampNetwork()
   });
   lampServer.on("/api/audio/test", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    if (!lampHasMicrophone() || lampUpdateOwnsResources()) {
+    if (!lampHasMicrophone() || !lampMicrophoneEnabled() || lampUpdateOwnsResources()) {
       lampServer.send(409,"text/plain","Enable the installed microphone and finish updating first."); return;
     }
     diagnoseLampAudio(); lampServer.send(200,"text/plain","Listening for 10 seconds.");
@@ -721,8 +952,8 @@ void beginLampNetwork()
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
   lampServer.on("/api/effects", HTTP_GET, []() {
     if (!authorizedLampRequest(false)) return;
-    String catalog = "[";
-    const uint8_t available=lampAvailableEffectCount();bool complete=catalog.length()==1;
+    const uint8_t available=lampAvailableEffectCount();
+    String catalog=lampJsonReply([&](LampJsonSink& catalog){catalog.concat('[');bool complete=true;
     static const char* const fields[]={"id","name","category","speed"};
     // A failed jsonText append can leave a valid but shortened name. Compare
     // its bounded JSON string against the canonical catalog without allocating.
@@ -750,8 +981,10 @@ void beginLampNetwork()
       if(complete)complete=catalog.concat(entry);
     }
     if(complete)complete=catalog.concat(']');
+    if(!complete)catalog.fail();
+    });
     size_t count=0;
-    if(!complete||!LampHttpJson::arrayCount(catalog.c_str(),catalog.length(),count)||count!=available){
+    if(catalog.isEmpty()||!LampHttpJson::arrayCount(catalog.c_str(),catalog.length(),count)||count!=available){
       lampServer.send(503,"text/plain","Effect catalog incomplete. Nothing changed.");return;
     }
     lampServer.send(200, "application/json", std::move(catalog));
@@ -858,9 +1091,12 @@ void beginLampNetwork()
   });
   lampServer.on("/update", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
-    lampServer.send(otaComplete ? 200 : 400, "text/plain", otaMessage);
-    if (otaComplete) restartAt = millis() + 1200;
+    const bool committed=otaComplete&&!browserUploadReplyRejected;
+    lampServer.send(committed ? 200 : 400, "text/plain", otaMessage);
+    if (committed) restartAt = millis() + 1200;
   }, receiveLampUpdate);
+  lampServer.on("/api/firmware/upload/prepare",HTTP_POST,prepareLampBrowserUpload);
+  lampServer.on("/api/firmware/upload/status",HTTP_GET,sendLampBrowserUploadStatus);
   lampServer.onNotFound([]() { lampServer.send(404, "text/plain", "Not found."); });
   WiFi.persistent(false);
   // The lamp is mains-powered; keep reception responsive for phone controls
@@ -1093,6 +1329,7 @@ void serviceLampNetwork()
   serviceLampScan();
   serviceLampWifiSetup();
   const uint32_t now = millis();
+  serviceLampBrowserUpload(now);
   if (restartAt && static_cast<int32_t>(now - restartAt) >= 0) ESP.restart();
   if (otaActive && now - otaLastActivity > 30000) failLampUpdate("Upload timed out.");
   // A BLE join keeps credentials provisional until DHCP succeeds. Expiring the

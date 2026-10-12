@@ -3,6 +3,8 @@
 #include "LampControl.h"
 #ifdef ARDUINO
 #include <Arduino.h>
+class LampJsonSink;
+#include "LampEspNow.h"
 #include "LampControlEndpoint.h"
 struct LampSyncGroupContext {
   uint8_t role=0,protocol=2,count=0;
@@ -20,6 +22,10 @@ String lampSyncJson(uint8_t peerCursor=0,uint8_t peerLimit=8);
 // the caller must discard the complete reply and report failed serialization.
 // This avoids retaining a second full group snapshot during parent growth.
 bool appendLampSyncJson(String& reply,uint8_t peerCursor=0,uint8_t peerLimit=8);
+bool appendLampSyncJson(LampJsonSink& reply,uint8_t peerCursor,uint8_t peerLimit,uint32_t now);
+struct LampSyncJsonSnapshot {uint32_t now=0;LampEspNow::Status radio{};LampSyncWire::Visual visual{};String incarnation;};
+LampSyncJsonSnapshot captureLampSyncJson(uint32_t now);
+bool appendLampSyncJson(LampJsonSink& reply,uint8_t peerCursor,uint8_t peerLimit,const LampSyncJsonSnapshot& snapshot);
 String lampSyncIncarnation(); // Stable nonsecret group fingerprint; empty if independent.
 bool configureLampSync(uint8_t role,const String& leader,const String& key,uint8_t protocol=2,const String& expectedIncarnation="");
 String lampSyncInvite();

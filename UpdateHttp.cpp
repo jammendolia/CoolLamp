@@ -29,6 +29,9 @@ bool UpdateHttp::allowed() const {
   return !cancelled()&&LampUpdateControlPolicy::withinBudget(millis(),started,budget);
 }
 String updateHttpDiagnostics(){return String(",\"httpStage\":")+httpStage.load()+",\"httpCode\":"+httpCode.load()+",\"httpHost\":"+httpHost.load()+",\"tlsError\":"+tlsError.load()+",\"tlsFlags\":"+tlsFlags.load()+",\"transportError\":"+transportError.load();}
+UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics(){
+  return {httpStage.load(),httpCode.load(),httpHost.load(),tlsError.load(),tlsFlags.load(),transportError.load()};
+}
 int UpdateHttp::receive(void* output,size_t size){
   const uint32_t idle=millis();
   while(tls&&allowed()&&uint32_t(millis()-idle)<30000){

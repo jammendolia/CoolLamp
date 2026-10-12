@@ -61,6 +61,7 @@ String lampToken="fixture-only-admin-token";uint32_t now=1000,apLastActivity=0;u
 uint32_t esp_random(){static uint32_t value=19;value=value*1664525+1013904223;return value;}
 int esp_read_mac(uint8_t* out,int){const uint8_t mac[6]{2,1,2,3,4,5};memcpy(out,mac,6);return 0;}
 uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=100;bool PowerOn=true;
+uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}

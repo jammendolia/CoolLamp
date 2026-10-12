@@ -7,6 +7,7 @@
 #include "UpdatePublisher.h"
 #include "LampHousehold.h"
 #include "LampHttpJson.h"
+#include "LampJsonSink.h"
 #include <mbedtls/sha256.h>
 extern LampControlHttpAdapter lampServer;
 
@@ -35,10 +36,21 @@ void observeLampAppearance(){
   if(!lightCommands.observe(bytes,sizeof(bytes))){lightCommands.begin((uint64_t(esp_random())<<32|esp_random())|1);lightCommands.observe(bytes,sizeof(bytes));}
 }
 String receiptJson(const LampCommands::Receipt* receipt,uint64_t requestedBoot,uint64_t id){
-  String out="{\"version\":1,\"target\":"+jsonText(lampIdentity())+",\"bootSession\":\""+commandHex(lightCommands.boot())+"\",\"requestBoot\":\""+commandHex(requestedBoot)+"\",\"commandId\":\""+commandHex(id)+"\",\"revision\":"+String(lightCommands.currentRevision());
-  if(!receipt||receipt->outcome==LampCommands::Outcome::Uncertain)return out+",\"outcome\":\"uncertain\",\"executed\":null,\"persisted\":null}";
-  const auto outcome=receipt->outcome;const bool executed=outcome!=LampCommands::Outcome::Rejected;
-  return out+",\"outcome\":\""+(outcome==LampCommands::Outcome::Persisted?"persisted":outcome==LampCommands::Outcome::SaveFailed?"save-failed":executed?"executed":"rejected")+"\",\"executed\":"+(executed?"true":"false")+",\"persisted\":"+(outcome==LampCommands::Outcome::Persisted?"true":"false")+",\"httpStatus\":"+String(receipt->status)+",\"executionRevision\":"+String(receipt->revision)+"}";
+  char bootText[17],requestText[17],idText[17];
+  snprintf(bootText,sizeof(bootText),"%016llx",(unsigned long long)lightCommands.boot());
+  snprintf(requestText,sizeof(requestText),"%016llx",(unsigned long long)requestedBoot);
+  snprintf(idText,sizeof(idText),"%016llx",(unsigned long long)id);
+  const String identity=lampIdentity();if(identity.length()!=12)return String();
+  return lampJsonReply([&](LampJsonSink& out){
+    out.concat("{\"version\":1,\"target\":");out.quote(identity);out.concat(",\"bootSession\":\"");out.concat(bootText);
+    out.concat("\",\"requestBoot\":\"");out.concat(requestText);out.concat("\",\"commandId\":\"");out.concat(idText);
+    out.concat("\",\"revision\":");out.concat(lightCommands.currentRevision());
+    if(!receipt||receipt->outcome==LampCommands::Outcome::Uncertain){out.concat(",\"outcome\":\"uncertain\",\"executed\":null,\"persisted\":null}");return;}
+    const auto outcome=receipt->outcome;const bool executed=outcome!=LampCommands::Outcome::Rejected;
+    out.concat(",\"outcome\":\"");out.concat(outcome==LampCommands::Outcome::Persisted?"persisted":outcome==LampCommands::Outcome::SaveFailed?"save-failed":executed?"executed":"rejected");
+    out.concat("\",\"executed\":");out.concat(executed?"true":"false");out.concat(",\"persisted\":");out.concat(outcome==LampCommands::Outcome::Persisted?"true":"false");
+    out.concat(",\"httpStatus\":");out.concat(receipt->status);out.concat(",\"executionRevision\":");out.concat(receipt->revision);out.concat('}');
+  });
 }
 const char* const lightCommandFields[]={"target","bootSession","commandId","expectedRevision","scope","mode","power","brightness","speed","intensity","dual","r","g","b","r2","g2","b2","resetPalette"};
 const char* const commandFields[]={"target","bootSession","commandId","expectedRevision","scope","mode","power","brightness","speed","intensity","dual","r","g","b","r2","g2","b2","resetPalette","expectedPolicyRevision","window","startMinute","endMinute","timezone","deferDuringUse","idleSeconds"};
@@ -63,16 +75,32 @@ bool admitLampCommand(uint8_t endpoint,LampCommands::Receipt*& receipt){
   return false;
 }
 void finishLampCommand(LampCommands::Receipt& receipt,uint16_t status,LampCommands::Outcome outcome){const uint64_t boot=lightCommands.boot(),id=receipt.id;observeLampAppearance();if(boot!=lightCommands.boot()){lampServer.send(409,"application/json",receiptJson(nullptr,boot,id));return;}lightCommands.finish(receipt,status,outcome);lampServer.send(status,"application/json",receiptJson(&receipt,boot,id));}
-String schemaParameter(const char* key,uint32_t low,uint32_t high,uint32_t initial,const char* role,const char* units){return String("{\"key\":\"")+key+"\",\"type\":\"integer\",\"min\":"+String(low)+",\"max\":"+String(high)+",\"step\":1,\"units\":\""+units+"\",\"default\":"+String(initial)+",\"semanticRole\":\""+role+"\"}";}
+void appendSchemaParameter(LampJsonSink& out,const char* key,uint32_t low,uint32_t high,uint32_t initial,const char* role,const char* units){
+    out.concat("{\"key\":\"");out.concat(key);out.concat("\",\"type\":\"integer\",\"min\":");out.concat(low);
+    out.concat(",\"max\":");out.concat(high);out.concat(",\"step\":1,\"units\":\"");out.concat(units);
+    out.concat("\",\"default\":");out.concat(initial);out.concat(",\"semanticRole\":\"");out.concat(role);out.concat("\"}");
+}
 }
 
 void beginLampExperience(){LampModel::begin();LampHousehold::begin();lightCommands.begin((uint64_t(esp_random())<<32|esp_random())|1);observeLampAppearance();}
-String lampRevisionJson(){observeLampAppearance();return String("{\"version\":1,\"target\":")+jsonText(lampIdentity())+",\"bootSession\":\""+commandHex(lightCommands.boot())+"\",\"revision\":"+String(lightCommands.currentRevision())+",\"nextCommandId\":\""+commandHex(lightCommands.nextId())+"\",\"mode\":"+String(Mode)+",\"brightness\":"+String(Brightness)+",\"power\":"+(PowerOn?"true":"false")+"}";}
+String lampRevisionJson(){
+  observeLampAppearance();const String identity=lampIdentity();if(identity.length()!=12)return String();
+  char boot[17],next[17];snprintf(boot,sizeof(boot),"%016llx",(unsigned long long)lightCommands.boot());snprintf(next,sizeof(next),"%016llx",(unsigned long long)lightCommands.nextId());
+  return lampJsonReply([&](LampJsonSink& out){
+    out.concat("{\"version\":1,\"target\":");out.quote(identity);out.concat(",\"bootSession\":\"");out.concat(boot);
+    out.concat("\",\"revision\":");out.concat(lightCommands.currentRevision());out.concat(",\"nextCommandId\":\"");out.concat(next);
+    out.concat("\",\"mode\":");out.concat(Mode);out.concat(",\"brightness\":");out.concat(Brightness);out.concat(",\"power\":");out.concat(PowerOn?"true":"false");out.concat('}');
+  });
+}
 String lampDescriptorJson(){
-  String out="{\"descriptorVersion\":2,\"deviceId\":"+jsonText(lampIdentity())+",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":"+LampModel::json()+",\"state\":"+lampRevisionJson();
-  out+=",\"hardware\":{\"ledCount\":"+String(NUM_LEDS)+",\"midpoint\":"+String(lampMidpoint)+",\"currentBudgetMa\":"+String(lampSettings.milliAmps)+",\"microphone\":"+(lampHasMicrophone()?"true":"false")+",\"style\":"+lampStyleJson()+"}";
-  out+=",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":"+String(UpdatePublisher::enforced()?"true":"false")+",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}";
-  out+=",\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":"+String(lampAppearanceMigrationPending()?"true":"false")+",\"inventory\":\"multi-broker-local-snapshots\"}}";
+  const String identitySnapshot=lampIdentity(),modelSnapshot=LampModel::json(),revisionSnapshot=lampRevisionJson(),styleSnapshot=lampStyleJson();
+  if(identitySnapshot.length()!=12||modelSnapshot.isEmpty()||revisionSnapshot.isEmpty()||styleSnapshot.isEmpty())return String();
+  String out=lampJsonReply([&](LampJsonSink& out){
+  out.concat("{\"descriptorVersion\":2,\"deviceId\":");out.quote(identitySnapshot);out.concat(",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":");out.concat(modelSnapshot);out.concat(",\"state\":");out.concat(revisionSnapshot);
+  out.concat(",\"hardware\":{\"ledCount\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat(",\"motionPath\":");if(lampMotionPathSaveUncertain())out.concat("null");else out.concat(lampMotionPath);out.concat(",\"currentBudgetMa\":");out.concat(lampSettings.milliAmps);out.concat(",\"microphone\":");out.concat((lampHasMicrophone()?"true":"false"));out.concat(",\"style\":");out.concat(styleSnapshot);out.concat("}");
+  out.concat(",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":");out.concat(UpdatePublisher::enforced()?"true":"false");out.concat(",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}");
+  out.concat(",\"motionPathVersion\":1,\"audioCaptureVersion\":1,\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":");out.concat(lampAppearanceMigrationPending()?"true":"false");out.concat(",\"inventory\":\"multi-broker-local-snapshots\"}}");
+  });
   // A failed String temporary can omit a complete member and still leave valid
   // JSON. Negotiate only the complete source-backed descriptor; the transports
   // reject an empty reply rather than claiming successful capabilities.
@@ -91,20 +119,26 @@ String lampDescriptorJson(){
 String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
   static const char* const sceneKeys[]={"mirror","portal","ping-pong","stereo-fountain","duet","orbit","storm-front","ember-exchange","color-wave","newtons-cradle","conversation","constellation","tidal-basin","firefly-courtship","rocket-relay","prism-split","rhythm-section","beat-chase","shared-heartbeat","bass-cathedral","spectrum-loom","resonant-rings","velvet-thunder","prism-chorus","twin-vortex","electric-bloom","room-groove","chromatic-screw","mercury-ribbon","bass-turbine","prism-torque","echo-coils","aurora-braid"};
   const uint8_t total=scenes?33:lampAvailableEffectCount();if(offset>=total||count<1||count>4)return "";
-  const uint8_t end=uint16_t(offset)+count<total?offset+count:total;String out;out.reserve(4096);
-  out=String("{\"schemaVersion\":2,\"target\":")+jsonText(lampIdentity())+",\"kind\":\""+(scenes?"scenes":"effects")+"\",\"offset\":"+String(offset)+",\"next\":"+String(end)+",\"total\":"+String(total)+",\"entries\":[";
-  for(uint8_t index=offset;index<end;++index){const uint8_t id=scenes?index:index+1;if(index!=offset)out+=',';
+  const uint8_t end=uint16_t(offset)+count<total?offset+count:total;
+  const String identitySnapshot=lampIdentity();if(identitySnapshot.length()!=12)return String();
+  return lampJsonReply([&](LampJsonSink& out){
+  out.concat("{\"schemaVersion\":2,\"target\":");out.quote(identitySnapshot);out.concat(",\"kind\":\"");out.concat((scenes?"scenes":"effects"));out.concat("\",\"offset\":");out.concat(offset);out.concat(",\"next\":");out.concat(end);out.concat(",\"total\":");out.concat(total);out.concat(",\"entries\":[");
+  for(uint8_t index=offset;index<end;++index){const uint8_t id=scenes?index:index+1;if(index!=offset)out.concat(',');
     const bool motion=scenes?id!=0:LampEffectSchema::motion(id),intensity=scenes?id!=0:LampEffectSchema::intensity(id),zones=!scenes&&LampEffectSchema::zonePalette(id),audio=scenes?LampSyncWire::sceneNeedsAudio(id):id>38,fixed=scenes&&id==15;
-    out+=String("{\"key\":\"")+(scenes?"scene.":"effect.")+(scenes?sceneKeys[id]:LampEffectSchema::key(id))+"\",\"localId\":"+String(id)+",\"motion\":"+(motion?"true":"false")+",\"parameters\":[";bool comma=false;
-    if(motion){out+=schemaParameter("speed",1,100,50,scenes?"scene-motion":audio?"audio-response":"motion","percent");comma=true;}
-    if(intensity){if(comma)out+=',';out+=schemaParameter("intensity",0,100,scenes?85:id==31?35:100,scenes?"glow":LampEffectSchema::intensityRole(id),"percent");}
-    out+=String("],\"palette\":{\"modes\":[")+(fixed?"\"fixed\"":zones?(id==46?"\"custom\"":"\"automatic\",\"custom\""):!scenes&&LampEffectSchema::automatic(id)?"\"automatic\",\"custom\"":"\"custom\"")+"],\"colorRoles\":[";
-    if(!fixed&&!(scenes&&id==0)){if(zones)out+=id==46?"\"zone-low\",\"zone-middle\",\"zone-high\"":"\"band-bass\",\"band-mid\",\"band-treble\"";else out+="\"primary\",\"secondary\"";}
-    out+=String("],\"secondaryToggle\":")+(!fixed&&!zones&&!(scenes&&id==0)?"true":"false")+",\"preservesAutomaticUntilCustom\":true,\"colorType\":\"rgb8\",\"channelMin\":0,\"channelMax\":255,\"channelStep\":1";
-    if(zones)out+=id==46?",\"defaults\":[[0,255,0],[255,255,0],[255,0,0]]":",\"defaults\":[[255,65,0],[0,230,130],[75,30,255]]";
-    else if(!fixed&&!(scenes&&id==0)){const auto c=defaultLampColor(id);out+=scenes?",\"defaults\":[[70,220,255],[255,65,170]]":",\"defaults\":[["+String(c.r)+","+String(c.g)+","+String(c.b)+"],[35,160,255]]";}
-    out+="},\"audio\":{\"required\":"+String(audio?"true":"false")+",\"optional\":"+(scenes&&id==2?"true":"false")+",\"source\":\""+(scenes?"coordinator":audio?"local-or-coordinator":"none")+"\"},\"persistence\":\""+(scenes?"shared-group":zones?"dedicated-palette-and-per-effect":"per-effect")+"\",\"requirements\":{\"catalogVersion\":2,\"sceneProtocol\":"+String(scenes?2:0)+",\"expandedSceneProtocol\":3,\"coordinatorMicrophone\":"+(scenes&&audio?"true":"false")+"},\"styleRecommendations\":[]}";
-  }out+="]}";return out.length()<=4096?out:String();
+    out.concat("{\"key\":\"");out.concat((scenes?"scene.":"effect."));out.concat((scenes?sceneKeys[id]:LampEffectSchema::key(id)));out.concat("\",\"localId\":");out.concat(id);out.concat(",\"motion\":");out.concat((motion?"true":"false"));out.concat(",\"parameters\":[");bool comma=false;
+    if(motion){appendSchemaParameter(out,"speed",1,100,50,scenes?"scene-motion":audio?"audio-response":"motion","percent");comma=true;}
+    if(intensity){if(comma)out.concat(',');appendSchemaParameter(out,"intensity",0,100,scenes?85:id==31?35:100,scenes?"glow":LampEffectSchema::intensityRole(id),"percent");}
+    out.concat("],\"palette\":{\"modes\":[");out.concat((fixed?"\"fixed\"":zones?(id==46?"\"custom\"":"\"automatic\",\"custom\""):!scenes&&LampEffectSchema::automatic(id)?"\"automatic\",\"custom\"":"\"custom\""));out.concat("],\"colorRoles\":[");
+    if(!fixed&&!(scenes&&id==0)){if(zones)out.concat(id==46?"\"zone-low\",\"zone-middle\",\"zone-high\"":"\"band-bass\",\"band-mid\",\"band-treble\"");else out.concat("\"primary\",\"secondary\"");}
+    out.concat("],\"secondaryToggle\":");out.concat((!fixed&&!zones&&!(scenes&&id==0)?"true":"false"));out.concat(",\"preservesAutomaticUntilCustom\":true,\"colorType\":\"rgb8\",\"channelMin\":0,\"channelMax\":255,\"channelStep\":1");
+    if(zones)out.concat(id==46?",\"defaults\":[[0,255,0],[255,255,0],[255,0,0]]":",\"defaults\":[[255,65,0],[0,230,130],[75,30,255]]");
+    else if(!fixed&&!(scenes&&id==0)){
+      if(scenes)out.concat(",\"defaults\":[[70,220,255],[255,65,170]]");
+      else {const auto c=defaultLampColor(id);out.concat(",\"defaults\":[[");out.concat(c.r);out.concat(",");out.concat(c.g);out.concat(",");out.concat(c.b);out.concat("],[35,160,255]]");}
+    }
+    out.concat("},\"audio\":{\"required\":");out.concat(audio?"true":"false");out.concat(",\"optional\":");out.concat((scenes&&id==2?"true":"false"));out.concat(",\"source\":\"");out.concat((scenes?"coordinator":audio?"local-or-coordinator":"none"));out.concat("\"},\"persistence\":\"");out.concat((scenes?"shared-group":zones?"dedicated-palette-and-per-effect":"per-effect"));out.concat("\",\"requirements\":{\"catalogVersion\":2,\"sceneProtocol\":");out.concat(scenes?2:0);out.concat(",\"expandedSceneProtocol\":3,\"coordinatorMicrophone\":");out.concat((scenes&&audio?"true":"false"));out.concat("},\"styleRecommendations\":[]}");
+  }out.concat("]}");
+  },4096);
 }
 void handleLampStatePatch(){
   LampCommands::Receipt* receipt=nullptr;if(!admitLampCommand(LampControlEndpoint::StatePatch,receipt))return;

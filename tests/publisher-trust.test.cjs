@@ -12,12 +12,14 @@ test('actual build helper combines public/provisioned flags, stages only generat
  const vm=require('node:vm'),source=fs.readFileSync(path.resolve(__dirname,'../tools/build-firmware.cjs'),'utf8');
  for(const configured of [false,true]){
   const writes=new Map(),configuration={header:trust.header(config()),provenance:{sha256:'a'.repeat(64),keyIds:['00000042']}};let command;
-  const virtualFs={existsSync:()=>false,mkdirSync:()=>{},readdirSync:()=>[],writeFileSync:(file,bytes)=>writes.set(file,bytes)};
+  const virtualFs={existsSync:()=>false,mkdirSync:()=>{},readdirSync:()=>[],readFileSync:file=>{assert.equal(path.basename(file),'LampPage.h');return fs.readFileSync(path.resolve(__dirname,'../LampPage.h'),'utf8');},writeFileSync:(file,bytes)=>writes.set(file,bytes)};
   const processContext={argv:['node','helper','--public',...(configured?['--publisher-trust=public.json']:[])],env:{ARDUINO_CLI:'mock-cli'},platform:'win32'};
-  const context={__dirname:path.resolve(__dirname,'../tools'),process:processContext,console:{log:()=>{},error:()=>{}},require:name=>name==='node:fs'?virtualFs:name==='node:child_process'?{spawnSync:(cli,args)=>{command={cli,args};return {status:0};}}:name==='./build-tls-library.cjs'?{ensureTlsLibrary:async()=>'/sdk/tls.a'}:name==='./publisher-trust.cjs'?{load:()=>configuration}:require(name)};
+  const context={__dirname:path.resolve(__dirname,'../tools'),process:processContext,console:{log:()=>{},error:()=>{}},require:name=>name==='node:fs'?virtualFs:name==='node:child_process'?{spawnSync:(cli,args)=>{command={cli,args};return {status:0};}}:name==='./build-tls-library.cjs'?{ensureTlsLibrary:async()=>'/sdk/tls.a'}:name==='./compress-lamp-page.cjs'?require('../tools/compress-lamp-page.cjs'):name==='./publisher-trust.cjs'?{load:()=>configuration}:require(name)};
   await vm.runInNewContext(source,context);
   assert.equal(command.cli,'mock-cli');assert(command.args.includes('esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs'));
-  const flags=Array.from(command.args).filter(value=>value.startsWith('compiler.cpp.extra_flags='));assert.deepEqual(flags,['compiler.cpp.extra_flags=-DCOOL_LAMP_PUBLIC_RELEASE=1'+(configured?' -DCOOL_LAMP_PUBLISHER_TRUST_PROVISIONED=1':'')]);
+  const flags=Array.from(command.args).filter(value=>value.startsWith('compiler.cpp.extra_flags='));assert.deepEqual(flags,['compiler.cpp.extra_flags=-DCOOL_LAMP_PAGE_GZIP=1 -DCOOL_LAMP_PUBLIC_RELEASE=1'+(configured?' -DCOOL_LAMP_PUBLISHER_TRUST_PROVISIONED=1':'')]);
+  assert([...writes.keys()].some(file=>file.endsWith('LampPageGzip.generated.h')));
+  const compression=JSON.parse([...writes.entries()].find(([file])=>file.endsWith('page-compression.json'))[1]);assert(compression.noRuntimeCompression&&compression.gzipBytes<compression.rawBytes);
   assert.equal([...writes.keys()].some(file=>file.endsWith('LampPublisherTrust.generated.h')),configured);
   if(configured)assert([...writes.entries()].some(([file,bytes])=>file.endsWith('publisher-trust-public.json')&&JSON.parse(bytes).sha256===configuration.provenance.sha256));
   assert.equal(processContext.exitCode,0);
@@ -25,9 +27,9 @@ test('actual build helper combines public/provisioned flags, stages only generat
 });
 test('actual test-image helper keeps public measurement, isolates artifacts/cache, and suppresses donation by compile flag',async()=>{
  const vm=require('node:vm'),source=fs.readFileSync(path.resolve(__dirname,'../tools/build-firmware.cjs'),'utf8');let command;
- const context={__dirname:path.resolve(__dirname,'../tools'),process:{argv:['node','helper','--public','--test-image'],env:{ARDUINO_CLI:'mock-cli'},platform:'win32'},console:{log:()=>{},error:()=>{}},require:name=>name==='node:fs'?{existsSync:()=>false,mkdirSync:()=>{},readdirSync:()=>[]}:name==='node:child_process'?{spawnSync:(cli,args)=>{command={cli,args};return {status:0};}}:name==='./build-tls-library.cjs'?{ensureTlsLibrary:async()=>'/sdk/tls.a'}:require(name)};
+ const context={__dirname:path.resolve(__dirname,'../tools'),process:{argv:['node','helper','--public','--test-image'],env:{ARDUINO_CLI:'mock-cli'},platform:'win32'},console:{log:()=>{},error:()=>{}},require:name=>name==='node:fs'?{existsSync:()=>false,mkdirSync:()=>{},readdirSync:()=>[],readFileSync:()=>fs.readFileSync(path.resolve(__dirname,'../LampPage.h'),'utf8'),writeFileSync:()=>{}}:name==='node:child_process'?{spawnSync:(cli,args)=>{command={cli,args};return {status:0};}}:name==='./build-tls-library.cjs'?{ensureTlsLibrary:async()=>'/sdk/tls.a'}:name==='./compress-lamp-page.cjs'?require('../tools/compress-lamp-page.cjs'):require(name)};
  await vm.runInNewContext(source,context);
- assert(command.args.includes('compiler.cpp.extra_flags=-DCOOL_LAMP_PUBLIC_RELEASE=1 -DCOOL_LAMP_TEST_IMAGE=1'));
+ assert(command.args.includes('compiler.cpp.extra_flags=-DCOOL_LAMP_PAGE_GZIP=1 -DCOOL_LAMP_PUBLIC_RELEASE=1 -DCOOL_LAMP_TEST_IMAGE=1'));
  assert(command.args.includes(path.resolve(__dirname,'../firmware/test-image')));
  assert(command.args.includes(path.resolve(__dirname,'../.build/cache-test-image')));
  assert(command.args.includes(path.resolve(__dirname,'../.build/sketch-test-image/CoolLamp')));

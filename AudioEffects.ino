@@ -40,7 +40,7 @@ CRGB audioRainbow(uint8_t hue) {
 void soundGlowPalette(CRGB* frame) {
   const auto c=getLampColor(MODE_SOUND_GLOW);
   const auto o=getLampEffectOptions(MODE_SOUND_GLOW);
-  const uint16_t left=lampSplitCount(NUM_LEDS,lampMidpoint);
+  const uint16_t left=lampMotionSplitCount(NUM_LEDS,lampMidpoint);
   for(uint16_t i=0;i<NUM_LEDS;++i){
     const uint16_t size=i<left?left:NUM_LEDS-left;
     const uint16_t height=i<left?i:NUM_LEDS-1-i;
@@ -85,10 +85,10 @@ void renderAudioEffect(uint8_t mode, uint32_t now) {
   CRGB fountainColors[3];
   if(mode==MODE_BAND_FOUNTAIN)for(unsigned b=0;b<3;++b)fountainColors[b]=fountainPaletteColor(b);
   const uint32_t duration=1600-uint32_t(options.speed)*10;
-  const uint16_t left = lampSplitCount(NUM_LEDS, lampMidpoint);
+  const uint16_t left = lampMotionSplitCount(NUM_LEDS, lampMidpoint);
   for (uint16_t i = 0; i < NUM_LEDS; ++i) {
     const uint16_t size = i < left ? left : NUM_LEDS - left;
-    // Both strip ends at base, midpoint at top.
+    // Calibrated split: both ends at base. Whole strip: one base at index zero.
     const uint16_t height = i < left ? i : NUM_LEDS - 1 - i;
     const uint8_t position = size > 1 ? uint32_t(height) * 255 / (size - 1) : 0;
     CRGB tint = options.dual ? blend(primary, secondary, position) : primary;

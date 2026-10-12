@@ -41,8 +41,14 @@ int main(int argc,char** argv){
  }
  start();assert(status()[1]==Receiving);upload();
  if(scenario=="storage-failure")Preferences::failWrite=true;
+ if(scenario=="attempt-storage")attemptStorage=false;
+ if(scenario=="boot-error-selected"){allowBoot=false;bootErrorMaySelect=true;}
  send(Finish);
  if(scenario=="storage-failure"){assert(status()[1]==Error&&status()[2]==Flash&&ends==1&&!boots&&!reserved);return 0;}
+ if(scenario=="attempt-storage"||scenario=="boot-error-selected"){
+  assert(UpdatePublisher::minimumEpoch()==7);assert(bootSelectionChanged==bootErrorMaySelect);
+  exerciseCommitHold();return 0;
+ }
  assert(status()[1]==Restarting&&boots==1&&ends==1);
  assert(UpdatePublisher::minimumEpoch()==7);
  char retained[UpdatePublisher::ManifestCapacity];size_t length=0;assert(UpdatePublisher::copyRetainedManifest(retained,sizeof(retained),length));assert(length==strlen(manifestText)&&!strcmp(retained,manifestText));
@@ -88,5 +94,6 @@ with tempfile.TemporaryDirectory(prefix='signed-receiver-',dir=ROOT/'.build') as
         output=folder/(name+'.o');subprocess.run(['gcc','-std=c11',*SANITIZERS,*includes,*defines,'-c',str(source/'library'/(name+'.c')),'-o',str(output)],check=True);objects.append(str(output))
     binary=folder/'receiver.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,*includes,*defines,str(folder/'test.cpp'),str(ROOT/'LampBleUpdate.cpp'),str(ROOT/'UpdatePublisher.cpp'),*objects,'-o',str(binary)],check=True)
-    for scenario in ['success','unsigned','bad-signature','wrong-epoch','trust-open-failure','storage-failure']:subprocess.run([str(binary),scenario],check=True)
-    print('PASS 6 provisioned-mode production receiver cases; untracked ephemeral development key only')
+    scenarios=['success','unsigned','bad-signature','wrong-epoch','trust-open-failure','storage-failure','attempt-storage','boot-error-selected']
+    for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
+    print(f'PASS {len(scenarios)} provisioned-mode production receiver cases; untracked ephemeral development key only')

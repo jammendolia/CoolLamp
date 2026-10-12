@@ -1,6 +1,7 @@
 // Two independent Fire2012 simulations, with their bases at opposite strip ends.
 // Heat travels inward: 0 -> 66 and 133 -> 67 for the 134-LED lamp.
 // Reverse mode maps both bases to the center and sends heat toward the ends.
+// Whole-strip layout uses one complete lane; reverse runs from last LED to zero.
 // Original split-fire adaptation by J Ammendolia.
 // Based on Fire2012 by Mark Kriegsman, July 2012.
 
@@ -40,9 +41,9 @@ CRGB splitFireColor(uint8_t heat, bool reverseColors, uint8_t palette)
 
 void FireSplit(bool reverse, bool reverseColors, uint8_t palette)
 {
-  const int leftCount = lampSplitCount(NUM_LEDS, lampMidpoint);
+  const int leftCount = lampMotionSplitCount(NUM_LEDS, lampMidpoint);
   const int rightCount = NUM_LEDS - leftCount;
-  // Give both bases some heat on first entry, then evolve independently.
+  // Evolve the configured lanes independently; a whole-strip lane has no right side.
   uint8_t* leftHeat = splitHeat;
   uint8_t* rightHeat = splitHeat + leftCount;
   updateSplitHeat(leftHeat, leftCount);

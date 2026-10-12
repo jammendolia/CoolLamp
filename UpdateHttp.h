@@ -3,6 +3,7 @@
 #include <esp_tls.h>
 #include <atomic>
 #include "UpdateHttpHeaders.h"
+#include "UpdateHttpDiagnostics.h"
 String updateHttpDiagnostics();
 
 class UpdateHttp {

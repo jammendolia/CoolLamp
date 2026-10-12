@@ -9,7 +9,7 @@ uint16_t lampBeatSin88(uint16_t bpm, uint16_t low, uint16_t high, uint32_t base,
 uint32_t effectHash(uint32_t x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; return x ^ (x >> 16); }
 void effectGlowAt(uint16_t position, uint16_t width, CRGB color, uint8_t strength, bool centered) {
   for (int i=0;i<NUM_LEDS;++i) {
-    const int32_t x = lampCenteredPosition(i, NUM_LEDS, centered ? lampMidpoint : 0);
+    const int32_t x = centered ? lampMotionPosition(i, NUM_LEDS, lampMidpoint) : lampCenteredPosition(i, NUM_LEDS, 0);
     const uint32_t distance = abs(x-int32_t(position));
     if (distance >= width) continue;
     CRGB pixel = color; pixel.nscale8(uint32_t(strength)*(width-distance)/width); leds[i] += pixel;
@@ -32,9 +32,11 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         if(phase<2800) travel=uint64_t(phase)*phase*32767/(2800UL*2800);
         else { const uint32_t age=phase-2800; travel=32767-uint32_t(sin8(age*256/850+192))*uint32_t(3400-age)*8/255; }
         travel=min(travel,uint32_t(32767));
-        // Reflect each half around its midpoint: center -> ends, same bounce.
+        // Keep the calibrated split bounce; whole strip traverses both endpoints.
         const uint32_t distance=mode==MODE_DROPLETS_OUTWARD ? 32767-travel : travel;
-        const uint16_t position=k%2 ? 65535-distance : distance;
+        const uint16_t position=lampMotionPath==1?
+          (mode==MODE_DROPLETS_OUTWARD?65535-uint32_t(travel)*65535/32767:uint32_t(travel)*65535/32767):
+          (k%2?65535-distance:distance);
         effectGlowAt(position,4500,k%2?b:a,255,true);
         effectGlowAt(position,10000,k%2?b:a,55,true);
       } break;
@@ -71,8 +73,11 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         const uint32_t age=phase-k*600;
         const uint16_t distance=age*32767/1700;
         const uint8_t strength=(1700-age)*255/1700;
-        effectGlowAt(32767-distance,6500,k?b:a,strength,true);
-        effectGlowAt(32768+distance,6500,k?b:a,strength,true);
+        if(lampMotionPath==1)effectGlowAt(uint32_t(distance)*65535/32767,6500,k?b:a,strength,true);
+        else{
+          effectGlowAt(32767-distance,6500,k?b:a,strength,true);
+          effectGlowAt(32768+distance,6500,k?b:a,strength,true);
+        }
       } break;
     }
     case MODE_STARS: {

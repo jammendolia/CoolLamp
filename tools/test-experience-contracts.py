@@ -14,15 +14,19 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 CASES = [
     ['node', '--test', 'tests/publisher-trust.test.cjs'],
+    ['node', '--test', 'tests/compress-lamp-page.test.cjs'],
+    ['node', 'tests/browser-upload-page.cjs'],
     *[[sys.executable, 'tests/' + name + '.py'] for name in [
         'experience-runtime', 'household-runtime', 'household-adapter-runtime',
         'commission-runtime', 'mesh-runtime', 'mesh-adapter-runtime',
         'control-http-adapter', 'status-builder-memory', 'factory-reset-runtime', 'bluetooth-runtime',
+        'audio-health-runtime', 'motion-path-storage-runtime',
         'runtime-metrics-runtime', 'runtime-diagnostic-runtime', 'usb-diagnostics-runtime', 'http-parser-runtime', 'http-multipart-runtime', 'http-server-runtime', 'http-socket-cleanup-runtime', 'http-stall-probe',
         'ble-control-runtime', 'ble-update-runtime', 'ble-update-radio-runtime',
         'update-policy-runtime', 'update-cue-runtime', 'rollout-recovery-preflight',
         'update-handoff-runtime', 'update-publisher-runtime',
-        'update-attempt-runtime', 'update-http-runtime',
+        'update-attempt-runtime', 'update-http-runtime', 'update-automatic-download-runtime',
+        'browser-upload-runtime',
         'update-publisher-receiver-runtime', 'firmware-relay-runtime',
     ]],
     [sys.executable, 'tests/firmware-relay-runtime.py', '--publisher'],

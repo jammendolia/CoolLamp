@@ -15,6 +15,7 @@ public:
   bool reserve(size_t n){std::string::reserve(n);return true;}
   bool concat(const String& value){append(value);return true;}
   bool concat(const char* value){if(!value)return false;append(value);return true;}
+  bool concat(const char* value,size_t length){if(!value)return false;append(value,length);return true;}
   bool concat(char value){push_back(value);return true;}
   template<class T,typename std::enable_if<std::is_integral<T>::value&&!std::is_same<T,char>::value,int>::type=0>
   bool concat(T value){append(std::to_string(value));return true;}
@@ -26,7 +27,11 @@ public:
 inline uint32_t fakeNow=0;
 inline uint32_t millis(){return fakeNow;}
 inline uint64_t fakeEfuseMac=0xaabbccddeeffULL;
-struct ESPClass{uint64_t getEfuseMac(){return fakeEfuseMac;}};
+struct ESPClass{
+  uint64_t getEfuseMac(){return fakeEfuseMac;}
+  uint32_t getFreeHeap()const{return 65536;}
+  uint32_t getMaxAllocHeap()const{return 65536;}
+};
 inline ESPClass ESP;
 
 inline size_t fakeStrlcpy(char* out,const char* source,size_t size){const size_t n=strlen(source);if(size){const size_t copy=n<size-1?n:size-1;memcpy(out,source,copy);out[copy]=0;}return n;}

@@ -75,9 +75,13 @@ void seed(int style=3){
  lampSettings.brightness=200;lampSettings.startupMode=47;lampMidpoint=99;
  strcpy(lampSettings.ssid,"Home");strcpy(lampSettings.wifiPassword,"old-network-secret");strcpy(lampSettings.adminPassword,"old-access-secret");
  Preferences p;p.begin("coollamp",false);p.putBytes("settings",&lampSettings,sizeof(lampSettings));
- const uint8_t old[]={5,6,7};for(auto key:{"colors","syncV1","name","audioEffectsV1","autoUpdate","rotationV1","householdV1"})p.putBytes(key,old,sizeof(old));
+ const uint8_t old[]={5,6,7};for(auto key:{"colors","syncV1","name","audioEffectsV1","autoUpdate","rotationV1","householdV1","audioUseV1"})p.putBytes(key,old,sizeof(old));
  if(style>=0)p.putUChar("lampStyle",uint8_t(style));
- p.begin("other",false);p.putBytes("keep",old,sizeof(old));p.begin("lampmodel",false);p.putBytes("descriptorV1",old,sizeof(old));p.begin("lamptrust",false);p.putBytes("epochV1",old,sizeof(old));Preferences::faults();
+ p.begin("other",false);p.putBytes("keep",old,sizeof(old));p.begin("lampmodel",false);p.putBytes("descriptorV1",old,sizeof(old));
+ // Independent physical-layout and factory-audio records must survive every
+ // reset interruption unchanged, including future/unknown record bytes.
+ p.putBytes("motionV1",old,sizeof(old));p.putBytes("audioHwV1",old,sizeof(old));
+ p.begin("lamptrust",false);p.putBytes("epochV1",old,sizeof(old));Preferences::faults();
 }
 uint8_t storedStyle(){Preferences p;p.begin("coollamp",true);return p.getUChar("lampStyle",0);}
 bool marker(){return Preferences::storage["coollamp-reset"].count("pendingV1")!=0;}
@@ -85,6 +89,8 @@ void assertOriginal(int style){
  assert(Preferences::storage["coollamp"].count("colors"));assert(storedStyle()==style);
  assert(Preferences::storage["other"].count("keep"));
  assert(Preferences::storage["lampmodel"].count("descriptorV1")&&Preferences::storage["lamptrust"].count("epochV1"));
+ assert((Preferences::storage["lampmodel"]["motionV1"]==std::vector<uint8_t>{5,6,7}));
+ assert((Preferences::storage["lampmodel"]["audioHwV1"]==std::vector<uint8_t>{5,6,7}));
 }
 void assertFactory(int style){
  Preferences p;p.begin("coollamp",true);LampSettings s{};assert(p.getBytes("settings",&s,sizeof(s))==sizeof(s));
@@ -96,6 +102,9 @@ void assertFactory(int style){
  assert(Preferences::storage["coollamp"]["geometryV1"][1]==99);
  assert(Preferences::storage["other"].count("keep"));
  assert(Preferences::storage["lampmodel"].count("descriptorV1")&&Preferences::storage["lamptrust"].count("epochV1"));
+ assert((Preferences::storage["lampmodel"]["motionV1"]==std::vector<uint8_t>{5,6,7}));
+ assert((Preferences::storage["lampmodel"]["audioHwV1"]==std::vector<uint8_t>{5,6,7}));
+ assert(!Preferences::storage["coollamp"].count("audioUseV1"));
 }
 void finish(){
  Preferences::faults();reboot();assert(recoverLampFactoryReset());

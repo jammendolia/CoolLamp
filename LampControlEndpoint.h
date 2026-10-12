@@ -1,4 +1,6 @@
 #pragma once
+#ifndef COOLLAMP_CONTROL_ENDPOINT_H
+#define COOLLAMP_CONTROL_ENDPOINT_H
 #include <Arduino.h>
 
 // The encrypted Bluetooth RPC and HTTP adapters share the same loop-only
@@ -26,3 +28,4 @@ struct LampControlReply {
 // Implemented by the network/config adapter; called on the Arduino loop only.
 String lampControlSnapshotJson();
 LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential=false);
+#endif

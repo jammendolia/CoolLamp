@@ -60,5 +60,25 @@ int main(){
   // With a 40/94 split, full collision must peak next to that boundary.
   NUM_LEDS=134;lampMidpoint=40;std::vector<CRGB> frame(NUM_LEDS);leds=frame.data();CometCollision();
   assert(leds[39].r>leds[66].r && leds[40].r>leds[67].r);
-  std::cout<<"PASS: geometry persistence, invalid settings, exact automatic mapping, asymmetric split/rain/collision bounds for lengths 1–1024\n";
+  // Whole-strip mode is one real lane, without changing physical calibration
+  // or the old centered height used by synchronized scenes/update progress.
+  const auto physical=lampCenteredPosition(39,134,40);
+  lampMotionPath=1;
+  assert(lampCenteredPosition(39,134,40)==physical);
+  for(uint16_t count=1;count<=1024;++count){
+    NUM_LEDS=count;lampMidpoint=count>1?count/3:0;
+    assert(lampMotionSplitCount(count,lampMidpoint)==count);
+    std::vector<CRGB> wholeFrame(count+2);leds=wholeFrame.data()+1;
+    std::vector<uint8_t> wholeHeat(count+2);splitHeat=wholeHeat.data()+1;
+    wholeFrame.front()=wholeFrame.back()={13,27,39};wholeHeat.front()=wholeHeat.back()=123;
+    uint16_t previous=0;
+    for(uint16_t i=0;i<count;++i){const auto x=lampMotionPosition(i,count,lampMidpoint);assert(x>=previous);previous=x;assert(x==(count>1?uint32_t(i)*65535/(count-1):32768));splitHeat[i]=uint16_t(i)*17%255;}
+    FireSplit(false,false,0);const std::vector<CRGB> rising(leds,leds+count);
+    for(uint16_t i=0;i<count;++i)splitHeat[i]=uint16_t(i)*17%255;
+    FireSplit(true,false,0);for(uint16_t i=0;i<count;++i)assert(leds[i]==rising[count-1-i]);
+    Rain();CometCollision();
+    assert(wholeFrame.front()==CRGB(13,27,39)&&wholeFrame.back()==CRGB(13,27,39)&&wholeHeat.front()==123&&wholeHeat.back()==123);
+  }
+  lampMotionPath=0;
+  std::cout<<"PASS: geometry persistence, exact legacy physical mapping; whole-strip fire direction reversal and split/rain/collision bounds for all lengths 1–1024\n";
 }

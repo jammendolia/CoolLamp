@@ -101,6 +101,12 @@ void begin(){
  Preferences prefs;if(prefs.begin("coollamp",true)){paired=prefs.getBytesLength("fleetKeyV1")==16&&prefs.getBytes("fleetKeyV1",fleet,16)==16;prefs.end();}
 }
 bool ownsRadio(){return state==Receiving||state==Sending;}
+DiscoverySnapshot discoverySnapshot(uint32_t now){
+ const auto radio=LampEspNow::status();DiscoverySnapshot out;out.state=state;out.paired=paired;
+ out.radioAvailable=radio.active&&!radio.suspended;
+ if(int32_t(now-retryAt)<0)out.retryInMs=retryAt-now;
+ return out;
+}
 void suspend(){if(state!=Idle)stop(millis());}
 bool receive(const LampEspNow::Received& message){
  if(message.length<4||memcmp(message.data,"CLF\1",4))return false;
@@ -127,8 +133,10 @@ bool receive(const LampEspNow::Received& message){
    if(!UpdatePublisher::format(next,original,sizeof(original),length)||!UpdatePublisher::verifyProvisioned(original,length,offeredPublisher))return true;
   }
   FirmwareManifest artifact{};memcpy(artifact.version,version,sizeof(version));artifact.size=u32(body+7);memcpy(artifact.sha256,body+11,32);
-  if(!LampUpdateAttempt::automaticAllowed(artifact))return true;
+  if(!lampAutomaticUpdateArtifactAllowed(artifact))return true;
   if(!lampRolloutAllowsAutomaticUpdate(artifact))return true;
+  noteLampAutomaticDonorOffer(artifact);
+  if(!lampAutomaticDonorDiscoveryAllowed())return true;
   memcpy(offeredVersion,version,sizeof(version));offeredSize=u32(body+7);memcpy(offeredHash,body+11,32);offerToken=u64(body+43);
   if(!offerToken)return true;
   memcpy(peer,message.source,6);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;session=randomSession();while(!uint32_t(session))session=randomSession();state=AwaitDonor;started=touched=now;lastSent=0;offset=0;return true;

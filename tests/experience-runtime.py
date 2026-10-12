@@ -29,17 +29,18 @@ with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
     prefs=prefs.replace('++writes;return length;', '++writes;return commitThenFail?0:length;')
     (folder/'Preferences.h').write_text(prefs)
     arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text()
-    arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return 65536;}uint32_t getMaxAllocHeap(){return 65536;}uint64_t getEfuseMac()')
-    arduino=arduino.replace('  bool isEmpty()const',r'''  inline static const char* omittedAppend=nullptr;
-  inline static bool appendEmptyObject=false;
-  using std::string::operator+=;
-  String& operator+=(const std::string& value){
-    // Pinned WString drops the entire StringSumHelper append when a temporary
-    // allocation fails. Reproduce that boundary in the actual serializer.
-    if(omittedAppend&&value.rfind(omittedAppend,0)==0){if(appendEmptyObject){std::string::operator+=(omittedAppend);std::string::operator+=("{}");}return *this;}
-    std::string::operator+=(value);return *this;
-  }
+    arduino=arduino.replace('[[maybe_unused]] inline struct','inline uint32_t fakeFreeHeap=65536,fakeLargestBlock=65536;\n[[maybe_unused]] inline struct')
+    arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return fakeFreeHeap;}uint32_t getMaxAllocHeap(){return fakeLargestBlock;}uint64_t getEfuseMac()')
+    arduino=arduino.replace('  bool isEmpty()const',r'''  inline static bool dishonestConcat=false;
+  inline static size_t reserveCalls=0,concatCalls=0,failReserveAt=0,failConcatAt=0,injectedFailures=0;
   bool isEmpty()const''')
+    arduino=arduino.replace('bool reserve(size_t size){std::string::reserve(size);return true;}',r'''bool reserve(size_t size){
+    ++reserveCalls;if(failReserveAt&&reserveCalls==failReserveAt){++injectedFailures;return false;}
+    std::string::reserve(size);return true;}''')
+    arduino=arduino.replace('bool concat(const char* value,size_t size){append(value,size);return true;}',r'''bool concat(const char* value,size_t size){
+    ++concatCalls;if(failConcatAt&&concatCalls==failConcatAt){++injectedFailures;return false;}
+    if(failedConcatLiteral&&std::string(value,size).find(failedConcatLiteral)!=std::string::npos){++concatFailures;return dishonestConcat;}
+    append(value,size);return true;}''')
     (folder/'Arduino.h').write_text(arduino)
     # These fixture headers use quoted Arduino.h includes; keep their include
     # directory with the single fault-injecting String definition.
@@ -70,6 +71,7 @@ LampControlHttpAdapter lampServer(80);LampSettings lampSettings{};
 String lampToken="private-token";uint32_t now=100;uint32_t millis(){return now;}
 uint32_t esp_random(){static uint32_t value=900;return ++value;}
 uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=100;bool PowerOn=true;
+uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned controls=0,uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
@@ -90,6 +92,22 @@ uint32_t lampUpdatePolicyRevision(){return fixturePolicyRevision;}bool setLampUp
 #include "LampExperience.ino"
 String envelope(uint64_t id,uint32_t revision){return "target="+lampIdentity()+"&scope=lamp&bootSession="+commandHex(lightCommands.boot())+"&commandId="+commandHex(id)+"&expectedRevision="+String(revision);}
 LampControlReply patch(uint64_t id,uint32_t revision,const String& fields){return lampServer.executeControl(LampControlEndpoint::StatePatch,true,envelope(id,revision)+fields);}
+size_t replyFailureCases=0;
+template<typename F>void checkReplyFailures(F build){
+ String::reserveCalls=String::concatCalls=0;
+ const String expected=build();assert(!expected.isEmpty());
+ const auto reserves=String::reserveCalls,concats=String::concatCalls;
+ for(size_t n=1;n<=reserves;++n){
+  String::reserveCalls=String::concatCalls=String::injectedFailures=0;String::failReserveAt=n;
+  assert(build().isEmpty()&&String::injectedFailures==1);++replyFailureCases;
+ }
+ String::failReserveAt=0;
+ for(size_t n=1;n<=concats;++n){
+  String::reserveCalls=String::concatCalls=String::injectedFailures=0;String::failConcatAt=n;
+  assert(build().isEmpty()&&String::injectedFailures==1);++replyFailureCases;
+ }
+ String::failConcatAt=0;assert(build()==expected);
+}
 int main(int argc,char** argv){
  lampServer.on("/api/state/patch",HTTP_POST,handleLampStatePatch);lampServer.on("/api/appearance/save",HTTP_POST,handleLampAppearanceSave);lampServer.on("/api/receipt",HTTP_POST,handleLampReceipt);lampServer.on("/api/firmware/policy",HTTP_POST,handleLampUpdatePolicy);
  lampSettings.brightness=77;lampSettings.startupMode=8;lampSettings.ledCount=205;lampSettings.milliAmps=500;
@@ -159,14 +177,28 @@ int main(int argc,char** argv){
  lampServer.on("/api/descriptor",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
  const auto descriptorWrites=Preferences::writes;const auto descriptorControls=controls;
  result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==200&&result.body.find("future-coil-2070")!=String::npos);
- String::omittedAppend=",\"capabilities\":";
- assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==507&&result.body.find("unavailable")!=String::npos);
- String::appendEmptyObject=true;
- assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==507);
- String::omittedAppend=nullptr;String::appendEmptyObject=false;
+ String::failedConcatLiteral=",\"capabilities\":";
+ assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==503&&result.body.find("unavailable")!=String::npos);
+ String::dishonestConcat=true;
+ assert(lampDescriptorJson().isEmpty());result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==503);
+ String::failedConcatLiteral=nullptr;String::dishonestConcat=false;
  result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==200&&result.body.find("future-coil-2070")!=String::npos&&Preferences::writes==descriptorWrites&&controls==descriptorControls);
+ fakeFreeHeap=16316;fakeLargestBlock=7668;
+ result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==200&&result.body.find("future-coil-2070")!=String::npos&&Preferences::writes==descriptorWrites&&controls==descriptorControls);
+ fakeFreeHeap=8703;
+ result=lampServer.executeControl(LampControlEndpoint::Descriptor,false,"");assert(result.status==503&&Preferences::writes==descriptorWrites&&controls==descriptorControls);
+ fakeFreeHeap=fakeLargestBlock=65536;
+ checkReplyFailures([](){return lampDescriptorJson();});checkReplyFailures([](){return lampRevisionJson();});
+ checkReplyFailures([&](){return receiptJson(nullptr,lightCommands.boot(),UINT64_MAX);});
+ for(auto outcome:{LampCommands::Outcome::Rejected,LampCommands::Outcome::Executed,LampCommands::Outcome::Persisted,LampCommands::Outcome::SaveFailed,LampCommands::Outcome::Uncertain}){
+  LampCommands::Receipt receipt;receipt.id=UINT64_MAX;receipt.revision=UINT32_MAX;receipt.status=503;receipt.outcome=outcome;
+  checkReplyFailures([&](){return receiptJson(&receipt,lightCommands.boot(),receipt.id);});
+ }
+ for(bool scenes:{false,true})for(unsigned offset=0;offset<(scenes?33:47);offset+=4)
+  checkReplyFailures([&](){return lampEffectSchemaPage(offset,4,scenes);});
+ assert(Preferences::writes==descriptorWrites&&controls==descriptorControls);
  if(argc>1){std::ofstream output(argv[1]);output<<"["<<lampDescriptorJson();for(bool scenes:{false,true})for(unsigned offset=0;offset<(scenes?33:47);offset+=4){const auto page=lampEffectSchemaPage(offset,4,scenes);assert(!page.empty()&&page.size()<=4096);output<<","<<page;}output<<"]";}
- std::cout<<"PASS real appearance/command handlers, duplicate/loss/reboot/CAS/knob/storage/schema; ledger bytes="<<sizeof(LampCommands::Ledger)<<"\n";
+ std::cout<<"PASS real appearance/command handlers, duplicate/loss/reboot/CAS/knob/storage/schema; ledger bytes="<<sizeof(LampCommands::Ledger)<<" counted reply reserve/concat failures="<<replyFailureCases<<"\n";
 }
 '''
     cpp=folder/'fixture.cpp';cpp.write_text(fixture)

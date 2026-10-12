@@ -16,15 +16,16 @@ public:
   using THandlerFunction=std::function<void()>;
   static constexpr unsigned MaxClients=3, MaxRoutes=72;
   static constexpr size_t MaxResponseBytes=8192, HouseholdResponseBytes=12288, TotalResponseBytes=12288;
+  static constexpr size_t MaxMappedPageBytes=65536;
   static constexpr size_t TurnReceiveBytes=512, TurnSendBytes=1024;
   static constexpr uint32_t TurnBudgetUs=2000;
   // The legacy mapped setup page is 24 KiB. Stop-and-wait sends can need more
   // than five seconds with healthy delayed ACKs; API/request limits stay fixed.
   static constexpr uint32_t MappedHtmlTimeoutMs=15000;
-  // Bulk setup-page copies into lwIP must leave room for ordinary control
-  // serializers, including requests still receiving headers/body. Keep the
-  // same shared admission floor; it is not a heap reservation.
-  static constexpr uint32_t StaticPageHeapFloorBytes=LampControlResourcePolicy::MinFreeHeapBytes;
+  // Mapped pages have no page-sized heap buffer. A separate measured-work
+  // allowance protects SDK/workspace plus one bounded TCP flight; accepted
+  // input and ordinary responses retain priority. Other admission is unchanged.
+  static constexpr uint32_t StaticPageHeapFloorBytes=LampControlResourcePolicy::MappedPageSendHeapBytes;
   static constexpr uint32_t DispatchHeapFloorBytes=LampControlResourcePolicy::MinFreeHeapBytes,DispatchLargestBlockBytes=LampControlResourcePolicy::MinLargestBlockBytes;
   // Internal upload callback storage follows the actual streaming chunk bound.
   // Wire framing and UPLOAD_FILE_* semantics remain the legacy service API.
@@ -124,6 +125,7 @@ public:
   void send(int code,const char* type,String&& body){retain(code,type,std::move(body));}
   void send(int code,const char* type,const char* body){send(code,type,String(body));}
   void send_P(int code,const char* type,const char* body);
+  void send_P(int code,const char* type,const char* body,size_t bytes);
   Upload& upload(){return upload_;}
   void acceptUpload(bool accepted){if(current_>=0)clients_[current_].uploadAccepted=accepted;}
   const Metrics& metrics()const{return metrics_;}

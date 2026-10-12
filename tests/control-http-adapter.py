@@ -56,19 +56,29 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'String lampRuntimeTimingJson()', 'String lampDiagnosticsJson()',
             'void sendLampState()', 'LampControlReply lampControlRequest(',
             'String lampControlSnapshotJson()', 'void saveLampConfiguration()'])
+        definitions='template<class HttpMetrics>\n'+function(source,'void appendLampRuntimeTimingJson(')+'\n'+definitions
         audio_source = (ROOT/'LampAudio.cpp').read_text()
         audio_settings = '\n'.join(function(audio_source, signature) for signature in [
-            'bool lampHasMicrophone()', 'bool saveLampMicrophoneInstalled(', 'bool saveLampAudioConfiguration('])
+            'void flagRecord(',
+            'bool matchesRecord(', 'bool persistRecord(',
+            'bool lampHasMicrophone()', 'bool lampMicrophoneEnabled()', 'bool lampMicrophoneEnabledKnown()', 'bool lampAudioSaveUncertain()',
+            'bool saveLampMicrophoneEnabled(', 'bool saveLampMicrophoneInstalled(', 'bool saveLampAudioConfiguration(', 'uint16_t lampAudioScale()'])
         # Hardware/numeric snapshots are mocked; current serializer logic is real.
         update_source = (ROOT/'LampUpdate.cpp').read_text()
         current_status = '\n'.join(function(update_source, signature) for signature in [
-            'String versionText(', 'String lampUpdatePolicyJson()', 'String lampUpdateJson()'])
-        current_status += '\n' + function(audio_source, 'String lampAudioJson()')
-        current_status += '\n' + function((ROOT/'UpdateHttp.cpp').read_text(), 'String updateHttpDiagnostics()')
+            'String versionText(', 'String lampUpdatePolicyJson()', 'LampUpdateJsonSnapshot captureLampUpdateJson(',
+            'void appendLampUpdateJson(', 'String lampUpdateJson()'])
+        current_status += '\n' + '\n'.join(function(audio_source,signature) for signature in [
+            'LampAudioJsonSnapshot captureLampAudioJson()', 'void appendLampAudioJson(', 'String lampAudioJson()'])
+        current_status += '\n' + function((ROOT/'UpdateHttp.cpp').read_text(), 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()')
+        current_status += '\n' + function((ROOT/'UpdateHttpDiagnostics.cpp').read_text(), 'void appendUpdateHttpDiagnostics(')
         attempt_json = function((ROOT/'LampUpdateAttempt.cpp').read_text(), 'String statusJson(const FirmwareManifest& image)')
-        sync_json = function(sync_source, 'bool appendLampSyncJson(')+'\n'+function(sync_source, 'String lampSyncJson(')
-        quote_json = function(sync_source, 'String quote(')
-        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style'])
+        sync_json = '\n'.join(function(sync_source,signature) for signature in [
+            'LampSyncJsonSnapshot captureLampSyncJson(',
+            'bool appendLampSyncJson(LampJsonSink& s,', 'bool appendLampSyncJson(LampJsonSink& reply,',
+            'bool appendLampSyncJson(String&', 'String lampSyncJson('])
+        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio'])
+        routes += '\n' + registration(source, '/api/audio', 'GET')
         routes += '\n' + registration(source, '/api/effects', 'GET')
         setup = r'''
 #include <cassert>
@@ -82,9 +92,12 @@ class ControlHttpAdapterTests(unittest.TestCase):
 #include "LampGeometry.h"
 #include "LampStyle.h"
 #include "LampAudio.h"
+#include "LampNvsBlob.h"
 #include "LampUpdate.h"
 #include "LampSyncProtocol.h"
+#include "LampEspNow.h"
 #include "LampRuntimeMetrics.h"
+#include "LampJsonSink.h"
 #include "Preferences.h"
 LampControlHttpAdapter lampServer(80);
 LampRuntimeMetrics::Snapshot diagnosticMetrics;
@@ -100,7 +113,12 @@ String lampSyncIncarnation(){return "fefefefefefefefefefefefefefefefe";}
 bool resetPending=false;bool lampFactoryResetPending(){return resetPending;}
 bool lampIsUpdating(){return ownsUpdate;}bool saveLampColors(){return colorsSaved;}
 bool installed=true;uint8_t gain=17;uint16_t gate=23,scale=250;
-uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
+bool saveUncertain=false,recordReadFailed=false,enabled=true,enabledStored=false,preferenceHealthy=true,captureWanted=false,diagnosticActive=false;
+uint32_t diagnosticUntil=0;constexpr const char* UseKey="audioUseV1";
+bool stopLampAudio(){return true;}
+LampAudioCaptureStatus lampAudioCaptureStatus(){return LampAudioCaptureStatus::Error;}
+uint16_t NUM_LEDS=205;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
+uint8_t heatStorage[1024]{};uint8_t* splitHeat=heatStorage;
 constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38;
 uint8_t lampAvailableEffectCount(){return 47;}
 struct Color {uint8_t enabled=1,r=70,g=220,b=255;};
@@ -116,6 +134,8 @@ uint32_t lampRenderedFrames=UINT32_MAX,lampMaxRenderUs=UINT32_MAX;
 LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures f{};f.sequence=f.timestamp=f.errors=f.overruns=UINT32_MAX;f.stackFree=6144;f.rms=f.peak=f.effectiveGain=f.noiseFloor=f.effectiveGate=f.bass=f.mid=f.treble=UINT16_MAX;f.beat=f.bassBeat=UINT32_MAX;f.level=255;f.error=INT32_MIN;return f;}
 LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.phase=UPDATE_ERROR;s.progress=100;s.error=UPDATE_MEMORY;s.latest[0]=s.latest[1]=s.latest[2]=UINT16_MAX;s.route=UPDATE_ROUTE_MANUAL_UPLOAD;s.checkedAt=UINT32_MAX;s.writtenOffset=s.totalBytes=2031616;return s;}
 FirmwareManifest candidate{};unsigned mux=0;
+LampUpdateAutomatic::Service automaticService;
+LampUpdateAutomatic::Snapshot automaticView;
 void* worker=reinterpret_cast<void*>(1);bool healthy=false;
 constexpr int MALLOC_CAP_8BIT=1;
 unsigned heap_caps_get_largest_free_block(int){return 327680;}
@@ -134,7 +154,7 @@ namespace LampUpdateAttempt {constexpr unsigned Capacity=4;unsigned mux=0;bool r
 ATTEMPT_JSON
 }
 constexpr int WL_CONNECTED=3;
-enum wifi_ps_type_t {WIFI_PS_NONE=0};constexpr int ESP_OK=0;
+enum wifi_ps_type_t {WIFI_PS_NONE=0};
 int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}
 int esp_reset_reason(){return INT32_MIN;}
 bool setupAP=false,scanActive=false;unsigned scanStartedAt=0,scanDuration=UINT32_MAX,scanPolls=UINT32_MAX;int scanCount=INT32_MIN;
@@ -154,9 +174,9 @@ bool slotSaved=false;struct {char leader[13]{};} followerSlot;
 uint32_t slotSaveFailures=0,incompatibleSubscriptions=0;
 uint32_t receivedPackets=20,discoveries=8,authFailures=0,subscriptionsSent=8,framesReceived=20,clockDrops=0;
 namespace LampEspNow {
-struct Status {bool active=true,suspended=false,seeking=false;uint8_t channel=14;uint32_t received=UINT32_MAX,receiveDropped=UINT32_MAX,sent=UINT32_MAX,sendFailed=UINT32_MAX,sendDropped=UINT32_MAX,channelChanges=UINT32_MAX;};
-Status status(){return {};}
+Status status(){Status s{};s.active=true;s.channel=14;s.received=s.receiveDropped=s.sent=s.sendFailed=s.sendDropped=s.channelChanges=UINT32_MAX;return s;}
 }
+SYNC_JSON_SNAPSHOT;
 Visual lampGroupVisual(){Visual visual{};visual.scene=32;visual.count=sceneConfig.count;visual.sceneSpeed=100;visual.sceneIntensity=100;memset(visual.scenePrimary,255,3);memset(visual.sceneSecondary,255,3);return visual;}
 unsigned syncMutations=0,sceneMutations=0,pauseMutations=0,resumeMutations=0;
 bool configureLampSync(uint8_t role,const String&,const String&,uint8_t protocol=2,const String& expected=""){if(expected.length()&&expected!=lampSyncIncarnation())return false;++syncMutations;return role<=2&&supportedVersion(protocol);}
@@ -178,6 +198,7 @@ void initial(){
 }
 int main(int argc,char** argv){
  initial();
+ lampMidpoint=102;
  lampServer.on("/api/state",HTTP_GET,sendLampState);
  lampServer.on("/api/config",HTTP_POST,saveLampConfiguration);
  registerRoutes();
@@ -195,16 +216,17 @@ int main(int argc,char** argv){
    const auto denied=lampControlRequest(LampControlEndpoint::Name,true,form);
    assert(denied.status==503&&denied.body=="Control resources unavailable. This request was not executed.");
   }
-  assert(lampControlRequest(LampControlEndpoint::State,false,"").status==503);
   assert(lampControlRequest(LampControlEndpoint::Config,true,"leds=205&milliamps=700&brightness=88&mode=4").status==503);
   assert(lampControlRequest(LampControlEndpoint::OfflineJoin,true,"id=aabbccddeeff").status==404);
   assert(!lampServer.controlActive()&&Preferences::writes==deniedWrites&&Preferences::storage==deniedStorage);
   assert(String::reserveCalls==deniedReserves&&lampName=="Test lamp"&&Mode==4&&Brightness==55&&PowerOn&&!restartAt);
  }
- fakeFreeHeap=24576;fakeLargestBlock=6160;
+ fakeFreeHeap=16316;fakeLargestBlock=7668;
  assert(Preferences::writes==deniedWrites&&Preferences::storage==deniedStorage&&lampName=="Test lamp");
  const auto admitted=lampControlRequest(LampControlEndpoint::State,false,"");
  assert(admitted.status==200&&String::reserveCalls>deniedReserves&&Preferences::writes==deniedWrites);
+ fakeFreeHeap=8703;
+ assert(lampControlRequest(LampControlEndpoint::State,false,"").status==503&&Preferences::writes==deniedWrites);
  fakeFreeHeap=327680;fakeLargestBlock=UINT32_MAX;
  // Classification is authenticated metadata, even for a current follower.
  const auto hardwareBefore=Preferences::storage.at("settings");
@@ -335,25 +357,49 @@ int main(int argc,char** argv){
  result=lampControlRequest(LampControlEndpoint::Sync,false,"");assert(result.status==200&&result.body=="Outer context kept"&&!lampServer.controlActive());
  // Explicit private invite can return the key; regular snapshots never do.
  result=lampControlRequest(LampControlEndpoint::SyncInvite,true,"");assert(result.status==200&&result.body.find(config.key)!=String::npos);
+ // New optional contracts call the production handlers and storage helpers.
+ // Save one absolute field; calibration/startup/light/group state stays local.
+ const auto originalCenter=lampMidpoint;const auto originalLight=getLampColor(Mode);
+ const auto originalTuning=std::vector<uint16_t>{gain,gate,scale};const auto originalSettings=Preferences::storage.at("settings");
+ result=lampControlRequest(LampControlEndpoint::Geometry,true,"pathVersion=1&path=1");assert(result.status==200&&lampMotionPath==1&&lampMidpoint==originalCenter);
+ const auto pathWrites=Preferences::writes;assert(lampControlRequest(LampControlEndpoint::Geometry,true,"pathVersion=1&path=1").status==200&&Preferences::writes==pathWrites);
+ for(const char* body:{"pathVersion=1&path=2","pathVersion=2&path=1","pathVersion=1&path=1&midpoint=5","pathVersion=1&path=1&unexpected=1","path=1","pathVersion=1&path=0&path=1"})assert(lampControlRequest(LampControlEndpoint::Geometry,true,body).status==400);
+ assert(Preferences::writes==pathWrites&&lampMotionPath==1&&lampMidpoint==originalCenter);
+ ownsUpdate=true;assert(lampControlRequest(LampControlEndpoint::Geometry,true,"pathVersion=1&path=0").status==409);ownsUpdate=false;
+ assert(lampControlRequest(LampControlEndpoint::Geometry,true,"pathVersion=1&path=0").status==200&&lampMotionPath==0);
+ result=lampControlRequest(LampControlEndpoint::Audio,true,"action=use&useVersion=1&enabled=0");assert(result.status==200&&!lampMicrophoneEnabled()&&lampHasMicrophone());
+ const auto useWrites=Preferences::writes;assert(lampControlRequest(LampControlEndpoint::Audio,true,"action=use&useVersion=1&enabled=0").status==200&&Preferences::writes==useWrites);
+ for(const char* body:{"action=use&useVersion=2&enabled=1","action=use&useVersion=1&enabled=2","action=use&enabled=1","action=use&useVersion=1&enabled=1&gain=8","action=use&useVersion=1&enabled=1&enabled=0"})assert(lampControlRequest(LampControlEndpoint::Audio,true,body).status==400);
+ assert(Preferences::writes==useWrites&&!lampMicrophoneEnabled());
+ installed=false;assert(lampControlRequest(LampControlEndpoint::Audio,true,"action=use&useVersion=1&enabled=1").status==409);installed=true;
+ ownsUpdate=true;assert(lampControlRequest(LampControlEndpoint::Audio,true,"action=use&useVersion=1&enabled=1").status==409);ownsUpdate=false;
+ fakeFreeHeap=16316;fakeLargestBlock=7668;const auto beforeAudioRead=Preferences::writes;
+ result=lampControlRequest(LampControlEndpoint::Audio,false,"");assert(result.status==200&&result.body.find("\"enabled\":false")!=String::npos&&Preferences::writes==beforeAudioRead);
+ fakeFreeHeap=327680;fakeLargestBlock=UINT32_MAX;
+ assert(Preferences::storage.at("settings")==originalSettings&&lampMidpoint==originalCenter&&std::vector<uint16_t>({gain,gate,scale})==originalTuning&&getLampColor(Mode).r==originalLight.r);
+ // Corrupt/future permission cannot be converted into a successful save.
+ Preferences::storage[UseKey]={2,0,0,0};const auto corruptWrites=Preferences::writes;
+ result=lampControlRequest(LampControlEndpoint::Audio,true,"action=use&useVersion=1&enabled=1");assert(result.status==500&&!lampMicrophoneEnabledKnown()&&Preferences::writes==corruptWrites);
+ enabledStored=false;enabled=false;preferenceHealthy=true;Preferences::storage.erase(UseKey);assert(saveLampMicrophoneEnabled(false));
  // Probe the complete production serializer through real HTTP; the private
  // adapter's 8 KiB guard remains unmodified and is separately checked below.
  // The common response must not require one contiguous 8 KiB allocation.
  const auto writesBeforeReserveFailure=Preferences::writes;
- String::failedReserve=6144;const auto reserveFailuresBefore=String::reserveFailures;
+ String::failNextReserve=true;const auto reserveFailuresBefore=String::reserveFailures;
  lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/state",HTTP_GET);
  assert(lampServer.responseStatus==503&&String::reserveFailures==reserveFailuresBefore+1&&Preferences::writes==writesBeforeReserveFailure);
  assert(lampServer.responseBody=="State response memory unavailable. Nothing changed.");
- String::failedReserve=0;
+ String::failNextReserve=false;
  const auto concatFailuresBefore=String::concatFailures;
  String::failedConcatLiteral="{\"version\":";
  lampServer.invokeHttp("/api/state",HTTP_GET);
  assert(lampServer.responseStatus==503&&String::concatFailures==concatFailuresBefore+1&&Preferences::writes==writesBeforeReserveFailure);
  assert(lampServer.responseBody=="State response memory unavailable. Nothing changed.");
- assert(lampDiagnosticsJson().isEmpty()&&String::concatFailures==concatFailuresBefore+2&&Preferences::writes==writesBeforeReserveFailure);
+ assert(lampDiagnosticsJson().isEmpty()&&String::concatFailures>=concatFailuresBefore+2&&Preferences::writes==writesBeforeReserveFailure);
  String::failedConcatLiteral=nullptr;
- const auto commonReservationsBefore=String::initial6144Reserves;
+ const auto commonReservationsBefore=String::reserveCalls;
  lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/state",HTTP_GET);
- assert(lampServer.responseStatus==200&&String::initial6144Reserves==commonReservationsBefore+1);
+ assert(lampServer.responseStatus==200&&String::reserveCalls>commonReservationsBefore);
  auto snapshot=lampServer.responseBody;
  const size_t tokenStart=snapshot.find(",\"token\":");const size_t tokenEnd=snapshot.find(",\"name\":",tokenStart);
  assert(tokenStart!=String::npos&&tokenEnd!=String::npos);snapshot.erase(tokenStart,tokenEnd-tokenStart);
@@ -409,38 +455,53 @@ int main(int argc,char** argv){
  result=lampControlRequest(LampControlEndpoint::Effects,false,"");assert(result.status==200&&result.body.find("\"id\":47")!=String::npos);
  if(argc>2){std::ofstream file(argv[2]);file<<result.body;}
  result=lampControlRequest(LampControlEndpoint::Effects,true,"");assert(result.status==404);
+ // Maximal boot-token width and every legal escaped SSID byte remain bounded.
+ char savedSsid[33];memcpy(savedSsid,lampSettings.ssid,sizeof(savedSsid));const String savedToken=lampToken;
+ memset(lampSettings.ssid,'"',32);lampSettings.ssid[32]=0;lampToken=std::string(32,'f');
+ const auto writesBeforeExtreme=Preferences::writes;
+ lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/state",HTTP_GET);
+ assert(lampServer.responseStatus==200&&lampServer.responseBody.length()<=8192&&Preferences::writes==writesBeforeExtreme);
+ assert(lampControlRequest(LampControlEndpoint::Audio,false,"").status==200);
+ result=lampControlRequest(LampControlEndpoint::State,false,"");assert(result.status==200&&result.body.length()<=8192);
+ const auto previousMotion=Preferences::storage.at(LAMP_MOTION_PATH_KEY);
+ memset(lampSettings.ssid,1,32);
+ Preferences::storage[LAMP_MOTION_PATH_KEY]={2,0,0};loadLampGeometry();lampMidpoint=1023;preferenceHealthy=false;
+ lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200&&lampServer.responseBody.length()<=8192);
+ assert(lampServer.responseBody.find("\"motionPath\":null")!=String::npos&&lampServer.responseBody.find("\"enabled\":null")!=String::npos);
+ std::cout<<"MEASURE maximal unknown-setting publicFullStateBytes="<<lampServer.responseBody.length()<<"\n";
+ Preferences::storage[LAMP_MOTION_PATH_KEY]=previousMotion;loadLampGeometry();lampMidpoint=1023;preferenceHealthy=true;
+ memset(lampSettings.ssid,1,32);lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200&&lampServer.responseBody.length()<=8192&&Preferences::writes==writesBeforeExtreme);
+ std::cout<<"MEASURE maximal escapedSSID32/token32 publicFullStateBytes="<<lampServer.responseBody.length()<<" protectedFullStateBytes="<<result.body.length()+128<<" compactAudioBytes="<<lampAudioJson().length()<<"\n";
+ result=lampControlRequest(LampControlEndpoint::State,false,"");assert(result.status==200&&result.body.length()<=8192);
+ memcpy(lampSettings.ssid,savedSsid,sizeof(savedSsid));lampToken=savedToken;
  lampServer.httpAuthorized=false;lampServer.headers["X-Lamp-Token"]=lampToken;lampServer.arguments={{"name","HTTP survives"},{"control","true"}};
  lampServer.invokeHttp("/api/name",HTTP_POST);assert(lampServer.responseStatus==401&&lampName!="HTTP survives");
  lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/name",HTTP_POST);assert(lampServer.responseStatus==200&&lampName=="HTTP survives");
  lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200&&lampServer.responseBody.find(lampToken)!=String::npos&&!lampServer.controlActive());
- // Pinned Arduino String can lose an entire failed SumHelper append while
- // retaining syntactically valid JSON. Actual handlers must fail the read.
+ // Checked count/write must refuse a failed output append, even for a small
+ // nested field or array marker, without changing accepted lamp state/NVS.
  const auto writesBeforeSnapshotFailure=Preferences::writes;
  for(const char* prefix:{",\"firmware\":",",\"audio\":",",\"sync\":"}){
-   String::droppedPrefix=prefix;lampServer.invokeHttp("/api/state",HTTP_GET);
+   String::failedConcatLiteral=prefix;lampServer.invokeHttp("/api/state",HTTP_GET);
    assert(lampServer.responseStatus==503&&!lampServer.controlActive());
  }
- String::droppedPrefix=nullptr;
+ String::failedConcatLiteral=nullptr;
  assert(Preferences::writes==writesBeforeSnapshotFailure);
  lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200);
- // Simulate two failed appends (separator and a complete entry), followed by
- // successful later appends. The result is valid JSON but incomplete memory.
  for(const char* array:{"effects","colors","effectOptions","fountainColors","vuColors"}){
-   String::omittedArray=array;String::arrayOwner=nullptr;String::arrayArmed=String::omitNext=String::omissionDone=false;String::omittedState.clear();
+   const String marker=String("\"")+array+"\":[";String::failedConcatLiteral=marker.c_str();
    lampServer.invokeHttp("/api/state",HTTP_GET);
-   assert(lampServer.responseStatus==503&&String::omissionDone&&!String::omittedState.empty());
-   assert(LampHttpJson::complete(String::omittedState.c_str(),String::omittedState.length()));
-   const auto member=LampHttpJson::member(String::omittedState.c_str(),String::omittedState.length(),array);size_t count=0;
-   assert(LampHttpJson::arrayCount(member.bytes,member.length,count)&&count==(!strcmp(array,"fountainColors")||!strcmp(array,"vuColors")?2:46));
+   assert(lampServer.responseStatus==503);
    assert(Preferences::writes==writesBeforeSnapshotFailure&&!lampServer.controlActive());
  }
- String::omittedArray=nullptr;lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200);
+ String::failedConcatLiteral=nullptr;lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200);
  std::cout<<"PASS: real HTTP/BLE handlers preserve auth, URI/update/follower guards, strict forms, NVS failures, hardware-only credentials, private snapshot and context cleanup; snapshot bytes="<<snapshot.length()<<" expanded worst-name bytes="<<expandedSnapshot.length()<<"\n";
 }
 '''
         setup = setup.replace('ATTEMPT_JSON', attempt_json)
+        setup=setup.replace('SYNC_JSON_SNAPSHOT',function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
         setup = setup.replace('namespace LampUpdateAttempt {', '#define portENTER_CRITICAL(value) ((void)(value))\n#define portEXIT_CRITICAL(value) ((void)(value))\nnamespace LampUpdateAttempt {')
-        fixture = setup + current_status + audio_settings + effect_names + quote_json + sync_json + definitions + '\nvoid registerRoutes(){\n' + routes + '\n}\n' + main
+        fixture = setup + current_status + audio_settings + effect_names + sync_json + definitions + '\nvoid registerRoutes(){\n' + routes + '\n}\n' + main
         with tempfile.TemporaryDirectory(prefix='lamp-control-http-') as directory:
             directory = pathlib.Path(directory)
             cpp, binary, snapshot, catalog, expanded, continuation = directory/'test.cpp', directory/'test', directory/'snapshot.json', directory/'catalog.json', directory/'expanded.json', directory/'continuation.json'
@@ -449,11 +510,29 @@ int main(int argc,char** argv){
             preferences = (ROOT/'tests/control-stubs/Preferences.h').read_text()
             preferences = preferences.replace('inline static unsigned writes=0;',
                 'inline static unsigned writes=0,audioWrites=0,failAudioAfter=0;\n  inline static String failKey="";')
+            preferences = preferences.replace('struct Preferences {','struct Preferences {\nprotected:\n uint32_t _handle=0;\npublic:')
+            preferences = preferences.replace('  bool begin(',r'''  bool isKey(const char* key){return storage.count(key)!=0;}
+  size_t getBytesLength(const char* key){const auto i=storage.find(key);return i==storage.end()?0:i->second.size();}
+  size_t getBytes(const char* key,void* output,size_t size){if(getBytesLength(key)!=size)return 0;memcpy(output,storage.at(key).data(),size);return size;}
+  bool remove(const char* key){if(failWrites||failKey==key)return false;return storage.erase(key)!=0;}
+  bool begin(''')
             preferences = preferences.replace('if(failWrites)return 0;',
                 'if(failWrites||failKey==key)return 0;')
             preferences = preferences.replace('const auto* bytes=static_cast<const uint8_t*>(data);',
                 'if(!strcmp(key,"audioV2")&&++audioWrites&&failAudioAfter&&audioWrites>failAudioAfter)return 0;\n    const auto* bytes=static_cast<const uint8_t*>(data);')
             (directory/'Preferences.h').write_text(preferences)
+            (directory/'nvs.h').write_text(r'''
+#pragma once
+#include <Preferences.h>
+using esp_err_t=int;
+constexpr esp_err_t ESP_OK=0,ESP_ERR_NVS_NOT_FOUND=1,ESP_ERR_NVS_INVALID_LENGTH=2;
+inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length){
+ const auto found=Preferences::storage.find(key);if(found==Preferences::storage.end())return ESP_ERR_NVS_NOT_FOUND;
+ if(!data){*length=found->second.size();return ESP_OK;}
+ if(*length<found->second.size())return ESP_ERR_NVS_INVALID_LENGTH;
+ *length=found->second.size();memcpy(data,found->second.data(),*length);return ESP_OK;
+}
+''')
             arduino = (ROOT/'tests/control-stubs/Arduino.h').read_text().replace('[[maybe_unused]] inline struct', 'inline uint32_t fakeFreeHeap=327680,fakeLargestBlock=UINT32_MAX;\n[[maybe_unused]] inline struct')
             arduino = arduino.replace('uint64_t getEfuseMac()', 'uint32_t getFreeHeap(){return fakeFreeHeap;}uint32_t getMinFreeHeap(){return UINT32_MAX;}uint32_t getMaxAllocHeap(){return fakeLargestBlock;}uint64_t getEfuseMac()')
             arduino=arduino.replace('using std::string::string;using std::string::operator=;',r'''using std::string::string;using std::string::operator=;using std::string::operator+=;
@@ -477,8 +556,12 @@ int main(int argc,char** argv){
   String& operator+=(const char* value){return appendFixture(value);}
   String& operator+=(char value){return appendFixture(std::string(1,value));}
 ''')
-            arduino=arduino.replace('bool reserve(size_t size){std::string::reserve(size);return true;}',r'''inline static size_t failedReserve=0,initial6144Reserves=0,reserveFailures=0,reserveCalls=0;
-  bool reserve(size_t size){++reserveCalls;if(size==6144&&empty())++initial6144Reserves;if(failedReserve&&size==failedReserve){++reserveFailures;return false;}std::string::reserve(size);return true;}''')
+            arduino=arduino.replace('bool reserve(size_t size){std::string::reserve(size);return true;}',r'''inline static bool failNextReserve=false;
+  inline static size_t reserveFailures=0,reserveCalls=0;
+  bool reserve(size_t size){++reserveCalls;if(failNextReserve){failNextReserve=false;++reserveFailures;return false;}std::string::reserve(size);return true;}''')
+            arduino=arduino.replace('bool concat(const char* value,size_t size){append(value,size);return true;}',r'''bool concat(const char* value,size_t size){
+    if(failedConcatLiteral&&std::string(value,size).find(failedConcatLiteral)!=std::string::npos){++concatFailures;return false;}
+    append(value,size);return true;}''')
             # Arduino String concatenates integer types as decimal numbers.
             arduino += '\ntemplate<class T,typename std::enable_if<std::is_integral<T>::value&&!std::is_same<T,char>::value,int>::type=0> String operator+(const std::string& value,T number){return String(value+std::to_string(number));}\n'
             (directory/'Arduino.h').write_text(arduino)
@@ -494,7 +577,7 @@ int main(int argc,char** argv){
             cpp.write_text(fixture)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-misleading-indentation',
                             '-I'+str(directory), '-I'+str(ROOT/'tests/control-stubs'), '-I'+str(ROOT), *SANITIZERS,
-                            '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'),str(ROOT/'LampUpdatePolicy.cpp'), '-o', str(binary)], check=True)
+                            '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'),str(ROOT/'LampGeometry.cpp'),str(ROOT/'LampUpdatePolicy.cpp'), '-o', str(binary)], check=True)
             diagnostic=ROOT/'.build/experience-complete-diagnostics.json'
             subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic)], check=True)
             value = json.loads(snapshot.read_text())
@@ -548,9 +631,11 @@ int main(int argc,char** argv){
                                           'lampUpdatePolicyJson', 'LampUpdateAttempt::statusJson', 'updateHttpDiagnostics',
                                           'lampDiagnosticsJson', 'lampRuntimeTimingJson'],
                 'controlResponseLimit': 8192, 'directHttpStateBytes': len((ROOT/'.build/experience-complete-state.json').read_bytes()),
-                'initialStateReservationBytes': 6144, 'initialReservationFailureBeforeSerialization': True,
-                'initialDiagnosticReservationBytes':6144,'directHttpDiagnosticBytes':len(diagnostic.read_bytes()),
-                'appearanceArrayCountsFenced':True,'validShortArrayFailureCases':5,
+                'countedExactStateReservation':True, 'initialReservationFailureBeforeSerialization': True,
+                'countedExactDiagnosticReservation':True,'directHttpDiagnosticBytes':len(diagnostic.read_bytes()),
+                'appearanceArrayCountsFenced':True,'checkedArrayAppendFailureCases':5,
+                'safeReadAdmissionFreeHeapBytes':16316,'safeReadAdmissionLargestBlockBytes':7668,
+                'mutationAdmissionFreeHeapBytes':24576,
                 'privateStateBytes': len(expanded.read_bytes()), 'baselinePrivateStateBytes': len(snapshot.read_bytes()),
                 'statePeerHintLimit': 1, 'dedicatedPeerPageLimit': 8, 'durableOrderPositions': 32,
                 'colors': 47, 'effectOptions': 47, 'escapedPeerNameBytes': 48, 'timezoneBytes': 63,

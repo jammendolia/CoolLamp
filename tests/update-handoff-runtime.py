@@ -29,6 +29,8 @@ FIXTURE = r'''
 #include "LampUpdateControlPolicy.h"
 #include "UpdateManifest.h"
 #include "LampControl.h"
+#include "LampFirmwareRelay.h"
+#include "LampUpdateAttempt.h"
 size_t responseBytes=0;unsigned responseFrees=0,ownedReleases=0,workerAllocations=0;
 void* trackedMalloc(size_t size){assert(!responseBytes);responseBytes=size;return std::malloc(size);}
 void trackedFree(void* pointer){
@@ -62,9 +64,23 @@ size_t heap_caps_get_free_size(unsigned){return freeHeap;}
 size_t heap_caps_get_largest_free_block(unsigned){return largestHeap;}
 bool lampControlTrafficIdle(uint32_t){return controlIdle;}
 namespace LampUpdateAttempt {bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}bool confirmHealthy(const FirmwareManifest&){++attemptConfirmCalls;return attemptConfirmWorks;}}
+namespace LampUpdateAttempt {AdmissionReason automaticAdmissionReason(const FirmwareManifest&){return attemptAllowed?Eligible:Unconfirmed;}}
 namespace LampFirmwareRelay {bool runningManifest(FirmwareManifest& out){out.size=512;return measuredReady;}}
 bool automaticAdmission=true;
 bool lampAutomaticUpdateAllowed(){return status.automatic&&automaticAdmission;}
+LampUpdateAutomatic::Service automaticService;
+LampUpdateAutomatic::Snapshot automaticView;
+bool automaticJob=false,automaticCommitHeld=false,workerCommitFence=false;
+bool manualCommitHeld=false;
+FirmwareManifest lastDonorWake{};bool donorWakeSeen=false,donorNewerSeen=false;uint32_t donorWakeAt=0;
+uint8_t automaticJobOperation=0;
+std::atomic<uint8_t> automaticOutcome{0};
+LampUpdatePolicy::Eligibility quietEligibility=LampUpdatePolicy::Ready;
+LampUpdatePolicy::Eligibility policyEligibility(){return quietEligibility;}
+uint8_t groupReason=0;
+uint8_t lampRolloutAutomaticAdmissionReason(){return automaticAdmission?groupReason:1;}
+LampFirmwareRelay::DiscoverySnapshot donorSnapshot;
+namespace LampFirmwareRelay {DiscoverySnapshot discoverySnapshot(uint32_t){return donorSnapshot;}}
 FirmwareManifest candidate{};
 bool rolloutAllowed=true,rolloutStorage=true;unsigned rolloutStarts=0;
 bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest&){return rolloutAllowed;}
@@ -76,9 +92,9 @@ uint32_t nextCheck=0,restartAt=0;
 char attemptedVersion[24]{};
 #define portENTER_CRITICAL(pointer) ((void)(pointer))
 #define portEXIT_CRITICAL(pointer) ((void)(pointer))
-bool busy(uint8_t p){return p==UPDATE_CHECKING||p==UPDATE_DOWNLOADING||p==UPDATE_RESTARTING;}
-void fail(uint8_t error){status.phase=UPDATE_ERROR;status.error=error;}
-void phase(uint8_t value,uint8_t error=UPDATE_OK){status.phase=value;status.error=error;}
+bool busy(uint8_t);
+void fail(uint8_t);
+void phase(uint8_t,uint8_t);
 String versionText(const uint16_t* v){return std::to_string(v[0])+"."+std::to_string(v[1])+"."+std::to_string(v[2]);}
 uint32_t clockMs=100000;uint32_t millis(){return clockMs;}
 uint32_t esp_random(){return 0;}
@@ -146,7 +162,8 @@ bool checkRelease(bool installing=false,bool background=false,uint32_t budget=La
  if(background&&(cancelBackground.load()||deferInside)){backgroundReadDeferred=true;return false;}
  status.phase=status.available?UPDATE_AVAILABLE:UPDATE_IDLE;return true;
 }
-void installRelease(){TlsOwner tls;++installs;status.phase=UPDATE_RESTARTING;}
+uint8_t installError=UPDATE_OK;bool installFence=false;
+void installRelease(){TlsOwner tls;++installs;workerCommitFence=installFence;phase(installError?UPDATE_ERROR:UPDATE_RESTARTING,installError);}
 std::string origin;bool trigger=true;
 void serviceLampNetwork(){
  if(trigger&&origin=="http"){callerLive=true;assert(requestLampUpdateCheck());callerLive=false;trigger=false;}
@@ -173,6 +190,7 @@ void seedResponse(bool owned=false){
 TESTS = r'''
 int main(int argc,char** argv){
  assert(argc==2);const std::string label=argv[1];origin=label;
+ candidate.version[0]=1;candidate.version[1]=10;candidate.version[2]=2;
  const bool owned=origin=="http-owned"||origin=="ble-owned"||origin=="automatic-owned";
  if(owned)origin.erase(origin.size()-6);
  seedResponse(owned);
@@ -181,7 +199,81 @@ int main(int argc,char** argv){
   try{updateTask(nullptr);}catch(const WorkerDone&){}
   assert(workerFinished&&!tlsLive&&job==0);
  };
- if(origin=="worker-lifecycle"||origin=="worker-install-reap"){
+ if(origin=="manual-lifecycle"||origin=="manual-lifecycle-off"||origin=="manual-lifecycle-uncertain"){
+  trigger=false;nextCheck=clockMs+1000000;cuePower=origin!="manual-lifecycle-off";
+  beginLampManualUpdateCue();assert(status.phase==UPDATE_IDLE&&!status.receiving);
+  assert(reserveLampManualUpdate());beginLampManualUpdateCue();assert(status.phase==UPDATE_DOWNLOADING&&status.error==UPDATE_OK&&status.receiving&&status.cueOn==cuePower&&status.route==UPDATE_ROUTE_MANUAL_UPLOAD);
+  setLampManualUpdateCueProgress(50,100);assert(status.progress==50);tick();tick();assert(!worker&&!taskCreations);
+  if(origin=="manual-lifecycle-uncertain"){
+   finishLampManualUpdate(false,true);assert(manual&&manualCommitHeld&&!status.receiving&&!status.cueOn&&status.phase==UPDATE_ERROR&&status.error==UPDATE_STORAGE);
+   releaseLampManualUpdate();assert(manual);clockMs+=180000;tick();assert(!worker&&!job&&!lampAutomaticDonorDiscoveryAllowed()&&automaticView.reason==LampUpdateAutomatic::CommitUnconfirmed);
+   assert(!requestLampUpdateInstall()&&!reserveLampManualUpdate());
+  }else{
+   finishLampManualUpdate(false);assert(!manual&&!status.receiving&&status.phase==UPDATE_ERROR);
+   assert(reserveLampManualUpdate());beginLampManualUpdateCue();setLampManualUpdateCueProgress(100,100);finishLampManualUpdate(true);
+   assert(manual&&!status.receiving&&!status.cueOn&&status.phase==UPDATE_RESTARTING&&status.progress==100);finishLampManualUpdate(false);assert(manual&&status.phase==UPDATE_RESTARTING);
+   tick();clockMs+=5000;tick();assert(!restartAt&&!ESP.restarts&&!worker&&!taskCreations); // Network owns its existing reply/restart deadline.
+  }
+  rpc.reset();
+ }else if(origin=="manual-https-safe-error"||origin=="manual-https-commit-uncertain"||origin=="manual-https-fence-storage"){
+  trigger=false;nextCheck=clockMs+1000000;status.automatic=false;status.available=true;status.phase=UPDATE_AVAILABLE;
+  installError=origin=="manual-https-fence-storage"?UPDATE_STORAGE:UPDATE_IMAGE;installFence=origin!="manual-https-safe-error";
+  assert(requestLampUpdateInstall());tick();tick();runWorker(2);tick();
+  assert(installs==1&&!worker&&!job&&status.phase==UPDATE_ERROR&&!status.receiving);
+  if(installFence){
+   assert(manual&&manualCommitHeld&&automaticCommitHeld&&!status.cueOn&&lampUpdateOwnsResources()&&lampRemoteUpdateBusy());
+   assert(status.error==UPDATE_STORAGE&&automaticView.reason==LampUpdateAutomatic::CommitUnconfirmed&&!automaticView.phoneFallback);
+   releaseLampManualUpdate();finishLampBluetoothUpdate(false,true);finishLampBluetoothUpdate(false);finishLampBluetoothUpdate(true);
+   assert(manual&&manualCommitHeld&&status.phase==UPDATE_ERROR&&status.error==UPDATE_STORAGE);
+   assert(!requestLampUpdateCheck()&&!requestLampUpdateInstall()&&!reserveLampManualUpdate()&&!beginLampBluetoothUpdate());
+   assert(!lampAutomaticDonorDiscoveryAllowed()&&!lampAutomaticUpdateArtifactAllowed(candidate));
+   status.automatic=true;clockMs+=3600000;tick();assert(installs==1&&!job&&!worker&&manual&&automaticView.reason==LampUpdateAutomatic::CommitUnconfirmed);
+  }else{
+   assert(!manual&&!manualCommitHeld&&!automaticCommitHeld&&!lampUpdateOwnsResources());
+   assert(reserveLampManualUpdate());releaseLampManualUpdate();assert(requestLampUpdateCheck());
+  }
+ }else if(origin=="manual-cue-bounds"){
+  setLampManualUpdateCueProgress(50,100);assert(!status.writtenOffset&&!status.totalBytes);
+  manual=true;setLampManualUpdateCueProgress(50,100);assert(!status.writtenOffset);
+  status.receiving=true;setLampManualUpdateCueProgress(101,100);setLampManualUpdateCueProgress(0,0);setLampManualUpdateCueProgress(0,2031617);assert(!status.writtenOffset&&!status.totalBytes);
+  setLampManualUpdateCueProgress(50,100);assert(status.writtenOffset==50&&status.totalBytes==100&&status.progress==50);
+  setLampManualUpdateCueProgress(2031616,2031616);assert(status.progress==100&&status.totalBytes==2031616);
+  manual=false;setLampManualUpdateCueProgress(0,100);assert(status.progress==100&&status.totalBytes==2031616);rpc.reset();
+ }else if(origin=="safe-automatic-retry"||origin=="automatic-commit-uncertain"||origin=="automatic-started-lease"){
+  trigger=false;nextCheck=clockMs+1000000;status.automatic=status.available=true;status.phase=UPDATE_AVAILABLE;
+  donorSnapshot.paired=donorSnapshot.radioAvailable=true;installError=UPDATE_NETWORK;installFence=origin=="automatic-commit-uncertain";
+  tick();tick();tick();runWorker(2);
+  if(origin=="automatic-started-lease")groupReason=4;
+  tick();assert(!worker&&!job&&installs==1);
+  if(installFence){assert(automaticCommitHeld&&automaticView.reason==LampUpdateAutomatic::CommitUnconfirmed&&!lampAutomaticDonorDiscoveryAllowed());clockMs+=180000;tick();assert(installs==1&&!job);}
+  else if(groupReason){assert(automaticView.reason==LampUpdateAutomatic::GroupPermit&&!automaticView.phoneFallback);clockMs+=180000;tick();assert(installs==1&&!job);}
+  else{
+   assert(status.phase==UPDATE_AVAILABLE&&status.error==UPDATE_NETWORK&&automaticService.donorsAllowed());
+   assert(automaticView.donorWaitMs==30000&&!automaticView.attention&&automaticView.internetAttempts==1);
+   clockMs+=30000;tick();assert(automaticView.attention&&automaticView.phoneFallback&&!job);
+   clockMs+=29999;tick();assert(!job);++clockMs;tick();assert(job==2&&installs==1);
+   tick();tick();runWorker(2);tick();assert(installs==2&&!worker&&!job&&status.phase==UPDATE_AVAILABLE);
+   status.automatic=false;nextCheck=clockMs+1000000;tick();assert(!lampAutomaticDonorDiscoveryAllowed()&&automaticView.state==LampUpdateAutomatic::Disabled);
+  }
+ }else if(origin=="automatic-offline-memory"||origin=="automatic-rollover"){
+  trigger=false;nextCheck=clockMs+1000000;status.automatic=status.available=true;status.phase=UPDATE_AVAILABLE;
+  if(origin=="automatic-rollover")clockMs=UINT32_MAX-15000;
+  WiFi.state=0;donorSnapshot.paired=donorSnapshot.radioAvailable=true;tick();
+  assert(!job&&automaticView.state==LampUpdateAutomatic::DonorSearch&&automaticView.reason==LampUpdateAutomatic::InternetUnavailable);
+  clockMs+=30000;tick();assert(automaticView.attention&&automaticView.retryInMs==30000);
+  WiFi.state=WL_CONNECTED;freeHeap=16316;largestHeap=7668;clockMs+=30000;tick();
+  assert(!job&&!audioStops&&automaticView.reason==LampUpdateAutomatic::Memory);
+  freeHeap=largestHeap=65536;clockMs+=60000;tick();assert(job==2&&rolloutStarts==1);
+ }else if(origin=="automatic-donor-wakeup"){
+  trigger=false;nextCheck=clockMs+1000000;status.automatic=true;
+  automaticService.enable();automaticService.checked(clockMs,false);tick();assert(!job&&automaticView.retryInMs==21600000);
+  noteLampAutomaticDonorOffer(candidate);assert(automaticService.due(clockMs));tick();assert(job==1&&donorNewerSeen&&!lampAutomaticDonorDiscoveryAllowed());
+  tick();tick();runWorker(1);tick();assert(!worker&&!job&&lampAutomaticDonorDiscoveryAllowed()&&automaticView.newerSeen);
+  const auto before=automaticService.snapshot(clockMs).retryInMs;noteLampAutomaticDonorOffer(candidate);assert(automaticService.snapshot(clockMs).retryInMs==before);
+  FirmwareManifest different=candidate;different.sha256[0]=1;noteLampAutomaticDonorOffer(different);assert(automaticService.snapshot(clockMs).retryInMs==before);
+  donorSnapshot.state=1;clockMs+=60000;tick();assert(!job&&automaticView.state==LampUpdateAutomatic::DonorTransfer&&!automaticView.phoneFallback);
+  donorSnapshot.state=0;status.automatic=false;nextCheck=clockMs+1000000;tick();assert(!donorNewerSeen&&!lampAutomaticDonorDiscoveryAllowed());
+ }else if(origin=="worker-lifecycle"||origin=="worker-install-reap"){
   trigger=false;nextCheck=clockMs+1000000;
   const auto idleFree=freeHeap,idleLargest=largestHeap;
   assert(!worker&&!taskCreations&&!workerFinished);
@@ -356,7 +448,7 @@ int main(int argc,char** argv){
   trigger=false;nextCheck=clockMs+60000;status.phase=UPDATE_AVAILABLE;status.available=true;status.automatic=true;
   status.latest[0]=1;status.latest[1]=10;status.latest[2]=2;controlIdle=false;
   tick();tick();assert(!job&&!audioStops&&!rolloutStarts&&status.phase==UPDATE_AVAILABLE);
-  controlIdle=true;tick();assert(job==2&&audioStops==1&&rolloutStarts==1&&!jobBackground);
+  controlIdle=true;clockMs+=60000;tick();assert(job==2&&audioStops==1&&rolloutStarts==1&&!jobBackground);
   // Once admitted, new traffic cannot cancel installation or select another route.
   controlIdle=false;tick();tick();assert(!cancelBackground&&notifications==1);job=2;
   try{updateTask(nullptr);}catch(const WorkerDone&){}
@@ -375,9 +467,11 @@ class UpdateHandoffTests(unittest.TestCase):
         source = (ROOT/'LampUpdate.cpp').read_text()
         request = source[source.index('bool request(uint8_t operation'):source.index('} // namespace')]
         cue=source[source.index('void startReceiverCue()'):source.index('void fail(uint8_t error)')]
+        actual_phase=source[source.index('bool busy(uint8_t phase)'):source.index('void startReceiverCue()')]
+        actual_phase+=source[source.index('void fail(uint8_t error)'):source.index('String versionText(')]
         public = source[source.index('LampUpdateStatus getLampUpdateStatus()'):source.index('bool setLampAutoUpdate')]
-        ownership = source[source.index('bool lampRemoteUpdateBusy()'):source.index('void serviceLampUpdater()')]
-        service = source[source.index('void serviceLampUpdater()'):source.index('void getLampUpdatePacket(')]
+        ownership = source[source.index('bool lampRemoteUpdateBusy()'):source.index('static void serviceAutomaticUpdates(')]
+        service = source[source.index('static void serviceAutomaticUpdates('):source.index('void getLampUpdatePacket(')]
         worker = source[source.index('void updateTask(void*)'):source.index('bool request(uint8_t operation')]
         initialization=source[source.index('void beginLampUpdater()'):source.index('LampUpdateStatus getLampUpdateStatus()')]
         self.assertNotIn('xTaskCreate', initialization)
@@ -409,7 +503,11 @@ class UpdateHandoffTests(unittest.TestCase):
             (directory/'LampBleControlWire.h').write_text(
                 wire.replace('malloc(size)','trackedMalloc(size)').replace('free(bytes)','trackedFree(bytes)'))
             cpp, binary = directory/'test.cpp', directory/'test'
-            cpp.write_text(FIXTURE+cue+'\n#define time fixtureTime\n'+worker+'\n#undef time\n'+request+public+ownership+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
+            artifact=source[source.index('bool lampAutomaticUpdateArtifactAllowed('):source.index('bool lampUpdatePolicySaveUncertain(')]
+            artifact=source[source.index('bool legacyAttemptMatches('):source.index('bool checkRelease(')]+artifact
+            manual_progress=source[source.index('void setLampManualUpdateCueProgress(uint32_t written,uint32_t total)'):source.index('void setLampUpdateRoute(uint8_t route)')]
+            manual_progress=source[source.index('void beginLampManualUpdateCue()'):source.index('void setLampManualUpdateCueProgress(uint32_t written)')]+manual_progress
+            cpp.write_text(FIXTURE+actual_phase+cue+'\n#define time fixtureTime\n'+worker+'\n#undef time\n'+request+public+ownership+artifact+manual_progress+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             for scenario in ('http','ble','automatic','install','guards','audio-failure',
@@ -419,7 +517,7 @@ class UpdateHandoffTests(unittest.TestCase):
                              'http-owned','ble-owned','automatic-owned',
                              'worker-lifecycle','worker-install-reap','worker-create-failure','install-create-failure',
                              'background-late-memory','background-late-largest','background-exact-worker-budget',
-                             'worker-cancel-before-tls','manual-receiver-no-worker'):
+                             'worker-cancel-before-tls','manual-receiver-no-worker','safe-automatic-retry','automatic-commit-uncertain','automatic-started-lease','automatic-offline-memory','automatic-rollover','automatic-donor-wakeup','manual-cue-bounds','manual-lifecycle','manual-lifecycle-off','manual-lifecycle-uncertain','manual-https-safe-error','manual-https-commit-uncertain','manual-https-fence-storage'):
                 subprocess.run([str(binary),scenario],check=True)
 
 

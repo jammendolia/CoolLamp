@@ -22,7 +22,7 @@ FirmwareManifest manifest{};
 const esp_partition_t* target=nullptr;
 esp_ota_handle_t ota=0;
 bool reserved=false,hashing=false,headerValid=false,markerFound=false;
-bool resumable=false,detached=false,publisherVerified=false;
+bool resumable=false,detached=false,publisherVerified=false,commitUnconfirmed=false;
 uint32_t signedEpoch=0,detachedAt=0;
 constexpr uint32_t ResumeLifetimeMs=120000;
 constexpr uint32_t SessionLifetimeMs=3600000;
@@ -32,12 +32,20 @@ uint8_t prefix[Prefix]{};size_t prefixUsed=0,markerAt=0;
 char marker[64]{};
 mbedtls_sha256_context hash;
 void release(bool cancelled=false){
+ if(commitUnconfirmed)return; // Only reboot may release an uncertain durable commit.
  if(ota){esp_ota_abort(ota);ota=0;}
  if(hashing){mbedtls_sha256_free(&hash);hashing=false;}
  if(reserved){finishLampBluetoothUpdate(false,cancelled);reserved=false;}
 }
 void fail(uint8_t reason){release(reason==Cancelled);phase=Error;error=reason;}
-void reset(){release(true);phase=Idle;error=Ok;session=0;offset=0;ack=0;manifestUsed=0;manifest={};target=nullptr;memset(text,0,sizeof(text));prefixUsed=0;markerAt=0;markerFound=false;headerValid=false;settle=0;resumable=false;detached=false;publisherVerified=false;signedEpoch=0;detachedAt=0;}
+void reset(){if(commitUnconfirmed)return;release(true);phase=Idle;error=Ok;session=0;offset=0;ack=0;manifestUsed=0;manifest={};target=nullptr;memset(text,0,sizeof(text));prefixUsed=0;markerAt=0;markerFound=false;headerValid=false;settle=0;resumable=false;detached=false;publisherVerified=false;signedEpoch=0;detachedAt=0;}
+void holdCommit(){
+ // A failed durable write may have taken effect. Keep this exact artifact,
+ // session, written offset and Finish ACK; neither a route change nor a new
+ // manifest can turn that uncertainty into permission to install again.
+ commitUnconfirmed=true;phase=Error;error=Flash;settle=0;detached=false;
+ holdLampUpdateCommitUnconfirmed();
+}
 bool readyImage(){
  const uint16_t current[3]={LAMP_VERSION_MAJOR,LAMP_VERSION_MINOR,LAMP_VERSION_PATCH};
  if(!strncmp(text,"COOLLAMP-OTA-2\n",15)){
@@ -70,7 +78,7 @@ bool append(const uint8_t* bytes,size_t size){
  offset+=size;setLampBluetoothUpdateProgress(headerValid?offset:0,manifest.size);return true;
 }
 void consume(const Frame& frame){
- if(phase==Restarting)return;
+ if(phase==Restarting||commitUnconfirmed)return;
  const uint8_t* p=frame.bytes;const uint8_t op=p[1];const uint32_t tx=u32(p+2);const uint16_t request=u16(p+6);
  if(op==Resume){
   // Authorized bonded reconnection may only take the original in-RAM lease.
@@ -109,8 +117,8 @@ void consume(const Frame& frame){
   const auto handle=ota;ota=0;
   if(esp_ota_end(handle)!=ESP_OK){fail(Image);return;}
   if(publisherVerified&&(!UpdatePublisher::retainManifest(text,manifestUsed)||!UpdatePublisher::recordEpoch(signedEpoch))){fail(Flash);return;}
-  if(!LampUpdateAttempt::prepare(manifest,!radioOwner)){fail(Flash);return;}
-  if(esp_ota_set_boot_partition(target)!=ESP_OK){fail(Flash);return;}
+  if(!LampUpdateAttempt::prepare(manifest,!radioOwner)){holdCommit();return;}
+  if(esp_ota_set_boot_partition(target)!=ESP_OK){holdCommit();return;}
   phase=Restarting;error=Ok;finishLampBluetoothUpdate(true);reserved=false;
  }
 }
@@ -121,6 +129,12 @@ bool enqueueLampBleUpdate(const uint8_t* bytes,size_t size,uint32_t generation){
 }
 static void serviceReceiver(uint32_t generation,bool bonded){
  using namespace LampBleUpdateWire;
+ if(commitUnconfirmed){
+  // Callbacks still copy bounded frames. Drain abandoned requests without
+  // execution so an old client cannot retain the queue or alter this receipt.
+  Frame frame;for(unsigned i=0;i<DataWriteWithoutResponseWindow&&queue.pop(frame);++i){}
+  return;
+ }
  // Commit is durable. Disconnect after Finish never cancels its scheduled boot.
  if(phase==Restarting)return;
  if(!bonded||(owner&&owner!=generation)){
@@ -138,14 +152,14 @@ static void serviceReceiver(uint32_t generation,bool bonded){
 }
 void serviceLampBleUpdate(uint32_t generation,bool bonded){if(!radioOwner)serviceReceiver(generation,bonded);}
 bool beginLampRadioFirmwareReceiver(uint32_t generation){
- if(!generation||radioOwner||reserved||phase==LampBleUpdateWire::Restarting||LampCommission::working()||lampUpdateOwnsResources())return false;
+ if(!generation||radioOwner||reserved||commitUnconfirmed||phase==LampBleUpdateWire::Restarting||LampCommission::working()||lampUpdateOwnsResources())return false;
  reset();radioOwner=generation;return true;
 }
 bool enqueueLampRadioFirmwareFrame(const uint8_t* bytes,size_t size){return radioOwner&&enqueueLampBleUpdate(bytes,size,radioOwner);}
 void serviceLampRadioFirmwareReceiver(){if(radioOwner)serviceReceiver(radioOwner,true);}
-void abortLampRadioFirmwareReceiver(){if(radioOwner&&phase!=LampBleUpdateWire::Restarting){reset();radioOwner=0;}}
+void abortLampRadioFirmwareReceiver(){if(radioOwner&&!commitUnconfirmed&&phase!=LampBleUpdateWire::Restarting){reset();radioOwner=0;}}
 void getLampBleUpdateStatus(uint8_t* out){
  using namespace LampBleUpdateWire;memset(out,0,20);out[0]=1;out[1]=phase;out[2]=error;
- out[3]=DataWriteWithoutResponseFourFlag|ResumeLeaseFlag|(detached?DetachedFlag:0)|(phase==Restarting?CommittedFlag:0);
+ out[3]=DataWriteWithoutResponseFourFlag|ResumeLeaseFlag|(detached?DetachedFlag:0)|(phase==Restarting?CommittedFlag:0)|(commitUnconfirmed?CommitUnconfirmedFlag:0);
  put32(out+4,session);put32(out+8,manifest.size);put32(out+12,offset);put16(out+16,ack);put16(out+18,MaxData);
 }

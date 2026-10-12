@@ -28,6 +28,11 @@ for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
   const target = path.join(sketch, entry.name);
   if (!fs.existsSync(target) || !source.equals(fs.readFileSync(target))) fs.writeFileSync(target, source);
 }
+// Store the immutable setup page compressed in flash. HTTP sends these exact
+// bytes incrementally; browsers decompress them, with no lamp heap workspace.
+const page=require('./compress-lamp-page.cjs').compressedPage(fs.readFileSync(path.join(root,'LampPage.h'),'utf8'));
+fs.writeFileSync(path.join(sketch,'LampPageGzip.generated.h'),page.header);
+fs.writeFileSync(path.join(stageRoot,'page-compression.json'),JSON.stringify(page.report,null,2)+'\n');
 if(publisherTrust){
   fs.writeFileSync(path.join(sketch,'LampPublisherTrust.generated.h'),publisherTrust.header);
   console.log('Publisher public trust configuration SHA-256: '+publisherTrust.provenance.sha256);
@@ -37,7 +42,7 @@ const board = 'esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs';
 const jobs = Math.max(1, Math.min(8, Math.floor(require('node:os').availableParallelism() / 2)));
 const args = ['compile', '--fqbn', board, '--jobs', String(jobs), '--build-path', path.join(root, '.build/cache-' + flavor),
   '--output-dir', path.join(root, 'firmware', flavor)];
-const cppFlags=[];
+const cppFlags=['-DCOOL_LAMP_PAGE_GZIP=1'];
 if (wifiOnly) cppFlags.push('-DCOOL_LAMP_BLE=0');
 if (publicRelease) cppFlags.push('-DCOOL_LAMP_PUBLIC_RELEASE=1');
 if (testImage) cppFlags.push('-DCOOL_LAMP_TEST_IMAGE=1');

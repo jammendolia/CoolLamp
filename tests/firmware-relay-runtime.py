@@ -27,6 +27,7 @@ fixture=r'''
 #include "LampEspNow.h"
 #include "LampBleUpdate.h"
 #include "LampUpdate.h"
+#include "LampFirmwareRelay.h"
 #include "UpdatePublisher.h"
 #include "LampFirmwareRelayCrypto.h"
 #include "esp_ota_ops.h"
@@ -47,8 +48,8 @@ namespace UpdatePublisher {
  bool format(const Manifest&,char*,size_t,size_t&){return false;}
  bool copyRetainedManifest(char*,size_t,size_t&){return false;}
 }
-int side=0;bool automatic=true,reservations[2]{},verified=false,radioAvailable=true,policyAllowed=true,rolloutAllowed=true,rolloutStorage=true,coordinatorDonor=false,pinnedRollout=false;uint8_t coordinationReason=0;
-unsigned begins=0,writes=0,ends=0,boots=0;bool dropAck=false,dropData=false,dropFinish=false,corrupt=false;
+int side=0;bool automatic=true,reservations[2]{},commitHeld[2]{},verified=false,radioAvailable=true,policyAllowed=true,rolloutAllowed=true,rolloutStorage=true,coordinatorDonor=false,pinnedRollout=false;uint8_t coordinationReason=0;
+unsigned begins=0,writes=0,ends=0,boots=0,bootWrites=0;bool bootSelectionChanged=false,dropAck=false,dropData=false,dropFinish=false,corrupt=false;
 bool ackDropped=false,dataDropped=false,finishDropped=false,corrupted=false;unsigned rejectedData=0;
 std::string scenarioName;
 esp_partition_t runningPartition,nextPartition;std::vector<uint8_t> installed(image,image+sizeof(image)),flash;
@@ -64,18 +65,23 @@ int esp_ota_begin(const esp_partition_t*,size_t,esp_ota_handle_t* handle){assert
 int esp_ota_write(esp_ota_handle_t,const void* p,size_t n){++writes;auto b=static_cast<const uint8_t*>(p);flash.insert(flash.end(),b,b+n);return 0;}
 int esp_ota_abort(esp_ota_handle_t){return 0;}
 int esp_ota_end(esp_ota_handle_t){++ends;return flash.size()==installed.size()?0:-1;}
-int esp_ota_set_boot_partition(const esp_partition_t*){assert(flash==installed);++boots;return 0;}
+int esp_ota_set_boot_partition(const esp_partition_t*){assert(flash==installed);++bootWrites;bootSelectionChanged=true;if(scenarioName=="boot-error-selected")return -1;++boots;return 0;}
 bool lampUpdateOwnsResources(){return reservations[side];}
 bool reserveLampManualUpdate(){if(reservations[side])return false;reservations[side]=true;return true;}
-void releaseLampManualUpdate(){reservations[side]=false;}
+void releaseLampManualUpdate(){if(!commitHeld[side])reservations[side]=false;}
+void holdLampUpdateCommitUnconfirmed(){assert(side==1&&reservations[side]&&ends==1);commitHeld[side]=true;}
 bool beginLampBluetoothUpdateRadio(){return true;}
 void finishLampBluetoothUpdateRadio(bool){}
 bool beginLampBluetoothUpdate(){return reserveLampManualUpdate();}
 void setLampBluetoothUpdateProgress(uint32_t n,uint32_t size){assert(n<=size);}
 void setLampUpdateRoute(uint8_t){}
-void finishLampBluetoothUpdate(bool okay,bool){reservations[side]=false;verified=okay;}
+void finishLampBluetoothUpdate(bool okay,bool){if(commitHeld[side])return;reservations[side]=false;verified=okay;}
 LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.automatic=side==1&&automatic;return s;}
 bool lampAutomaticUpdateAllowed(){return getLampUpdateStatus().automatic&&policyAllowed&&(side==0||!coordinationReason);}
+bool donorDiscovery=true,legacyAttempt=false;unsigned donorOffersObserved=0;
+bool lampAutomaticUpdateArtifactAllowed(const FirmwareManifest& image){return !legacyAttempt&&LampUpdateAttempt::automaticAllowed(image);}
+bool lampAutomaticDonorDiscoveryAllowed(){return donorDiscovery;}
+void noteLampAutomaticDonorOffer(const FirmwareManifest&){assert(side==1);++donorOffersObserved;}
 bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest&){return rolloutAllowed;}
 bool lampRolloutAutomaticUpdateStarted(const FirmwareManifest&){assert(reservations[side]);uint8_t status[20];getLampBleUpdateStatus(status);assert(status[1]==LampBleUpdateWire::Preparing);return rolloutStorage;}
 uint8_t lampSyncRole(){return side==0&&coordinatorDonor?1:0;}
@@ -89,6 +95,7 @@ void holdChannel(uint32_t){}
 #ifdef LAMP_RELAY_TEST_DONOR
 #define COOL_LAMP_TEST_IMAGE 1
 #endif
+namespace Donor {using DiscoverySnapshot=LampFirmwareRelay::DiscoverySnapshot;}
 #define LampFirmwareRelay Donor
 #include "LampFirmwareRelay.cpp"
 #undef LampFirmwareRelay
@@ -100,6 +107,7 @@ void holdChannel(uint32_t){}
 #ifdef LAMP_RELAY_TEST_RECEIVER
 #define COOL_LAMP_TEST_IMAGE 1
 #endif
+namespace Recipient {using DiscoverySnapshot=LampFirmwareRelay::DiscoverySnapshot;}
 #define LampFirmwareRelay Recipient
 #include "LampFirmwareRelay.cpp"
 #undef LampFirmwareRelay
@@ -152,6 +160,8 @@ int main(int argc,char** argv){
   std::cout<<"PASS relay "<<scenario<<": measured artifact retained, no offering/donation or policy writes\n";return 0;
  }
  if(scenario=="auto-off")automatic=false;
+ if(scenario=="internet-first")donorDiscovery=false;
+ if(scenario=="unknown-legacy-attempt")legacyAttempt=true;
  if(scenario=="quiet-window")policyAllowed=false;
  if(scenario=="attempt-quarantine")attemptAllowed=false;
  if(scenario=="attempt-storage")attemptStorage=false;
@@ -174,8 +184,15 @@ int main(int argc,char** argv){
  if(scenario=="lost-finish-ack")for(unsigned i=0;i<2000;++i){side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();++fakeNow;}
  if(scenario=="success"||scenario=="lost-ack"||scenario=="lost-data"||scenario=="lost-finish-ack"||scenario=="coordinator-legacy"){
   assert(boots==1&&ends==1&&verified&&flash==installed);assert(begins==1);if(dropAck)assert(ackDropped);if(dropData)assert(dataDropped);if(dropFinish)assert(finishDropped);
- }else{assert(!boots&&!verified);if(scenario=="auto-off"||scenario=="wrong-fleet"||scenario=="old-offer"||scenario=="commission"||scenario=="quiet-window"||scenario=="attempt-quarantine"||scenario=="group-unassigned"||scenario=="group-legacy"||scenario=="rollout-denied"||scenario=="rollout-storage"||scenario=="coordinator-held"||scenario=="malicious-signature"||scenario=="malicious-artifact"||scenario=="unsigned-offer"||scenario=="missing-metadata"||scenario=="retained-mismatch")assert(!begins);}
- if(scenario=="attempt-storage")assert(attemptPrepares&&ends&&!boots);
+ }else{assert(!boots&&!verified);if(scenario=="internet-first"||scenario=="unknown-legacy-attempt"||scenario=="auto-off"||scenario=="wrong-fleet"||scenario=="old-offer"||scenario=="commission"||scenario=="quiet-window"||scenario=="attempt-quarantine"||scenario=="group-unassigned"||scenario=="group-legacy"||scenario=="rollout-denied"||scenario=="rollout-storage"||scenario=="coordinator-held"||scenario=="malicious-signature"||scenario=="malicious-artifact"||scenario=="unsigned-offer"||scenario=="missing-metadata"||scenario=="retained-mismatch")assert(!begins);}
+ if(scenario=="internet-first"){assert(donorOffersObserved&&Recipient::discoverySnapshot(fakeNow).state==0);donorDiscovery=true;for(unsigned i=0;i<30000&&!boots;++i){side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();++fakeNow;}assert(boots==1&&verified&&flash==installed);}
+ if(scenario=="unknown-legacy-attempt")assert(!donorOffersObserved);
+ if(scenario=="attempt-storage"||scenario=="boot-error-selected"){
+  assert(attemptPrepares==1&&ends==1&&!boots&&commitHeld[1]&&reservations[1]);
+  assert(bootSelectionChanged==(scenario=="boot-error-selected")&&bootWrites==unsigned(bootSelectionChanged));
+  side=1;uint8_t held[20],after[20];getLampBleUpdateStatus(held);assert(held[1]==LampBleUpdateWire::Error&&(held[3]&LampBleUpdateWire::CommitUnconfirmedFlag));
+  abortLampRadioFirmwareReceiver();releaseLampManualUpdate();assert(!beginLampRadioFirmwareReceiver(123));getLampBleUpdateStatus(after);assert(!memcmp(held,after,20)&&reservations[1]);
+ }
  side=0;if(scenario=="coordinator-held")assert(Donor::control(false,"").body.find("\"coordinatorDonationHeld\":true")!=std::string::npos);
  std::cout<<"PASS relay "<<scenario<<" begins="<<begins<<" boots="<<boots<<"\n";
 }
@@ -189,7 +206,8 @@ if publisher:
  beginStub=fixture.index('namespace UpdatePublisher {');endStub=fixture.index('\n}',beginStub)+2
  fixture=fixture[:beginStub]+fixture[endStub:]
  fixture=fixture.replace('scenarioName=scenario;', 'scenarioName=scenario; if(scenario!="missing-metadata")assert(UpdatePublisher::retainManifest(signedManifest,strlen(signedManifest)));')
- preferences=preferences.replace('struct Preferences {','constexpr int PT_U32=1,PT_BLOB=2;\nstruct Preferences {')
+ preferences=preferences.replace('  bool isKey(const char* key){return storage.count(key)!=0;}\n','').replace('  PreferenceType getType(const char* key){return isKey(key)?PT_BLOB:PT_INVALID;}\n','')
+ preferences=preferences.replace('struct Preferences {','constexpr int PT_U32=2;\nstruct Preferences {')
  preferences=preferences.replace('size_t getBytesLength(const char* key) { return storage[key].size(); }','size_t getBytesLength(const char* key) { auto it=storage.find(key);return it==storage.end()?0:it->second.size(); }\n  bool isKey(const char* key){return storage.count(key);}\n  int getType(const char* key){return getBytesLength(key)==4?PT_U32:PT_BLOB;}\n  uint32_t getUInt(const char* key,uint32_t fallback){auto found=storage.find(key);if(found==storage.end()||found->second.size()!=4)return fallback;uint32_t value;memcpy(&value,found->second.data(),4);return value;}\n  size_t putUInt(const char* key,uint32_t value){return putBytes(key,&value,4);}')
  fixture='#include "Preferences.h"\n'+fixture
 with tempfile.TemporaryDirectory(prefix='coollamp-firmware-relay-') as folder:
@@ -208,7 +226,7 @@ with tempfile.TemporaryDirectory(prefix='coollamp-firmware-relay-') as folder:
   output=folder/(name+'.o');subprocess.run(['gcc','-std=c11',*SANITIZERS,*includes,*defines,'-c',str(source/'library'/f'{name}.c'),'-o',str(output)],check=True);objects.append(str(output))
  binary=folder/'relay.exe'
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,*includes,*defines,str(folder/'fixture.cpp'),str(ROOT/'LampFirmwareRelayCrypto.cpp'),str(ROOT/'LampBleUpdate.cpp'),*([str(ROOT/'UpdatePublisher.cpp')] if publisher else []),*objects,'-o',str(binary)],check=True)
- scenarios=['crypto','unpaired-measurement','success','auto-off','commission','wrong-fleet','old-offer','lost-data','lost-ack','lost-finish-ack','corrupt','auto-disabled-midway','radio-lost','quiet-window','attempt-quarantine','attempt-storage','group-unassigned','group-legacy','rollout-denied','rollout-storage','coordinator-held','coordinator-legacy']
+ scenarios=['crypto','unpaired-measurement','success','auto-off','commission','wrong-fleet','old-offer','lost-data','lost-ack','lost-finish-ack','corrupt','auto-disabled-midway','radio-lost','quiet-window','attempt-quarantine','attempt-storage','boot-error-selected','group-unassigned','group-legacy','rollout-denied','rollout-storage','coordinator-held','coordinator-legacy','internet-first','unknown-legacy-attempt']
  if publisher:scenarios+=['malicious-signature','malicious-artifact','unsigned-offer','missing-metadata','retained-mismatch']
  for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
  for mode,extra_scenarios in [('DONOR',['test-donor-measurement','test-donor-request']),('RECEIVER',['success'])]:

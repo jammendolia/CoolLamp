@@ -116,3 +116,24 @@ global heap measurement. The immutable ignored archive has 216 digest-indexed
 evidence files and excludes private NVS/RAM captures. Repeat the long workload
 with bounded guarded USB recovery and independent optical timing before release;
 keep router and settings fixed.
+
+### Subsequent authorized OTA publication, 2026-10-11
+
+The user subsequently authorized publishing standard 1.15.1 with the disclosed
+remaining gates. [GitHub Latest](https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.15.1)
+now serves the 2,020,592-byte normal artifact, SHA-256
+`10218a28628724c2f4fca45b670e28ea2d6d4fab276eeb51197dc199e780bb9d`,
+and its exact 120-byte OTA-1 manifest. Anonymous Latest and version-pinned
+downloads were verified. The source commit is
+`f0206b64b2194a249c469b1dbbaaf3882e477f25`; its isolated export passed
+33 contract commands, 13 release guards and 574 inherited protocol/client tests.
+Unrelated visual app changes, private fixtures and the diagnostic image were
+excluded. The original checkout/index and sealed physical archive were retained.
+
+This is publication under the existing legacy trust policy, not production
+publisher-signature activation or completion of the physical/native/store
+requirements above. Pink Corkscrew retains the diagnostic; the standard artifact
+has not been physically installed in this validation. Equal versions do not
+cause an automatic diagnostic-to-standard replacement. The pending sustained,
+memory, native, twenty-lamp, update/donor and rollback gates remain pending.
+See [release notes](releases/firmware-1.15.1.md) and the current handoff.

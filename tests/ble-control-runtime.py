@@ -204,7 +204,7 @@ int main(){
  assert(send(begin(2,7,Mutation),12)==0&&send(commit(2),12)==0&&u16(out+4)==503&&calls==beforeOwnedCalls+1);
  fakeFreeHeap=LampControlResourcePolicy::MinFreeHeapBytes;
  assert(send(page(2),12)==0&&u16(out+4)==503&&send(commit(2),12)==2&&calls==beforeOwnedCalls+1);
- fakeFreeHeap=50000;fakeLargestBlock=6159;
+ fakeFreeHeap=50000;fakeLargestBlock=15;
  assert(send(begin(3,1,Read),12)==0&&send(commit(3),12)==0&&u16(out+4)==503&&calls==beforeOwnedCalls+1);
  // Once other owners release memory, a fresh transaction can run exactly once.
  fakeFreeHeap=LampControlResourcePolicy::MinFreeHeapBytes;fakeLargestBlock=6160;stateBytes=2000;
@@ -236,7 +236,50 @@ int main(){
  assert(!legacy.finish(200,oldBytes,sizeof(oldBytes))&&wireMallocAttempts==beforeMalloc+1);
  for(size_t i=0;i<MaxRequest+1;++i)assert(legacy.body()[i]==0);
  assert(!legacy.consume(oldCommit.data(),oldCommit.size(),1,clockMs));
- std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, shared heap/largest admission, tiny/error allocation failures, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
+ // Safe status reads have independent admission; mutations retain the24KiB
+ // execution floor. Each read still evaluates once and pages an immutable
+ // private reply. Endpoint/form classification never broadens that exception.
+ resetLampBleControlTransfer(13);stateBytes=2000;fakeFreeHeap=16316;fakeLargestBlock=7668;
+ const auto lowMemoryCalls=calls;
+ assert(send(begin(1,LampControlEndpoint::State,Read),13)==0&&send(commit(1),13)==0);
+ assert(u16(out+4)==200&&u16(out+6)==2000&&calls==lowMemoryCalls+1);
+ assert(send(page(1,480),13)==0&&payload()==std::string(PageBytes,'s')&&calls==lowMemoryCalls+1);
+ assert(send(commit(1),13)==2&&calls==lowMemoryCalls+1);
+ assert(send(begin(2,LampControlEndpoint::Config,Mutation),13)==0&&send(commit(2),13)==0);
+ assert(u16(out+4)==503&&calls==lowMemoryCalls+1&&send(commit(2),13)==2);
+ uint16_t sequence=3;
+ for(uint8_t endpoint:{uint8_t(LampControlEndpoint::Sync),uint8_t(LampControlEndpoint::Effects),uint8_t(LampControlEndpoint::Descriptor),uint8_t(LampControlEndpoint::Revision),uint8_t(LampControlEndpoint::Firmware)}){
+  assert(send(begin(sequence,endpoint,Read),13)==0&&send(commit(sequence),13)==0);
+  assert(u16(out+4)==200&&send(commit(sequence),13)==2);
+  ++sequence;
+ }
+ const auto permittedCalls=calls;
+ assert(send(begin(100,LampControlEndpoint::Bluetooth,Read),13)==0&&send(commit(100),13)==0&&u16(out+4)==503&&calls==permittedCalls);
+ fakeFreeHeap=8703;
+ assert(send(begin(101,LampControlEndpoint::State,Read),13)==0&&send(commit(101),13)==0&&u16(out+4)==503&&calls==permittedCalls);
+ fakeFreeHeap=50000;fakeLargestBlock=24000;
+ assert(send(page(101),13)==0&&u16(out+4)==503&&send(commit(101),13)==2&&calls==permittedCalls);
+ resetLampBleControlTransfer(14);
+ // A semantic read POST may carry the full1024-byte bounded form. BLE must
+ // budget its owned copy and decoded fields before any handler is evaluated.
+ resetLampBleControlTransfer(15);const std::string maximumForm(1024,'x');
+ const auto formCalls=calls;uint16_t formSequence=1;
+ const auto submitForm=[&](uint16_t tx){
+  assert(send(begin(tx,LampControlEndpoint::SchemaPage,Mutation,maximumForm.size()),15)==0);
+  for(size_t offset=0;offset<maximumForm.size();offset+=13){
+   std::vector<uint8_t> frame{1,2,Chunk,uint8_t(tx),uint8_t(tx>>8),uint8_t(offset),uint8_t(offset>>8)};
+   frame.insert(frame.end(),maximumForm.begin()+offset,maximumForm.begin()+std::min(offset+13,maximumForm.size()));assert(send(frame,15)==0);
+  }
+  assert(send(commit(tx),15)==0);
+ };
+ for(const auto budget:{std::pair<uint32_t,uint32_t>{10752,2048},{13599,2048},{50000,1039}}){
+  fakeFreeHeap=budget.first;fakeLargestBlock=budget.second;submitForm(formSequence);
+  assert(u16(out+4)==503&&calls==formCalls&&send(commit(formSequence++),15)==2);
+ }
+ fakeFreeHeap=13600;fakeLargestBlock=1040;submitForm(formSequence);
+ assert(u16(out+4)==200&&calls==formCalls+1&&lastForm==maximumForm&&send(commit(formSequence),15)==2);
+ resetLampBleControlTransfer(16);
+ std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/mutation admission, tiny/error allocation failures, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-control-') as directory:

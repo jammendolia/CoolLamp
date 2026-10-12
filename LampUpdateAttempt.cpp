@@ -55,7 +55,10 @@ bool save(const FirmwareManifest* next,uint8_t used){
 int find(const FirmwareManifest& image){for(unsigned i=0;i<count;++i)if(sameFirmwareManifest(entries[i],image))return int(i);return -1;}
 }
 void begin(){uint8_t bytes[RecordSize]{};bool absent=false;count=0;memset(entries,0,sizeof(entries));readable=read(bytes,absent)&&(absent||decode(bytes));}
-bool automaticAllowed(const FirmwareManifest& image){portENTER_CRITICAL(&mux);const bool allowed=readable&&valid(image)&&find(image)<0&&count<Capacity;portEXIT_CRITICAL(&mux);return allowed;}
+AdmissionReason automaticAdmissionReason(const FirmwareManifest& image){
+ portENTER_CRITICAL(&mux);const auto reason=!readable?Unavailable:!valid(image)?InvalidArtifact:find(image)>=0?Unconfirmed:count==Capacity?Full:Eligible;portEXIT_CRITICAL(&mux);return reason;
+}
+bool automaticAllowed(const FirmwareManifest& image){return automaticAdmissionReason(image)==Eligible;}
 bool prepare(const FirmwareManifest& image,bool explicitRepair){
  FirmwareManifest next[Capacity];uint8_t used=0;
  portENTER_CRITICAL(&mux);

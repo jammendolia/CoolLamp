@@ -39,6 +39,7 @@ test=r'''
 int main(){
  std::vector<CRGB> frame(1026,CRGB(11,22,33)),scratch(1026,CRGB(1,2,3));leds=frame.data()+1;originalFrame=scratch.data()+1;
  const auto unchanged=frame;
+ status.route=UPDATE_ROUTE_DONATION; // Preserve exhaustive amber geometry regression checks.
  // Mere availability/checking/donation/postboot health has no receiver latch.
  for(uint8_t phase:{uint8_t(UPDATE_IDLE),uint8_t(UPDATE_CHECKING),uint8_t(UPDATE_AVAILABLE),uint8_t(UPDATE_DOWNLOADING),uint8_t(UPDATE_RESTARTING)}){status.phase=phase;status.receiving=false;assert(!renderLampUpdateCue());}
  assert(FastLED.calls==0);
@@ -55,11 +56,165 @@ int main(){
   for(uint32_t written:{uint32_t(1),uint32_t(1015808),uint32_t(2031616)}){status.writtenOffset=written;clockMs+=100;assert(renderLampUpdateCue());assert(FastLED.brightness==40&&FastLED.visible.size()==count&&FastLED.currentBudget==500);for(const auto& p:FastLED.visible)assert(p.r<=48&&p.g<=38&&p.b<=28);}
   assert(!memcmp(frame.data(),unchanged.data(),frame.size()*sizeof(CRGB)));assert(Mode==4&&Brightness==255&&PowerOn);
  }
- // Known progress grows both base halves rather than reversing the folded strip.
- assert(LampUpdateCue::level(0,5,0,0,1,100)>0);assert(LampUpdateCue::level(4,5,0,0,1,100)>0);assert(LampUpdateCue::level(2,5,0,0,1,100)==0);
- assert(LampUpdateCue::level(0,0,0,0,1,100)==0&&LampUpdateCue::level(0,1025,0,0,1,100)==0);
+ // Exercise the real overlay at every supported count, including odd counts
+ // and both endpoint calibrations. Inspect observable pixels rather than
+ // reproduce its height/progress calculation in this fixture.
+ uint64_t sampledPixels=0;unsigned geometries=0;
+ for(uint16_t count=1;count<=1024;++count){
+  std::vector<uint16_t> midpoints={0,uint16_t(count/2),uint16_t(count-1)};
+  if(count>1)midpoints.push_back(1);
+  std::sort(midpoints.begin(),midpoints.end());midpoints.erase(std::unique(midpoints.begin(),midpoints.end()),midpoints.end());
+  for(uint16_t midpoint:midpoints){
+   ++geometries;NUM_LEDS=count;lampMidpoint=midpoint;status.receiving=false;assert(!renderLampUpdateCue());
+   PowerOn=true;Brightness=255;startReceiverCue();status.totalBytes=2031616;status.writtenOffset=0;clockMs=0;
+   assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(p.r==12&&p.g==9&&p.b==7);
+   std::vector<bool> filledBefore(count,false);uint8_t singleBefore=12;
+   for(uint32_t written:{uint32_t(1),uint32_t(20316),uint32_t(507904),uint32_t(1015808),uint32_t(1523712),uint32_t(2011299),uint32_t(2031615),uint32_t(2031616)}){
+    status.writtenOffset=written;clockMs+=4000;assert(renderLampUpdateCue());const auto low=FastLED.visible;
+    clockMs+=2000;assert(renderLampUpdateCue());const auto high=FastLED.visible;
+    // Return to the low point of the four-second ambient cycle for the next
+    // sample; no transfer progress or render settings are inferred from time.
+    clockMs+=2000;
+    assert(FastLED.brightness==40&&FastLED.currentBudget==500);
+    if(count==1){
+     assert(low[0].r>=singleBefore&&low[0].r<=48&&high[0].r>=low[0].r&&high[0].r<=48);
+     if(written<status.totalBytes)assert(low[0].r<48&&high[0].r<48);
+     singleBefore=low[0].r;
+    }else{
+     assert(low.front().r==48&&low.back().r==48); // Both physical base ends.
+     bool ambientVisible=false;
+     for(uint16_t i=0;i<count;++i){
+      const bool filled=low[i].r==48;
+      assert(!filledBefore[i]||filled);filledBefore[i]=filled;
+      if(filled){assert(low[i].g==38&&low[i].b==28&&high[i].r==48&&high[i].g==38&&high[i].b==28);}
+      else{ambientVisible=true;assert(low[i].r==12&&low[i].g==9&&low[i].b==7&&high[i].r==18&&high[i].g==14&&high[i].b==10);}
+     }
+     if(count>2&&written==1)assert(ambientVisible); // The top is still unfilled.
+    }
+    if(written==status.totalBytes)for(const auto& p:high)assert(p.r==48&&p.g==38&&p.b==28);
+    sampledPixels+=uint64_t(count)*2;
+   }
+   // No guessed percentage for zero bytes, absent size, or a corrupt offset.
+   for(uint8_t invalid=0;invalid<3;++invalid){
+    status.totalBytes=invalid==1?0:2031616;status.writtenOffset=invalid==0?0:2031617;
+    clockMs+=4000;assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(p.r==12&&p.g==9&&p.b==7);
+    clockMs+=2000;assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(p.r==18&&p.g==14&&p.b==10);
+    clockMs+=2000;
+   }
+   assert(!memcmp(frame.data(),unchanged.data(),frame.size()*sizeof(CRGB)));assert(Mode==4&&Brightness==255&&PowerOn);
+  }
+ }
+ // Preserve the physical folded-strip orientation and strict sharp boundary.
+ assert(LampUpdateCue::level(0,5,0,0,1,100)==48);assert(LampUpdateCue::level(4,5,0,0,1,100)==48);assert(LampUpdateCue::level(2,5,0,0,1,100)==12);
+ assert(LampUpdateCue::level(2,5,0,2000,1,100)==18);
+ assert(LampUpdateCue::level(1,5,0,0,49,100)==12&&LampUpdateCue::level(1,5,0,0,50,100)==48);
+ assert(LampUpdateCue::level(3,5,0,0,49,100)==12&&LampUpdateCue::level(3,5,0,0,51,100)==48);
+ // Wide artifact counters do not overflow or falsely indicate completed data.
+ for(uint32_t elapsed:{uint32_t(0),uint32_t(2000),UINT32_MAX}){
+  assert(LampUpdateCue::level(0,1,0,elapsed,UINT32_MAX-1,UINT32_MAX)<48);
+  assert(LampUpdateCue::level(0,1,0,elapsed,UINT32_MAX,UINT32_MAX)==48);
+  assert(LampUpdateCue::level(2,5,0,elapsed,UINT32_MAX,UINT32_MAX)==48);
+ }
+ assert(LampUpdateCue::level(0,0,0,0,1,100)==0&&LampUpdateCue::level(0,1025,0,0,1,100)==0&&LampUpdateCue::level(5,5,0,0,1,100)==0);
  status.receiving=false;assert(!renderLampUpdateCue());
- std::cout<<"PASS production update cue: power/brightness latch, receiver-only, local frame restore, 1-1024/odd/folded geometry, dark automatic update, cadence/rollover, no settings/group/catalog mutations\n";
+ // Test route selection through the production renderer, using explicit RGB
+ // expectations rather than reimplement its palette or geometry calculation.
+ struct RouteColor {uint8_t route;CRGB low,high,filled,singleLow,singleHigh,maximum;};
+ const RouteColor routeColors[]={
+  {UPDATE_ROUTE_NONE,          {12,12,12},{18,18,18},{48,48,48},{30,30,30},{33,33,33},{255,255,255}},
+  {UPDATE_ROUTE_INTERNET,      {7,12,7},{10,18,10},{28,48,28},{18,30,18},{19,33,19},{153,255,153}},
+  {UPDATE_ROUTE_BLUETOOTH,     {7,9,12},{10,14,18},{28,38,48},{18,24,30},{19,26,33},{153,204,255}},
+  {UPDATE_ROUTE_DONATION,      {12,9,7},{18,14,10},{48,38,28},{30,24,18},{33,26,19},{255,204,153}},
+  {UPDATE_ROUTE_MANUAL_UPLOAD, {9,7,12},{14,10,18},{38,28,48},{24,18,30},{26,19,33},{204,153,255}},
+  {5,                         {12,12,12},{18,18,18},{48,48,48},{30,30,30},{33,33,33},{255,255,255}},
+  {255,                       {12,12,12},{18,18,18},{48,48,48},{30,30,30},{33,33,33},{255,255,255}}
+ };
+ const auto same=[](const CRGB& a,const CRGB& b){return a.r==b.r&&a.g==b.g&&a.b==b.b;};
+ const auto intensity=[](const CRGB& p){return std::max(p.r,std::max(p.g,p.b));};
+ const auto checkFrameRestored=[&](){
+  assert(!memcmp(frame.data(),unchanged.data(),frame.size()*sizeof(CRGB)));
+  assert(scratch.front().r==1&&scratch.front().g==2&&scratch.front().b==3);
+  assert(scratch.back().r==1&&scratch.back().g==2&&scratch.back().b==3);
+ };
+ uint64_t coloredPixels=0;unsigned coloredGeometries=0;
+ for(const auto& expected:routeColors){
+  status.route=expected.route;
+  // No channel overflows even outside the overlay's 0-48 level range. Unknown
+  // routes and legacy NONE deliberately use neutral white, never donor amber.
+  const auto zero=LampUpdateCue::color(expected.route,0),maximum=LampUpdateCue::color(expected.route,255);
+  assert(!zero.r&&!zero.g&&!zero.b&&same(CRGB(maximum.r,maximum.g,maximum.b),expected.maximum));
+  // Sender/donor service activity has no receiver latch, regardless of route
+  // or phase. It must not render, alter the local frame or latch power.
+  const auto inactiveCalls=FastLED.calls;
+  for(uint8_t phase:{uint8_t(UPDATE_IDLE),uint8_t(UPDATE_CHECKING),uint8_t(UPDATE_AVAILABLE),uint8_t(UPDATE_DOWNLOADING),uint8_t(UPDATE_RESTARTING),uint8_t(UPDATE_ERROR)}){
+   status.phase=phase;status.receiving=false;assert(!renderLampUpdateCue());
+  }
+  assert(FastLED.calls==inactiveCalls);checkFrameRestored();
+  // Every source obeys captured off-at-start state. Later live control state
+  // cannot make an update visible or change its saved brightness/settings.
+  NUM_LEDS=5;lampMidpoint=2;PowerOn=false;Brightness=80;startReceiverCue();
+  status.totalBytes=100;status.writtenOffset=100;PowerOn=true;Brightness=255;clockMs=0;
+  assert(renderLampUpdateCue()&&FastLED.brightness==0);for(const auto& p:FastLED.visible)assert(!intensity(p));
+  clockMs=2000;assert(renderLampUpdateCue()&&FastLED.brightness==0);for(const auto& p:FastLED.visible)assert(!intensity(p));
+  checkFrameRestored();
+  for(uint16_t count=1;count<=1024;++count){
+   std::vector<uint16_t> midpoints={0,uint16_t(count/2),uint16_t(count-1)};
+   if(count>1)midpoints.push_back(1);
+   std::sort(midpoints.begin(),midpoints.end());midpoints.erase(std::unique(midpoints.begin(),midpoints.end()),midpoints.end());
+   for(uint16_t midpoint:midpoints){
+    ++coloredGeometries;NUM_LEDS=count;lampMidpoint=midpoint;status.receiving=false;assert(!renderLampUpdateCue());
+    PowerOn=true;Brightness=23;startReceiverCue();PowerOn=false;Brightness=200;
+    status.totalBytes=100;status.writtenOffset=0;clockMs=0;
+    assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(same(p,expected.low));
+    clockMs=2000;assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(same(p,expected.high));
+    // The same route color applies to both steady confirmed-byte fill and
+    // subdued ambient; time must never animate a filled pixel.
+    std::vector<bool> filledBefore(count,false);
+    for(uint32_t written:{uint32_t(1),uint32_t(50),uint32_t(100)}){
+     status.writtenOffset=written;clockMs+=2000;assert(renderLampUpdateCue());const auto low=FastLED.visible;
+     clockMs+=2000;assert(renderLampUpdateCue());const auto high=FastLED.visible;
+     assert(FastLED.brightness==23&&FastLED.currentBudget==500&&low.size()==count&&high.size()==count);
+     if(count==1){
+      if(written==1){assert(same(low[0],expected.low)&&same(high[0],expected.high));}
+      if(written==50){assert(same(low[0],expected.singleLow)&&same(high[0],expected.singleHigh));}
+      if(written==100){assert(same(low[0],expected.filled)&&same(high[0],expected.filled));}
+     }else{
+      assert(same(low.front(),expected.filled)&&same(low.back(),expected.filled));
+      bool ambientVisible=false;
+      for(uint16_t i=0;i<count;++i){
+       const bool filled=intensity(low[i])==48;
+       assert(!filledBefore[i]||filled);filledBefore[i]=filled;
+       if(filled){assert(same(low[i],expected.filled)&&same(high[i],expected.filled));}
+       else{ambientVisible=true;assert(same(low[i],expected.low)&&same(high[i],expected.high));}
+      }
+      if(count>2&&written==1)assert(ambientVisible);
+     }
+     if(written==100)for(const auto& p:high)assert(same(p,expected.filled));
+     coloredPixels+=uint64_t(count)*2;
+    }
+    // Invalid or absent progress keeps the entire lamp breathing, without a
+    // route-specific invented completed region or percentage.
+    for(uint8_t invalid=0;invalid<3;++invalid){
+     status.totalBytes=invalid==1?0:100;status.writtenOffset=invalid==0?0:101;
+     clockMs+=2000;assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(same(p,expected.low));
+     clockMs+=2000;assert(renderLampUpdateCue());for(const auto& p:FastLED.visible)assert(same(p,expected.high));
+     coloredPixels+=uint64_t(count)*2;
+    }
+    checkFrameRestored();assert(Mode==4&&Brightness==200&&!PowerOn&&status.route==expected.route);
+   }
+  }
+  // Route coloring must not weaken rollover-safe cadence or the admission
+  // generation fence when a new receiver replaces a prior session.
+  NUM_LEDS=5;lampMidpoint=2;status.receiving=false;assert(!renderLampUpdateCue());
+  status.cueGeneration=UINT32_MAX;PowerOn=true;Brightness=255;startReceiverCue();assert(status.cueGeneration==1);
+  status.totalBytes=100;status.writtenOffset=100;clockMs=UINT32_MAX-50;assert(renderLampUpdateCue());const auto before=FastLED.calls;
+  clockMs=48;assert(renderLampUpdateCue()&&FastLED.calls==before);
+  clockMs=49;assert(renderLampUpdateCue()&&FastLED.calls==before+1&&FastLED.brightness==40);
+  for(const auto& p:FastLED.visible)assert(same(p,expected.filled));
+  checkFrameRestored();
+  status.receiving=false;assert(!renderLampUpdateCue());
+ }
+ std::cout<<"PASS production update cue: "<<geometries<<" calibrated geometries / "<<sampledPixels<<" progress pixel samples; "<<coloredGeometries<<" route-calibrated geometries / "<<coloredPixels<<" colored progress/invalid pixel samples across all five known routes and two unknown routes; whole-lamp ambient breath, steady sharp progress fill, one-pixel brightness fallback, monotonic confirmed-byte progress, power/brightness latch, sender-only inactivity, local frame restore, every count 1-1024 including odd counts, invalid progress, cadence/generation/rollover, no settings/group/catalog mutations\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='update-cue-',dir=ROOT/'.build') as folder:

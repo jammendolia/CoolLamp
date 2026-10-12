@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,21 @@ ROOT = Path(__file__).resolve().parents[1]
 PINNED_STRING_HASHES = {
     'WString.cpp': '6982868692d7347cb1f951101d14072332803716b27aa001f60c4fc941df93f7',
     'WString.h': 'e17d75d8ab183deb56677de708cca5e73b635e5ecdb5af118ce6f34b9ca6565d',
+}
+# Captured from these same production fixtures before the count/write change.
+# These are output oracles, not another serializer implementation. A field,
+# type, ordering or omission regression cannot pass by modifying two builders.
+LEGACY_FIXTURE_VERSION = '1.15.1'
+LEGACY_PAYLOAD_DIGESTS = {
+    'update': '4ea422552c8aa44fa27e651550edf2a757f2926cc48b7d86a327b0d6857bae16',
+    'policy': '34c4f64c6d1887d305c20d42426a1ae5807543651aee8ff9be11ac6a628de52e',
+    'audio': '43c0f3502a97c66c607d5d20a469d6a03d08431b7da5197e511ea926679ceed9',
+    'sync': 'a92111a66adebbf5fab7389e117c3ecc65ad9e4f088088900fc4cb332a79455d',
+    'stateSync': '1007be0c77ceb43389d8695c4d886c4dbc58c40a5c7481e7fcf2431cc9b33864',
+    'fullState': '2acf8f0b121e09fdd791ee9954484c3ea5c134b62b0097f1b75f43d228f2b9f4',
+    'fullDiagnostics': '0d546c70c8da2aa1b106efe5c06b70f5aa687bec8aac84e755447835a06726d3',
+    'catalog38': '5a315e0da2e90486c1469943ae2d256bfa6d4e3681d68d9e70fef110bd69a1be',
+    'catalog47': '6d5c1d442a250afcc7e88ce59442e152019d46e8c457a8cbca4246a34703b773',
 }
 spec = importlib.util.spec_from_file_location('control_adapter_extract', ROOT/'tests/control-http-adapter.py')
 extract = importlib.util.module_from_spec(spec)
@@ -49,11 +65,12 @@ ARDUINO = r'''
 #include <algorithm>
 void* observedMalloc(size_t);void* observedRealloc(void*,size_t);void observedFree(void*);
 void observeStringCopy(size_t);
+uint32_t fixtureFreeHeap();uint32_t fixtureLargestBlock();
 #include "WString.h"
 #define portENTER_CRITICAL(value) ((void)(value))
 #define portEXIT_CRITICAL(value) ((void)(value))
 inline uint32_t millis(){return 1000;}
-[[maybe_unused]] inline struct {uint32_t getFreeHeap(){return 327680;}uint32_t getMinFreeHeap(){return 327680;}uint32_t getMaxAllocHeap(){return 327680;}uint64_t getEfuseMac(){return 0xaabbccddeeffULL;}} ESP;
+[[maybe_unused]] inline struct {uint32_t getFreeHeap(){return fixtureFreeHeap();}uint32_t getMinFreeHeap(){return 327680;}uint32_t getMaxAllocHeap(){return fixtureLargestBlock();}uint64_t getEfuseMac(){return 0xaabbccddeeffULL;}} ESP;
 '''
 
 PLATFORM = r'''
@@ -61,7 +78,10 @@ PLATFORM = r'''
 #include "LampAudio.h"
 #include "LampUpdate.h"
 #include "LampSyncProtocol.h"
+#include "LampEspNow.h"
 #include "LampHttpJson.h"
+#include "LampJsonSink.h"
+#include "LampGeometry.h"
 #include <atomic>
 #include <cassert>
 #include <iostream>
@@ -72,17 +92,25 @@ struct AllocationStats {size_t live=0,peak=0,maxCopy=0,largeCopies=0,calls=0,fai
 AllocationStats stats;
 size_t failAllocation=0,syncAllocationCalls=0;
 bool syncScope=false,failOnlySync=false,forceMove=false;
+size_t heapBudget=327680,largestBudget=327680;
+bool accountLiveHeap=false;
+uint32_t fixtureFreeHeap(){assert(heapBudget>=stats.live);return uint32_t(heapBudget-(accountLiveHeap?stats.live:0));}uint32_t fixtureLargestBlock(){return uint32_t(largestBudget);}
 std::unordered_map<void*,size_t> allocations;
 void observeStringCopy(size_t n){stats.maxCopy=std::max(stats.maxCopy,n);if(n>=256)++stats.largeCopies;}
-bool denyAllocation(){++stats.calls;if(syncScope)++syncAllocationCalls;const size_t call=failOnlySync?syncAllocationCalls:stats.calls;if(failAllocation&&call==failAllocation&&(!failOnlySync||syncScope)){++stats.failures;return true;}return false;}
-void* observedMalloc(size_t n){if(denyAllocation())return nullptr;void* p=std::malloc(n);if(p){allocations[p]=n;stats.live+=n;stats.peak=std::max(stats.peak,stats.live);}return p;}
-void* observedRealloc(void* p,size_t n){if(denyAllocation())return nullptr;size_t previous=p?allocations.at(p):0;void* next=forceMove?std::malloc(n):std::realloc(p,n);if(next){if(forceMove){stats.peak=std::max(stats.peak,stats.live+n);if(p){std::memcpy(next,p,std::min(previous,n));std::free(p);}}if(p)allocations.erase(p);allocations[next]=n;stats.live=stats.live-previous+n;stats.peak=std::max(stats.peak,stats.live);}return next;}
+bool denyAllocation(size_t bytes){++stats.calls;if(syncScope)++syncAllocationCalls;const size_t call=failOnlySync?syncAllocationCalls:stats.calls;if((failAllocation&&call==failAllocation&&(!failOnlySync||syncScope))||bytes>largestBudget||stats.live+bytes>heapBudget){++stats.failures;return true;}return false;}
+void* observedMalloc(size_t n){if(denyAllocation(n))return nullptr;void* p=std::malloc(n);if(p){allocations[p]=n;stats.live+=n;stats.peak=std::max(stats.peak,stats.live);}return p;}
+void* observedRealloc(void* p,size_t n){if(denyAllocation(n))return nullptr;size_t previous=p?allocations.at(p):0;void* next=forceMove?std::malloc(n):std::realloc(p,n);if(next){if(forceMove){stats.peak=std::max(stats.peak,stats.live+n);if(p){std::memcpy(next,p,std::min(previous,n));std::free(p);}}if(p)allocations.erase(p);allocations[next]=n;stats.live=stats.live-previous+n;stats.peak=std::max(stats.peak,stats.live);}return next;}
 void observedFree(void* p){if(p){stats.live-=allocations.at(p);allocations.erase(p);}std::free(p);}
-bool installed=true;uint8_t gain=255;uint16_t gate=65535,scale=65535;
+bool installed=true,audioRunning=false;uint8_t gain=255;uint16_t gate=65535,scale=65535;
+bool lampMicrophoneEnabled(){return false;}bool lampMicrophoneEnabledKnown(){return true;}
+LampAudioCaptureStatus lampAudioCaptureStatus(){return LampAudioCaptureStatus::Error;}
+uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 uint32_t lampRenderedFrames=UINT32_MAX,lampMaxRenderUs=UINT32_MAX;
-LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures f{};f.sequence=f.timestamp=f.errors=f.overruns=UINT32_MAX;f.stackFree=6144;f.rms=f.peak=f.effectiveGain=f.noiseFloor=f.effectiveGate=f.bass=f.mid=f.treble=UINT16_MAX;f.beat=f.bassBeat=UINT32_MAX;f.level=255;f.error=INT32_MIN;return f;}
+LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures f{};f.running=audioRunning;f.sequence=f.timestamp=f.errors=f.overruns=UINT32_MAX;f.stackFree=6144;f.rms=f.peak=f.effectiveGain=f.noiseFloor=f.effectiveGate=f.bass=f.mid=f.treble=UINT16_MAX;f.beat=f.bassBeat=UINT32_MAX;f.level=255;f.error=INT32_MIN;return f;}
 LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.phase=UPDATE_ERROR;s.progress=100;s.error=UPDATE_MEMORY;s.latest[0]=s.latest[1]=s.latest[2]=UINT16_MAX;s.route=UPDATE_ROUTE_MANUAL_UPLOAD;s.checkedAt=UINT32_MAX;s.writtenOffset=s.totalBytes=2031616;return s;}
 FirmwareManifest candidate{};unsigned mux=0;
+LampUpdateAutomatic::Snapshot automaticView;
+struct {LampUpdateAutomatic::Snapshot snapshot(uint32_t){LampUpdateAutomatic::Snapshot out;out.retryInMs=21600000;out.donorWaitMs=30000;return out;}} automaticService;
 void* worker=reinterpret_cast<void*>(1);bool healthy=false;
 constexpr int MALLOC_CAP_8BIT=1;unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
@@ -98,7 +126,8 @@ constexpr int WL_CONNECTED=3;
 using namespace LampSyncWire;
 struct {uint8_t role=1;char leader[13]="aabbccddeeff",key[33]="0123456789abcdef0123456789abcdef";} config;
 struct Address {String toString(){return "192.168.255.254";}};
-struct {int status(){return 0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int){return {};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
+bool wifiConnected=false;
+struct {int status(){return wifiConnected?WL_CONNECTED:0;}Address localIP(){return {};}Address gatewayIP(){return {};}Address dnsIP(int){return {};}int RSSI(){return -128;}unsigned channel(){return 14;}String BSSIDstr(){return "aa:bb:cc:dd:ee:ff";}Address subnetMask(){return {};}unsigned softAPgetStationNum(){return 255;}} WiFi;
 struct Peer {Packet info{};bool joined=true;uint32_t seen=1000,subscribed=1000;bool udpKnown=true,radioKnown=true;uint32_t udpSeen=1000,radioSeen=1000;Address ip;uint8_t radioChannel=14;} peers[31];
 struct {uint8_t count=32;char order[32][13]{};} sceneConfig;
 char identity[13]="aabbccddeeff";bool paused=false,followingRadio=true,started=true,serviceBlocked=false;
@@ -108,8 +137,10 @@ uint32_t slotSaveFailures=UINT32_MAX,incompatibleSubscriptions=UINT32_MAX;
 uint32_t receivedPackets=UINT32_MAX,discoveries=UINT32_MAX,authFailures=UINT32_MAX,subscriptionsSent=UINT32_MAX,framesReceived=UINT32_MAX,clockDrops=UINT32_MAX;
 bool lampSyncFollowing(){return false;}bool lampRolloutPinsMembership(){return false;}
 String lampSyncIncarnation(){return "fefefefefefefefefefefefefefefefe";}
-namespace LampEspNow {struct Status {bool active=true,suspended=false,seeking=false;uint8_t channel=14;uint32_t received=UINT32_MAX,receiveDropped=UINT32_MAX,sent=UINT32_MAX,sendFailed=UINT32_MAX,sendDropped=UINT32_MAX,channelChanges=UINT32_MAX;};Status status(){return {};}}
-Visual lampGroupVisual(){Visual v{};v.scene=32;v.count=32;v.sceneSpeed=v.sceneIntensity=100;memset(v.scenePrimary,255,3);memset(v.sceneSecondary,255,3);return v;}
+namespace LampEspNow {Status status(){Status s{};s.active=true;s.channel=14;s.received=s.receiveDropped=s.sent=s.sendFailed=s.sendDropped=s.channelChanges=UINT32_MAX;return s;}}
+SYNC_JSON_SNAPSHOT;
+uint8_t visualScene=32;
+Visual lampGroupVisual(){Visual v{};v.scene=visualScene;v.count=sceneConfig.count;v.sceneSpeed=v.sceneIntensity=100;memset(v.scenePrimary,255,3);memset(v.sceneSecondary,255,3);return v;}
 bool appendLampSyncJson(String&,uint8_t peerCursor=0,uint8_t peerLimit=8);
 '''
 
@@ -125,11 +156,15 @@ const char* lampName="A bounded public fixture lamp name";
 uint16_t NUM_LEDS=1024,lampMidpoint=512;uint8_t Mode=4,Brightness=255;bool PowerOn=true;
 uint8_t availableEffects=47;
 uint8_t lampAvailableEffectCount(){return availableEffects;}
-struct Color {uint8_t enabled=1,r=255,g=255,b=255;};Color getLampColor(uint8_t){return {};}
-struct Options {uint8_t speed=100,intensity=100,dual=1,r=255,g=255,b=255;};Options getLampEffectOptions(uint8_t){return {};}
+constexpr uint8_t LAMP_CUSTOM_SOLID=29;bool productionDefaultAppearance=false;
+struct Color {uint8_t enabled=1,r=255,g=255,b=255;};using LampColor=Color;
+DEFAULT_COLOR_FN
+Color getLampColor(uint8_t mode){return productionDefaultAppearance?defaultLampColor(mode):Color{};}
+struct Options {uint8_t speed=100,intensity=100,dual=1,r=255,g=255,b=255;};using LampEffectOptions=Options;
+DEFAULT_OPTIONS_FN
+Options getLampEffectOptions(uint8_t mode){return productionDefaultAppearance?defaultEffectOptions(mode):Options{};}
 struct RGB {uint8_t r=255,g=255,b=255;};RGB fountainPaletteColor(unsigned){return {};}RGB renderVuColor(unsigned){return {};}
 bool lampCalibrationActive(){return false;}bool lampCalibrationCenter(){return false;}unsigned lampCalibrationPosition(){return NUM_LEDS-1;}
-unsigned lampSplitCount(uint16_t,uint16_t){return 512;}
 struct {bool enabled=false,random=false;uint8_t category=255;uint32_t seconds=UINT32_MAX;} lampRotation;
 String lampStyleJson(){return "{\"version\":1,\"code\":3,\"id\":\"corkscrew\",\"family\":\"corkscrew\"}";}
 enum wifi_ps_type_t {WIFI_PS_NONE=0};constexpr int ESP_OK=0;
@@ -162,6 +197,7 @@ template<typename F> void measure(const char* name,F f){
    std::cout<<"{\"name\":\""<<name<<"\",\"bytes\":"<<result.length()<<",\"peakStringPayloadBytes\":"<<stats.peak<<",\"largestStringCopyBytes\":"<<stats.maxCopy<<",\"largeCopies\":"<<stats.largeCopies<<",\"allocationFailureCases\":"<<calls<<",\"value\":"<<result.c_str()<<"}\n";}
   assert(stats.live==0&&allocations.empty());
   for(size_t n=1;n<=calls;++n){
+    std::cerr<<name<<" injection="<<n<<"/"<<calls<<"\n";
     stats={};failAllocation=n;
     {String failed=f();if(failed.length()){std::cerr<<name<<" did not reject allocation failure "<<n<<"/"<<calls<<": "<<failed.c_str()<<"\n";}assert(stats.failures==1&&failed.length()==0);}
     assert(stats.live==0&&allocations.empty());
@@ -171,12 +207,13 @@ template<typename F> void measure(const char* name,F f){
 template<typename F> void measureHandler(const char* name,F f,bool checkFailures=true){
   assert(stats.live==0);stats={};syncAllocationCalls=0;forceMove=true;
   size_t calls=0;
-  {String result=f();assert(result.length());calls=syncAllocationCalls;
+  {String result=f();if(!result.length())std::cerr<<name<<" rejected at modeled heap="<<heapBudget<<" largest="<<largestBudget<<" peakPayload="<<stats.peak<<"\n";assert(result.length());calls=stats.calls;assert(stats.largeCopies==0);
    std::cout<<"{\"name\":\""<<name<<"\",\"bytes\":"<<result.length()<<",\"peakStringPayloadBytes\":"<<stats.peak<<",\"largestStringCopyBytes\":"<<stats.maxCopy<<",\"largeCopies\":"<<stats.largeCopies<<",\"allocationFailureCases\":"<<(checkFailures?calls:0)<<",\"value\":"<<result.c_str()<<"}\n";}
   assert(stats.live==0&&allocations.empty());
   if(checkFailures&&calls)for(size_t n=1;n<=calls;++n){
-    stats={};syncAllocationCalls=0;failAllocation=n;failOnlySync=true;
-    {String failed=f();assert(stats.failures==1&&failed.length()==0);}
+    std::cerr<<name<<" injection="<<n<<"/"<<calls<<"\n";
+    stats={};syncAllocationCalls=0;failAllocation=n;failOnlySync=false;
+    {String failed=f();if(stats.failures!=1||failed.length()){std::cerr<<name<<" failed boundary "<<n<<"/"<<calls<<" failures="<<stats.failures<<" resultBytes="<<failed.length()<<"\n";}assert(stats.failures==1&&failed.length()==0);}
     assert(stats.live==0&&allocations.empty());
   }
   failAllocation=0;failOnlySync=false;forceMove=false;
@@ -206,20 +243,81 @@ void measureCatalog(const char* name){
 }
 void measureCatalogLoop255(){
   assert(stats.live==0);stats={};forceMove=true;availableEffects=255;
-  lampServer.catalogRead();assert(lampServer.status==200);
-  size_t count=0;assert(LampHttpJson::arrayCount(lampServer.body.c_str(),lampServer.body.length(),count)&&count==255);
-  std::cout<<"{\"name\":\"catalogLoop255\",\"bytes\":"<<lampServer.body.length()<<",\"handlerLoopOnly\":true,\"value\":"<<lampServer.body.c_str()<<"}\n";
+  lampServer.catalogRead();assert(lampServer.status==503);
+  std::cout<<"{\"name\":\"catalogLoop255\",\"status\":"<<lampServer.status<<",\"handlerLoopOnly\":true,\"bytes\":"<<lampServer.body.length()<<"}\n";
   lampServer.body=static_cast<const char*>(nullptr);assert(stats.live==0&&allocations.empty());forceMove=false;
+}
+void measureLowMemory(){
+  // Four durable positions, three small visible hints. The SDK heap/largest
+  // values are the observed fixture; only actual pinned String calls are
+  // faulted/accounted, so this remains host validation of reply ownership.
+  availableEffects=47;heapBudget=16316;largestBudget=7668;accountLiveHeap=true;stats={};
+  sendLampState();assert(lampServer.status==503);lampServer.body=static_cast<const char*>(nullptr);
+  assert(lampDiagnosticsJson().isEmpty()&&stats.live==0);
+  availableEffects=47;sceneConfig.count=4;for(unsigned i=3;i<31;++i)peers[i]={};
+  for(unsigned i=0;i<3;++i)snprintf(peers[i].info.name,49,"Fixture %u",i+1);
+  for(unsigned i=4;i<32;++i)memset(sceneConfig.order[i],0,13);
+  heapBudget=16316;largestBudget=7668;accountLiveHeap=true;
+  measureHandler("fourMemberState",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}return std::move(lampServer.body);});
+  measureHandler("fourMemberDiagnostics",[]{return lampDiagnosticsJson();});
+  availableEffects=47;measureCatalog("lowMemoryCatalog47");
+  // CoolLamp2-like public shape uses fabricated names/addresses, not the
+  // private diagnostic artifact. Keep maximum counters/tuning as conservative
+  // sizing inputs. Test installed audio and unknown/absent audio catalogs.
+  NUM_LEDS=134;lampMidpoint=0;Mode=46;Brightness=55;wireVersion=LegacyVersion;visualScene=24;
+  lampSettings.ledCount=134;audioRunning=true;wifiConnected=true;
+  auto& extra=peers[3];snprintf(extra.info.sender,13,"%012x",4);strcpy(extra.info.name,"Fixture 4");extra.info.role=0;extra.info.version=2;extra.seen=1000;extra.udpKnown=true;extra.udpSeen=1000;
+  for(auto& peer:peers)if(peer.info.sender[0])peer.info.version=2;
+  // Fixed HTTP diagnostics remove the retained temporary allocation. Prove
+  // that the formerly rejected maximal appearance fits without lowering the
+  // exact reply reservation or the unchanged SDK/workspace headroom.
+  stats={};sendLampState();assert(lampServer.status==200);
+  assert(lampServer.body.length()<=largestBudget&&stats.peak<=heapBudget-8704);
+  std::cout<<"{\"maxAppearanceLowMemory\":true,\"bytes\":"<<lampServer.body.length()<<",\"peakStringPayloadBytes\":"<<stats.peak<<",\"remainingModeledBytes\":"<<heapBudget-stats.peak<<"}\n";
+  lampServer.body=static_cast<const char*>(nullptr);assert(stats.live==0);
+  productionDefaultAppearance=true;
+  measureHandler("cool2Profile47State",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}return std::move(lampServer.body);});
+  measureHandler("cool2Profile47Diagnostics",[]{return lampDiagnosticsJson();});
+  availableEffects=38;installed=false;audioRunning=false;
+  measureHandler("cool2Profile38State",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}return std::move(lampServer.body);});
+  measureHandler("cool2Profile38Diagnostics",[]{return lampDiagnosticsJson();});
+  assert(stats.live==0);heapBudget=327680;largestBudget=327680;accountLiveHeap=false;
+}
+void checkSinkBounds(){
+  assert(stats.live==0);stats={};
+  LampJsonSink exact(nullptr,3);assert(exact.concat("abc")&&exact.size()==3);
+  assert(!exact.concat('d')&&!exact.okay()&&!exact.size());
+  LampJsonSink invalid(nullptr,32);assert(!invalid.concat(nullptr,0)&&!invalid.okay());
+  LampJsonSink numbers(nullptr,64);numbers+=INT64_MIN;numbers+=',';numbers+=UINT64_MAX;
+  assert(numbers.okay()&&numbers.size()==41&&stats.calls==0);
+  unsigned pass=0;
+  {String changed=lampJsonReply([&](LampJsonSink& s){++pass;s.concat(pass==1?"{}":"{\"changed\":1}");});assert(changed.isEmpty());}
+  assert(pass==2&&stats.live==0);
+  {String truncated=lampJsonReply([](LampJsonSink& s){s.concat("{\"x\":");});assert(truncated.isEmpty());}
+  {String tooLarge=lampJsonReply([](LampJsonSink& s){s.quote(std::string(8191,'x').c_str());});assert(tooLarge.isEmpty());}
+  assert(stats.live==0);
+  // Exact core3.3.11 reservation rounding and retained SDK margin are checked
+  // before any output allocation, including a fragmented largest block.
+  constexpr size_t bytes=102,rounded=(bytes+16)&~size_t(15);
+  auto encode=[](LampJsonSink& s){s.quote(std::string(100,'x').c_str());};
+  for(const auto budget:{std::pair<size_t,size_t>{rounded+8703,rounded},{rounded+8704,rounded-1}}){
+    heapBudget=budget.first;largestBudget=budget.second;stats={};
+    {String denied=lampJsonReply(encode);assert(denied.isEmpty()&&stats.calls==0);}assert(stats.live==0);
+  }
+  heapBudget=rounded+8704;largestBudget=rounded;stats={};
+  {String accepted=lampJsonReply(encode);assert(accepted.length()==bytes&&stats.calls==1&&stats.peak==rounded);}assert(stats.live==0);
+  heapBudget=327680;largestBudget=327680;
 }
 // Prove the observer catches the exact StringSumHelper return-copy failure.
 String copyCanary(){String s;assert(s.reserve(4096));for(unsigned i=0;i<4096;++i)s+='x';return s+"]}";}
 int main(){
+  checkSinkBounds();
   {String canary=copyCanary();assert(canary.length()==4098&&stats.largeCopies>=2&&stats.maxCopy>=4096&&stats.peak>=8192);}
   assert(stats.live==0);
   memset(updatePolicy.timezone,'T',63);updatePolicy.timezone[63]=0;updatePolicy.startMinute=updatePolicy.endMinute=65535;updatePolicy.idleSeconds=UINT32_MAX;
   strcpy(sceneConfig.order[0],identity);
   for(unsigned i=0;i<31;++i){auto& p=peers[i];snprintf(p.info.sender,13,"%012x",i+1);p.info.role=2;p.info.version=3;p.info.microphone=1;memset(p.info.name,'"',48);p.info.name[48]=0;strcpy(sceneConfig.order[i+1],p.info.sender);}
-  measure("update",[]{return lampUpdateJson();});measure("policy",[]{return lampUpdatePolicyJson();});measure("audio",[]{return lampAudioJson();});
+  measure("update",[]{const auto snapshot=captureLampUpdateJson();return lampJsonReply([&](LampJsonSink& out){appendLampUpdateJson(out,snapshot);});});measure("policy",[]{return lampUpdatePolicyJson();});measure("audio",[]{return lampAudioJson();});
   measure("sync",[]{return lampSyncJson(0,8);});measure("stateSync",[]{return lampSyncJson(0,1);});
   lampSettings.version=1;lampSettings.ledCount=1024;lampSettings.milliAmps=65535;lampSettings.brightness=255;lampSettings.startupMode=4;memset(lampSettings.ssid,'"',32);lampSettings.ssid[32]=0;
   diagnosticMetrics.loops=diagnosticMetrics.shows=diagnosticMetrics.animationShows=UINT32_MAX;
@@ -227,13 +325,15 @@ int main(){
   diagnosticMetrics.maxShowUs=diagnosticMetrics.maxFrameGapUs=diagnosticMetrics.maxAnimationFrameGapUs=diagnosticMetrics.animationGapOverruns=UINT32_MAX;
   for(auto* w:{&diagnosticMetrics.currentWindow,&diagnosticMetrics.lastWindow}){w->sequence=w->startUs=w->endUs=w->observedThroughUs=w->observations=w->animationFrames=w->maxAnimationGapUs=w->animationGapOverruns=UINT32_MAX;}
   HTTP_METRIC_INIT
-  measureHandler("legacyFullState",[]{sendLampStateLegacy();assert(lampServer.status==200);return std::move(lampServer.body);},false);
   measureHandler("fullState",[]{sendLampState();if(lampServer.status!=200){lampServer.body=static_cast<const char*>(nullptr);return String();}return std::move(lampServer.body);});
-  measureHandler("legacyFullDiagnostics",[]{return lampDiagnosticsJsonLegacy();},false);
   measureHandler("fullDiagnostics",[]{return lampDiagnosticsJson();});
   CATALOG_REGISTRATION
   availableEffects=38;measureCatalog("catalog38");
   availableEffects=47;measureCatalog("catalog47");
+  measureLowMemory();
+  automaticView.internetAttempts=automaticView.donorOffers=UINT16_MAX;automaticView.state=6;automaticView.reason=24;
+  measure("compactUpdate",[]{return lampUpdateJson();});
+  std::cout<<"{\"snapshotSizes\":{\"firmware\":"<<sizeof(LampUpdateJsonSnapshot)<<",\"audio\":"<<sizeof(LampAudioJsonSnapshot)<<",\"sync\":"<<sizeof(LampSyncJsonSnapshot)<<",\"runtimeMetrics\":"<<sizeof(LampRuntimeMetrics::Snapshot)<<",\"httpMetrics\":"<<sizeof(decltype(lampServer.measured))<<"},\"hostOnly\":true}\n";
 }
 '''
 
@@ -250,30 +350,38 @@ class StatusBuilderMemoryTests(unittest.TestCase):
                           'String::String(const String &value) {\n  observeStringCopy(value.length());')
         # The pinned implementation remains intact apart from observers.
         raw = raw.replace('malloc(', 'observedMalloc(').replace('realloc(', 'observedRealloc(').replace('free(', 'observedFree(')
-        sources = {name: (ROOT/name).read_text() for name in ['LampSync.cpp', 'LampUpdate.cpp', 'LampAudio.cpp', 'LampUpdateAttempt.cpp', 'UpdateHttp.cpp']}
+        sources = {name: (ROOT/name).read_text() for name in ['LampSync.cpp', 'LampUpdate.cpp', 'LampAudio.cpp', 'LampUpdateAttempt.cpp', 'UpdateHttp.cpp', 'UpdateHttpDiagnostics.cpp']}
         sources['LampNetwork.ino']=(ROOT/'LampNetwork.ino').read_text()
+        sources['LampVersion.h']=(ROOT/'LampVersion.h').read_text()
+        current_version=re.search(r'^#define LAMP_FIRMWARE_VERSION "([^"]+)"$',sources['LampVersion.h'],re.MULTILINE)[1]
         bodies = '\n'.join(extract.function(sources[name], signature) for name, signature in [
             ('LampUpdate.cpp', 'String versionText('), ('LampUpdate.cpp', 'String lampUpdatePolicyJson()'),
-            ('UpdateHttp.cpp', 'String updateHttpDiagnostics()'), ('LampUpdate.cpp', 'String lampUpdateJson()'),
-            ('LampAudio.cpp', 'String lampAudioJson()'), ('LampSync.cpp', 'String quote('),
-            ('LampSync.cpp', 'bool appendLampSyncJson('), ('LampSync.cpp', 'String lampSyncJson(')])
-        bodies=bodies.replace('bool appendLampSyncJson(String& s,','bool appendLampSyncJsonImplementation(String& s,')
-        bodies+='\nbool appendLampSyncJson(String& s,uint8_t cursor,uint8_t limit){const bool previous=syncScope;syncScope=true;const bool okay=appendLampSyncJsonImplementation(s,cursor,limit);syncScope=previous;return okay;}\n'
+            ('UpdateHttp.cpp', 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()'),
+            ('UpdateHttpDiagnostics.cpp', 'void appendUpdateHttpDiagnostics('),
+            ('LampUpdate.cpp', 'LampUpdateJsonSnapshot captureLampUpdateJson('),
+            ('LampUpdate.cpp', 'void appendLampUpdateJson('), ('LampUpdate.cpp', 'String lampUpdateJson()'),
+            ('LampAudio.cpp', 'LampAudioJsonSnapshot captureLampAudioJson()'),
+            ('LampAudio.cpp', 'void appendLampAudioJson('), ('LampAudio.cpp', 'String lampAudioJson()'),
+            ('LampSync.cpp', 'LampSyncJsonSnapshot captureLampSyncJson('),
+            ('LampSync.cpp', 'bool appendLampSyncJson(LampJsonSink& s,'),
+            ('LampSync.cpp', 'bool appendLampSyncJson(LampJsonSink& reply,'),
+            ('LampSync.cpp', 'bool appendLampSyncJson(String&'), ('LampSync.cpp', 'String lampSyncJson(')])
         network=sources['LampNetwork.ino']
         diagnostic=extract.function(network,'String lampDiagnosticsJson()')
         state=extract.function(network,'void sendLampState()')
-        old_diagnostic=diagnostic.replace('String lampDiagnosticsJson()','String lampDiagnosticsJsonLegacy()').replace('out += ",\\\"sync\\\":";if(!appendLampSyncJson(out))return String();','out += ",\\\"sync\\\":";out += lampSyncJson(0,8);')
-        old_state=state.replace('void sendLampState()','void sendLampStateLegacy()').replace('state += ",\\\"sync\\\":";if(!appendLampSyncJson(state,0,1)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}','state += ",\\\"sync\\\":";state += lampSyncJson(0,1);')
-        self.assertNotIn('appendLampSyncJson',old_diagnostic)
-        self.assertNotIn('appendLampSyncJson',old_state)
-        bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+old_diagnostic+'\n'+state+'\n'+old_state
+        timing='template<class HttpMetrics>\n'+extract.function(network,'void appendLampRuntimeTimingJson(')
+        bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+timing+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+state
         bodies+='\n'+extract.function(network,'String lampEffectCatalogEntry(')
         catalog_registration=extract.registration(network,'/api/effects','GET')
         server=(ROOT/'LampHttpServer.h').read_text()
         metrics=extract.function(server,'struct Metrics ')
         names=network[network.index('const char* const effectNames[]'):network.index('static_assert(sizeof(effectNames)')]
         platform = PLATFORM.replace('ATTEMPT_JSON', extract.function(sources['LampUpdateAttempt.cpp'], 'String statusJson(const FirmwareManifest& image)'))
-        platform+='\n'+HANDLER_PLATFORM.replace('HTTP_METRICS',metrics).replace('EFFECT_NAMES',names)
+        platform=platform.replace('SYNC_JSON_SNAPSHOT',extract.function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
+        colors=(ROOT/'LampColors.ino').read_text();sources['LampColors.ino']=colors
+        defaults=HANDLER_PLATFORM.replace('DEFAULT_COLOR_FN',extract.function(colors,'LampColor defaultLampColor(uint8_t mode)\n'))
+        defaults=defaults.replace('DEFAULT_OPTIONS_FN',extract.function(colors,'LampEffectOptions defaultEffectOptions(uint8_t mode) {'))
+        platform+='\n'+defaults.replace('HTTP_METRICS',metrics).replace('EFFECT_NAMES',names)
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             (directory/'Arduino.h').write_text(ARDUINO)
@@ -296,21 +404,21 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             metric_init=''.join('lampServer.measured.'+m.group(1)+'=UINT32_MAX;' for m in re.finditer(r'\b([A-Za-z_]\w*)=0\b',metrics))
             combined=platform+'\n'+bodies+'\n'+MAIN.replace('HTTP_METRIC_INIT',metric_init).replace('CATALOG_REGISTRATION',catalog_registration)
             cpp.write_text(combined)
+            # The diagnostic authentication fixture reuses this exact extracted
+            # source and pinned core, rather than mocking the new encoders.
+            if os.environ.get('COOLLAMP_STATUS_FIXTURE_DIR'):
+                retained=Path(os.environ['COOLLAMP_STATUS_FIXTURE_DIR']);retained.mkdir(exist_ok=True)
+                for artifact in directory.iterdir():
+                    if artifact.is_file():shutil.copy2(artifact,retained/artifact.name)
             subprocess.run(['c++', '-std=c++17', '-fno-elide-constructors', '-Wall', '-Wextra', '-Werror',
                             '-Wno-misleading-indentation', '-Wno-sign-compare', '-I'+str(directory), '-I'+str(ROOT),
                             *SANITIZERS, str(cpp), str(directory/'WString.cpp'), '-o', str(binary)], check=True)
-            output = subprocess.run([str(binary)], capture_output=True, text=True)
-            self.assertEqual(output.returncode,0,output.stderr)
-            # Disable only the new canonical-name fence in a private copy of
-            # the actual handler. Pinned String failures must then demonstrate
-            # a syntactically valid wrong catalog, proving the positive sweep
-            # is not satisfied solely by the transport's syntax validator.
-            self.assertIn('!nameMatches(name,effectNames[mode-1])',combined)
-            canary=combined.replace('!nameMatches(name,effectNames[mode-1])','false').replace('const auto nameMatches=[]','[[maybe_unused]] const auto nameMatches=[]').replace('const auto name=LampHttpJson','[[maybe_unused]] const auto name=LampHttpJson')
-            cpp.write_text(canary)
-            subprocess.run(['c++','-std=c++17','-DCATALOG_GUARD_CANARY=1','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
-            negative=subprocess.run([str(binary)],capture_output=True,text=True)
-            self.assertEqual(negative.returncode,0,negative.stderr)
+            output = subprocess.run([str(binary)], capture_output=True, text=True,timeout=20)
+            if output.returncode and os.environ.get('COOLLAMP_KEEP_STATUS_FIXTURE'):
+                retained=ROOT/'.build/status-builder-failure';retained.mkdir(exist_ok=True)
+                for artifact in directory.iterdir():
+                    if artifact.is_file():shutil.copy2(artifact,retained/artifact.name)
+            self.assertEqual(output.returncode,0,output.stderr[-2500:])
             # Synthetic canonical names/255 advertised entries exercise the
             # actual read handler's escaping and integer iteration. This is
             # handler completeness only; the real transport's unchanged8KiB
@@ -322,29 +430,35 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             future=combined.replace(names,future_names).replace('availableEffects=47;measureCatalog("catalog47");','availableEffects=47;measureCatalog("catalog47");measureCatalogLoop255();')
             cpp.write_text(future)
             subprocess.run(['c++','-std=c++17','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
-            future_output=subprocess.run([str(binary)],capture_output=True,text=True)
+            future_output=subprocess.run([str(binary)],capture_output=True,text=True,timeout=20)
             self.assertEqual(future_output.returncode,0,future_output.stderr)
-        results = [json.loads(line) for line in output.stdout.splitlines()]
-        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','legacyFullState','fullState','legacyFullDiagnostics','fullDiagnostics','catalog38','catalog47'])
-        negative_rows=[json.loads(line) for line in negative.stdout.splitlines()]
-        canary_cases=[r for r in negative_rows if 'negativeCatalogCase' in r]
-        self.assertEqual(len(canary_cases),2)
+        rows=[json.loads(line) for line in output.stdout.splitlines()]
+        snapshot_sizes=next(row['snapshotSizes'] for row in rows if 'snapshotSizes' in row)
+        results = [row for row in rows if 'name' in row]
+        self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','compactUpdate'])
+        compact=results[-1];self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
+        self.assertEqual(compact['value']['automaticService'],dict(version=1,state=6,reason=24,retryInMs=21600000,donorWaitMs=30000,internetAttempts=65535,donorOffers=65535,attention=False,phoneFallback=False,newerSeen=False))
+        for result in results:
+            nested=result['value'].get('firmware') if isinstance(result['value'],dict) else None
+            if isinstance(nested,dict):
+                self.assertNotIn('automaticService',nested,result['name']);self.assertNotIn('deviceId',nested,result['name'])
+            firmware=result['value'] if result['name'] in ('update','compactUpdate') else nested
+            if isinstance(firmware,dict):
+                self.assertEqual(firmware['version'],current_version,result['name']+' reports the wrong release version')
+                self.assertEqual(firmware['build'],'COOLLAMP-LOCAL-'+current_version,result['name']+' reports the wrong build identity')
         names=re.findall(r'"([^"\n]*)"',names)
-        for result in results[-2:]:
+        for result in results[7:9]+results[11:12]:
             value=result['value'];self.assertEqual(len(value),38 if result['name']=='catalog38' else 47)
             self.assertEqual([entry['id'] for entry in value],list(range(1,len(value)+1)))
             self.assertEqual([entry['name'] for entry in value],names[:len(value)])
             self.assertTrue(all(set(entry)=={'id','name','category','speed'} and isinstance(entry['speed'],bool) for entry in value))
-            legacy_success=next(r for r in negative_rows if r.get('name')==result['name'])
-            self.assertEqual(value,legacy_success['value'])
-        for row in canary_cases:self.assertNotEqual([entry['name'] for entry in row['value']],names[:len(row['value'])])
-        future_rows=[json.loads(line) for line in future_output.stdout.splitlines()]
+        future_rows=[json.loads(line) for line in future_output.stdout.splitlines() if '"name":' in line]
         future_catalog=next(row for row in future_rows if row['name']=='catalogLoop255')
         self.assertTrue(future_catalog['handlerLoopOnly'])
-        self.assertEqual(len(future_catalog['value']),255)
-        self.assertEqual([entry['id'] for entry in future_catalog['value']],list(range(1,256)))
-        self.assertEqual([entry['name'] for entry in future_catalog['value']],unusual_names)
-        self.assertGreater(future_catalog['bytes'],8192) # No new transport capability is claimed.
+        self.assertEqual(future_catalog['status'],503)
+        unusual_catalog=next(row for row in future_rows if row['name']=='catalog47')
+        self.assertEqual([entry['id'] for entry in unusual_catalog['value']],list(range(1,48)))
+        self.assertEqual([entry['name'] for entry in unusual_catalog['value']],unusual_names[:47])
         self.assertEqual(results[0]['value']['latest'], '65535.65535.65535')
         self.assertEqual(results[0]['value']['policy'], results[1]['value'])
         self.assertEqual(results[2]['value']['gain'], 255)
@@ -357,12 +471,41 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
         for result in results[:5]:
             self.assertEqual(result['largeCopies'], 0)
             self.assertLess(result['largestStringCopyBytes'], 256)
-        self.assertEqual(results[5]['value'],results[6]['value'])
-        self.assertEqual(results[7]['value'],results[8]['value'])
-        # State grows later while formatting appearance arrays; removing its
-        # earlier compact Sync buffer need not reduce that separate peak.
-        self.assertLessEqual(results[6]['peakStringPayloadBytes'],results[5]['peakStringPayloadBytes'])
-        self.assertLess(results[8]['peakStringPayloadBytes'],results[7]['peakStringPayloadBytes'])
+        for result in results[:9]:
+            # New bounded negotiation fields are additive. Preserve the exact
+            # historical payload oracle after projecting only those fields and
+            # the explicitly verified release version/build identity above.
+            value=json.loads(json.dumps(result['value']))
+            firmware=value if result['name']=='update' else value.get('firmware') if isinstance(value,dict) else None
+            if isinstance(firmware,dict):
+                firmware['version']=LEGACY_FIXTURE_VERSION
+                firmware['build']='COOLLAMP-LOCAL-'+LEGACY_FIXTURE_VERSION
+            audio=value if result['name']=='audio' else value.get('audio') if isinstance(value,dict) else None
+            if isinstance(audio,dict):
+                self.assertEqual(audio['captureVersion'],1)
+                self.assertIs(audio['enabled'],False)
+                self.assertEqual(audio['captureStatus'],4)
+                for key in ['captureVersion','enabled','captureStatus']:audio.pop(key)
+            if isinstance(value,dict):
+                value.pop('motionPath',None);value.pop('motionVersion',None)
+            digest=hashlib.sha256(json.dumps(value,separators=(',',':')).encode()).hexdigest()
+            self.assertEqual(digest,LEGACY_PAYLOAD_DIGESTS[result['name']],result['name']+' legacy JSON changed')
+        self.assertLess(results[5]['peakStringPayloadBytes'],15696)
+        self.assertLess(results[6]['peakStringPayloadBytes'],16096)
+        for result in results[9:]:
+            self.assertLessEqual(result['peakStringPayloadBytes'],16316-8192)
+            if result['name'].startswith('fourMember'):
+                self.assertEqual(len(result['value']['sync']['order']),4)
+                self.assertLessEqual(result['bytes'],7668)
+            if result['name'].startswith('cool2Profile'):
+                value=result['value'];sync=value['sync'];self.assertEqual(sync['version'],2)
+                self.assertEqual(sync['role'],1);self.assertEqual(sync['scene'],24);self.assertEqual(sync['count'],4)
+                self.assertEqual(len(sync['order']),4);self.assertEqual(sync['peerTotal'],4)
+                self.assertTrue(all('name' in member for member in sync['order']))
+                if result['name'].endswith('State'):
+                    self.assertEqual((value['leds'],value['mode'],value['brightness'],value['power']),(134,46,55,True))
+                    self.assertEqual(len(value['effects']),47 if '47' in result['name'] else 38)
+                else:self.assertEqual(value['render']['leds'],134)
         report = dict(hostOnly=True, hardwareTouched=False, pinnedCoreVersion='3.3.11',
                       pinnedStringHashes={name:hashlib.sha256((core/name).read_bytes()).hexdigest() for name in ['WString.cpp','WString.h']},
                       sources={name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in sources},
@@ -370,11 +513,20 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       allSingleAllocationFailureBoundariesReturnEmpty=True,
                       fullHandlerForcedMovingRealloc=True,fullHandlerNewAppendFailureBoundariesReturnFailedRead=True,
                       catalogHandlerSingleAllocationFailuresReturn503=True,
-                      catalogNegativeNameFenceCanaryFalseSuccesses=[r['falseSuccesses'] for r in negative_rows if 'negativeCatalogCanary' in r],
+                      exactLegacyPayloadProjectionDigests=True,additiveNegotiationFieldsOnly=['audio.captureVersion','audio.enabled','audio.captureStatus','motionPath','motionVersion'],checkedCountWriteBoundaryCases=True,
+                      reportedReleaseVersionVerified=current_version,legacyFixtureVersion=LEGACY_FIXTURE_VERSION,
+                      releaseVersionNormalizationOnly=['firmware.version','firmware.build'],
                       catalogUnusualCanonicalNamesRoundTrip=True,catalogUint8MaximumLoopTerminates=True,
-                      catalog255FixtureIsHandlerOnly=True,catalog255FixtureBytes=future_catalog['bytes'],
+                      catalog255FixtureIsHandlerOnly=True,catalog255FixtureStatus=future_catalog['status'],
+                      lowMemoryFixture={'freeHeapBytes':16316,'largestBlockBytes':7668,'durableMembers':4},
+                      snapshotStructBytesHost=snapshot_sizes,snapshotStructSizesAreNotTargetSizes=True,
+                      worst32MemberReadRejectedAtLowMemory=True,
+                      maximizedFourMemberV2StateAcceptedAtLowMemory=next(row for row in rows if row.get('maxAppearanceLowMemory')),
+                      cool2Fixture={'leds':134,'groupVersion':2,'groupCount':4,'role':1,'scene':24,'mode':46,'brightness':55,'publicFabricatedNames':True,'scalarCountersConservative':True,'appearance':'production defaults; target saved appearance unavailable','catalogs':[38,47]},
                       measuredScope='String payload allocation only; host pointer/SSO sizes differ; excludes allocator transient and SDK allocations',
                       results=[dict(**{k:v for k,v in r.items() if k!='value'},
+                                    finalReplyReservationBytes=(r['bytes']+16)&~15,
+                                    minimumRemainingModeledHeapBytes=16316-r['peakStringPayloadBytes'] if r in results[9:] else None,
                                     payloadSha256=hashlib.sha256(json.dumps(r['value'],separators=(',',':')).encode()).hexdigest()) for r in results])
         (ROOT/'.build').mkdir(exist_ok=True)
         report_path=Path(os.environ.get('COOLLAMP_STATUS_BUILDER_REPORT',str(ROOT/'.build/status-builder-memory.json')))

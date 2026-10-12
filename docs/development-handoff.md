@@ -1625,3 +1625,38 @@ same long workload with at most one guarded USB reopen and independent optical
 timing, followed by the native and fleet fixture gates. Keep router/settings
 constant. Production publication remains blocked by these gates and the signing/
 provisioning prerequisites recorded in the implementation ledger.
+
+## OTA publication — explicit authorization, 2026-10-11
+
+After the limitations above were disclosed, the user explicitly authorized
+publication. Standard **1.15.1** is now GitHub Latest:
+https://github.com/jammendolia/CoolLamp/releases/tag/firmware-v1.15.1.
+This publication supersedes the earlier decision to hold release; it does not
+mark the remaining acceptance gates complete or activate publisher-signature
+enforcement. The existing legacy OTA-1/SHA-256/HTTPS/fleet-trust policy from
+1.15.0 remains accurately disclosed. Production signature roots remain absent.
+
+The two released assets are the 2,020,592-byte standard public application
+`10218a28628724c2f4fca45b670e28ea2d6d4fab276eeb51197dc199e780bb9d`
+and the matching 120-byte manifest
+`fc239b2238f03c9f3cc71d09889cd92533d36b51ab887073d4f54278a3e9cd60`.
+Anonymous downloads from both the exact-version and `/releases/latest/download/`
+URLs matched those digests and the complete 1.15.1/chip/layout/size contract.
+The source tag points to `f0206b64b2194a249c469b1dbbaaf3882e477f25`,
+on `codex/firmware-1-15-1-ota`, directly after the prior 1.15.0 release source.
+The isolated export passed fresh 33/33 contract commands, 13/13 release guards
+and 574/574 inherited protocol/client tests, with all 546 files unchanged.
+No mobile redesign overlay, private backup, development key, diagnostic binary,
+service image, partition file or ELF/map was published. The user's original
+checkout HEAD/index and unrelated edits remain preserved.
+
+Publication can trigger existing automatic opt-ins and enables the standard
+artifact's normal donation behavior; the diagnostic suppresses donation.
+Pink Corkscrew still runs its verified diagnostic image. Equal-version update
+checks do not automatically replace it with the standard 1.15.1 artifact.
+No further lamp flash, reset, router or credential change was performed.
+The 216-file physical archive remains immutable. Publication/source/download
+proof is separately retained under `.build/ota-1.15.1-*` and the public
+[release notes](releases/firmware-1.15.1.md) retain all physical/native/update
+limits. Continue the controlled acceptance procedure before claiming those
+gates or automatic rollback.

@@ -1,6 +1,7 @@
 #include "LampModel.h"
 #include <Preferences.h>
 #include <cstring>
+#include "LampJsonSink.h"
 namespace LampModel {
 namespace {
 Record model;
@@ -14,7 +15,6 @@ bool text(const char* value,size_t size,bool key){
     if(code<minimum||code>0x10ffff||(code>=0xd800&&code<=0xdfff))return false;
   }return true;
 }
-String quote(const char* value){String out="\"";for(;*value;++value){if(*value=='"'||*value=='\\')out+='\\';out+=*value;}return out+'"';}
 }
 bool valid(const Record& value){return value.version==1&&value.preconfigured<=1&&text(value.id,sizeof(value.id),true)&&text(value.name,sizeof(value.name),false)&&text(value.artwork,sizeof(value.artwork),true)&&text(value.hardware,sizeof(value.hardware),true);}
 void begin(){
@@ -24,5 +24,11 @@ void begin(){
 }
 const Record& current(){return model;}
 bool provision(const Record& value){if(!valid(value))return false;Preferences prefs;if(!prefs.begin("lampmodel",false))return false;const bool ok=prefs.putBytes("descriptorV1",&value,sizeof(value))==sizeof(value);prefs.end();if(ok)model=value;return ok;}
-String json(){return String("{\"version\":1,\"id\":")+quote(model.id)+",\"displayName\":"+quote(model.name)+",\"artworkFamily\":"+quote(model.artwork)+",\"hardwareRevision\":"+quote(model.hardware)+",\"preconfigured\":"+(model.preconfigured?"true":"false")+"}";}
+String json(){
+  return lampJsonReply([&](LampJsonSink& out){
+    out.concat("{\"version\":1,\"id\":");out.quote(model.id);out.concat(",\"displayName\":");out.quote(model.name);
+    out.concat(",\"artworkFamily\":");out.quote(model.artwork);out.concat(",\"hardwareRevision\":");out.quote(model.hardware);
+    out.concat(",\"preconfigured\":");out.concat(model.preconfigured?"true":"false");out.concat('}');
+  });
+}
 }

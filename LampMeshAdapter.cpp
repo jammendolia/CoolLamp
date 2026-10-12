@@ -43,7 +43,7 @@ bool allowed(uint8_t endpoint,uint8_t method){
  const bool confidential=method&0x80;method&=0x7f;
  if(confidential&&endpoint!=Household)return false;
  if(endpoint==Household)return confidential&&method==2;
- if(method==1)return endpoint==State||endpoint==Sync||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew||endpoint==Descriptor||endpoint==Revision;
+ if(method==1)return endpoint==State||endpoint==Sync||endpoint==Audio||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew||endpoint==Descriptor||endpoint==Revision;
  if(method!=2)return false;
  return (endpoint>=SyncInvite&&endpoint<=AudioTest)||endpoint==FirmwareAutomatic||endpoint==Style||(endpoint>=Power&&endpoint<=EffectOptions)||(endpoint>=EnrollStart&&endpoint<=EnrollCancel)||(endpoint>=SchemaPage&&endpoint<=LampControlEndpoint::Receipt)||endpoint==UpdatePolicy||endpoint==GroupPage||endpoint==Rollout||endpoint==GroupRemove;
 }

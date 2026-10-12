@@ -68,8 +68,8 @@ FIXTURE = r'''
 #include "fixture.h"
 using namespace LampBleUpdateWire;
 uint32_t clockMs=100000;uint32_t millis(){return clockMs;}
-unsigned begins=0,aborts=0,ends=0,boots=0,releases=0;bool reserved=false,verified=false,cancelled=false;
-bool allowReserve=true,allowBegin=true,allowWrite=true,allowEnd=true,allowBoot=true;
+unsigned begins=0,aborts=0,ends=0,boots=0,bootWrites=0,releases=0,holds=0;bool reserved=false,verified=false,cancelled=false,commitHeld=false;
+bool allowReserve=true,allowBegin=true,allowWrite=true,allowEnd=true,allowBoot=true,bootErrorMaySelect=false,bootSelectionChanged=false;
 bool commissionBusy=false;
 namespace LampCommission {bool working(){return commissionBusy;}}
 bool attemptAllowed=true,attemptStorage=true,attemptRepair=false;unsigned attempts=0;
@@ -91,15 +91,16 @@ bool partitionPresent=true;esp_partition_t partition;
 std::vector<uint8_t> flash;
 bool beginLampBluetoothUpdate(){if(!allowReserve||reserved)return false;reserved=true;return true;}
 void setLampBluetoothUpdateProgress(uint32_t bytes,uint32_t total){assert(reserved&&bytes<=total);}
-void finishLampBluetoothUpdate(bool ok,bool cancel){assert(reserved);reserved=false;++releases;verified=ok;cancelled=cancel;}
+void finishLampBluetoothUpdate(bool ok,bool cancel){assert(reserved);if(commitHeld)return;reserved=false;++releases;verified=ok;cancelled=cancel;}
+void holdLampUpdateCommitUnconfirmed(){assert(reserved&&ends==1);commitHeld=true;++holds;}
 const esp_partition_t* esp_ota_get_next_update_partition(const void*){return partitionPresent?&partition:nullptr;}
 int esp_ota_begin(const esp_partition_t* p,size_t size,esp_ota_handle_t* out){assert(reserved&&p==&partition&&size==OTA_WITH_SEQUENTIAL_WRITES);++begins;if(!allowBegin)return -1;*out=1;flash.clear();return 0;}
 int esp_ota_write(esp_ota_handle_t handle,const void* bytes,size_t size){assert(handle==1&&reserved);if(!allowWrite)return -1;const auto* p=static_cast<const uint8_t*>(bytes);flash.insert(flash.end(),p,p+size);return 0;}
 int esp_ota_abort(esp_ota_handle_t handle){assert(handle==1);++aborts;return 0;}
 int esp_ota_end(esp_ota_handle_t handle){assert(handle==1&&reserved);++ends;return allowEnd?0:-1;}
-int esp_ota_set_boot_partition(const esp_partition_t* p){assert(p==&partition&&ends==1&&reserved);if(!allowBoot)return -1;++boots;return 0;}
-uint32_t generation=7,session=11;uint16_t request=0;bool leaseRequested=false;
-void tick(bool bond=true){serviceLampBleUpdate(generation,bond);}
+int esp_ota_set_boot_partition(const esp_partition_t* p){assert(p==&partition&&ends==1&&reserved);++bootWrites;bootSelectionChanged=allowBoot||bootErrorMaySelect;if(!allowBoot)return -1;++boots;return 0;}
+uint32_t generation=7,session=11;uint16_t request=0;bool leaseRequested=false,radioTest=false;
+void tick(bool bond=true){if(radioTest)serviceLampRadioFirmwareReceiver();else serviceLampBleUpdate(generation,bond);}
 std::vector<uint8_t> packet(unsigned op,unsigned at=0,const uint8_t* bytes=nullptr,size_t size=0){
  const size_t header=op==Manifest?10:op==Data?12:8;std::vector<uint8_t> p(header+size);
  p[0]=1;p[1]=op;put32(p.data()+2,session);put16(p.data()+6,++request);
@@ -108,7 +109,7 @@ std::vector<uint8_t> packet(unsigned op,unsigned at=0,const uint8_t* bytes=nullp
  if(size)memcpy(p.data()+header,bytes,size);
  return p;
 }
-void enqueue(const std::vector<uint8_t>& p){assert(enqueueLampBleUpdate(p.data(),p.size(),generation));}
+void enqueue(const std::vector<uint8_t>& p){assert(radioTest?enqueueLampRadioFirmwareFrame(p.data(),p.size()):enqueueLampBleUpdate(p.data(),p.size(),generation));}
 void send(unsigned op,unsigned at=0,const uint8_t* bytes=nullptr,size_t size=0){enqueue(packet(op,at,bytes,size));tick();}
 std::vector<uint8_t> status(){
  // The real packet keeps the legacy size/version and committed mask in all
@@ -122,8 +123,23 @@ void start(const std::string& text=manifestText){
  send(leaseRequested?StartWithLease:Start);assert(status()[1]==Preparing&&begins==0&&reserved);tick();assert(begins==0);tick();
 }
 void upload(const uint8_t* bytes=image){for(size_t at=0;at<sizeof(image);){const auto count=std::min(size_t(121),sizeof(image)-at);send(Data,at,bytes+at,count);at+=count;}assert(u32(status().data()+12)==sizeof(image));}
+void exerciseCommitHold(){
+ const auto held=status();const auto priorBootWrites=bootWrites;
+ assert(held[1]==Error&&held[2]==Flash&&(held[3]&CommitUnconfirmedFlag)&&!(held[3]&(CommittedFlag|DetachedFlag)));
+ assert(reserved&&commitHeld&&holds==1&&!verified&&!releases&&!aborts&&ends==1&&attempts==1);
+ assert(u32(held.data()+4)==session&&u32(held.data()+8)==sizeof(image)&&u32(held.data()+12)==sizeof(image)&&u16(held.data()+16)==request);
+ send(Finish);send(Cancel);send(Data,0,image,1);assert(status()==held);
+ ++generation;tick(false);clockMs+=3600000;tick(false);assert(status()==held);
+ ++session;for(size_t at=0;at<strlen(manifestText);){const size_t n=std::min(size_t(100),strlen(manifestText)-at);send(Manifest,at,reinterpret_cast<const uint8_t*>(manifestText)+at,n);at+=n;}send(Start);assert(status()==held);
+ // A legacy client, another route and the donation abort all remain fenced.
+ finishLampBluetoothUpdate(false,true);assert(reserved&&commitHeld);
+ assert(!beginLampBluetoothUpdate()&&!beginLampRadioFirmwareReceiver(generation+1));
+ abortLampRadioFirmwareReceiver();assert(status()==held&&reserved&&commitHeld);
+ assert(bootWrites==priorBootWrites&&ends==1&&attempts==1&&holds==1&&!releases);
+}
 int main(int argc,char** argv){
  assert(argc==2);const std::string test=argv[1];
+ if(test=="reboot-fresh"){assert(status()[1]==Idle&&!(status()[3]&CommitUnconfirmedFlag)&&!reserved&&!commitHeld&&!bootSelectionChanged);}
  if(test=="wire"){
   Queue q;Frame f;for(unsigned i=0;i<8;++i){f.generation=i;assert(q.push(f));}assert(!q.push(f));for(unsigned i=0;i<8;++i){assert(q.pop(f)&&f.generation==i);}assert(!q.pop(f));
   auto p=packet(Data,0,image,232);assert(valid(p.data(),p.size()));p.push_back(0);assert(!valid(p.data(),p.size()));p=packet(Start);assert(valid(p.data(),p.size()));p[0]=2;assert(!valid(p.data(),p.size()));p=packet(Manifest,ManifestCapacity-1,image,1);assert(!valid(p.data(),p.size()));return 0;
@@ -144,6 +160,7 @@ int main(int argc,char** argv){
   return 0;
  }
  leaseRequested=test.rfind("resume-",0)==0;
+ radioTest=test.rfind("radio-",0)==0;if(radioTest)assert(beginLampRadioFirmwareReceiver(generation));
  if(test=="partition")partition.size=1024;
  if(test=="begin-error")allowBegin=false;
  start(test=="marker"?noMarkerManifest:manifestText);
@@ -191,15 +208,19 @@ int main(int argc,char** argv){
  if(test=="chip"||test=="header"){send(Data,0,altered.data(),232);send(Data,232,altered.data()+232,100);assert(status()[2]==Image&&!boots&&flash.empty());return 0;}
  upload(altered.data());assert(!boots&&flash.size()==sizeof(image));
  if(test=="end-error")allowEnd=false;
- if(test=="boot-error")allowBoot=false;
- if(test=="attempt-storage")attemptStorage=false;
- if(test=="success"||test=="manual-repair"){
+ if(test=="boot-error"||test=="boot-error-selected"||test=="radio-boot-error-selected"){allowBoot=false;bootErrorMaySelect=test!="boot-error";}
+ if(test=="attempt-storage"||test=="radio-attempt-storage")attemptStorage=false;
+ if(test=="success"||test=="manual-repair"||test=="reboot-fresh"){
   if(test=="manual-repair")attemptAllowed=false;
   enqueue(packet(Finish));enqueue(packet(Cancel));enqueue(packet(Data,0,image,1));tick();
   assert(boots==1&&verified&&!reserved&&status()[1]==Restarting&&(status()[3]&CommittedFlag)==1&&aborts==0&&attempts==1&&attemptRepair);
   ++generation;tick(false);clockMs+=40000;tick(false);assert(boots==1&&status()[1]==Restarting);return 0;
  }
- send(Finish);assert(!boots&&!verified&&!reserved&&status()[1]==Error);
+ send(Finish);
+ if(test=="attempt-storage"||test=="radio-attempt-storage"||test=="boot-error"||test=="boot-error-selected"||test=="radio-boot-error-selected"){
+  assert(bootWrites==unsigned(attemptStorage)&&bootSelectionChanged==bootErrorMaySelect);exerciseCommitHold();return 0;
+ }
+ assert(!boots&&!verified&&!reserved&&status()[1]==Error);
  if(test=="sha"||test=="marker")assert(!ends&&aborts==1);
  if(test=="end-error"||test=="boot-error")assert(ends==1);
  if(test=="attempt-storage")assert(ends==1&&attempts==1&&status()[2]==Flash);
@@ -235,9 +256,10 @@ with tempfile.TemporaryDirectory(prefix='coollamp-ble-update-') as folder:
     binary = folder/'test.exe'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, *include, *defines,
                     str(folder/'test.cpp'), str(ROOT/'LampBleUpdate.cpp'), *objects, '-o', str(binary)], check=True)
-    scenarios = ['wire', 'commission', 'success', 'copied-four', 'queue-limit', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
+    scenarios = ['wire', 'commission', 'success', 'reboot-fresh', 'copied-four', 'queue-limit', 'sha', 'chip', 'header', 'marker', 'downgrade', 'busy', 'partition',
                  'begin-error', 'bond', 'generation', 'timeout', 'total-lifetime', 'cancel', 'offset', 'truncated', 'write-error', 'end-error', 'boot-error',
-                 'resume-success','resume-wrong-artifact','resume-wrong-session','resume-expiry','rollout-denied','rollout-storage','attempt-storage','manual-repair']
+                 'resume-success','resume-wrong-artifact','resume-wrong-session','resume-expiry','rollout-denied','rollout-storage','attempt-storage','manual-repair',
+                 'boot-error-selected','radio-boot-error-selected','radio-attempt-storage']
     for scenario in scenarios:
         subprocess.run([str(binary), scenario], check=True)
     print(f'PASS: {len(scenarios)} production BLE receiver scenarios with pinned real SHA-256')

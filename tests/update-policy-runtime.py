@@ -2,14 +2,22 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import importlib.util
 from host_compiler import SANITIZERS
 ROOT=Path(__file__).resolve().parents[1]
 source=(ROOT/'LampUpdate.cpp').read_text()
 functions=source[source.index('void noteLampUpdateUse()'):]
 functions=functions[:functions.index('bool lampRolloutRecoveryPreflight(')]+functions[functions.index('uint32_t lampUpdatePolicyRevision()'):]
+spec=importlib.util.spec_from_file_location('policy_function_extract',ROOT/'tests/control-http-adapter.py')
+extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
+for signature in ('void beginLampManualUpdateCue()', 'void finishLampManualUpdate(', 'void setLampManualUpdateCueProgress(uint32_t written,uint32_t total)',
+                  'bool lampAutomaticUpdateArtifactAllowed(', 'bool lampAutomaticDonorDiscoveryAllowed(',
+                  'void noteLampAutomaticDonorOffer('):
+    functions=functions.replace(extract.function(source,signature),'')
 load=source[source.index('  Preferences policyPrefs;'):source.index('  configTime(')]
 fixture=r'''
 #include "LampUpdate.h"
+#include "LampJsonSink.h"
 #include <cassert>
 #include <time.h>
 #include <stdlib.h>

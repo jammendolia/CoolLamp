@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'CoolLamp.ino').read_text()
 wrappers = source[source.index('const LampRuntimeMetrics::Snapshot& getLampRuntimeMetrics()'):]
 network = (ROOT / 'LampNetwork.ino').read_text()
-timing_json = network[network.index('String lampRuntimeTimingJson()'):network.index('String lampDiagnosticsJson()')]
+timing_json = network[network.index('template<class HttpMetrics>'):network.index('String lampDiagnosticsJson()')]
 fixture = r'''
 #include "LampRuntimeMetrics.h"
 #include <cassert>
@@ -44,16 +44,8 @@ int main(){
 }
 '''
 json_fixture = r'''
-#include <string>
-#include <type_traits>
-#include <cstring>
-class String : public std::string {
-public:
-  using std::string::string;
-  String(const std::string& value):std::string(value){}
-  template<class T, typename std::enable_if<std::is_integral<T>::value,int>::type=0>
-  String(T number):std::string(std::to_string(number)){}
-};
+#include "Arduino.h"
+#include "LampJsonSink.h"
 struct {
   struct Metrics {
     uint32_t accepted=0,rejected=0,deadlines=0,cancelled=0,blockedSends=0;
@@ -72,6 +64,9 @@ int main(){
   const auto output=lampRuntimeTimingJson();
   assert(!std::memcmp(&before,&getLampRuntimeMetrics(),sizeof(before)));
   std::cout<<output;
+  failTimingReserve=true;assert(lampRuntimeTimingJson().isEmpty());failTimingReserve=false;
+  timingFreeHeap=8703;assert(lampRuntimeTimingJson().isEmpty());timingFreeHeap=65536;
+  assert(lampRuntimeTimingJson()==output&&!std::memcmp(&before,&getLampRuntimeMetrics(),sizeof(before)));
 }
 '''
 
@@ -97,9 +92,14 @@ with tempfile.TemporaryDirectory(prefix='runtime-metrics-', dir=ROOT / '.build')
                         '-I' + str(ROOT), str(cpp), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
     cpp=directory/'json.cpp';binary=directory/'json.exe'
+    arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text()
+    arduino=arduino.replace('struct String:std::string {','inline bool failTimingReserve=false;inline uint32_t timingFreeHeap=65536;\nstruct String:std::string {')
+    arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return timingFreeHeap;}uint32_t getMaxAllocHeap(){return 65536;}uint64_t getEfuseMac()')
+    arduino=arduino.replace('bool reserve(size_t size){std::string::reserve(size);return true;}','bool reserve(size_t size){if(failTimingReserve)return false;std::string::reserve(size);return true;}')
+    (directory/'Arduino.h').write_text(arduino)
     cpp.write_text(fixture+json_fixture+wrappers+timing_json+json_test)
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
-                    '-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
+                    '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
     value=json.loads(subprocess.check_output([str(binary)],text=True))
     assert value['maxAnimationFrameGapUs']==400000 and value['animationGapOverruns']==1
     windows=value['windows'];assert windows['durationUs']==5000000

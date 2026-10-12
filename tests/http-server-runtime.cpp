@@ -1,5 +1,8 @@
 #include "LampControlHttpAdapter.h"
 #include "LampPage.h"
+#ifdef COOL_LAMP_PAGE_GZIP
+#include "LampPageCompressed.h"
+#endif
 #include "LampHttpSocketCleanup.h"
 #include <lwip/sockets.h>
 #include <fcntl.h>
@@ -79,7 +82,7 @@ uint32_t micros(){clockUs+=callCostUs;return uint32_t(clockUs);}
 struct Socket {
   std::string incoming,outgoing;
   size_t at=0,readLimit=SIZE_MAX,writeLimit=SIZE_MAX;
-  bool disconnected=false,readHalfClosed=false,sendBlocked=false,closed=false,nonblocking=false,listener=false;
+  bool disconnected=false,readHalfClosed=false,sendBlocked=false,sendAllocationFailure=false,closed=false,nonblocking=false,listener=false;
   uint32_t sendTimeoutUs=0;
   size_t transmitCapacity=SIZE_MAX,bufferedTransmit=0;
   uint32_t heapCostPerByte=0,retainedHeap=0;
@@ -116,6 +119,7 @@ int send(int fd,const void* data,size_t size,int flags){
   assert(inService&&!inCloseWorker&&flags==MSG_DONTWAIT&&sockets[fd].nonblocking);clockUs+=ioCostUs;
   auto& peer=sockets[fd];largestWrite=std::max(largestWrite,size);assert(size<=LampHttpServer::TurnSendBytes);
   if(peer.disconnected){errno=ECONNRESET;return -1;}
+  if(peer.sendAllocationFailure){errno=ENOMEM;return -1;}
   if(peer.sendBlocked||peer.bufferedTransmit==peer.transmitCapacity){errno=EAGAIN;return -1;}
   const size_t n=std::min({size,peer.writeLimit,peer.transmitCapacity-peer.bufferedTransmit});
   const uint32_t cost=uint32_t(n)*peer.heapCostPerByte;assert(fakeFreeHeap>=cost);fakeFreeHeap-=cost;peer.retainedHeap+=cost;peer.bufferedTransmit+=n;
@@ -193,13 +197,28 @@ struct Fixture {
     return true;
   }
   Fixture(){
+    server.on("/",HTTP_GET,[this](){if(!auth())return;++reads;server.sendHeader("X-Content-Type-Options","nosniff");server.sendHeader("X-Frame-Options","DENY");
+#ifdef COOL_LAMP_PAGE_GZIP
+      server.sendHeader("Content-Encoding","gzip");server.send_P(200,"text/html; charset=utf-8",reinterpret_cast<const char*>(LAMP_PAGE_GZIP),LAMP_PAGE_GZIP_SIZE);
+#else
+      server.send_P(200,"text/html; charset=utf-8",LAMP_PAGE);
+#endif
+    });
     server.on("/api/state",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",server.controlActive()?"{\"deviceId\":\"aabbccddeeff\"}":"{\"deviceId\":\"aabbccddeeff\",\"token\":\"development-token\"}");});
+    for(const char* route:{"/api/effects","/api/descriptor","/api/revision","/api/firmware","/api/diagnostics"})
+      server.on(route,HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
+    server.on("/api/effects/schema",HTTP_POST,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/power",HTTP_POST,[this](){if(!auth(true))return;const char* const fields[]={"on"};if(!server.fieldsAllowed(fields,1)||server.arg("on")!="1"){server.send(400,"text/plain","Invalid form.");return;}++mutations;server.send(200,"text/plain","Light on.");});
     server.on("/large",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(4000,'a')));});
     server.on("/full-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(5998,'a')+"\""));});
     server.on("/max-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(8190,'a')+"\""));});
     server.on("/giant",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(8193,'a')));});
     server.on("/page",HTTP_GET,[this](){if(!auth())return;++reads;server.send_P(200,"text/html","immutable-flash-page");});
+    server.on("/binary-page",HTTP_GET,[this](){if(!auth())return;++reads;static const char bytes[]={char(0x1f),char(0x8b),0,'a',0,'z'};server.sendHeader("Content-Encoding","gzip");server.send_P(200,"text/html",bytes,sizeof(bytes));});
+    server.on("/oversized-page",HTTP_GET,[this](){if(!auth())return;++reads;server.send_P(200,"text/html","x",LampHttpServer::MaxMappedPageBytes+1);});
+    server.on("/null-page",HTTP_GET,[this](){if(!auth())return;++reads;server.send_P(200,"text/html",nullptr,1);});
+    server.on("/api/firmware/upload/prepare",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"application/json","{\"prepared\":true}");});
+    server.on("/api/firmware/upload/status",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json","{\"uploadContractVersion\":1}");});
     server.on("/bulk-page",HTTP_GET,[this](){if(!auth())return;++reads;server.send_P(200,"text/html; charset=utf-8",bulkPage);});
     server.on("/setup-page",HTTP_GET,[this](){if(!auth())return;++reads;server.send_P(200,"text/html; charset=utf-8",LAMP_PAGE);});
     server.on("/mut-json",HTTP_POST,[this](){
@@ -235,15 +254,116 @@ struct Fixture {
 static void contains(int fd,const char* needle){assert(sockets[fd].outgoing.find(needle)!=std::string::npos);}
 static void completeMappedPage(int fd){
   contains(fd,"200 OK");const auto body=sockets[fd].outgoing.find("\r\n\r\n");assert(body!=std::string::npos);
-  assert(sockets[fd].outgoing.substr(body+4)==LAMP_PAGE&&sockets[fd].outgoing.size()-body-4==24012);
+  assert(sockets[fd].outgoing.substr(body+4)==LAMP_PAGE&&sockets[fd].outgoing.size()-body-4==sizeof(LAMP_PAGE)-1);
   assert(detachedRequests.at(fd).absoluteTimeoutMs==15000&&!detachedRequests.at(fd).cancelled);
+}
+static void completeRootPage(int fd){
+#ifdef COOL_LAMP_PAGE_GZIP
+  contains(fd,"200 OK");contains(fd,"Content-Encoding: gzip");const auto body=sockets[fd].outgoing.find("\r\n\r\n");assert(body!=std::string::npos);
+  assert(sockets[fd].outgoing.substr(body+4)==std::string(reinterpret_cast<const char*>(LAMP_PAGE_GZIP),LAMP_PAGE_GZIP_SIZE));
+  assert(detachedRequests.at(fd).absoluteTimeoutMs==15000&&!detachedRequests.at(fd).cancelled);
+#else
+  completeMappedPage(fd);
+#endif
 }
 
 int main(int argc,char** argv){
   assert(argc==2);const std::string scenario=argv[1];
   memset(bulkPage,'p',sizeof(bulkPage)-1);
 
-  if(scenario=="policy-header-ack-3.6"||scenario=="policy-header-ack-rollover"){
+  if(scenario=="mapped-page-low-memory-auth-and-no-copy"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    const auto reservations=fakeStringReserveCalls;fakeStringReserveFailure=true;
+    const int page=connect(f.listener,get("/"));f.finish(page);fakeStringReserveFailure=false;
+    completeRootPage(page);contains(page,"X-Content-Type-Options: nosniff");contains(page,"X-Frame-Options: DENY");
+    assert(f.reads==1&&!f.mutations&&fakeStringReserveCalls==reservations&&largestWrite<=1024);
+    const int denied=connect(f.listener,get("/","Basic wrong"));f.finish(denied);contains(denied,"401 Unauthorized");
+    contains(denied,"WWW-Authenticate");assert(f.reads==1&&!f.mutations&&!f.server.metrics().deadlines);
+    // Only the exact immutable GET route gets this policy. Mutations and
+    // unclassified/read-buffer routes keep the unchanged24 KiB admission.
+    for(int fd:{connect(f.listener,post("/api/power","on=1")),connect(f.listener,post("/","on=1")),connect(f.listener,get("/large"))}){
+      for(unsigned i=0;i<12;++i)turn(f.server);
+      turn(f.server,5001);runCloser();assert(sockets[fd].closed);
+    }
+    assert(f.reads==1&&!f.mutations&&LampHttpServer::DispatchHeapFloorBytes==24576);
+    assert(!LampControlResourcePolicy::mappedPageHttpPath("/",true)&&!LampControlResourcePolicy::mappedPageHttpPath("/api/state",false));
+    assert(!LampControlResourcePolicy::readHttpPath("/",false));
+  }else if(scenario=="mapped-page-low-memory-bounds-and-copy-failure"){
+    Fixture f;static_assert(LampHttpServer::StaticPageHeapFloorBytes==11776);
+    for(const auto budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
+      fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto began=millis();
+      const int page=connect(f.listener,get("/"));f.finish(page,30);contains(page,"503 Service Unavailable");
+      contains(page,"Nothing changed");assert(!f.reads&&!f.mutations&&uint32_t(millis()-began)<100);
+    }
+    fakeFreeHeap=16316;fakeLargestFreeBlock=7668;fakeStringReserveFailure=true;
+    const int noCopy=connect(f.listener,get("/?unused=bounded"));f.finish(noCopy);fakeStringReserveFailure=false;
+    contains(noCopy,"503 Service Unavailable");assert(!f.reads&&!f.mutations&&!f.server.metrics().deadlines);
+    const std::string query="unused="+std::string(LampHttpParser::TargetLimit-9,'x');
+    assert(query.size()==LampHttpParser::TargetLimit-2);
+    assert(!LampControlResourcePolicy::mappedPageReady(16316,7668,1025));
+    assert(!LampControlResourcePolicy::mappedPageReady(13583,7668,1024)&&LampControlResourcePolicy::mappedPageReady(13584,7668,1024));
+    // An actual parser/form decoder consumes the full allowed query. It is
+    // budgeted separately from the immutable page and never grants mutations.
+    const uint32_t queryBudget=uint32_t(LampHttpServer::StaticPageHeapFloorBytes+LampControlResourcePolicy::roundedReplyBytes(query.size())+24*32);
+    for(uint32_t heap:{queryBudget-1,queryBudget}){
+      fakeFreeHeap=heap;const int page=connect(f.listener,get("/?"+query));f.finish(page);
+      if(heap==queryBudget-1){contains(page,"503 Service Unavailable");assert(!f.reads);}
+      else {completeRootPage(page);assert(f.reads==1&&!f.mutations);}
+    }
+    fakeFreeHeap=11776;fakeLargestFreeBlock=512;const int floor=connect(f.listener,get("/"));f.finish(floor);completeRootPage(floor);
+    assert(f.reads==2&&!f.mutations&&!f.server.metrics().deadlines);
+  }else if(scenario=="mapped-page-low-memory-client-fairness"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    const int first=connect(f.listener,get("/"));
+    sockets[first].heapCostPerByte=2;sockets[first].ackDelayMs=5;
+    for(unsigned i=0;i<50&&sockets[first].outgoing.size()<1024;++i)turn(f.server,1);
+    sockets[first].ackBlocked=true;assert(sockets[first].unackedBytes==1024&&f.reads==1);
+    const int second=connect(f.listener,get("/"));
+    sockets[second].heapCostPerByte=2;sockets[second].ackDelayMs=5;
+    for(unsigned i=0;i<50&&sockets[second].outgoing.size()<1024;++i)turn(f.server,1);
+    sockets[second].ackBlocked=true;assert(sockets[second].unackedBytes==1024&&f.reads==2);
+    assert(fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes&&fakeFreeHeap<16316);
+    const auto firstBytes=sockets[first].outgoing.size(),secondBytes=sockets[second].outgoing.size();const uint32_t began=millis();
+    const int state=connect(f.listener,get());f.finish(state,40);contains(state,"200 OK");assert(f.reads==3&&!f.mutations&&uint32_t(millis()-began)<100);
+    assert(sockets[first].outgoing.size()==firstBytes&&sockets[second].outgoing.size()==secondBytes);
+    sockets[first].disconnected=true;turn(f.server);runCloser();assert(sockets[first].closed&&detachedRequests.at(first).cancelled);
+    turn(f.server,5001);runCloser();assert(sockets[second].closed&&detachedRequests.at(second).cancelled);
+    assert(fakeFreeHeap==16316&&detachedRequests.at(first).absoluteTimeoutMs==15000&&detachedRequests.at(second).absoluteTimeoutMs==15000);
+    const int fresh=connect(f.listener,get("/"));f.finish(fresh);completeRootPage(fresh);assert(f.reads==4&&!f.mutations&&largestWrite<=1024);
+  }else if(scenario=="mapped-page-low-memory-absolute-rollover"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;clockUs=uint64_t(UINT32_MAX-600)*1000;
+    const auto began=millis();const int page=connect(f.listener,get("/"));sockets[page].writeLimit=1;sockets[page].ackDelayMs=1000;
+    for(unsigned i=0;i<12;++i)turn(f.server);assert(f.reads==1&&!sockets[page].outgoing.empty());
+    for(unsigned i=0;i<15;++i){turn(f.server,1000);runCloser();}
+    assert(sockets[page].closed&&f.server.metrics().deadlines==1&&detachedRequests.at(page).absoluteTimeoutMs==15000&&detachedRequests.at(page).acceptedAt==began);
+    assert(detachedRequests.at(page).cancelled&&!f.mutations);
+  }else if(scenario=="mapped-page-low-memory-send-allocation-failure"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    const int page=connect(f.listener,get("/"));sockets[page].sendAllocationFailure=true;f.finish(page);
+    assert(f.reads==1&&!f.mutations&&sockets[page].outgoing.empty()&&detachedRequests.at(page).cancelled&&detachedRequests.at(page).absoluteTimeoutMs==15000);
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(f.reads==1&&!f.mutations);
+    const int state=connect(f.listener,get());f.finish(state);contains(state,"200 OK");assert(f.reads==2);
+    const int retry=connect(f.listener,get("/"));f.finish(retry);completeRootPage(retry);assert(f.reads==3&&!f.mutations);
+  }else if(scenario=="mapped-binary-exact-length"){
+    Fixture f;const int fd=connect(f.listener,get("/binary-page"));f.finish(fd);
+    contains(fd,"200 OK");contains(fd,"Content-Encoding: gzip");contains(fd,"Content-Length: 6");
+    const auto body=sockets[fd].outgoing.find("\r\n\r\n")+4;
+    const char expected[]={char(0x1f),char(0x8b),0,'a',0,'z'};
+    assert(sockets[fd].outgoing.substr(body)==std::string(expected,sizeof(expected))&&f.reads==1);
+  }else if(scenario=="mapped-binary-bounds"){
+    Fixture f;for(const char* path:{"/oversized-page","/null-page"}){const int fd=connect(f.listener,get(path));f.finish(fd);contains(fd,"500");contains(fd,"Mapped response unavailable.");}
+    assert(f.server.metrics().responseFailures==2);
+  }else if(scenario=="browser-preparation-budget"){
+    Fixture f;fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    int fd=connect(f.listener,post("/api/firmware/upload/prepare","deviceId=aabbccddeeff&manifest=fixture"));f.finish(fd);contains(fd,"200 OK");assert(f.mutations==1);
+    fd=connect(f.listener,get("/api/firmware/upload/status"));f.finish(fd);contains(fd,"200 OK");assert(f.reads==1&&f.mutations==1);
+    fakeFreeHeap=9000;fd=connect(f.listener,post("/api/firmware/upload/prepare","manifest=fixture"));f.finish(fd);contains(fd,"503");assert(f.mutations==1);
+    fakeFreeHeap=16316;fakeLargestFreeBlock=639;fd=connect(f.listener,post("/api/firmware/upload/prepare","manifest=fixture"));f.finish(fd);contains(fd,"503");assert(f.mutations==1);
+    fakeLargestFreeBlock=7668;fd=connect(f.listener,post("/api/power","on=1"));f.finish(fd,20,1000);assert(f.mutations==1&&sockets[fd].closed);
+    assert(!LampControlResourcePolicy::readHttpPath("/api/firmware/upload/prepare",true));
+    assert(!LampControlResourcePolicy::preparationHttpPath("/api/firmware/upload/prepare",false));
+    assert(!LampControlResourcePolicy::preparationReady(16316,7668,1025));
+  }else if(scenario=="policy-header-ack-3.6"||scenario=="policy-header-ack-rollover"){
     Fixture f;if(scenario=="policy-header-ack-rollover")clockUs=uint64_t(UINT32_MAX-1500)*1000;
     const uint32_t began=millis();const int fd=connect(f.listener,get("/max-json"));auto& peer=sockets[fd];peer.ackDelayMs=3600;
     for(unsigned i=0;i<30&&peer.outgoing.find("\r\n\r\n")==std::string::npos;++i)turn(f.server);
@@ -361,16 +481,17 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<12&&f.reads==1;++i)turn(f.server);assert(f.reads==2);
     fakeFreeHeap=LampHttpServer::StaticPageHeapFloorBytes-1;f.finish(good);contains(good,"200 OK");assert(f.reads==2);
     fakeFreeHeap=LampHttpServer::StaticPageHeapFloorBytes;f.finish(page);contains(page,"immutable-flash-page");
-  }else if(scenario=="static-page-shared-floor"){
-    static_assert(LampHttpServer::StaticPageHeapFloorBytes==LampControlResourcePolicy::MinFreeHeapBytes);
-    static_assert(LampHttpServer::StaticPageHeapFloorBytes==24576);
+  }else if(scenario=="static-page-separate-floor"){
+    static_assert(LampHttpServer::StaticPageHeapFloorBytes==LampControlResourcePolicy::MappedPageSendHeapBytes);
+    static_assert(LampHttpServer::StaticPageHeapFloorBytes==11776);
+    static_assert(LampHttpServer::DispatchHeapFloorBytes==24576);
     Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=250;
     for(unsigned i=0;i<12&&!f.reads;++i)turn(f.server);assert(f.reads==1&&sockets[page].outgoing.empty());
-    for(uint32_t heap:{20480u,24575u}){
+    for(uint32_t heap:{10240u,11775u}){
       fakeFreeHeap=heap;for(unsigned i=0;i<10;++i)turn(f.server,10);
       assert(sockets[page].outgoing.empty()&&!sockets[page].closed);
     }
-    fakeFreeHeap=24576;f.finish(page,2000,10);completeMappedPage(page);
+    fakeFreeHeap=11776;f.finish(page,2000,10);completeMappedPage(page);
     assert(f.reads==1&&!f.mutations&&!f.server.metrics().deadlines);
   }else if(scenario=="static-page-receiving-priority"){
     Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=250;
@@ -412,21 +533,66 @@ int main(int argc,char** argv){
     assert(sockets[page].outgoing.size()==before&&f.reads==2&&fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes);
     sockets[good].sendBlocked=false;f.finish(good);contains(good,"200 OK");f.finish(page);contains(page,"Content-Length: 16384");
   }else if(scenario=="static-page-pressure-deadline"){
-    Fixture f;fakeFreeHeap=LampHttpServer::StaticPageHeapFloorBytes+4096;const int a=connect(f.listener,get("/bulk-page")),b=connect(f.listener,get("/bulk-page"));
+    Fixture f;fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes+4096;const int a=connect(f.listener,get("/bulk-page")),b=connect(f.listener,get("/bulk-page"));
     for(int fd:{a,b}){sockets[fd].heapCostPerByte=2;sockets[fd].transmitCapacity=5744;sockets[fd].ackBlocked=true;}
     for(unsigned i=0;i<30;++i)turn(f.server);
     assert(fakeFreeHeap>=LampHttpServer::StaticPageHeapFloorBytes&&!sockets[a].closed&&!sockets[b].closed&&sockets[a].unackedBytes<=1024&&sockets[b].unackedBytes<=1024);
     const auto beforeA=sockets[a].outgoing.size(),beforeB=sockets[b].outgoing.size();
     // Additional modeled SDK pressure leaves the ordinary request below its
     // admission floor. A page cannot enqueue again to consume that headroom.
-    fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes-1;
+    fakeFreeHeap=LampHttpServer::StaticPageHeapFloorBytes-1;
     const auto withheldHeap=fakeFreeHeap,retained=sockets[a].retainedHeap+sockets[b].retainedHeap;
-    const int good=connect(f.listener,get());for(unsigned i=0;i<12;++i)turn(f.server);assert(f.reads==2&&sockets[good].outgoing.empty());
+    const int good=connect(f.listener,get("/large"));for(unsigned i=0;i<12;++i)turn(f.server);assert(f.reads==2&&sockets[good].outgoing.empty());
     for(unsigned i=0;i<12;++i)turn(f.server);
     assert(sockets[a].outgoing.size()==beforeA&&sockets[b].outgoing.size()==beforeB);
     turn(f.server,5001);runCloser();assert(sockets[a].closed&&sockets[b].closed&&sockets[good].closed&&f.server.metrics().deadlines==3&&fakeFreeHeap==withheldHeap+retained&&f.reads==2);
     fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes;
     const int recovered=connect(f.listener,get());f.finish(recovered);contains(recovered,"200 OK");assert(f.reads==3);
+  }else if(scenario=="read-memory-admission-and-immediate-denial"){
+    Fixture f;const auto began=millis();fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    for(const char* route:{"/api/state","/api/effects","/api/descriptor","/api/revision","/api/firmware","/api/diagnostics"}){
+      const int fd=connect(f.listener,get(route));f.finish(fd,30);contains(fd,"200 OK");
+      assert(!detachedRequests.at(fd).cancelled&&!f.server.metrics().deadlines);
+    }
+    assert(f.reads==6&&!f.mutations&&uint32_t(millis()-began)<100);
+    // A denied read gets a bounded response while the original connection is
+    // healthy. It does not wait five seconds without headers or execute later.
+    for(const auto budget:{std::pair<uint32_t,uint32_t>{8703,7668},{16316,15}}){
+      fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
+      const auto deniedAt=millis();const int fd=connect(f.listener,get());f.finish(fd,30);
+      contains(fd,"503 Service Unavailable");assert(uint32_t(millis()-deniedAt)<100);
+      assert(f.reads==6&&!f.mutations&&!f.server.metrics().deadlines);
+    }
+    fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
+    // A fresh snapshot may use the smaller read path. This does not admit a
+    // settings/power mutation or an unclassified route under the old floor.
+    const int mutation=connect(f.listener,post("/api/power","on=1"));
+    const int legacyRead=connect(f.listener,get("/large"));
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations&&f.reads==6);
+    turn(f.server,5001);runCloser();assert(sockets[mutation].closed&&sockets[legacyRead].closed&&!f.mutations);
+    fakeFreeHeap=fakeLargestFreeBlock=65536;
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations&&f.reads==6);
+    const int fresh=connect(f.listener,get());f.finish(fresh);contains(fresh,"200 OK");assert(f.reads==7);
+  }else if(scenario=="read-form-capture-budget"){
+    Fixture f;std::string form;
+    for(unsigned i=0;i<24;++i){if(i)form+='&';form+="f"+std::to_string(i)+"="+std::string(32,'x');}
+    form+=std::string(1024-form.size(),'x');assert(form.size()==1024);
+    static_assert(LampControlResourcePolicy::ReadDispatchHeapBytes==10752);
+    assert(LampControlResourcePolicy::roundedReplyBytes(1024)==1040);
+    for(uint32_t heap:{10752U,12559U}){
+      fakeFreeHeap=heap;fakeLargestFreeBlock=2048;
+      const auto began=millis();const int fd=connect(f.listener,post("/api/effects/schema",form));f.finish(fd,40);
+      contains(fd,"503 Service Unavailable");assert(!f.reads&&!f.mutations&&uint32_t(millis()-began)<100);
+    }
+    fakeFreeHeap=12560;fakeLargestFreeBlock=2048;
+    const int fd=connect(f.listener,post("/api/effects/schema",form));f.finish(fd,40);contains(fd,"200 OK");assert(f.reads==1&&!f.mutations);
+    // The trusted adapter applies the same decoded form budget before fields
+    // are allocated; an old denied request never runs when memory recovers.
+    fakeFreeHeap=12559;const auto reserves=fakeStringReserveCalls;inControl=true;
+    const auto denied=f.server.executeControl(LampControlEndpoint::SchemaPage,true,form.c_str(),true);inControl=false;
+    assert(denied.status==503&&f.reads==1&&fakeStringReserveCalls==reserves);
+    fakeFreeHeap=12560;inControl=true;const auto admitted=f.server.executeControl(LampControlEndpoint::SchemaPage,true,form.c_str(),true);inControl=false;
+    assert(admitted.status==200&&f.reads==2&&!f.mutations&&!f.server.controlActive()&&!f.server.hasArg("f0"));
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;
@@ -436,8 +602,7 @@ int main(int argc,char** argv){
         inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::Power,true,body,true);inControl=false;
         assert(denied.status==503&&denied.body=="Control resources unavailable. This request was not executed.");
       }
-      inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::State,false,"");inControl=false;
-      assert(denied.status==503&&!f.reads&&!f.mutations&&fakeStringReserveCalls==reserves);
+      assert(!f.reads&&!f.mutations&&fakeStringReserveCalls==reserves);
       assert(!f.server.controlActive()&&!f.server.hasArg("on")&&f.server.uri().isEmpty()&&f.server.header("Authorization").isEmpty());
       assert(f.server.executeControl(0,true,"on=1").status==404&&fakeStringReserveCalls==reserves);
     }
@@ -450,6 +615,11 @@ int main(int argc,char** argv){
     turn(f.server,5000);runCloser();assert(sockets[oldBudget].closed&&f.mutations==1);
     fakeFreeHeap=24576;for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1);
     const int current=connect(f.listener,post("/api/power","on=1"));f.finish(current);contains(current,"200 OK");assert(f.mutations==2&&f.server.metrics().dispatches==1);
+    fakeFreeHeap=16316;fakeLargestFreeBlock=7668;inControl=true;
+    const auto read=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
+    assert(read.status==200&&f.reads==1&&f.mutations==2&&read.body.find("development-token")==std::string::npos);
+    fakeFreeHeap=8703;inControl=true;const auto readDenied=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
+    assert(readDenied.status==503&&f.reads==1&&f.mutations==2&&!f.server.controlActive());
   }else if(scenario=="ready-memory-before-mutation"){
     Fixture f;fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes-1;
     const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
@@ -487,10 +657,10 @@ int main(int argc,char** argv){
     assert(!f.mutations&&!liveParsers&&!liveBodies&&fakeStringWatchedStorage&&!fakeStringWipedWatched);
     assert(!f.server.hasArg("value")&&f.server.header("Authorization").isEmpty()&&f.server.uri().isEmpty());
     inControl=true;const auto independent=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
-    assert(independent.status==503&&!f.reads&&!f.mutations&&!f.server.hasArg("value")&&f.server.uri().isEmpty());
+    assert(independent.status==200&&f.reads==1&&!f.mutations&&!f.server.hasArg("value")&&f.server.uri().isEmpty());
     fakeFreeHeap=fakeLargestFreeBlock=65536;
     inControl=true;const auto admitted=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
-    assert(admitted.status==200&&admitted.body.find("development-token")==std::string::npos&&f.reads==1&&!f.mutations);
+    assert(admitted.status==200&&admitted.body.find("development-token")==std::string::npos&&f.reads==2&&!f.mutations);
     fakeFreeHeap=fakeLargestFreeBlock=65536;f.finish(waiting);contains(waiting,"200 OK");assert(f.mutations==1&&fakeStringWipedWatched==1&&!fakeStringWatchedStorage);
     // The same exact raw staging allocation is wiped on both total expiration
     // and a reset socket, before a command or shared BLE form can execute.
@@ -531,7 +701,7 @@ int main(int argc,char** argv){
     // Model already-owned radio/TCP resources, returned only by actual mocked
     // close-worker execution, not by a test-side dispatch/admission shortcut.
     sockets[a].retainedHeap=sockets[b].retainedHeap=6500;fakeFreeHeap=12000;
-    const uint32_t accepted=millis();const int healthy=connect(f.listener,get());for(unsigned i=0;i<12;++i)turn(f.server);
+    const uint32_t accepted=millis();const int healthy=connect(f.listener,get("/large"));for(unsigned i=0;i<12;++i)turn(f.server);
     assert(!f.reads&&liveParsers==2&&sockets[healthy].outgoing.empty());
     turn(f.server,1501);assert(!sockets[healthy].closed&&!f.reads&&!liveParsers&&!sockets[a].closed&&!sockets[b].closed);
     turn(f.server,750);assert(!sockets[healthy].closed&&!f.reads&&fakeFreeHeap==12000);

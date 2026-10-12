@@ -29,6 +29,7 @@ int nvs_commit(nvs_handle_t){if(failCommit)return ESP_FAIL;durable=staged;++writ
 void nvs_close(nvs_handle_t){staged.clear();}
 FirmwareManifest artifact(unsigned id){FirmwareManifest value{};value.version[0]=1;value.version[1]=id;value.size=512;value.sha256[0]=id;return value;}
 int main(){using namespace LampUpdateAttempt;const auto a=artifact(15),b=artifact(16);begin();assert(automaticAllowed(a));
+ assert(automaticAdmissionReason(a)==Eligible);FirmwareManifest invalid=a;invalid.size=0;assert(automaticAdmissionReason(invalid)==InvalidArtifact&&!automaticAllowed(invalid));
  // Before a commit there is no attempt: cancelled/incomplete image does not consume a slot.
  begin();assert(automaticAllowed(a)&&writes==0);
  failWrite=true;assert(!prepare(a,false)&&automaticAllowed(a)&&durable.empty());failWrite=false;
@@ -36,6 +37,7 @@ int main(){using namespace LampUpdateAttempt;const auto a=artifact(15),b=artifac
  // Durable record precedes boot selection. Interruption before/after selection
  // has the same honest unconfirmed state; absence of health never proves rollback.
  assert(prepare(a,false)&&durable.size()==RecordSize&&writes==1);begin();assert(!automaticAllowed(a)&&automaticAllowed(b));
+ assert(automaticAdmissionReason(a)==Unconfirmed&&automaticAdmissionReason(b)==Eligible);
  assert(!prepare(a,false)&&writes==1);assert(prepare(a,true)&&writes==1);
  begin();assert(!automaticAllowed(a)); // Rollback to a supported old image cannot re-offer a forever.
  assert(confirmHealthy(b)&&writes==1&&!automaticAllowed(a)); // Different running bytes cannot clear it.
@@ -46,11 +48,13 @@ int main(){using namespace LampUpdateAttempt;const auto a=artifact(15),b=artifac
  const auto retained=durable;begin();assert(durable==retained&&!automaticAllowed(a));
  for(unsigned i=16;i<19;++i)assert(prepare(artifact(i),false));
  assert(!automaticAllowed(artifact(20))&&!prepare(artifact(20),true));
+ assert(automaticAdmissionReason(artifact(20))==Full);
  assert(prepare(a,true)); // Full ledger still allows explicit repair of a recorded artifact.
  assert(confirmHealthy(a)&&automaticAllowed(artifact(20)));
  const auto valid=durable;
  for(size_t i=0;i<valid.size();++i){durable=valid;durable[i]^=1;begin();assert(!automaticAllowed(a)&&!prepare(a,true));}
  durable=valid;failRead=true;begin();assert(!automaticAllowed(a)&&!prepare(a,true));failRead=false;begin();
+ failRead=true;begin();assert(automaticAdmissionReason(a)==Unavailable);failRead=false;begin();
  failOpen=true;assert(!prepare(a,false));failOpen=false;
  // A committed record with unreadable acknowledgement is uncertain and blocks
  // all automatic admission until reload/service; never overwrite a hidden tuple.

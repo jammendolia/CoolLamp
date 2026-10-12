@@ -1,4 +1,5 @@
 #include "LampUpdate.h"
+#include "LampJsonSink.h"
 #include "LampWifiSetup.h"
 #include "LampFactoryReset.h"
 #include "LampAudio.h"
@@ -29,6 +30,7 @@
 
 // Arduino core 3.3.11 normally confirms OTA before setup. Defer until loop is healthy.
 extern "C" bool verifyRollbackLater() { return true; }
+static LampUpdatePolicy::Eligibility policyEligibility();
 
 namespace {
 constexpr char ROOT[] = "https://github.com/jammendolia/CoolLamp/releases/";
@@ -62,6 +64,18 @@ bool jobBackground=false;
 std::atomic<bool> backgroundActive{false},cancelBackground{false},backgroundDeferred{false};
 bool backgroundPriorAvailable=false;
 bool backgroundReadDeferred=false; // Worker-owned until completion notification.
+LampUpdateAutomatic::Service automaticService;
+LampUpdateAutomatic::Snapshot automaticView;
+bool automaticJob=false,automaticCommitHeld=false;
+bool manualCommitHeld=false;
+uint8_t automaticJobOperation=0;
+// The worker publishes only bounded evidence after destroying its TLS owner.
+// 1 safe precommit error,2 commit fence entered,3 discovery success,4 deferred.
+std::atomic<uint8_t> automaticOutcome{0};
+bool workerCommitFence=false; // Worker-owned until workerFinished acquire.
+FirmwareManifest lastDonorWake{};
+bool donorWakeSeen=false,donorNewerSeen=false;
+uint32_t donorWakeAt=0;
 
 bool busy(uint8_t phase) { return phase == UPDATE_CHECKING || phase == UPDATE_DOWNLOADING || phase == UPDATE_RESTARTING; }
 void phase(uint8_t value, uint8_t error = UPDATE_OK) {
@@ -78,6 +92,10 @@ String versionText(const uint16_t v[3]) {
   String out;
   if(!out.concat(v[0])||!out.concat('.')||!out.concat(v[1])||!out.concat('.')||!out.concat(v[2]))return String();
   return out;
+}
+bool legacyAttemptMatches(const FirmwareManifest& artifact){
+  char version[18];snprintf(version,sizeof(version),"%u.%u.%u",unsigned(artifact.version[0]),unsigned(artifact.version[1]),unsigned(artifact.version[2]));
+  return !strcmp(version,attemptedVersion);
 }
 
 bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
@@ -143,7 +161,6 @@ void downloadRelease() {
   const FirmwareManifest selected = candidate;
   portENTER_CRITICAL(&mux);status.totalBytes=selected.size;portEXIT_CRITICAL(&mux);
   const String version = versionText(selected.version);
-  if (!recordAttempt(version)) { fail(UPDATE_STORAGE); return; }
   UpdateHttp http; int code = 0; int64_t length = 0;
   if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
   if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
@@ -184,7 +201,12 @@ void downloadRelease() {
   ok = ok && hashed && headerValid && received == selected.size && !memcmp(digest, selected.sha256, 32);
   if (!ok) { if (ota) esp_ota_abort(ota); fail(UPDATE_IMAGE); return; }
   if(esp_ota_end(ota)!=ESP_OK){fail(UPDATE_IMAGE);return;}
-  if((candidateEpoch&&(!UpdatePublisher::retainManifest(signedCandidate,strlen(signedCandidate))||!UpdatePublisher::recordEpoch(candidateEpoch)))||!LampUpdateAttempt::prepare(selected,explicitRepair)){fail(UPDATE_STORAGE);return;}
+  if(candidateEpoch&&(!UpdatePublisher::retainManifest(signedCandidate,strlen(signedCandidate))||!UpdatePublisher::recordEpoch(candidateEpoch))){fail(UPDATE_STORAGE);return;}
+  // Retain the legacy version guard for supported old rollback images, but do
+  // not quarantine a version merely because its network download was tried.
+  // A failure anywhere inside the durable fence is never an automatic replay.
+  workerCommitFence=true;
+  if(!LampUpdateAttempt::prepare(selected,explicitRepair)||!recordAttempt(version)){fail(UPDATE_STORAGE);return;}
   if(esp_ota_set_boot_partition(target)!=ESP_OK){fail(UPDATE_IMAGE);return;}
   phase(UPDATE_RESTARTING);
 }
@@ -223,6 +245,11 @@ void updateTask(void*) {
     finishBackground();
   };
   run();
+  // Every HTTPS origin publishes the durable fence, including Update now.
+  // A failed boot-selection reply is uncertain, not permission to try BLE.
+  const auto completed=getLampUpdateStatus();
+  automaticOutcome=workerCommitFence?2:completed.phase==UPDATE_ERROR?1:
+    (completed.phase==UPDATE_IDLE||completed.phase==UPDATE_AVAILABLE)?3:4;
   workerFinished.store(true,std::memory_order_release);
   // Never self-delete or execute another job. The loop deletes this blocked
   // task after observing completion; until then its handle/stack stay valid.
@@ -233,34 +260,38 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
   if(backgroundActive.load())return false;
   // Automatic discovery waits without taking audio/radio ownership or advancing
   // its pending deadline. Explicit Check now / Update now are separate paths.
-  if(background&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(millis()),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t)))return false;
+  const bool automaticInstall=operation==2&&!manualRepair&&getLampUpdateStatus().automatic;
+  if((background||automaticInstall)&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(millis()),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t)))return false;
   FirmwareManifest offered;
   portENTER_CRITICAL(&mux);
   if(manual||busy(status.phase)||job||(operation==2&&!status.available)){portEXIT_CRITICAL(&mux);return false;}
   offered=candidate;portEXIT_CRITICAL(&mux);
   if(operation==2&&!lampRolloutAllowsAutomaticUpdate(offered))return false;
-  if(operation==2&&!manualRepair&&!LampUpdateAttempt::automaticAllowed(offered))return false;
+  if(operation==2&&!manualRepair&&!lampAutomaticUpdateArtifactAllowed(offered))return false;
   portENTER_CRITICAL(&mux);
   if (manual || busy(status.phase) || job) { portEXIT_CRITICAL(&mux); return false; }
   if (operation == 2 && !status.available) { portEXIT_CRITICAL(&mux); return false; }
   job = operation;jobBackground=background;backgroundPriorAvailable=status.available;
   cancelBackground=false;backgroundActive=background;
   status.phase = UPDATE_CHECKING; status.error = 0;explicitRepair=manualRepair;
+  automaticJob=automaticInstall||(background&&status.automatic);automaticJobOperation=operation;workerCommitFence=false;automaticOutcome=0;
   portEXIT_CRITICAL(&mux);
   // request() runs on the loop task. Do not wake HTTPS until DMA is released.
   if (!stopLampAudio()) {
     portENTER_CRITICAL(&mux); job = 0; portEXIT_CRITICAL(&mux);
     backgroundActive=false;
+    automaticJob=false;
     handoff.cancel();
     fail(UPDATE_MEMORY); return false;
   }
   if(operation==2&&!lampRolloutAutomaticUpdateStarted(offered)){
-    portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);handoff.cancel();fail(UPDATE_STORAGE);return false;
+    portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);automaticJob=false;handoff.cancel();fail(UPDATE_STORAGE);return false;
   }
   // Do not notify inside a consumed RPC/HTTP handler. The request's caller
   // still owns response/form temporaries, and group-radio cleanup may be next
   // loop. serviceLampUpdater() dispatches after the resource owners have run.
   if(operation==2){startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_INTERNET);}
+  if(automaticJob){automaticService.enable();automaticService.internetStarted();}
   handoff.queue();return true;
 }
 } // namespace
@@ -289,6 +320,8 @@ void beginLampUpdater() {
   setenv("TZ",updatePolicy.timezone,1);tzset();
   configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
   nextCheck = millis() + 60000 + esp_random() % 30000;
+  automaticService.disable();automaticView={};automaticCommitHeld=false;
+  manualCommitHeld=false;
 }
 LampUpdateStatus getLampUpdateStatus() {
   portENTER_CRITICAL(&mux); const auto copy = status; portEXIT_CRITICAL(&mux); return copy;
@@ -300,10 +333,12 @@ bool setLampAutoUpdate(bool enabled) {
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
   const bool saved = prefs.putBool("autoUpdate", enabled) == 1; prefs.end();
-  if (saved) { portENTER_CRITICAL(&mux); status.automatic = enabled; portEXIT_CRITICAL(&mux); }
+  if (saved) { portENTER_CRITICAL(&mux); status.automatic = enabled; portEXIT_CRITICAL(&mux);
+    if(enabled){automaticService.enable();nextCheck=millis();}else{automaticService.disable();automaticView={};}
+  }
   return saved;
 }
-bool lampRemoteUpdateBusy() { return worker || job || busy(getLampUpdateStatus().phase); }
+bool lampRemoteUpdateBusy() { return lampUpdateOwnsResources(); }
 bool lampUpdateOwnsResources() {
   portENTER_CRITICAL(&mux); const bool result = manual || worker || job || busy(status.phase); portEXIT_CRITICAL(&mux);
   return result;
@@ -317,7 +352,7 @@ bool reserveLampManualUpdate() {
   if (ok && !stopLampAudio()) { releaseLampManualUpdate(); return false; }
   return ok;
 }
-void releaseLampManualUpdate() { portENTER_CRITICAL(&mux); manual = false;status.receiving=false;portEXIT_CRITICAL(&mux); }
+void releaseLampManualUpdate() { portENTER_CRITICAL(&mux);if(!manualCommitHeld)manual=false;status.receiving=false;portEXIT_CRITICAL(&mux); }
 bool beginLampBluetoothUpdate() {
   if(!reserveLampManualUpdate())return false;
   if(!beginLampBluetoothUpdateRadio()){releaseLampManualUpdate();return false;}
@@ -331,11 +366,67 @@ void setLampBluetoothUpdateProgress(uint32_t received,uint32_t total) {
 }
 void finishLampBluetoothUpdate(bool verified,bool cancelled) {
   portENTER_CRITICAL(&mux);
+  if(manualCommitHeld){portEXIT_CRITICAL(&mux);return;}
   manual=false;status.phase=verified?UPDATE_RESTARTING:cancelled?UPDATE_IDLE:UPDATE_ERROR;
   status.error=verified||cancelled?UPDATE_OK:UPDATE_IMAGE;status.progress=verified?100:0;
   status.receiving=verified;
   portEXIT_CRITICAL(&mux);
   finishLampBluetoothUpdateRadio(verified);
+}
+void holdLampUpdateCommitUnconfirmed(){
+  portENTER_CRITICAL(&mux);
+  manual=true;manualCommitHeld=true;automaticCommitHeld=true;
+  status.phase=UPDATE_ERROR;status.error=UPDATE_STORAGE;
+  status.receiving=false;status.cueOn=false;
+  portEXIT_CRITICAL(&mux);
+  finishLampBluetoothUpdateRadio(false);
+}
+static void serviceAutomaticUpdates(uint32_t now,const LampUpdateStatus& current){
+  using namespace LampUpdateAutomatic;
+  if(manualCommitHeld){automaticView=automaticService.snapshot(now);automaticView.state=Waiting;automaticView.reason=CommitUnconfirmed;automaticView.attention=true;automaticView.phoneFallback=false;return;}
+  if(!current.automatic){automaticService.disable();automaticView={};donorWakeSeen=donorNewerSeen=false;lastDonorWake={};return;}
+  automaticService.enable();automaticService.discovered(current.available||donorNewerSeen||automaticService.snapshot(now).newerSeen);
+  automaticView=automaticService.snapshot(now);
+  const auto hold=[&](uint8_t reason,bool attention=false){automaticView.state=Waiting;automaticView.reason=reason;automaticView.attention=attention;automaticView.phoneFallback=false;};
+  if(current.phase==UPDATE_RESTARTING){automaticView.state=Committing;automaticView.reason=Ready;automaticView.attention=automaticView.phoneFallback=false;return;}
+  const auto donor=LampFirmwareRelay::discoverySnapshot(now);
+  if(donor.state==1||donor.state==2){automaticView.state=DonorTransfer;automaticView.reason=Ready;automaticView.attention=automaticView.phoneFallback=false;return;}
+  if(worker||job||manual||busy(current.phase)){hold(UpdaterBusy);if(automaticJob){automaticView.state=Internet;automaticView.reason=Ready;}return;}
+  if(!healthy){hold(BootHealth);return;}
+  const auto discoverWhileHeld=[&]{
+    // Discovery does not confer group/window permission to install. Retain the
+    // legacy ability to learn a release while that independent gate is held.
+    if(!current.available&&automaticService.due(now)&&WiFi.status()==WL_CONNECTED)
+      request(1,false,true);
+  };
+  const auto quiet=policyEligibility();
+  if(quiet!=LampUpdatePolicy::Ready){const uint8_t reasons[]={Ready,Ready,ActiveUse,ClockUnknown,QuietWindow,InvalidPolicy};hold(reasons[quiet<=5?quiet:5]);if(quiet!=LampUpdatePolicy::InvalidPolicy)discoverWhileHeld();return;}
+  const uint8_t group=lampRolloutAutomaticAdmissionReason();
+  if(group){const uint8_t reasons[]={Ready,GroupStage,GroupLegacy,GroupStorage,GroupPermit};hold(reasons[group<=4?group:4],current.available);discoverWhileHeld();return;}
+  if(automaticCommitHeld){hold(CommitUnconfirmed,true);return;}
+  if(current.available&&!lampAutomaticUpdateArtifactAllowed(candidate)){
+    const bool legacy=legacyAttemptMatches(candidate);
+    const auto attempt=LampUpdateAttempt::automaticAdmissionReason(candidate);
+    hold(legacy?LegacyAttempt:(attempt==LampUpdateAttempt::Unavailable||attempt==LampUpdateAttempt::Full)?AttemptStorage:attempt==LampUpdateAttempt::InvalidArtifact?Partition:ArtifactQuarantine,true);return;
+  }
+  if(current.available&&!lampRolloutAllowsAutomaticUpdate(candidate)){hold(GroupPermit,true);return;}
+  if(automaticService.due(now)){
+    uint8_t fallback=Ready;
+    if(WiFi.status()!=WL_CONNECTED)fallback=InternetUnavailable;
+    else if(!lampControlTrafficIdle(now))fallback=ControlBusy;
+    else if(!LampUpdateControlPolicy::backgroundStartReady(true,heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t)))fallback=Memory;
+    else if(request(current.available?2:1,false,!current.available)){
+      automaticView=automaticService.snapshot(now);automaticView.state=Internet;automaticView.reason=Ready;return;
+    }else fallback=getLampUpdateStatus().error==UPDATE_STORAGE?AttemptStorage:UpdaterBusy;
+    automaticService.fallback(now,fallback,esp_random());automaticView=automaticService.snapshot(now);
+  }
+  if(automaticService.donorsAllowed()){
+    if(!donor.paired)automaticView.reason=FleetUnpaired;
+    else if(!donor.radioAvailable)automaticView.reason=RadioUnavailable;
+    // This is observation of authenticated periodic offers, not an RF scan or
+    // a promise that compatible channels/trust/donors exist nearby.
+    else if(!automaticView.donorWaitMs&&automaticView.reason!=Memory&&automaticView.reason!=ControlBusy)automaticView.reason=DonorUnavailable;
+  }
 }
 void serviceLampUpdater() {
   const uint32_t now = millis();
@@ -344,6 +435,24 @@ void serviceLampUpdater() {
     // the handle before any later request/status builder can observe it.
     const TaskHandle_t completed=worker;worker=nullptr;
     vTaskDelete(completed);workerFinished=false;
+    const uint8_t outcome=automaticOutcome.exchange(0);
+    const auto finished=getLampUpdateStatus();
+    if(outcome==2&&finished.phase!=UPDATE_RESTARTING){
+      // Keep a loop-owned reservation through error/status reads, disconnect,
+      // opt-out and route changes. Only reboot can reconcile this durable fence.
+      holdLampUpdateCommitUnconfirmed();
+    }
+    if(automaticJob){
+      if(outcome==1){
+        automaticService.fallback(now,finished.error==UPDATE_MANIFEST?LampUpdateAutomatic::ManifestRejected:finished.error==UPDATE_PARTITION?LampUpdateAutomatic::Partition:LampUpdateAutomatic::InternetFailed,esp_random());
+        if(finished.available)phase(UPDATE_AVAILABLE,finished.error);
+      }else if(outcome==3&&automaticJobOperation==1){
+        if(!finished.available&&donorNewerSeen)automaticService.fallback(now,LampUpdateAutomatic::InternetUnavailable,esp_random());
+        else automaticService.checked(now,finished.available);
+      }
+      else if(outcome==4)automaticService.fallback(now,LampUpdateAutomatic::ControlBusy,esp_random());
+    }
+    automaticJob=false;
   }
   serviceLampUpdatePolicy(now);
   if(backgroundActive.load()&&!lampControlTrafficIdle(now))cancelBackground=true;
@@ -379,7 +488,7 @@ void serviceLampUpdater() {
     workerFinished=false;
     if(xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)!=pdPASS){
       worker=nullptr;portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
-      backgroundActive=false;handoff.cancel();fail(UPDATE_MEMORY);return;
+      backgroundActive=false;automaticJob=false;handoff.cancel();fail(UPDATE_MEMORY);return;
     }
     xTaskNotifyGive(worker);return;
   }
@@ -387,16 +496,15 @@ void serviceLampUpdater() {
   static uint8_t previousPhase = UPDATE_IDLE;
   if (current.phase == UPDATE_ERROR && previousPhase != UPDATE_ERROR) nextCheck = now + 15UL * 60 * 1000 + esp_random() % 60000;
   previousPhase = current.phase;
+  serviceAutomaticUpdates(now,current);
   if (current.phase == UPDATE_RESTARTING) {
+    if(manual)return; // Browser upload retains Network's existing reply/restart owner.
     if (!restartAt) restartAt = now + 2000;
     if (static_cast<int32_t>(now - restartAt) >= 0) ESP.restart();
     return;
   }
   if (WiFi.status() != WL_CONNECTED || manual || busy(current.phase)) return;
-  if (lampAutomaticUpdateAllowed() && current.available && current.phase == UPDATE_AVAILABLE &&
-      versionText(current.latest) != attemptedVersion && now > 60000 && lampControlTrafficIdle(now) && lampRolloutAllowsAutomaticUpdate(candidate)) {
-    if (request(2)) return;
-  }
+  if(current.automatic)return;
   if (static_cast<int32_t>(now - nextCheck) >= 0) {
     if (request(1,false,true)) nextCheck = now + 6UL * 60 * 60 * 1000 + esp_random() % 300000;
   }
@@ -411,11 +519,29 @@ void getLampUpdatePacket(uint8_t* out) {
   }
   out[18] = s.available;
 }
-String lampUpdateJson() {
-  const auto s = getLampUpdateStatus();
+LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
+  LampUpdateJsonSnapshot snapshot;snapshot.status=getLampUpdateStatus();
   FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
-  String out;bool good=true;
-  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+  snapshot.latest=versionText(snapshot.status.latest);snapshot.attempt=LampUpdateAttempt::statusJson(offered);
+  snapshot.policy=lampUpdatePolicyJson();snapshot.http=captureUpdateHttpDiagnostics();
+  const char* const attemptKeys[]={"version","storageReady","unconfirmedArtifacts","capacity","candidateReason","sameArtifactRequiresManual","rollbackProven"};
+  const char* const policyKeys[]={"version","valid","revision","window","startMinute","endMinute","timezone","deferDuringUse","idleSeconds","eligibility","groupCoordination","automaticEligible","unknownTime","restartResume","automaticRadioRollout"};
+  char latest[18];snprintf(latest,sizeof(latest),"%u.%u.%u",unsigned(snapshot.status.latest[0]),unsigned(snapshot.status.latest[1]),unsigned(snapshot.status.latest[2]));
+  if(snapshot.latest!=latest||!LampHttpJson::requiredKeys(snapshot.attempt.c_str(),snapshot.attempt.length(),attemptKeys,sizeof(attemptKeys)/sizeof(attemptKeys[0]))||
+     !LampHttpJson::requiredKeys(snapshot.policy.c_str(),snapshot.policy.length(),policyKeys,sizeof(policyKeys)/sizeof(policyKeys[0])))snapshot.latest=String();
+  snapshot.heap=ESP.getFreeHeap();snapshot.largest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):0;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
+  snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
+  if(includeAutomatic){
+    snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
+    snapshot.automaticService.retryInMs=timing.retryInMs;snapshot.automaticService.donorWaitMs=timing.donorWaitMs;
+    const String identity=lampIdentity();if(identity.length()==12)memcpy(snapshot.deviceId,identity.c_str(),13);
+  }
+  return snapshot;
+}
+void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic) {
+  if(!snapshot.latest.length()||!snapshot.attempt.length()||!snapshot.policy.length()){out.fail();return;}
+  const auto& s=snapshot.status;const auto add=[&](const auto& value){out.concat(value);};
   add("{\"version\":\"");
   add(LAMP_FIRMWARE_VERSION);add("\",\"build\":\"");
 #ifdef COOL_LAMP_PUBLIC_RELEASE
@@ -423,32 +549,66 @@ String lampUpdateJson() {
 #else
   add("COOLLAMP-LOCAL-" LAMP_FIRMWARE_VERSION);
 #endif
-  {const String latest=versionText(s.latest);if(!latest.length())return String();add("\",\"latest\":\"");add(latest);}
+  add("\",\"latest\":\"");add(snapshot.latest);
   add("\",\"phase\":");add(String(s.phase));add(",\"progress\":");add(String(s.progress));add(",\"error\":");add(String(s.error));
   add(",\"automatic\":");add((s.automatic?"true":"false"));add(",\"available\":");add((s.available?"true":"false"));
-  add(",\"wifi\":");add((WiFi.status()==WL_CONNECTED?"true":"false"));
+  add(",\"wifi\":");add((snapshot.wifi?"true":"false"));
   add(",\"updateContractVersion\":2,\"route\":");add(String(s.route));add(",\"checkedAt\":");add(String(s.checkedAt));
   add(",\"receiver\":");add((s.receiving?"true":"false"));add(",\"writtenOffset\":");add(String(s.writtenOffset));add(",\"totalBytes\":");add(String(s.totalBytes));
-  add(",\"freeHeap\":");add(String(ESP.getFreeHeap()));add(",\"largestBlock\":");add(String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-  add(",\"workerStackFree\":");add(String(worker?uxTaskGetStackHighWaterMark(worker):0));add(",\"loopStackFree\":");add(String(uxTaskGetStackHighWaterMark(nullptr)));
-  add(",\"bootHealthy\":");add((healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((UpdatePublisher::enforced()?"true":"false"));
+  add(",\"freeHeap\":");add(String(snapshot.heap));add(",\"largestBlock\":");add(String(snapshot.largest));
+  add(",\"workerStackFree\":");add(String(snapshot.workerStack));add(",\"loopStackFree\":");add(String(snapshot.loopStack));
+  add(",\"bootHealthy\":");add((snapshot.healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
   add(",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
   // End each nested builder's lifetime before creating the next one. Returning
   // the named String also avoids copying a full StringSumHelper result.
-  {const String attempt=LampUpdateAttempt::statusJson(offered);if(!attempt.length())return String();add(attempt);}
+  add(snapshot.attempt);
   add(",\"policy\":");
-  {const String policy=lampUpdatePolicyJson();if(!policy.length())return String();add(policy);}
-  {const String http=updateHttpDiagnostics();if(!http.length())return String();add(http);}
+  add(snapshot.policy);
+  appendUpdateHttpDiagnostics(out,snapshot.http);
+  if(includeAutomatic){
+    if(strlen(snapshot.deviceId)!=12){out.fail();return;}
+    const auto& a=snapshot.automaticService;
+    add(",\"deviceId\":\"");add(snapshot.deviceId);add("\",\"automaticService\":{\"version\":1,\"state\":");add(a.state);
+    add(",\"reason\":");add(a.reason);add(",\"retryInMs\":");add(a.retryInMs);add(",\"donorWaitMs\":");add(a.donorWaitMs);
+    add(",\"internetAttempts\":");add(a.internetAttempts);add(",\"donorOffers\":");add(a.donorOffers);
+    add(",\"attention\":");add(a.attention?"true":"false");add(",\"phoneFallback\":");add(a.phoneFallback?"true":"false");
+    add(",\"newerSeen\":");add(a.newerSeen?"true":"false");add('}');
+  }
   add('}');
-  // The legacy HTTP diagnostic fragment is itself a StringSumHelper chain:
-  // an OOM can drop its leading field yet leave valid shorter JSON.
+}
+String lampUpdateJson() {
+  const auto snapshot=captureLampUpdateJson(true);
+  String out=lampJsonReply([&](LampJsonSink& reply){appendLampUpdateJson(reply,snapshot,true);});
   const char* const httpKeys[]={"httpStage","httpCode","httpHost","tlsError","tlsFlags","transportError"};
-  if(!good||!LampHttpJson::requiredKeys(out.c_str(),out.length(),httpKeys,sizeof(httpKeys)/sizeof(httpKeys[0])))return String();
+  if(!LampHttpJson::requiredKeys(out.c_str(),out.length(),httpKeys,sizeof(httpKeys)/sizeof(httpKeys[0])))return String();
   return out;
 }
+
 void noteLampUpdateUse(){lastUserUse=millis();userUseObserved=true;}
-void beginLampManualUpdateCue(){startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_MANUAL_UPLOAD);}
+void beginLampManualUpdateCue(){
+  portENTER_CRITICAL(&mux);const bool admitted=manual&&!manualCommitHeld&&!status.receiving&&!busy(status.phase);portEXIT_CRITICAL(&mux);
+  if(!admitted)return;
+  startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_MANUAL_UPLOAD);
+  phase(UPDATE_DOWNLOADING);
+}
+void finishLampManualUpdate(bool verified,bool commitUnconfirmed){
+  portENTER_CRITICAL(&mux);
+  if(!manual||!status.receiving||status.route!=UPDATE_ROUTE_MANUAL_UPLOAD){portEXIT_CRITICAL(&mux);return;}
+  status.receiving=false;status.cueOn=false;
+  status.phase=verified?UPDATE_RESTARTING:UPDATE_ERROR;
+  status.error=verified?UPDATE_OK:commitUnconfirmed?UPDATE_STORAGE:UPDATE_IMAGE;
+  if(verified)status.progress=100;
+  manualCommitHeld=commitUnconfirmed;
+  if(!verified&&!commitUnconfirmed)manual=false;
+  portEXIT_CRITICAL(&mux);
+}
 void setLampManualUpdateCueProgress(uint32_t written){portENTER_CRITICAL(&mux);status.writtenOffset=written;status.totalBytes=0;status.progress=0;portEXIT_CRITICAL(&mux);}
+void setLampManualUpdateCueProgress(uint32_t written,uint32_t total){
+  if(!total||total>2031616||written>total)return;
+  portENTER_CRITICAL(&mux);
+  if(manual&&status.receiving){status.writtenOffset=written;status.totalBytes=total;status.progress=written*100ULL/total;}
+  portEXIT_CRITICAL(&mux);
+}
 void setLampUpdateRoute(uint8_t route){if(route>UPDATE_ROUTE_MANUAL_UPLOAD)return;portENTER_CRITICAL(&mux);if(status.receiving)status.route=route;portEXIT_CRITICAL(&mux);}
 bool lampBootHealthy(){return healthy;}
 static bool reconcileUncertainPolicy();
@@ -480,6 +640,19 @@ bool lampAutomaticUpdateAllowed(){
   // internet or donor admission; explicit manual requests keep their own
   // exact-artifact rollout fence.
   return policyEligibility()==LampUpdatePolicy::Ready&&lampRolloutAutomaticAdmissionReason()==0;
+}
+bool lampAutomaticUpdateArtifactAllowed(const FirmwareManifest& artifact){
+  return !automaticCommitHeld&&!manualCommitHeld&&!legacyAttemptMatches(artifact)&&LampUpdateAttempt::automaticAllowed(artifact);
+}
+bool lampAutomaticDonorDiscoveryAllowed(){return automaticService.donorsAllowed()&&!automaticCommitHeld&&!manualCommitHeld;}
+void noteLampAutomaticDonorOffer(const FirmwareManifest& artifact){
+  if(!getLampUpdateStatus().automatic)return;
+  const uint32_t now=millis();donorNewerSeen=true;
+  const bool different=!donorWakeSeen||!sameFirmwareManifest(lastDonorWake,artifact);
+  const bool wake=!automaticService.donorsAllowed()&&!lampUpdateOwnsResources()&&!automaticCommitHeld&&different&&
+    (!donorWakeSeen||uint32_t(now-donorWakeAt)>=LampUpdateAutomatic::RetryMs);
+  if(wake){lastDonorWake=artifact;donorWakeSeen=true;donorWakeAt=now;}
+  automaticService.enable();automaticService.observedOffer(wake);
 }
 bool lampUpdatePolicySaveUncertain(){return policySaveUncertain;}
 class UpdatePolicyPreferences:public Preferences {
@@ -541,14 +714,13 @@ bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& next,uint32_t expectedR
 }
 String lampUpdatePolicyJson(){
   const auto eligibility=policyEligibility();const uint8_t coordination=lampRolloutAutomaticAdmissionSnapshotReason();
-  String out;bool good=true;
-  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+  return lampJsonReply([&](LampJsonSink& out){
+  const auto add=[&](const auto& value){out.concat(value);};
   add("{\"version\":1,\"valid\":");
   add((policyReadable?"true":"false"));add(",\"revision\":");add(String(policyRevision));add(",\"window\":");add((updatePolicy.window?"true":"false"));
   add(",\"startMinute\":");add(String(updatePolicy.startMinute));add(",\"endMinute\":");add(String(updatePolicy.endMinute));add(",\"timezone\":\"");add(updatePolicy.timezone);
   add("\",\"deferDuringUse\":");add((updatePolicy.deferDuringUse?"true":"false"));add(",\"idleSeconds\":");add(String(updatePolicy.idleSeconds));
   add(",\"eligibility\":");add(String(uint8_t(eligibility)));add(",\"groupCoordination\":");add(String(coordination));
   add(",\"automaticEligible\":");add((eligibility==LampUpdatePolicy::Ready&&coordination==0?"true":"false"));add(",\"unknownTime\":\"wait\",\"restartResume\":false,\"automaticRadioRollout\":false}");
-  if(!good)return String();
-  return out;
+  });
 }

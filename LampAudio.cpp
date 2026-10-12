@@ -1,7 +1,8 @@
 #include "LampAudio.h"
+#include "LampJsonSink.h"
 #include "AudioAnalysis.h"
 #include "AudioSpectrum.h"
-#include <Preferences.h>
+#include "LampNvsBlob.h"
 #include <driver/i2s_std.h>
 #include <driver/gpio.h>
 #include <freertos/semphr.h>
@@ -10,6 +11,9 @@
 
 namespace {
 bool installed = false;
+bool enabled = true, enabledStored = false, preferenceHealthy = true, saveUncertain = false, recordReadFailed = false;
+bool captureWanted = false, capturedSinceStart = false, diagnosticActive = false, retryPending = false;
+uint32_t captureStartedAt = 0;
 uint8_t gain = 8;
 uint16_t gate = 8;
 uint16_t scale = 100;
@@ -23,6 +27,38 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 LampAudioFeatures features{};
 uint32_t diagnosticUntil = 0, retryAt = 0;
 constexpr size_t FRAMES = 256;
+constexpr uint32_t CaptureFreshMs = 100, CaptureStartupMs = 2000;
+constexpr const char* UseKey = "audioUseV1";
+constexpr const char* HardwareKey = "audioHwV1";
+bool validFlag(const uint8_t* record) {
+  return record[0]==1 && record[1]<=1 && record[2]==0 && record[3]==uint8_t(0x69^record[0]^record[1]^record[2]);
+}
+void flagRecord(uint8_t* record,bool value) {
+  record[0]=1;record[1]=uint8_t(value);record[2]=0;record[3]=uint8_t(0x69^record[0]^record[1]);
+}
+bool matchesRecord(LampNvsBlobPreferences& prefs,const char* key,const uint8_t* record,size_t length) {
+  uint8_t check[7]{};size_t actual=length;
+  return length<=sizeof(check) && prefs.readBlob(key,check,actual)==ESP_OK && actual==length && memcmp(check,record,length)==0;
+}
+// NVS commits one blob atomically. Readback verifies success; a failed write or
+// readback restores the exact prior blob/absence before claiming no change.
+bool persistRecord(LampNvsBlobPreferences& prefs,const char* key,const uint8_t* record,size_t length) {
+  uint8_t previous[7]{};size_t previousLength=sizeof(previous);
+  const esp_err_t prior=prefs.readBlob(key,previous,previousLength);const bool existed=prior==ESP_OK;
+  if(length>sizeof(previous) || (prior!=ESP_OK && prior!=ESP_ERR_NVS_NOT_FOUND) ||
+      (existed && (!previousLength || previousLength>sizeof(previous)))) {recordReadFailed=true;return false;}
+  if(prefs.putBytes(key,record,length)==length && matchesRecord(prefs,key,record,length))return true;
+  bool restored=false;
+  if(existed)restored=matchesRecord(prefs,key,previous,previousLength) ||
+    (prefs.putBytes(key,previous,previousLength)==previousLength && matchesRecord(prefs,key,previous,previousLength));
+  else {
+    size_t probeLength=0;const esp_err_t probe=prefs.readBlob(key,nullptr,probeLength);
+    if(probe==ESP_ERR_NVS_NOT_FOUND)restored=true;
+    else if(probe==ESP_OK && prefs.remove(key)) {probeLength=0;restored=prefs.readBlob(key,nullptr,probeLength)==ESP_ERR_NVS_NOT_FOUND;}
+    // Type mismatches/driver errors never authorize deleting an unknown record.
+  }
+  saveUncertain=!restored;return false;
+}
 bool IRAM_ATTR overflow(i2s_chan_handle_t, i2s_event_data_t*, void*) {
   portENTER_CRITICAL_ISR(&mux); ++features.overruns; portEXIT_CRITICAL_ISR(&mux);
   return false;
@@ -72,7 +108,7 @@ void capture(void*) {
     features.noiseFloor=noiseFloor.rms();features.effectiveGate=noiseFloor.cutoff(gate);
     features.effectiveGain = analysis.effectiveGainHundredths(gain);
     features.rms = level.rms; features.peak = level.peak; features.level = heldLevel;
-    features.signalSeen |= level.signal; features.valid = true; features.error = 0;
+    features.signalSeen |= level.signal; features.valid = true; features.error = 0; capturedSinceStart = true;
     features.stackFree = stackFree;
     portEXIT_CRITICAL(&mux);
   }
@@ -128,6 +164,7 @@ bool start() {
   stopping = false;
   portENTER_CRITICAL(&mux);
   features.running = true; features.valid = false; features.signalSeen = false; features.error = 0;
+  capturedSinceStart = false;captureStartedAt=millis();
   portEXIT_CRITICAL(&mux);
   if (xTaskCreate(capture, "lamp-audio", 4096, nullptr, 1, &worker) != pdPASS) {
     worker = nullptr; error(ESP_ERR_NO_MEM); releaseReceiver(); return false;
@@ -137,30 +174,79 @@ bool start() {
 }
 
 void beginLampAudio() {
-  Preferences prefs;
+  LampNvsBlobPreferences prefs;
   uint8_t data[7]{};
-  if (!prefs.begin("coollamp", true)) return;
-  const bool v2 = prefs.getBytesLength("audioV2") == sizeof(data);
+  // Boot-only writable open can create a genuinely missing namespace. Verify
+  // both legacy keys after it succeeds; any open/read failure stays closed.
+  if (!prefs.begin("coollamp", true) && !prefs.begin("coollamp", false)) {enabled=false;preferenceHealthy=false;return;}
+  size_t lengthV1=0,lengthV2=0;
+  const esp_err_t foundV1=prefs.readBlob("audioV1",nullptr,lengthV1),foundV2=prefs.readBlob("audioV2",nullptr,lengthV2);
+  if((foundV1!=ESP_OK && foundV1!=ESP_ERR_NVS_NOT_FOUND) || (foundV2!=ESP_OK && foundV2!=ESP_ERR_NVS_NOT_FOUND)) {enabled=false;preferenceHealthy=false;prefs.end();return;}
+  const bool legacyAbsent=foundV1==ESP_ERR_NVS_NOT_FOUND && foundV2==ESP_ERR_NVS_NOT_FOUND;
+  const bool v2 = foundV2==ESP_OK && lengthV2==sizeof(data);
   const char* key = v2 ? "audioV2" : "audioV1";
   const size_t size = v2 ? 7 : 5;
-  const bool ok = prefs.getBytesLength(key) == size && prefs.getBytes(key, data, size) == size;
+  size_t actual=size;const bool ok=(v2?lengthV2:lengthV1)==size && prefs.readBlob(key,data,actual)==ESP_OK && actual==size;
+  uint8_t use[4]{};actual=sizeof(use);const esp_err_t foundUse=prefs.readBlob(UseKey,use,actual);
+  if(foundUse!=ESP_ERR_NVS_NOT_FOUND) {
+    const bool valid=foundUse==ESP_OK && actual==sizeof(use) && validFlag(use);
+    enabled=valid && use[1];enabledStored=valid;preferenceHealthy=valid;
+  }
   prefs.end();
   const uint16_t storedGate = uint16_t(data[3]) | uint16_t(data[4]) << 8;
   const uint16_t storedScale = v2 ? uint16_t(data[5]) | uint16_t(data[6]) << 8 : 100;
   if (ok && data[0] == (v2 ? 2 : 1) && storedScale >= 100 && storedScale <= 400 && data[1] <= 1 && data[2] >= 1 && data[2] <= 64 && storedGate <= 1024) {
     installed = data[1]; gain = data[2]; gate = storedGate; scale = storedScale;
   }
+  // Only a verified absence of BOTH old records permits factory defaults.
+  // Existing malformed records are preserved, never replaced by heuristics.
+  if(legacyAbsent) {
+    LampNvsBlobPreferences factory;uint8_t hardware[4]{};
+    if(factory.begin("lampmodel",true)) {
+      actual=sizeof(hardware);if(factory.readBlob(HardwareKey,hardware,actual)==ESP_OK && actual==sizeof(hardware) && validFlag(hardware))installed=hardware[1];
+      factory.end();
+    }
+  }
 }
 bool lampHasMicrophone() { return installed; }
+bool lampMicrophoneEnabled() { return enabled && preferenceHealthy; }
+bool lampMicrophoneEnabledKnown() { return preferenceHealthy; }
+bool lampAudioSaveUncertain() { return saveUncertain; }
+bool provisionLampMicrophoneHardware(bool nextInstalled) {
+  saveUncertain=false;recordReadFailed=false;if(worker || receiver)return false;uint8_t hardware[4]{};flagRecord(hardware,nextInstalled);
+  LampNvsBlobPreferences prefs;if(!prefs.begin("lampmodel",false))return false;
+  uint8_t previous[4]{};size_t actual=sizeof(previous);const esp_err_t found=prefs.readBlob(HardwareKey,previous,actual);
+  if(found!=ESP_ERR_NVS_NOT_FOUND) {
+    const bool same=found==ESP_OK && actual==sizeof(previous) && validFlag(previous) && memcmp(previous,hardware,sizeof(hardware))==0;
+    prefs.end();return same; // No overwriting corrupt, unreadable or conflicting factory identity.
+  }
+  const bool ok=persistRecord(prefs,HardwareKey,hardware,sizeof(hardware));prefs.end();return ok;
+}
+bool saveLampMicrophoneEnabled(bool nextEnabled) {
+  saveUncertain=false;recordReadFailed=false;
+  if(enabledStored && preferenceHealthy && nextEnabled==enabled)return true;
+  if(!stopLampAudio())return false;
+  uint8_t data[4]{};flagRecord(data,nextEnabled);
+  LampNvsBlobPreferences prefs;if(!prefs.begin("coollamp",false)) {enabled=false;preferenceHealthy=false;return false;}
+  uint8_t previous[4]{};size_t actual=sizeof(previous);const esp_err_t found=prefs.readBlob(UseKey,previous,actual);
+  if(found!=ESP_ERR_NVS_NOT_FOUND && (found!=ESP_OK || actual!=sizeof(previous) || previous[0]!=1)) {enabled=false;preferenceHealthy=false;prefs.end();return false;}
+  const bool ok=persistRecord(prefs,UseKey,data,sizeof(data));prefs.end();
+  if(!ok) {if(saveUncertain||recordReadFailed){enabled=false;preferenceHealthy=false;}return false;}
+  enabled=nextEnabled;enabledStored=true;preferenceHealthy=true;
+  if(!enabled){diagnosticActive=false;diagnosticUntil=0;captureWanted=false;}
+  return true;
+}
 uint16_t lampAudioScale() { return scale; }
 bool saveLampMicrophoneInstalled(bool enabled){return saveLampAudioConfiguration(enabled,gain,gate,scale);}
 bool saveLampAudioConfiguration(bool enabled, uint8_t nextGain, uint16_t nextGate, uint16_t nextScale) {
+  saveUncertain=false;recordReadFailed=false;
   if (!nextScale) nextScale = scale;
   if (!nextGain || nextGain > 64 || nextGate > 1024 || nextScale < 100 || nextScale > 400) return false;
+  if(!stopLampAudio())return false;
   const uint8_t data[7] = {2, uint8_t(enabled), nextGain, uint8_t(nextGate), uint8_t(nextGate >> 8), uint8_t(nextScale), uint8_t(nextScale >> 8)};
-  Preferences prefs;
+  LampNvsBlobPreferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
-  const bool ok = prefs.putBytes("audioV2", data, sizeof(data)) == sizeof(data); prefs.end();
+  const bool ok = persistRecord(prefs,"audioV2",data,sizeof(data)); prefs.end();
   // Apply at reboot so catalogs and BLE capability negotiation stay consistent.
   return ok;
 }
@@ -189,28 +275,44 @@ bool adjustLampAudioGain(bool increase) {
 }
 void serviceLampAudio(bool wanted, bool blocked) {
   const uint32_t now = millis();
-  const bool diagnostic = diagnosticUntil && int32_t(diagnosticUntil - now) > 0;
-  if (!installed || blocked || (!wanted && !diagnostic)) { stopLampAudio(); return; }
+  const bool diagnostic = diagnosticActive && int32_t(diagnosticUntil - now) > 0;
+  if(diagnosticActive && !diagnostic)diagnosticActive=false;
+  captureWanted=installed && lampMicrophoneEnabled() && !blocked && (wanted || diagnostic);
+  if (!captureWanted) { stopLampAudio(); return; }
   if (worker && uxSemaphoreGetCount(finished)) {
-    stopLampAudio(); retryAt = now + 5000;
+    stopLampAudio(); retryAt = now + 5000;retryPending=true;
   }
-  if (!worker && (!retryAt || int32_t(now - retryAt) >= 0)) {
-    retryAt = start() ? 0 : now + 5000;
+  if (!worker && (!retryPending || int32_t(now - retryAt) >= 0)) {
+    // Deadline zero is valid at rollover, not an invitation to retry early.
+    retryPending=!start();retryAt=retryPending?now+5000:0;
   }
 }
-void diagnoseLampAudio() { diagnosticUntil = millis() + 10000; }
+void diagnoseLampAudio() { if(installed && lampMicrophoneEnabled()){diagnosticActive=true;diagnosticUntil = millis() + 10000;} }
+LampAudioCaptureStatus lampAudioCaptureStatus() {
+  if(!installed || !enabled || !captureWanted)return preferenceHealthy?LampAudioCaptureStatus::Idle:LampAudioCaptureStatus::Error;
+  if(!preferenceHealthy)return LampAudioCaptureStatus::Error;
+  portENTER_CRITICAL(&mux);const auto copy=features;const bool sampled=capturedSinceStart;const uint32_t started=captureStartedAt;portEXIT_CRITICAL(&mux);
+  if(copy.error)return LampAudioCaptureStatus::Error;
+  if(!copy.running || stopping.load())return LampAudioCaptureStatus::Idle;
+  const uint32_t now=millis();
+  if(!sampled)return uint32_t(now-started)<=CaptureStartupMs?LampAudioCaptureStatus::Starting:LampAudioCaptureStatus::Stale;
+  return copy.valid && uint32_t(now-copy.timestamp)<=CaptureFreshMs?LampAudioCaptureStatus::Healthy:LampAudioCaptureStatus::Stale;
+}
 LampAudioFeatures getLampAudioFeatures() {
   portENTER_CRITICAL(&mux); auto copy = features; portEXIT_CRITICAL(&mux);
-  if (!copy.running || uint32_t(millis() - copy.timestamp) > 100) { copy.valid = false; copy.level = 0; }
+  if (!copy.running || uint32_t(millis() - copy.timestamp) > CaptureFreshMs) { copy.valid = false; copy.level = 0; }
   return copy;
 }
-String lampAudioJson() {
-  const auto f = getLampAudioFeatures();
-  String out;bool good=true;
-  const auto add=[&](const auto& value){if(good)good=out.concat(value);};
+LampAudioJsonSnapshot captureLampAudioJson() {
+  return {getLampAudioFeatures(),installed,gain,gate,scale,ESP.getFreeHeap(),lampRenderedFrames,lampMaxRenderUs,lampMicrophoneEnabled(),uint8_t(lampAudioCaptureStatus()),lampMicrophoneEnabledKnown()};
+}
+void appendLampAudioJson(LampJsonSink& out,const LampAudioJsonSnapshot& snapshot) {
+  const auto& f=snapshot.features;
+  const auto add=[&](const auto& value){out.concat(value);};
   add("{\"installed\":");
-  add((installed?"true":"false"));add(",\"liveTuning\":true,\"automaticGain\":true,\"gain\":");add(String(gain));
-  add(",\"gate\":");add(String(gate));add(",\"scale\":");add(String(scale));
+  add((snapshot.installed?"true":"false"));add(",\"liveTuning\":true,\"automaticGain\":true,\"gain\":");add(String(snapshot.gain));
+  add(",\"captureVersion\":1,\"enabled\":");add(snapshot.enabledKnown?(snapshot.enabled?"true":"false"):"null");add(",\"captureStatus\":");add(String(snapshot.captureStatus));
+  add(",\"gate\":");add(String(snapshot.gate));add(",\"scale\":");add(String(snapshot.scale));
   add(",\"running\":");add((f.running?"true":"false"));add(",\"valid\":");add((f.valid?"true":"false"));
   add(",\"signalSeen\":");add((f.signalSeen?"true":"false"));add(",\"level\":");add(String(f.level));
   add(",\"noiseFloor\":");add(String(f.noiseFloor));add(",\"effectiveGate\":");add(String(f.effectiveGate));add(",\"effectiveGain\":");add(String(f.effectiveGain));
@@ -218,8 +320,10 @@ String lampAudioJson() {
   add(",\"errors\":");add(String(f.errors));add(",\"overruns\":");add(String(f.overruns));add(",\"stackFree\":");add(String(f.stackFree));
   add(",\"bass\":");add(String(f.bass));add(",\"mid\":");add(String(f.mid));add(",\"treble\":");add(String(f.treble));
   add(",\"beat\":");add(String(f.beat));add(",\"bassBeat\":");add(String(f.bassBeat));
-  add(",\"heap\":");add(String(ESP.getFreeHeap()));add(",\"frames\":");add(String(lampRenderedFrames));
-  add(",\"maxRenderUs\":");add(String(lampMaxRenderUs));add(",\"error\":");add(String(f.error));add('}');
-  if(!good)return String();
-  return out;
+  add(",\"heap\":");add(String(snapshot.heap));add(",\"frames\":");add(String(snapshot.frames));
+  add(",\"maxRenderUs\":");add(String(snapshot.maxRender));add(",\"error\":");add(String(f.error));add('}');
+}
+String lampAudioJson() {
+  const auto snapshot=captureLampAudioJson();
+  return lampJsonReply([&](LampJsonSink& out){appendLampAudioJson(out,snapshot);});
 }

@@ -16,7 +16,7 @@ class LampControlHttpAdapter : public LampHttpServer {
   struct Entry { String key,value; } fields[Fields];
   unsigned fieldCount=0;
   bool control=false, httpFormActive=false;
-  bool privateTransport=false;
+  bool privateTransport=false,readContext=false;
   String controlUri;
   LampControlReply reply;
   static void erase(String& text){
@@ -67,6 +67,7 @@ class LampControlHttpAdapter : public LampHttpServer {
     using namespace LampControlEndpoint;
     if(method==HTTP_GET&&!strcmp(path,"/api/descriptor"))return Descriptor;
     if(method==HTTP_GET&&!strcmp(path,"/api/revision"))return Revision;
+    if(method==HTTP_GET&&!strcmp(path,"/api/audio"))return Audio;
     if(method==HTTP_POST&&!strcmp(path,"/api/effects/schema"))return SchemaPage;
     if(method==HTTP_POST&&!strcmp(path,"/api/state/patch"))return StatePatch;
     if(method==HTTP_POST&&!strcmp(path,"/api/appearance/save"))return AppearanceSave;
@@ -102,6 +103,7 @@ class LampControlHttpAdapter : public LampHttpServer {
     using namespace LampControlEndpoint;
     if(id==Descriptor&&!mutation)return "/api/descriptor";
     if(id==Revision&&!mutation)return "/api/revision";
+    if(id==Audio&&!mutation)return "/api/audio";
     if(id==SchemaPage&&mutation)return "/api/effects/schema";
     if(id==StatePatch&&mutation)return "/api/state/patch";
     if(id==AppearanceSave&&mutation)return "/api/appearance/save";
@@ -166,7 +168,7 @@ public:
   String header(const String& name)const{return control?(name=="X-Lamp-Token"?lampToken:String()):LampHttpServer::header(name);}
   void sendHeader(const String& name,const String& value,bool first=false){if(!control)LampHttpServer::sendHeader(name,value,first);}
   void send(int status,const char* type,const String& body){if(!control){LampHttpServer::send(status,type,body);return;}reply.status=status;if(body.length()>8192||(status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}else {reply.body=body;if(reply.body.length()!=body.length()){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}}}
-  void send(int status,const char* type,String&& body){if(!control){LampHttpServer::send(status,type,std::move(body));return;}reply.status=status;if(body.length()>8192||(status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}else reply.body=std::move(body);}
+  void send(int status,const char* type,String&& body){if(!control){LampHttpServer::send(status,type,std::move(body));return;}reply.status=status;if(readContext&&status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&body.isEmpty()){reply.status=503;reply.body="Read resources unavailable. Nothing changed.";}else if(body.length()>8192||(status>=200&&status<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){reply.status=507;reply.body="Control response unavailable; reconcile any submitted mutation.";}else reply.body=std::move(body);}
   void send(int status,const char* type,const char* body){send(status,type,String(body));}
   LampControlReply executeControl(uint8_t id,bool mutation,const String& body,bool confidential=false){
     if(control)return {409,"Another control request is active."};
@@ -174,14 +176,16 @@ public:
     // Decode and execution share the loop owner across BLE and mesh. Denial
     // consumes no command here; an earlier uncertain submission still needs
     // reconciliation rather than replay on a different route.
-    if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))
+    const bool boundedRead=LampControlResourcePolicy::readEndpoint(id,mutation);
+    if(!(boundedRead?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
+                   LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap())))
       return {503,"Control resources unavailable. This request was not executed."};
     clearFields();
     if((!mutation&&!body.isEmpty())||!parse(body)){clearFields();return {400,"Invalid control request form."};}
     if(id==LampControlEndpoint::Bluetooth&&mutation){bool forget=false;for(unsigned i=0;i<fieldCount;++i)if(fields[i].key=="action"&&fields[i].value=="forget")forget=true;if(!forget){clearFields();return {400,"Choose a supported Bluetooth action."};}}
-    reply.status=500;erase(reply.body);controlUri=route(id,mutation);control=true;privateTransport=confidential;
+    reply.status=500;erase(reply.body);controlUri=route(id,mutation);control=true;privateTransport=confidential;readContext=boundedRead;
     controls[id][mutation?1:0]();
-    control=false;privateTransport=false;controlUri=String();clearFields();
+    control=false;privateTransport=false;readContext=false;controlUri=String();clearFields();
     LampControlReply result{reply.status,std::move(reply.body)};reply.status=500;return result;
   }
 };

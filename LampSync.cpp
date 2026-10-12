@@ -1,4 +1,5 @@
 #include "LampSync.h"
+#include "LampJsonSink.h"
 #include "LampAudio.h"
 #include "LampEspNow.h"
 #include "LampSyncRadioCrypto.h"
@@ -157,13 +158,6 @@ Peer* peer(const char* id,uint32_t now,bool subscribing=false){
     for(auto& p:peers)if(!p.joined || uint32_t(now-p.subscribed)>=Timeout){p=Peer{};return &p;}
   }
   return nullptr;
-}
-String quote(const char* value){
-  if(!value)return String();
-  String s="\"";
-  for(size_t i=0;value[i];++i){const uint8_t c=value[i];if((c=='"'||c=='\\')&&!s.concat('\\'))return String();if(c>=32&&!s.concat(char(c)))return String();}
-  if(!s.concat('"'))return String();
-  return s;
 }
 void locate(Peer& item,const Packet& p,uint32_t now,bool radio,const uint8_t* mac,uint8_t channel,IPAddress source) {
   strlcpy(item.info.sender,p.sender,sizeof(item.info.sender));strlcpy(item.info.name,p.name,sizeof(item.info.name));
@@ -464,21 +458,25 @@ String lampSyncIncarnation(){
   volatile uint8_t* wipe=hash;for(unsigned i=0;i<sizeof(hash);++i)wipe[i]=0;
   return out;
 }
-bool appendLampSyncJson(String& s,uint8_t peerCursor,uint8_t peerLimit){
+LampSyncJsonSnapshot captureLampSyncJson(uint32_t now){
+  return {now,LampEspNow::status(),lampGroupVisual(),lampSyncIncarnation()};
+}
+bool appendLampSyncJson(LampJsonSink& s,uint8_t peerCursor,uint8_t peerLimit,const LampSyncJsonSnapshot& snapshot){
+  const uint32_t now=snapshot.now;
   if(!peerLimit)peerLimit=1;else if(peerLimit>8)peerLimit=8;
-  const uint32_t now=millis();unsigned members=0;for(auto& p:peers)if(p.joined&&uint32_t(now-p.subscribed)<Timeout)++members;
-  const auto radio=LampEspNow::status();
+  unsigned members=0;for(auto& p:peers)if(p.joined&&uint32_t(now-p.subscribed)<Timeout)++members;
+  const auto& radio=snapshot.radio;
   const char* transport=lampSyncFollowing()?(followingRadio?"esp-now":"udp"):
     started&&radio.active&&!radio.suspended?"hybrid":started?"udp":radio.active&&!radio.suspended?"esp-now":"none";
   bool good=true;
   const auto add=[&](const auto& value){if(good)good=s.concat(value);};
-  const auto quoted=[&](const char* value){const String text=quote(value);if(!text.length())good=false;add(text);};
+  const auto quoted=[&](const char* value){if(good)good=s.quote(value);};
   add("{\"version\":");add(wireVersion);add(",\"protocolVersions\":[2,3],\"maxMembers\":");add(memberLimit(wireVersion));add(",\"maxSupportedMembers\":32,\"coordinatorMigration\":false,\"broadcastFrames\":");add(wireVersion==ExpandedVersion?"true":"false");
   char sessionText[17];snprintf(sessionText,sizeof(sessionText),"%016llx",static_cast<unsigned long long>(nonce));
   add(",\"session\":");quoted(sessionText);add(",\"dissolutionV1\":true");
   // The random group key identifies the group incarnation across reboot/prune.
   // Publish a domain-separated one-way fingerprint, never reusable authority.
-  const String incarnation=lampSyncIncarnation();if(incarnation.length()){add(",\"incarnation\":");quoted(incarnation.c_str());}else if(config.role)good=false;
+  const String& incarnation=snapshot.incarnation;if(incarnation.length()){add(",\"incarnation\":");quoted(incarnation.c_str());}else if(config.role)good=false;
   add(",\"membershipLocked\":");add(lampRolloutPinsMembership()?"true":"false");
   add(",\"role\":");add(config.role);add(",\"leader\":");quoted(config.leader);add(",\"paused\":");add(paused?"true":"false");add(",\"active\":");add(lampSyncFollowing()?"true":"false");add(",\"members\":");add(members);add(",\"peers\":[");
   unsigned peerTotal=0,peerReturned=0;
@@ -504,7 +502,7 @@ bool appendLampSyncJson(String& s,uint8_t peerCursor,uint8_t peerLimit){
   add(",\"received\":");add(receivedPackets);add(",\"discoveries\":");add(discoveries);add(",\"authenticationFailures\":");add(authFailures);
   add(",\"subscriptions\":");add(subscriptionsSent);add(",\"frames\":");add(framesReceived);add(",\"clockDrops\":");add(clockDrops);add('}');
   add(",\"sceneCount\":");add(SceneCount);
-  const auto v=lampGroupVisual();
+  const auto& v=snapshot.visual;
   add(",\"scene\":");add(v.scene);add(",\"position\":");add(v.position);add(",\"count\":");add(v.count);add(",\"sceneSpeed\":");add(v.sceneSpeed);add(",\"sceneIntensity\":");add(v.sceneIntensity);
   add(",\"scenePrimary\":[");add(v.scenePrimary[0]);add(',');add(v.scenePrimary[1]);add(',');add(v.scenePrimary[2]);add("],\"sceneSecondary\":[");add(v.sceneSecondary[0]);add(',');add(v.sceneSecondary[1]);add(',');add(v.sceneSecondary[2]);add(']');
   add(",\"order\":[");
@@ -519,10 +517,17 @@ bool appendLampSyncJson(String& s,uint8_t peerCursor,uint8_t peerLimit){
   add("]}");
   return good;
 }
+bool appendLampSyncJson(LampJsonSink& reply,uint8_t peerCursor,uint8_t peerLimit,uint32_t now){
+  const auto snapshot=captureLampSyncJson(now);return appendLampSyncJson(reply,peerCursor,peerLimit,snapshot);
+}
+bool appendLampSyncJson(String& reply,uint8_t peerCursor,uint8_t peerLimit){
+  if(reply.length()>8192)return false;
+  LampJsonSink sink(&reply,8192-reply.length());
+  return appendLampSyncJson(sink,peerCursor,peerLimit,millis());
+}
 String lampSyncJson(uint8_t peerCursor,uint8_t peerLimit){
-  String out;
-  if(!appendLampSyncJson(out,peerCursor,peerLimit))return String();
-  return out;
+  const auto snapshot=captureLampSyncJson(millis());
+  return lampJsonReply([&](LampJsonSink& out){appendLampSyncJson(out,peerCursor,peerLimit,snapshot);});
 }
 
 uint8_t lampSyncRole(){return config.role;}

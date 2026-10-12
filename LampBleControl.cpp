@@ -62,7 +62,9 @@ uint8_t lampBleControlCommand(const uint8_t* frame,size_t size,uint32_t generati
   if(frame[2]==Chunk)return transfer.append(frame,size,generation,millis())?0:2;
   if(frame[2]==Commit){
     if(!transfer.consume(frame,size,generation,millis()))return 2;
-    if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap())){
+    const bool read=LampControlResourcePolicy::readEndpoint(transfer.endpointId(),transfer.mutation());
+    if(!(read?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),transfer.bodySize(),true):
+              LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))){
       constexpr char denied[]="Control resources unavailable. No command executed.";
       String body=denied;
       const bool saved=body.length()==sizeof(denied)-1&&retainResponse(503,body);

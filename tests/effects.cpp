@@ -1,6 +1,7 @@
 #include <algorithm>
 #include "../LampGeometry.h"
 uint16_t lampMidpoint=0;
+uint8_t lampMotionPath=0;
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -257,5 +258,55 @@ int main(){
   lampSyncVisual=nullptr;
   assert(getLampColor(46).r==localColor.r && getLampEffectOptions(46).speed==localOptions.speed);
   assert(Preferences::storage==stored);
-  std::cout<<"PASS: legacy color migration, option persistence/retry, packet bounds, nine animated effects, black colors, 1/2/odd/1024 LEDs and clock wrap.\n";
+  // Actual whole-strip renderers use one complete lane. The saved calibrated
+  // midpoint still has its original physical meaning and is not rewritten.
+  lampMotionPath=1;
+  const VuColor zones[3]={{0,255,0},{255,255,0},{255,0,0}};
+  assert(saveLampVuColors(zones));
+  uint32_t now=1000000;
+  for(int count=1;count<=1024;++count)for(uint16_t midpoint:{uint16_t(0),uint16_t(1),uint16_t(count/3),uint16_t(count-1)}){
+    NUM_LEDS=count;lampMidpoint=midpoint;
+    const auto storage=Preferences::storage;
+    const auto physical=lampCenteredPosition(count/2,count,midpoint);
+    std::vector<CRGB> frame(count+2);leds=frame.data()+1;
+    const CRGB guard(13,27,39);frame.front()=frame.back()=guard;
+    auto peak=[&](){int best=0;for(int i=1;i<count;++i)if(leds[i].r>leds[best].r)best=i;return best;};
+    for(uint8_t mode:{30,38}){
+      setLampColor(mode,255,0,0);setLampEffectOptions(mode,{50,0,0,0,0,0});
+      renderNewEffect(mode,0);
+      if(count>1){assert(leds[mode==30?0:count-1].r==255);assert(leds[mode==30?count-1:0].r==0);}
+      renderNewEffect(mode,2800);
+      if(count>1){assert(leds[mode==30?count-1:0].r==255);assert(leds[mode==30?0:count-1].r==0);}
+      if(count==1){renderNewEffect(mode,1980);assert(leds[0].r>200);}
+      for(uint32_t t:{0xffffffffU,0U,1U})renderNewEffect(mode,t);
+    }
+    setLampColor(34,255,0,0);setLampEffectOptions(34,{50,100,1,0,0,0});
+    renderNewEffect(34,0);
+    if(count>1){assert(leds[0].r==255&&leds[count-1].r==0);renderNewEffect(34,1600);assert(peak()>=count*8/10);}
+    else{renderNewEffect(34,850);assert(leds[0].r>100);}
+    setLampColor(39,255,0,0);setLampEffectOptions(39,{100,100,1,0,0,255});
+    soundGlowPalette(leds);
+    assert(leds[0]==CRGB(255,0,0));if(count>1)assert(leds[count-1]==CRGB(0,0,255));
+    for(uint8_t mode=39;mode<=47;++mode){
+      resetLampColor(mode);if(mode<=40)setLampColor(mode,255,255,255);
+      setLampEffectOptions(mode,{100,100,0,0,0,0});
+      now+=1000;audioSnapshot={true,255,100,60,30,0,0};renderAudioEffect(mode,now);
+      bool lit=false;
+      for(uint32_t age:{32U,200U,400U,500U,550U}){
+        audioSnapshot={true,255,100,60,30,1,1};renderAudioEffect(mode,now+age);
+        for(int i=0;i<count;++i)lit|=leds[i].r||leds[i].g||leds[i].b;
+      }
+      if(!lit)std::cerr<<"Whole audio missing: count="<<count<<" midpoint="<<midpoint<<" mode="<<unsigned(mode)<<"\n";
+      assert(lit);
+      if(mode==46){assert(leds[0]==(count>1?CRGB(0,255,0):CRGB(255,0,0)));if(count>1)assert(leds[count-1]==CRGB(255,0,0));}
+      audioSnapshot={false,0};renderAudioEffect(mode,now+700);renderAudioEffect(mode,now+800);
+      for(int i=0;i<count;++i)assert(leds[i]==CRGB::Black);
+      for(uint32_t t:{0xfffffff0U,0U,80U})renderAudioEffect(mode,t);
+      assert(frame.front()==guard&&frame.back()==guard);
+    }
+    assert(lampMidpoint==midpoint&&lampCenteredPosition(count/2,count,midpoint)==physical);
+    assert(Preferences::storage==storage);
+  }
+  lampMotionPath=0;
+  std::cout<<"PASS: legacy migration/options/effect semantics, whole-strip opposite Droplets endpoints and single Heartbeat, audio palette/VU/Fountain/pulses, all lengths 1–1024 with odd/asymmetric calibration and clock wrap, unchanged physical geometry/NVS.\n";
 }

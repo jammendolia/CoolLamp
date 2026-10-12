@@ -1,5 +1,40 @@
 # Firmware updates through a phone
 
+## Prepared durable installation uncertainty contract
+
+The version-1 receiver status stays exactly 20 bytes. Byte 3 retains its existing
+flags: `0x01` committed, `0x02` four-frame writes without response, `0x04` resume
+support, and `0x08` detached resume lease. The additive `0x10` flag means
+**the durable installation fence was entered, but its result is unconfirmed**.
+This includes a failed durable attempt-record preparation before boot selection;
+the flag alone does not prove boot selection was attempted.
+Unknown reserved bits do not change those meanings.
+
+A valid `0x10` status has phase 5 (Error), error 6 (flash/boot selection), committed
+clear, detached clear, the original nonzero session and Finish acknowledgment,
+the original image size (288–2,031,616 bytes), and written offset equal to size.
+The receiver keeps update ownership and rejects new mutations until reboot.
+This is different from an image rejected before the durable installation fence.
+
+The phone validates those fields. During a transfer it also requires the exact
+session, image size and acknowledgment of an issued Finish; an earlier Data ACK,
+foreign session, stale acknowledgment or malformed notification cannot establish
+that receipt. A matching uncertain Finish returns `verificationRequired` and
+never sends Cancel, another Finish or new metadata. A fresh protected initial
+status with this flag similarly prevents every mutative native write, including
+resume. It reports uncertainty even though this new phone attempt sent no bytes;
+it cannot truthfully claim the lamp is unchanged. Reconciliation must obtain a
+fresh verified identity, installed version and control/boot health after reboot
+before approving another attempt. The existing native foreground and connection
+lifetime requirements continue to apply.
+
+An initial read that sets `0x10` with inconsistent fields also prevents writes
+and reports an unverified outcome; those malformed fields never become an
+accepted receipt. Invalid or unrelated notifications remain ignored.
+
+These are source and host-tested contracts for the prepared change. They do not
+claim that a new app or firmware release has been published or physically tested.
+
 ## Faster transfers published — 2026-10-10
 
 Public Latest **firmware 1.14.0** and **app 1.0 (45.1)** add native iOS bulk data writes.

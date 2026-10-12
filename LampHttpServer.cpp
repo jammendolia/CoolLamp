@@ -100,16 +100,25 @@ void LampHttpServer::queueError(unsigned index,int code,const char* message){
 void LampHttpServer::retain(int code,const char* type,String&& body){
   if(current_<0)return;auto& c=clients_[current_];
   const auto* request=currentRequest();
+  if(code>=200&&code<300&&type&&!strncmp(type,"application/json",16)&&body.isEmpty()&&request&&
+     LampControlResourcePolicy::readHttpPath(request->path,request->method==LampHttpParser::Method::Post)){
+    increment(metrics_.responseFailures);queueError(unsigned(current_),503,"Read resources unavailable. Nothing changed.");return;
+  }
   const size_t limit=request&&!strcmp(request->path,"/api/household/control")?HouseholdResponseBytes:MaxResponseBytes;
   if(body.length()>limit||queuedBodyBytes()-c.body.length()+body.length()>TotalResponseBytes||(code>=200&&code<300&&type&&!strncmp(type,"application/json",16)&&!LampHttpJson::complete(body.c_str(),body.length()))){increment(metrics_.responseFailures);queueError(unsigned(current_),507,"Response unavailable; reconcile any submitted mutation.");return;}
   erase(c.body);c.body=std::move(body);c.staticBody=nullptr;c.staticPage=false;
   if(!prepareResponse(code,type,c.body.length())){increment(metrics_.responseFailures);queueError(unsigned(current_),507,"Response unavailable; reconcile any submitted mutation.");}
 }
 void LampHttpServer::send_P(int code,const char* type,const char* body){
-  if(current_<0)return;auto& c=clients_[current_];erase(c.body);c.staticBody=body;
+  send_P(code,type,body,body?strlen(body):0);
+}
+void LampHttpServer::send_P(int code,const char* type,const char* body,size_t bytes){
+  if(current_<0)return;
+  if((bytes&&!body)||bytes>MaxMappedPageBytes){increment(metrics_.responseFailures);queueError(unsigned(current_),500,"Mapped response unavailable.");return;}
+  auto& c=clients_[current_];erase(c.body);c.staticBody=body;
   c.staticPage=type&&!strncmp(type,"text/html",9)&&(type[9]=='\0'||type[9]==';');
   // ESP32 flash is mapped. The immutable page is sent directly, no heap copy.
-  if(!prepareResponse(code,type,strlen(body)))queueError(unsigned(current_),500,"Response unavailable.");
+  if(!prepareResponse(code,type,bytes))queueError(unsigned(current_),500,"Response unavailable.");
 }
 bool LampHttpServer::authenticate(const char* name,const char* password){
   const auto* request=currentRequest();
@@ -241,7 +250,22 @@ void LampHttpServer::serviceTransport(){
       // Wait before executing any mutation until its ordinary reply has a
       // viable allocation budget. 6160 includes pinned WString's rounding for
       // the common 6144-byte reserve. Waiting does not renew request lifetime.
-      if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))continue;
+      const bool boundedRead=dispatchContext_==int(index)&&LampControlResourcePolicy::readHttpPath(dispatchRequest_.path,dispatchRequest_.method==LampHttpParser::Method::Post);
+      const bool boundedPreparation=dispatchContext_==int(index)&&LampControlResourcePolicy::preparationHttpPath(dispatchRequest_.path,dispatchRequest_.method==LampHttpParser::Method::Post);
+      const bool mappedPage=dispatchContext_==int(index)&&LampControlResourcePolicy::mappedPageHttpPath(dispatchRequest_.path,dispatchRequest_.method==LampHttpParser::Method::Post);
+      if(mappedPage){
+        if(!LampControlResourcePolicy::mappedPageReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
+          clearDispatchRequest();queueError(index,503,"Page resources unavailable. Nothing changed.");callback=true;continue;
+        }
+      }else if(boundedRead){
+        if(!LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
+          clearDispatchRequest();queueError(index,503,"Read resources unavailable. Nothing changed.");callback=true;continue;
+        }
+      }else if(boundedPreparation){
+        if(!LampControlResourcePolicy::preparationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
+          clearDispatchRequest();queueError(index,503,"Upload preparation memory unavailable. Nothing started.");callback=true;continue;
+        }
+      }else if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))continue;
       dispatch(index);callback=true;continue;
     }
     if(c.state==ClientState::Receive||c.state==ClientState::Upload){

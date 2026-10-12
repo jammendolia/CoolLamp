@@ -3,6 +3,9 @@
 #include "LampVersion.h"
 #include "LampUpdatePolicy.h"
 #include "UpdateManifest.h"
+#include "LampUpdateAutomatic.h"
+#include "UpdateHttpDiagnostics.h"
+class LampJsonSink;
 
 enum LampUpdatePhase : uint8_t { UPDATE_IDLE, UPDATE_CHECKING, UPDATE_AVAILABLE, UPDATE_DOWNLOADING, UPDATE_RESTARTING, UPDATE_ERROR };
 enum LampUpdateError : uint8_t { UPDATE_OK, UPDATE_OFFLINE, UPDATE_CLOCK, UPDATE_NETWORK, UPDATE_MANIFEST, UPDATE_PARTITION, UPDATE_IMAGE, UPDATE_STORAGE, UPDATE_MEMORY };
@@ -30,14 +33,29 @@ void releaseLampManualUpdate();
 bool beginLampBluetoothUpdate();
 void setLampBluetoothUpdateProgress(uint32_t received,uint32_t total);
 void finishLampBluetoothUpdate(bool verified,bool cancelled=false);
+// Main-loop only: retain updater ownership after a possibly durable commit.
+void holdLampUpdateCommitUnconfirmed();
 bool beginLampBluetoothUpdateRadio();
 void finishLampBluetoothUpdateRadio(bool restarting);
 void getLampUpdatePacket(uint8_t* packet); // Exactly 20 bytes; fits minimum BLE MTU.
 String lampUpdateJson();
+struct LampUpdateJsonSnapshot {
+  LampUpdateStatus status{};String latest,attempt,policy;
+  UpdateHttpDiagnosticsSnapshot http{};
+  LampUpdateAutomatic::Snapshot automaticService{};
+  char deviceId[13]{};
+  uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
+  bool wifi=false,healthy=false,publisher=false;
+};
+LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic=false);
+void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic=false);
 // Loop-owned durable policy. Automatic and donation admission share this gate;
 // Update now retains its explicit manual override.
 void noteLampUpdateUse();
 bool lampAutomaticUpdateAllowed();
+bool lampAutomaticUpdateArtifactAllowed(const FirmwareManifest& artifact);
+bool lampAutomaticDonorDiscoveryAllowed(); // RAM-only fallback admission; no scan/radio mutation.
+void noteLampAutomaticDonorOffer(const FirmwareManifest& artifact); // Loop only, authenticated/validated artifact.
 bool setLampUpdatePolicy(const LampUpdatePolicy::Policy& policy,uint32_t expectedRevision);
 bool lampUpdatePolicySaveUncertain(); // Last save: failed return may have committed.
 uint32_t lampUpdatePolicyRevision(); // Mutation CAS admission; may reconcile an uncertain save.
@@ -45,7 +63,9 @@ void serviceLampUpdatePolicy(uint32_t now); // Owning loop: bounded retry/volati
 String lampUpdatePolicyJson();
 bool lampBootHealthy(); // Responsive-loop gate only, not complete peripheral/RF acceptance.
 void beginLampManualUpdateCue(); // Loop only, after receiver reservation (never on a donor).
+void finishLampManualUpdate(bool verified,bool commitUnconfirmed=false); // Loop only; selected/uncertain image retains owner until reboot.
 void setLampManualUpdateCueProgress(uint32_t written); // Legacy upload has no pinned total.
+void setLampManualUpdateCueProgress(uint32_t written,uint32_t total); // Pinned browser receiver only.
 void setLampUpdateRoute(uint8_t route); // Loop-owned receiver route only.
 bool lampRolloutRecoveryPreflight(const FirmwareManifest& pinned);
 bool lampControlTrafficIdle(uint32_t now); // Owning loop only: active/recent HTTP or BLE.

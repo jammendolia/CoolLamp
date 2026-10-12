@@ -1131,3 +1131,19 @@ while opening Lamp Designs. The broader matrix in
 actual LED/calibration changes, BLE/mesh, updates, group dissolution and twenty
 mixed lamps. Those configuration/update fixtures need their own authorized
 scope; they are not inferred from these read-only connection checks.
+
+### Subsequent OTA publication
+
+On 2026-10-11 the user explicitly authorized publication after this evidence
+and its limitations were disclosed. The standard 1.15.1 application
+`10218a28628724c2f4fca45b670e28ea2d6d4fab276eeb51197dc199e780bb9d`
+(2,020,592 bytes) and matching OTA-1 manifest are now GitHub Latest. Anonymous
+Latest and exact-version downloads match the frozen normal artifacts. Release
+source `f0206b64b2194a249c469b1dbbaaf3882e477f25` passed a fresh isolated
+33-command gate, 13 release guards and 574 inherited protocol/client tests.
+The legacy trust policy is unchanged; no publisher keys were invented.
+Publication does not extend the physical measurements to the uninstalled normal
+artifact or complete the pending gates. Pink Corkscrew retains its isolated
+diagnostic; the sealed 216-file archive remains unchanged. See
+[`releases/firmware-1.15.1.md`](releases/firmware-1.15.1.md) and
+[`development-handoff.md`](development-handoff.md) for publication evidence.

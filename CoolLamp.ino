@@ -146,7 +146,8 @@ void setup() {
   if (!fireHeat) { activeLedCount = 1; fireHeat = emergencyHeat; }
   splitHeat = fireHeat + NUM_LEDS;
   splitHeat[0] = 200;
-  if (NUM_LEDS > 1) splitHeat[lampSplitCount(NUM_LEDS, lampMidpoint)] = 200;
+  const uint16_t split = lampMotionSplitCount(NUM_LEDS, lampMidpoint);
+  if (split < NUM_LEDS) splitHeat[split] = 200;
   Brightness = lampSettings.brightness;
   Mode = lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE;
 
