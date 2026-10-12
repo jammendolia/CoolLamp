@@ -31,3 +31,13 @@ test('service prerequisites and invalid status produce specific saved outcomes, 
  assert.match(firmwareUpdateResultPresentation(result,{stages:[{code:'invalid-status',message:'SSID password secret'}]}),/status could not be read/);
  assert(!firmwareUpdateResultPresentation(result,{stages:[{code:'invalid-status',message:'SSID password secret'}]}).includes('secret'));
 });
+test('foreground interruption explains sending stopped without claiming cancellation or offering a replay',()=>{
+ const diagnostic={stages:[{code:'app-hidden',commitAttempted:false}]};
+ const message=firmwareUpdateResultPresentation({outcome:'unresolved',message:'Checking…'},diagnostic);
+ assert.match(message,/Sending stopped when CoolLamp left the screen/);
+ assert.match(message,/checking your lamp/);
+ assert(!/unchanged|cancelled|Try again|100%/i.test(message));
+ assert.match(firmwareUpdateFailurePresentation({stopReason:'app-hidden'},{pending:true}),/when you return/);
+ for(const commitAttempted of [true,undefined])assert.equal(firmwareUpdateResultPresentation({outcome:'unresolved',message:'Checking installation.'},{stages:[{code:'app-hidden',commitAttempted}]}),'Checking installation.');
+ assert.equal(firmwareUpdateResultPresentation({outcome:'installed'},diagnostic),'Your lamp is updated.');
+});

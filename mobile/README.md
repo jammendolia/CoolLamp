@@ -1,5 +1,29 @@
 # CoolLamp phone app
 
+Update progress is shown in both Lamps and the selected lamp's Settings, even
+while ordinary Settings controls are hidden during connection recovery. Both
+views use `lamp-update-progress.js`: only confirmed receiver-written bytes fill
+the model artwork and percentage. Download, cancellation, restart and unresolved
+commit stages retain indeterminate progress. Existing callbacks refresh the
+display; rendering adds no network requests or mutations. A global update hold
+does not claim that the selected lamp is updating.
+
+Phone Bluetooth transfer still requires CoolLamp in the foreground. A captured
+1.15.0 receiver attempt stopped at 134,792/2,029,600 bytes when the user switched
+apps (`app-hidden`), before a final commit was attempted. Sending stopped, while
+receiver cancellation remains unconfirmed until a fresh protected read; the app
+must not claim unchanged firmware or automatically restart installation. The
+Settings view displays the stopped/checking result and keeps this receipt.
+
+Reliable iOS background transfer is a separate native milestone. The current
+JavaScript sender and pinned bridge do not provide a native transfer owner,
+Core Bluetooth restoration or an enabled `bluetooth-central` background mode.
+A finite UIKit background grant alone does not prove WKWebView continues the
+sender. Before offering that capability, implement and test a native bounded
+artifact/ACK/lease/receipt owner, expiry and restoration, exact foreground
+reconciliation, and physical lock/app-switch/system-termination cases. Internet
+and trusted-donor receivers run on the lamp once their installation starts.
+
 Version 2.0.0 introduces the new Home, Lamps, Effects and Settings experience,
 guided physical pairing, room names, group creation and adaptive effect controls.
 The warm paper and olive design supports light, dark and system appearance,

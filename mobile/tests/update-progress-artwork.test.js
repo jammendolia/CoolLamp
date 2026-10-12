@@ -6,6 +6,7 @@ import {runInNewContext} from 'node:vm';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {styleDefinition,styleLabel,resolveLampStyle} from '../src/lamp-style.js';
 import {firmwareUpdatePresentation} from '../src/firmware-update-ui.js';
+import {lampUpdatePresentation} from '../src/lamp-update-progress.js';
 import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage} from '../src/update-source.js';
 
 const normalDigests={
@@ -56,6 +57,7 @@ test('twenty cards have independent clips and labels are escaped without executa
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const illustration=source.slice(source.indexOf('function lampStyleIllustration('),source.indexOf('function renderLampStyleSettings('));
 const render=source.slice(source.indexOf('function renderLamps()'),source.indexOf('async function discover(',source.indexOf('function renderLamps()')));
+const updateView=source.slice(source.indexOf('function lampUpdateView('),source.indexOf('function renderSettingsUpdate('));
 const id='aabbccddeeff',other='112233445566';
 
 test('the production UI model exposes owned IDs from storage without adopting discovery or mesh inventory',()=>{
@@ -112,7 +114,7 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
  const receiverLamp=receiverSnapshot?{raw:receiverSnapshot}:null;
  const context={document,$:name=>roots.get(name),discovery:{scanned:true},mergedLampEntries:()=>entries,verifiedSelectedLamp:()=>Boolean(receiverSnapshot),selected:receiverSnapshot?entries[0]:null,lamp:receiverLamp,wifiLamp:receiverLamp,
   connectivity:{get:()=>null},fleetStatuses:statuses,cardFirmwareTasks:tasks,firmwareFeedback:{get:key=>feedback.get(key)},cardFirmwareUnconfirmed:new Map(pending?[[id,'1.15.1']]:[]),
-  resolvedStyle:entry=>resolveLampStyle(entry.lampStyle,entry.phoneLampStyle),styleDefinition,styleLabel,lampArtworkSvg,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage,
+  resolvedStyle:entry=>resolveLampStyle(entry.lampStyle,entry.phoneLampStyle),styleDefinition,styleLabel,lampArtworkSvg,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage,lampUpdatePresentation,bluetoothFirmwareTask:null,
   connecting:false,busy:false,meshSelection:null,fleetLampInstalling:key=>tasks.has(key),firmwareConnectionSelectionAllowed:()=>true,groupsSnapshot:{groups:[]},
   openCardSettings(){},cardPowerButton:()=>control('power'),cardFirmwareButton:()=>control('update'),cardFirmwareReinstallButton:()=>null,
   cardFirmwareCancelButton:entry=>entry.id===id&&task?cancel:null,cardPowerTasks:new Map(),
@@ -121,7 +123,7 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
   wifiCardIcon:()=>control('wifi'),bluetoothCardIcon:()=>control('bluetooth'),groupCardIcon:()=>control('group'),bluetoothFirmwareOwner:()=>null,
   removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(),cardFirmwareMessages:new Map(),meshNetworkMessages:new Map(),
   fleetCardStatus:()=>null,activeCardBluetooth:()=>false,renderFleetControls(){}};
- runInNewContext(illustration+'\n'+render+'\nthis.render=renderLamps;',context);context.render();
+ runInNewContext(illustration+'\n'+updateView+'\n'+render+'\nthis.render=renderLamps;',context);context.render();
  const card=key=>roots.get('lampList').children.find(value=>value.dataset.lampId===key);
  return {card:card(id),otherCard:card(other),cancel,document,cancelClicks:()=>cancelClicks};
 }

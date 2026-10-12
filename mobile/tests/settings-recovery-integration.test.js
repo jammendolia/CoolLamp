@@ -271,7 +271,7 @@ test('real recovery cancellation while acquiring a mesh lease releases the late 
 });
 
 function settingsConnectionHarness(){
-  const view=elements(),context={...view,Date:class extends Date{static now(){return 10000;}}};
+  const view=elements(),context={...view,renderSettingsUpdate:()=>({active:false}),Date:class extends Date{static now(){return 10000;}}};
   runInNewContext(`let selected={id:'${id}',name:'Reading lamp'},verified=false,held=false,settingsRestartWaitUntil=0;
     const wifiLamp={identity:selected.id},bleLamp={identity:selected.id},meshLamp={identity:selected.id,isMesh:true};let lamp=bleLamp;
     const verifiedSelectedLamp=()=>verified;const firmwareConnectionBusy=()=>held;
@@ -297,8 +297,8 @@ test('actual settings status explains firmware and restart holds then restores t
   for(const reason of [{firmware:true},{restarting:true}]){
     const f=settingsConnectionHarness();f.waiting(reason);
     assert.equal(f.$('settingsRecovery').hidden,false);assert.equal(f.$('page-settings').dataset.connectionRecovering,'true');
-    assert.equal(f.$('settingsRecoveryTitle').textContent,'Waiting for your lamp');assert.equal(f.$('connectionBadge').textContent,'Updating');
-    assert.equal(f.$('settingsRecoveryHint').textContent,'Your update is still in progress. We’ll restore the controls when it finishes.');
+    assert.equal(f.$('settingsRecoveryTitle').textContent,'Waiting to reconnect');assert.equal(f.$('connectionBadge').textContent,'Waiting');
+    assert.equal(f.$('settingsRecoveryHint').textContent,'An update is using the connection. We’ll restore your settings when the connection is available.');
     f.healthy('wifi');assert.equal(f.$('settingsRecovery').hidden,true);assert.equal(f.$('connectionBadge').textContent,'Wi-Fi');assert.equal(f.$('settingsConnection').textContent,'Reading lamp · Wi-Fi');
   }
 });

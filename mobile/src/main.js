@@ -25,6 +25,7 @@ import {FirmwareFleetTrust} from './firmware-fleet-trust.js';
 import {FirmwareAttemptJournal,reconcileFirmwareAttempt,reconcileLegacyFirmwareReceipt} from './firmware-attempt.js';
 import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from './firmware-update-ui.js';
 import {FirmwareUpdateDiagnostics} from './firmware-update-diagnostics.js';
+import {lampUpdatePresentation} from './lamp-update-progress.js';
 import { LampConnectivity, lightingObservation, groupObservation, groupCardPresentation } from './lamp-connectivity.js';
 import { LAMP_STYLES, styleDefinition, styleLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
 import { wifiSetupMessage, wifiCredentials } from './wifi-setup.js';
@@ -508,15 +509,39 @@ function renderSettings() {
   renderCenterTool();
   renderSettingsConnection();
 }
+function lampUpdateView(entry){
+  const id=entry?.id,connected=verifiedSelectedLamp()&&id===selected?.id;
+  return lampUpdatePresentation(id,{task:cardFirmwareTasks.get(id)|| (bluetoothFirmwareTask?.id===id?bluetoothFirmwareTask:null),
+    feedback:firmwareFeedback.get(id),pending:cardFirmwareUnconfirmed.has(id),observation:fleetStatuses.get(id),
+    selectedSnapshot:connected&&lamp.raw?.firmware===firmware?lamp.raw:null,selectedObservedAt:firmwareReceivedAt});
+}
+function renderSettingsUpdate(){
+  const view=lampUpdateView(selected),visible=!$('page-settings').hidden&&view.active;
+  $('settingsUpdate').hidden=!visible;
+  $('page-settings').dataset.updateActive=String(visible);
+  if(!visible)return view;
+  $('settingsUpdateTitle').textContent=view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
+  $('settingsUpdateMessage').textContent=view.message;
+  $('settingsUpdateHint').textContent=view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
+  $('settingsUpdateArt').innerHTML=lampArtworkSvg(resolvedStyle(selected).id,{updateProgress:view.percent,updateSource:view.source,decorative:true});
+  $('settingsUpdatePercent').textContent=view.percent===undefined?'':view.percent+'%';
+  $('settingsUpdateSource').textContent=view.sourceLabel||'';
+  $('settingsUpdateSource').hidden=!view.sourceLabel;
+  const bar=$('settingsUpdateProgress');bar.max=100;
+  if(view.percent===undefined)bar.removeAttribute('value');else bar.value=view.percent;
+  bar.setAttribute('aria-label',selected.name+' update progress');
+  return view;
+}
 function renderSettingsConnection(){
+  const update=renderSettingsUpdate();
   const waiting=!$('page-settings').hidden&&Boolean(selected)&&!verifiedSelectedLamp();
   $('page-settings').dataset.connectionRecovering=String(waiting);
-  $('settingsRecovery').hidden=!waiting;
+  $('settingsRecovery').hidden=!waiting||update.active;
   if(waiting){
     const held=firmwareConnectionBusy()||Date.now()<settingsRestartWaitUntil;
-    $('settingsRecoveryTitle').textContent=held?'Waiting for your lamp':'Reconnecting to '+selected.name;
-    $('settingsRecoveryHint').textContent=held?'Your update is still in progress. We’ll restore the controls when it finishes.':'We’re finding the best available connection. You can return to Lamps at any time.';
-    $('connectionBadge').textContent=held?'Updating':'Reconnecting';
+    $('settingsRecoveryTitle').textContent=held?'Waiting to reconnect':'Reconnecting to '+selected.name;
+    $('settingsRecoveryHint').textContent=held?'An update is using the connection. We’ll restore your settings when the connection is available.':'We’re finding the best available connection. You can return to Lamps at any time.';
+    $('connectionBadge').textContent=update.active?'Updating':held?'Waiting':'Reconnecting';
     $('settingsConnection').textContent='Your settings will return when this lamp’s connection is verified.';
   }else if(verifiedSelectedLamp()){
     const kind=lamp?.isMesh?'ESP-NOW mesh':lamp===wifiLamp?'Wi-Fi':'Bluetooth';
@@ -1636,16 +1661,7 @@ function renderLamps() {
     button.setAttribute('aria-label','Control '+name);button.setAttribute('aria-current',String(connected));
     button.disabled=connecting||busy||fleetLampInstalling(entry.id)||!firmwareConnectionSelectionAllowed(entry);
     const task=cardFirmwareTasks.get(entry.id),updateFeedback=firmwareFeedback.get(entry.id),pendingUpdate=cardFirmwareUnconfirmed.has(entry.id);
-    // Only acknowledged receiver-written progress fills this lamp. Download,
-    // cancellation, restart and unresolved receipts keep neutral artwork.
-    const writtenProgress=!pendingUpdate&&task&&!task.reconciling&&!task.cancelRequested&&task.stage==='transferring'?updateFeedback?.progress:
-      !task&&!pendingUpdate&&observation?.state==='updating'&&observation.verified===true&&observation.fresh===true?observation.progress:undefined;
-    const selectedReceiver=connected&&lamp.raw?.firmware===firmware?observedReceiverUpdate(lamp.raw,entry.id,{verified:true,fresh:true,observedAt:firmwareReceivedAt}):null;
-    const fleetReceiver=observation?.receiverSnapshot&&!['restarting','failed','offline','unsupported','needs-password','pending'].includes(observation.state)?
-      observedReceiverUpdate(observation.receiverSnapshot,entry.id,{verified:true,fresh:true,observedAt:observation.receiverSnapshotAt}):null;
-    const receiverUpdate=!pendingUpdate&&!task?.cancelRequested&&!task?.reconciling&&(!task||task.stage==='wifi')&&(selectedReceiver||fleetReceiver);
-    const updatePercent=Number.isInteger(writtenProgress)&&writtenProgress>=0&&writtenProgress<=100?writtenProgress:receiverUpdate?.progress;
-    const updateSource=task?.stage==='transferring'&&updatePercent!==undefined?task.updateSource:receiverUpdate?.source;
+    const updateView=lampUpdateView(entry),receiverUpdate=updateView.receiver,updatePercent=updateView.percent,updateSource=updateView.source;
     const sourceLabel=updateSourceLabel(updateSource);
     const art=lampStyleIllustration(resolvedStyle(entry).id);art.classList.add('v2-card-art');if(lighting?.fresh&&lighting.power===false)art.classList.add('is-off');
     if(updatePercent!==undefined){

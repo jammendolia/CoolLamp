@@ -483,6 +483,12 @@
 <span id="connectionBadge" class="badge">Not connected</span>
 <p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
 <section id="settingsRecovery" class="panel" hidden role="status" aria-live="polite"><h3 id="settingsRecoveryTitle">Reconnecting to your lamp</h3><p id="settingsRecoveryHint" class="hint">We’re finding the best available connection.</p></section>
+<section id="settingsUpdate" class="panel settings-update" hidden>
+<div class="settings-update-heading"><span id="settingsUpdateArt" class="settings-update-art" aria-hidden="true"></span><div><h3 id="settingsUpdateTitle">Updating your lamp</h3><p id="settingsUpdatePercent" class="settings-update-percent" aria-hidden="true"></p><p id="settingsUpdateSource" class="hint" hidden></p></div></div>
+<p id="settingsUpdateMessage" role="status" aria-live="polite" aria-atomic="true"></p>
+<progress id="settingsUpdateProgress" max="100" aria-label="Lamp update progress"></progress>
+<p id="settingsUpdateHint" class="hint">Keep your lamp powered.</p>
+</section>
 <aside id="defaultPasswordNotice" class="sync-banner" hidden>
 <div><p class="eyebrow">MAKE IT YOURS</p><p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p></div>
 <button id="changeDefaultPassword" class="secondary compact">Change password</button>

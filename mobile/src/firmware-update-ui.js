@@ -11,6 +11,7 @@ export function firmwareUpdatePresentation(value={}){
  return {message:messages[value.stage]||'Checking your lamp…'};
 }
 export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
+ if(pending&&error?.stopReason==='app-hidden')return 'Sending stopped when CoolLamp left the screen. We’ll check your lamp when you return. Keep it powered.';
  if(pending)return 'The connection was lost. We’ll check your lamp when it is available. Keep it powered and nearby.';
  if(error?.stopReason==='user')return 'Update cancelled. Nothing more will be sent to your lamp.';
  if(error?.stopReason==='app-hidden'||error?.cancelled)return 'The update stopped when the app closed. Keep CoolLamp open during updates.';
@@ -22,6 +23,8 @@ export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
 }
 export function firmwareUpdateResultPresentation(result,diagnostic){
  if(result?.outcome==='installed')return 'Your lamp is updated.';
+ const last=diagnostic?.stages?.at(-1);
+ if(last?.code==='app-hidden'&&last.commitAttempted===false)return 'Sending stopped when CoolLamp left the screen. We’re checking your lamp. Keep it powered.';
  if(!['installationNotStarted','transferStopped'].includes(result?.outcome))return result?.message||'We’ll check your lamp when it is available. Keep it powered and nearby.';
  const failure=diagnostic?.stages?.at(-1);
  if(failure?.code==='authorization-required'&&failure.stage==='bluetooth-preflight')return 'First approve this lamp on your phone using its Bluetooth icon. No update was sent.';
