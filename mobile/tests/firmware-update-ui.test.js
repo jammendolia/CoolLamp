@@ -41,3 +41,13 @@ test('foreground interruption explains sending stopped without claiming cancella
  for(const commitAttempted of [true,undefined])assert.equal(firmwareUpdateResultPresentation({outcome:'unresolved',message:'Checking installation.'},{stages:[{code:'app-hidden',commitAttempted}]}),'Checking installation.');
  assert.equal(firmwareUpdateResultPresentation({outcome:'installed'},diagnostic),'Your lamp is updated.');
 });
+
+test('confirmed disconnected transfer gives a plain result and action without extending that claim to uncertainty',()=>{
+ const diagnostic={stages:[{stage:'bluetooth-transfer',code:'native-disconnect',commitAttempted:false}]};
+ const message=firmwareUpdateResultPresentation({outcome:'transferStopped',installedVersion:'1.15.2'},diagnostic);
+ assert.match(message,/connection to your lamp was interrupted/);
+ assert.match(message,/Your lamp was not updated/);assert.match(message,/Try again/);
+ assert(!/reconnect|native|transfer|firmware|Bluetooth|Wi-Fi/.test(message));
+ const unresolved=firmwareUpdateResultPresentation({outcome:'unresolved',message:'We’ll check your lamp.'},diagnostic);
+ assert.equal(unresolved,'We’ll check your lamp.');assert(!/Try again|not updated/.test(unresolved));
+});

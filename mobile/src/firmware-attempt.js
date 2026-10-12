@@ -306,6 +306,65 @@ export async function reconcileLegacyFirmwareReceipt({receipt,...options}={}){
  return result.outcome==='active'?Object.freeze({...result,outcome:'unresolved'}):result;
 }
 
+// One foreground resume preflight shares reconciliation's native ownership
+// fences. A timed-out acquisition can only release its late lease; no later
+// read worker may acquire that target until acquisition/cleanup have settled.
+export async function acquireFirmwareResumeLease({attempt,resumeLease,installedVersion,acquire,isCurrent=()=>true,signal,
+ timeoutMs=30000,now=()=>performance.now()}={}){
+ const value=restored(attempt),proof=Object.freeze({...resumeLease});
+ if(typeof acquire!=='function'||!integer(timeoutMs,1,30000)||!version(installedVersion)||value.outcome!=='pending'||
+  !value.beginAttempted||value.commitAttempted||value.commitUnconfirmed||value.cancelAttempted||value.resumeAttempted||value.wifiInstallAttempted||
+  proof.identity!==value.identity||proof.session!==value.session||proof.version!==value.version||proof.size!==value.size||proof.sha256!==value.sha256)
+  throw failure('The original update cannot be resumed.',{requiresReconciliation:true});
+ const owners=new Set([...workerOwners.keys(),...acquisitionOwners.keys(),...cleanupOwners.keys()]);
+ if(workerOwners.has(value.identity)||!owners.has(value.identity)&&owners.size>=FIRMWARE_ATTEMPT_LIMIT)
+  throw failure('The lamp’s previous connection still needs to close.',{receiverBusy:true});
+ const owner={};workerOwners.set(value.identity,owner);
+ const controller=new AbortController(),started=now();let handedOff=false,expired=false,lease;
+ const remaining=()=>Math.max(0,timeoutMs-(now()-started));
+ const current=()=>{try{return !controller.signal.aborted&&(handedOff||Number.isFinite(remaining())&&remaining()>0)&&isCurrent();}catch{return false;}};
+ const check=()=>{if(!current())throw failure('Update recovery stopped.',{cancelled:true});};
+ const external=()=>controller.abort('cancelled');signal?.addEventListener('abort',external,{once:true});if(signal?.aborted)external();
+ const deadline=setTimeout(()=>controller.abort('deadline'),timeoutMs);
+ const bounded=async operation=>{
+  check();let timer,abort;
+  try{return await Promise.race([Promise.resolve().then(()=>{check();return operation();}),new Promise((_,reject)=>{
+   abort=()=>reject(failure('Update recovery stopped.',{cancelled:true,timeout:controller.signal.reason==='deadline'}));
+   controller.signal.addEventListener('abort',abort,{once:true});timer=setTimeout(()=>reject(failure('Update recovery timed out.',{timeout:true})),remaining());
+  })]);}finally{clearTimeout(timer);controller.signal.removeEventListener('abort',abort);}
+ };
+ const cleanup=async acquired=>{
+  if(!acquired)return true;
+  let close=cleanupOwners.get(value.identity);
+  if(!close){close=Promise.resolve().then(()=>acquired.release()).then(()=>true,()=>false);cleanupOwners.set(value.identity,close);
+   close.finally(()=>{if(cleanupOwners.get(value.identity)===close)cleanupOwners.delete(value.identity);});}
+  let timer;try{return await Promise.race([close,new Promise(resolve=>{timer=setTimeout(()=>resolve(null),1500);})]);}finally{clearTimeout(timer);}
+ };
+ const retire=()=>{clearTimeout(deadline);signal?.removeEventListener('abort',external);controller.abort('finished');
+  if(workerOwners.get(value.identity)===owner)workerOwners.delete(value.identity);};
+ try{
+  if(acquisitionOwners.has(value.identity))await bounded(()=>acquisitionOwners.get(value.identity));
+  if(cleanupOwners.has(value.identity))await bounded(()=>cleanupOwners.get(value.identity));
+  const acquisition=Promise.resolve().then(()=>{check();return acquire(copy(value),{signal:controller.signal,isCurrent:current});});
+  const settled=acquisition.then(async late=>{if(expired)await cleanup(late);},()=>{});
+  acquisitionOwners.set(value.identity,settled);settled.finally(()=>{if(acquisitionOwners.get(value.identity)===settled)acquisitionOwners.delete(value.identity);});
+  lease=await bounded(()=>acquisition);check();
+  if(!lease?.lamp||typeof lease.release!=='function'||typeof lease.lamp.readFirmwareUpdateSnapshot!=='function')
+   throw failure('The lamp’s update status is unavailable.',{invalidRead:true});
+  if(lease.lamp.identity!==value.identity)throw failure('This connection belongs to a different lamp.',{identity:true});
+  const observed=snapshot(await bounded(()=>lease.lamp.readFirmwareUpdateSnapshot({signal:controller.signal,isCurrent:current,expectedSession:proof.session})),value);
+  check();const time=Date.now(),receiver=observed.receiver;
+  if(!Number.isFinite(observed.observedAt)||time<observed.observedAt||time-observed.observedAt>5000||
+   observed.firmware.version!==installedVersion||![0,3].includes(observed.firmware.phase)||receiver.phase!==2||receiver.error!==0||
+   receiver.committed!==false||receiver.commitUnconfirmed===true||receiver.resumeSupported!==true||receiver.detached!==true||
+   receiver.session!==proof.session||receiver.size!==proof.size||receiver.offset<value.offset)
+   throw failure('The original update lease could not be verified.',{invalidRead:true,requiresReconciliation:true});
+  handedOff=true;clearTimeout(deadline);
+  let release;
+  return {lamp:lease.lamp,snapshot:observed,release:()=>release??=Promise.resolve().then(async()=>{retire();return cleanup(lease);})};
+ }catch(error){expired=true;controller.abort('stopped');await cleanup(lease);retire();throw error;}
+}
+
 async function reconcileProtectedFirmware({value,classify,unknown,acquire,isCurrent=()=>true,signal,onProgress=()=>{},
  delay=delayDefault,now=()=>performance.now(),maxAttempts=3,timeoutMs=45000}={}){
  if(!pending(value)||typeof acquire!=='function'||!integer(maxAttempts,1,3)||!integer(timeoutMs,1,45000))

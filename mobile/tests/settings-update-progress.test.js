@@ -5,6 +5,8 @@ import {runInNewContext} from 'node:vm';
 import {lampUpdatePresentation} from '../src/lamp-update-progress.js';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {FirmwareFeedback} from '../src/firmware-feedback.js';
+import {FirmwareAttemptJournal,classifyFirmwareSnapshot} from '../src/firmware-attempt.js';
+import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 import {firmwareUpdatePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
 import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
 
@@ -38,6 +40,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   hasAttribute(name){return Object.hasOwn(this.attributes,name);}
   append(...values){this.children.push(...values);}
   replaceChildren(...values){this.children=[...values];}
+  querySelector(selector){return selector==='[data-update-result-action]'?this.children.find(child=>child.dataset?.updateResultAction==='true')||null:null;}
  }
  const roots=new Map();
  const $=name=>{if(!roots.has(name))roots.set(name,new Element());return roots.get(name);};
@@ -48,6 +51,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
  }
  $('page-settings').hidden=false;
  const feedback=new FirmwareFeedback({getItem:()=>null,setItem(){}});
+ const durable=new Map(),journal=new FirmwareAttemptJournal({getItem:key=>durable.get(key)??null,setItem:(key,value)=>durable.set(key,value)});
  const owned={id,name:'Pink Corkscrew',phoneLampStyle:'corkscrew'};
  const tasks=new Map(),statuses=new Map(),pending=new Map();
  const sender={id,entry:owned,stage,path,abort:new AbortController(),feedback:feedback.begin(id)};
@@ -55,7 +59,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
  let connected=verified,cardRenders=0;
  const wifiLamp={raw:null},bleLamp={raw:null};
  const context={$,document:{hidden:false,createElement:tag=>new Element(tag),querySelectorAll:()=>[]},selected:owned,lamp:bleLamp,wifiLamp,bleLamp,
-  cardFirmwareTasks:tasks,bluetoothFirmwareTask:null,firmwareFeedback:feedback,cardFirmwareUnconfirmed:pending,fleetStatuses:statuses,
+  cardFirmwareTasks:tasks,bluetoothFirmwareTask:null,firmwareFeedback:feedback,firmwareAttempts:journal,cardFirmwareUnconfirmed:pending,fleetStatuses:statuses,
   firmware:null,firmwareReceivedAt:0,settingsRestartWaitUntil:0,verifiedSelectedLamp:()=>connected,
   firmwareConnectionBusy:()=>Boolean(tasks.size||context.bluetoothFirmwareTask||[...statuses.values()].some(value=>['updating','restarting'].includes(value.state))),
   lampUpdatePresentation,lampArtworkSvg,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
@@ -68,10 +72,11 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   groupsAvailable:()=>false,independentLightingAllowed:()=>true,playbackIdentity:null,rotationDirty:false,
   renderLamps:()=>{cardRenders++;},
   task:sender,current:()=>tasks.get(id)===sender,release:{version:'1.15.2'},bluetoothFirmwareConnectionSerial:0,
-  acknowledgedBluetoothUpdateSource,firmwareUpdatePresentation};
+  acknowledgedBluetoothUpdateSource,firmwareUpdatePresentation,mergedLampEntries:()=>[owned],page:name=>pages.push(name)};
+ const pages=[];
  runInNewContext(views+'\n'+settingsRender+'\n'+playbackRender+'\n'+firmwareRender+'\n'+progressCallback+'\nthis.ui={render:renderSettingsConnection,view:lampUpdateView,progress};',context);
  context.ui.render();
- return {context,$,feedback,tasks,statuses,pending,sender,roots,render:context.ui.render,progress:context.ui.progress,
+ return {context,$,feedback,tasks,statuses,pending,sender,roots,journal,pages,render:context.ui.render,progress:context.ui.progress,
   view:()=>context.ui.view(context.selected),cardRenders:()=>cardRenders,
   selectOther(){context.selected={id:other,name:'Other lamp',phoneLampStyle:'helix'};connected=false;context.ui.render();},
   receiver(snapshot,{observedAt=Date.now(),connectedTarget=false,state='updating'}={}){
@@ -79,7 +84,20 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
    else statuses.set(id,{state,receiverSnapshot:snapshot,receiverSnapshotAt:observedAt});
    context.ui.render();
   },
-  complete(){tasks.delete(id);pending.delete(id);statuses.delete(id);connected=true;context.lamp=wifiLamp;context.firmware={version:'1.15.2',phase:0};context.ui.render();}};
+  complete(){tasks.delete(id);pending.delete(id);statuses.delete(id);connected=true;context.lamp=wifiLamp;context.firmware={version:'1.15.2',phase:0};context.ui.render();},
+  stopped({outcome='transferStopped',target=id,commit=false}={}){
+   const manifest=parsePhoneManifest(`COOLLAMP-OTA-1\n1.15.3\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
+   journal.begin(target,manifest);
+   if(outcome==='transferStopped'||commit){journal.beforeWrite(journal.get(target),1,77);journal.beforeWrite(journal.get(target),2,77);journal.beforeWrite(journal.get(target),3,77);journal.noteProgress(journal.get(target),8);}
+   if(commit)journal.beforeWrite(journal.get(target),4,77);
+   const result=classifyFirmwareSnapshot(journal.get(target),{identity:target,observedAt:Date.now(),firmware:{version:'1.15.2',phase:0},
+    state:{mode:1,effectCount:47,power:true,brightness:100},receiver:{phase:0,error:0,committed:false,session:0,size:0,offset:0}});
+   journal.settle(journal.get(target),result);
+   tasks.delete(id);pending.delete(id);statuses.delete(id);
+   if(commit)pending.set(id,'1.15.3');
+   feedback.update(sender.feedback,{message:firmwareUpdateResultPresentation(result),terminal:true,...(commit?{outcome:'verification-required',targetVersion:'1.15.3'}:{})});
+   context.ui.render();return result;
+  }};
 }
 const ack=percent=>({stage:'transferring',version:'1.15.2',progress:percent,acknowledgedBytes:percent*10,total:1000});
 const receiver=(fields={},target=id)=>({deviceId:target,firmware:{updateContractVersion:2,receiver:true,phase:3,route:1,progress:50,writtenOffset:500,totalBytes:1000,...fields}});
@@ -191,6 +209,32 @@ test('successful fresh completion hides update presentation and restores verifie
  assert.equal(f.$('page-settings').dataset.connectionRecovering,'false');
  assert.equal(f.$('connectionBadge').textContent,'Wi-Fi');
  assert.equal(f.$('settingsConnection').textContent,'Pink Corkscrew · Wi-Fi');
+});
+
+for(const outcome of ['transferStopped','installationNotStarted'])test('durably confirmed '+outcome+' stays visible in selected Settings without ongoing progress',()=>{
+ const f=fixture();f.stopped({outcome});
+ assert.equal(f.journal.get(id).outcome,outcome);
+ assert.equal(f.$('settingsUpdate').hidden,false);assert.equal(f.$('page-settings').dataset.updateActive,'false');
+ assert.equal(f.$('settingsUpdateTitle').textContent,outcome==='transferStopped'?'Update stopped':'Update did not start');
+ assert.match(f.$('settingsUpdateMessage').textContent,outcome==='transferStopped'?/transfer stopped before installation/i:/did not start/i);
+ assertNeutral(f);assert.equal(f.$('settingsUpdateProgress').hidden,true);assert.equal(f.$('settingsUpdateSource').hidden,true);
+ assert(!/Keep CoolLamp open|restarts|Updating|100%/.test(f.$('settingsUpdateHint').textContent));
+ const action=f.$('settingsUpdate').querySelector('[data-update-result-action]');assert(action&&!action.hidden);
+ action.onclick();assert.deepEqual(f.pages,['lamps']);assert.equal(f.tasks.size,0);assert.equal(f.journal.pending().length,0);
+});
+
+test('a saved result survives a render but another target, pending commit, or new attempt cannot borrow it',()=>{
+ const f=fixture();f.stopped();f.render();assert.equal(f.$('settingsUpdate').hidden,false);
+ const action=f.$('settingsUpdate').querySelector('[data-update-result-action]');
+ const manifest=parsePhoneManifest(f.journal.get(id).text);f.journal.begin(id,manifest);action.onclick();assert.deepEqual(f.pages,[]);
+ f.render();assert.equal(f.$('settingsUpdate').hidden,true);
+ const different=fixture();different.stopped({target:other});assert.equal(different.$('settingsUpdate').hidden,true);
+ const switched=fixture();switched.stopped();const oldAction=switched.$('settingsUpdate').querySelector('[data-update-result-action]');
+ switched.selectOther();assert.equal(switched.$('settingsUpdate').hidden,true);oldAction.onclick();assert.deepEqual(switched.pages,[]);
+ const uncertain=fixture();uncertain.stopped({commit:true});assert.equal(uncertain.journal.get(id).outcome,'pending');
+ assert.equal(uncertain.$('settingsUpdate').hidden,false);assert.match(uncertain.$('settingsUpdateTitle').textContent,/Checking/);
+ assert.equal(uncertain.$('settingsUpdateProgress').hidden,false);assertNeutral(uncertain);
+ assert.equal(uncertain.$('settingsUpdate').querySelector('[data-update-result-action]'),null);
 });
 
 test('Settings progress stays accessible above hidden controls and decorative artwork does not announce twice',()=>{

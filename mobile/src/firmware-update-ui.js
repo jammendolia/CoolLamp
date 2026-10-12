@@ -32,6 +32,7 @@ export function firmwareUpdateResultPresentation(result,diagnostic){
  if(result.outcome==='installationNotStarted'&&failure?.stage==='wifi-preflight'&&failure.metadataIssued===false&&failure.beginAttempted===false&&failure.commitAttempted===false&&failure.wifiInstallAttempted===false)
   return 'The update stopped before reaching your lamp. Tap Try again and your phone will send it. Keep the lamp nearby and the app open.';
  if(failure?.code==='native-not-connected')return 'The connection closed before the update finished. Keep your lamp powered and nearby. The app will restore its connection on your next attempt.';
+ if(result.outcome==='transferStopped'&&failure?.code==='native-disconnect')return 'The connection to your lamp was interrupted. Your lamp was not updated. Keep it powered and nearby, then tap Try again.';
  if(failure?.code==='invalid-status')return 'The lamp’s update status could not be read correctly. No new firmware was installed. Update details are saved below.';
  return result.outcome==='transferStopped'?'The transfer stopped before installation. Your lamp is still on its previous firmware. Update details are saved below.':'The update did not start. No new firmware was installed. Update details are saved below.';
 }

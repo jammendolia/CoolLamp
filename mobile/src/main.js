@@ -533,27 +533,36 @@ function renderSettings() {
   renderCenterTool();
   renderSettingsConnection();
 }
-function lampUpdateView(entry){
+function lampUpdateView(entry,attempt=null){
   const id=entry?.id,connected=verifiedSelectedLamp()&&id===selected?.id;
   return lampUpdatePresentation(id,{task:cardFirmwareTasks.get(id)|| (bluetoothFirmwareTask?.id===id?bluetoothFirmwareTask:null),
-    feedback:firmwareFeedback.get(id),pending:cardFirmwareUnconfirmed.has(id),observation:fleetStatuses.get(id),
+    feedback:firmwareFeedback.get(id),attempt,pending:cardFirmwareUnconfirmed.has(id),observation:fleetStatuses.get(id),
     selectedSnapshot:connected&&lamp.raw?.firmware===firmware?lamp.raw:null,selectedObservedAt:firmwareReceivedAt});
 }
 function renderSettingsUpdate(){
-  const view=lampUpdateView(selected),visible=!$('page-settings').hidden&&view.active;
+  const view=lampUpdateView(selected,firmwareAttempts.get(selected?.id)),visible=!$('page-settings').hidden&&(view.active||view.terminal===true);
   $('settingsUpdate').hidden=!visible;
-  $('page-settings').dataset.updateActive=String(visible);
+  $('page-settings').dataset.updateActive=String(visible&&view.active);
   if(!visible)return view;
-  $('settingsUpdateTitle').textContent=view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
+  $('settingsUpdateTitle').textContent=view.terminal?view.outcome==='transferStopped'?'Update stopped':'Update did not start':view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
   $('settingsUpdateMessage').textContent=view.message;
-  $('settingsUpdateHint').textContent=view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
+  $('settingsUpdateHint').textContent=view.terminal?'Your lamp’s update result is saved on its card.':view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
   $('settingsUpdateArt').innerHTML=lampArtworkSvg(resolvedStyle(selected).id,{updateProgress:view.percent,updateSource:view.source,decorative:true});
   $('settingsUpdatePercent').textContent=view.percent===undefined?'':view.percent+'%';
   $('settingsUpdateSource').textContent=view.sourceLabel||'';
   $('settingsUpdateSource').hidden=!view.sourceLabel;
-  const bar=$('settingsUpdateProgress');bar.max=100;
+  const bar=$('settingsUpdateProgress');bar.max=100;bar.hidden=Boolean(view.terminal);
   if(view.percent===undefined)bar.removeAttribute('value');else bar.value=view.percent;
   bar.setAttribute('aria-label',selected.name+' update progress');
+  let action=$('settingsUpdate').querySelector('[data-update-result-action]');
+  if(view.terminal&&!action){action=document.createElement('button');action.type='button';action.className='secondary';action.dataset.updateResultAction='true';$('settingsUpdate').append(action);}
+  if(action){action.hidden=!view.terminal;action.textContent='View this lamp in Lamps';
+    const id=selected.id,attemptId=view.attemptId;
+    action.onclick=()=>{const saved=mergedLampEntries().find(entry=>entry.id===id),current=firmwareAttempts.get(id);
+      if(selected?.id!==id||!saved||current?.attemptId!==attemptId||!['transferStopped','installationNotStarted'].includes(current.outcome))return;
+      page('lamps');$('lampList').querySelector('[data-lamp-id="'+id+'"]')?.scrollIntoView?.({block:'center'});
+    };
+  }
   return view;
 }
 function renderSettingsConnection(){
@@ -1133,7 +1142,7 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false}={
   task.screenAwake??=new FirmwareScreenAwake({native,enabled:isNative});
   await task.screenAwake.acquire({signal:task.abort.signal,isCurrent:current});
   const progress=value=>{if(!current())return;const path=value.stage==='wifi'?'wifi':'bluetooth';if(path==='bluetooth'&&task.path!=='bluetooth')++bluetoothFirmwareConnectionSerial;task.path=path;task.stage=value.stage;task.updateSource=acknowledgedBluetoothUpdateSource(value,release.version);if(document.hidden&&task.path==='bluetooth'&&!task.transport?.bluetoothUpdate?.commitAttempted)task.abort.abort('app-hidden');const presentation=task.cancelRequested&&!['checking-result','reconciling','restarting'].includes(value.stage)?{message:'Stopping the update…'}:firmwareUpdatePresentation(value);task.progress=presentation.progress;const key=value.stage+':'+presentation.progress+':'+presentation.message+':'+task.updateSource;if(task.presentationKey===key)return;task.presentationKey=key;firmwareFeedback.update(task.feedback,presentation);renderLamps();renderFirmware();};
-  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version),acquireBluetooth:()=>acquireCardFirmwareBluetooth(task.entry),isCurrent:current,signal:task.abort.signal,onProgress:progress,allowReinstall,exactReinstall:allowReinstall,
+  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version),acquireBluetooth:(_entry,options)=>acquireCardFirmwareBluetooth(task.entry,options),isCurrent:current,signal:task.abort.signal,onProgress:progress,allowReinstall,exactReinstall:allowReinstall,
    attemptJournal:firmwareAttempts,onAttempt:attempt=>{task.attempt=attempt;firmwareDiagnostics.begin(entry.id,attempt.attemptId);},
    onFailure:(error,context)=>{if(current()&&task.attempt)firmwareDiagnostics.failure(entry.id,task.attempt.attemptId,error,{...context,safety:firmwareAttempts.get(entry.id)});},
    onTransferDiagnostic:value=>{if(current()&&task.attempt)firmwareDiagnostics.transfer(entry.id,task.attempt.attemptId,value);},
@@ -1145,6 +1154,8 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false}={
   if(pending)cardFirmwareUnconfirmed.set(entry.id,release.version);else cardFirmwareUnconfirmed.delete(entry.id);
   const message=firmwareUpdateResultPresentation(result,firmwareDiagnostics.get(entry.id));
   if(task.feedback&&current())firmwareFeedback.update(task.feedback,{message,progress:result.outcome==='installed'?100:undefined,terminal:true,...(pending?{outcome:'verification-required',targetVersion:release.version}:result.outcome==='installed'?{outcome:'installed',targetVersion:release.version}:{})});
+  const settled=firmwareAttempts.get(entry.id);
+  if(current()&&settled?.attemptId===task.attempt?.attemptId&&['transferStopped','installationNotStarted'].includes(settled.outcome))status((entry.name||'Your lamp')+': '+message);
  }catch(error){
   if(task.abort.signal.aborted)error.stopReason??=task.abort.signal.reason;
   const pending=firmwareAttempts.pending().some(value=>value.identity===entry.id);

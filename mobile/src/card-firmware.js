@@ -1,5 +1,5 @@
 import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './bluetooth-firmware.js';
-import {classifyFirmwareSnapshot,firmwareMayInstall} from './firmware-attempt.js';
+import {classifyFirmwareSnapshot,firmwareMayInstall,acquireFirmwareResumeLease} from './firmware-attempt.js';
 import {safeFirmwareTransferMetrics} from './firmware-update-diagnostics.js';
 
 // The lamp's installed-version observation is separate from a public release
@@ -135,9 +135,10 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  try{packageValue=await download(release,{signal,isCurrent,onProgress});current();
   if(packageValue.manifest.text!==release.text)throw Error('The prepared release changed. Nothing was sent.');
  }catch(error){reportFailure(error,'phone-download');return stopUnstarted(error);}
+ let resumeUsed=false;
  for(let connectionAttempt=0;connectionAttempt<2;connectionAttempt++){
   current();onProgress({stage:connectionAttempt?'recovering-connection':'connecting',progress:0});
-  let lease,failure,result,failureStage='bluetooth-preflight';
+  let lease,failure,result,installedBeforeTransfer,failureStage='bluetooth-preflight';
   try{
   lease=await acquireBluetooth(entry);
   current();if(lease.lamp.identity!==entry.id)throw Object.assign(Error('Bluetooth identity does not match this lamp.'),{identity:true});
@@ -145,6 +146,7 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   if(compareFirmwareVersions(initialFirmware.version,'1.11.0')<0)throw Object.assign(Error('This lamp needs a one-time service update before phone updates can work.'),{bootstrapRequired:true});
   const observed=attemptJournal?await lease.lamp.readFirmwareUpdateSnapshot({signal,isCurrent}):null;
   const installed=observed?.firmware||initialFirmware;current();
+  installedBeforeTransfer=installed.version;
   guardReceiver(observed);
   if(firmwareMayInstall(installed))throw Object.assign(Error('Your lamp is already updating. Checking its progress…'),{receiverBusy:true});
   verifyReinstallVersion(installed);
@@ -157,11 +159,41 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   result=await lease.lamp.updateOverBluetooth(packageValue,value=>{
    if(attemptJournal&&Number.isInteger(value.acknowledgedBytes)&&value.stage==='transferring')attemptJournal.noteProgress(latest(),{offset:value.acknowledgedBytes});
    onProgress(value);
-   },{signal,isCurrent,...(attemptJournal?{onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)}:{})});
+   },{signal,isCurrent,...(attemptJournal?{enableResume:true,onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)}:{})});
    reportTransfer(result);
    }catch(error){reportTransfer(error);reportFailure(error,failureStage);failure=error;}
   finally{await lease?.release();}
   current();
+  // One foreground reconnection may continue the receiver's negotiated lease.
+  // The original attempt/artifact/session remain authoritative; no new journal,
+  // Manifest, Begin, update route or repeated Finish is permitted here.
+  const original=latest(),offered=Object.getOwnPropertyDescriptor(failure||{},'firmwareResumeLease')?.value;
+  const reason=failure?.stopReason??failure?.updateDiagnostic?.stopReason;
+  const eligible=!resumeUsed&&attemptJournal&&failure&&reason==='native-disconnect'&&!failure.identity&&!failure.stale&&
+   !failure.journalFailure&&!failure.commitUnconfirmed&&original?.outcome==='pending'&&original.beginAttempted===true&&
+   original.commitAttempted===false&&original.commitUnconfirmed===false&&original.cancelAttempted===false&&original.resumeAttempted===false&&
+   original.wifiInstallAttempted===false&&original.text===release.text&&offered?.identity===entry.id&&
+   Number.isInteger(offered.session)&&offered.session>0&&offered.session===original.session&&
+   offered.version===release.version&&offered.size===release.size&&offered.sha256===release.sha256;
+  if(eligible){
+   resumeUsed=true;onProgress({stage:'recovering-connection'});
+   let recoveredLease;
+   try{
+    recoveredLease=await acquireFirmwareResumeLease({attempt:original,resumeLease:offered,installedVersion:installedBeforeTransfer,
+     acquire:(_attempt,options)=>acquireBluetooth(entry,options),signal,isCurrent});current();
+    const same=latest();
+    if(same.attemptId!==original.attemptId||same.session!==offered.session||same.text!==release.text||same.commitAttempted||
+     same.commitUnconfirmed||same.cancelAttempted||same.resumeAttempted)
+     throw Object.assign(Error('The original update attempt changed. Checking your lamp…'),{uncertain:true,stale:true});
+    result=await recoveredLease.lamp.updateOverBluetooth(packageValue,value=>{
+     if(Number.isInteger(value.acknowledgedBytes)&&value.stage==='transferring')attemptJournal.noteProgress(latest(),{offset:value.acknowledgedBytes});
+     onProgress(value);
+    },{signal,isCurrent,enableResume:true,resumeLease:offered,onBeforeWrite:operation=>attemptJournal.beforeWrite(latest(),operation)});
+    reportTransfer(result);failure=null;
+   }catch(error){reportTransfer(error);reportFailure(error,'bluetooth-transfer');failure=error;}
+   finally{await recoveredLease?.release();}
+   current();
+  }
   if(result?.commitUnconfirmed){if(attemptJournal&&attempt)attemptJournal.noteCommitUnconfirmed(latest());return checkResult(unconfirmedCommit());}
   if(result){
    if(attemptJournal&&result.receipt){try{attemptJournal.confirmCommit(latest(),result.receipt);}catch(error){reportFailure(error,'bluetooth-transfer');throw error;}}
