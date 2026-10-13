@@ -69,11 +69,18 @@ test('phone text size, reduced motion and theme belong only to their own comfort
 });
 
 test('setup and knob separate everyday clicks, blue pairing and red release-to-reset',()=>{
- has(topic('setup'),['six seconds','flashes blue','let go','Do not keep holding','pattern','only when the lamp matches','2.4 GHz','No account']);
+ has(topic('setup'),['six seconds','flashes blue','let go','Do not keep holding','2.4 GHz','No account']);
  has(topic('knob'),['quick press and release','Turn the knob','Click once','brightness','five seconds','Double-click','color','Triple-click','off','three seconds','six seconds','blue, then release','pauses group following','unavailable']);
  const reset=topic('recovery');
  has(reset,['ten seconds','until red, then release','release at blue','hardware settings remain']);
  assert.doesNotMatch(reset,/click.*confirm.*reset/);
+});
+
+test('color matching belongs only to the named optional setup-through-another-lamp instructions',()=>{
+ const setup=HELP_TOPICS.find(value=>value.id==='setup'),normal=blocks(setup).join(' ');
+ assert.doesNotMatch(normal,/compar|four colors|color matching|approve/i);
+ const alternate=setup.sections.find(value=>value.title==='Optional: Add through another lamp');assert.ok(alternate);
+ has(text(alternate),['before Bluetooth pairing','new lamp is still unpaired','existing lamp you own','Normal Bluetooth setup does not use color matching','new lamp powered','Add through another lamp','app shows four colors','same order','new lamp’s knob once','If they differ, choose Cancel','confirms the lamp was added']);
 });
 
 test('effects and saving distinguish real controls, previews, phone favorites and startup',()=>{

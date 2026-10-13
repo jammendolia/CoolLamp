@@ -19,7 +19,17 @@ const topics=[
    'Choose your lamp from the phone’s picker. Allow Bluetooth and Local Network access if asked.',
    'Save its name, room and design. Add home Wi-Fi to reach it from farther away; the lamp needs a 2.4 GHz network.'
   ],
-  paragraphsAfter:['A spinner means the app is working; wait for confirmation. Approve a comparison pattern only when the lamp matches. You can finish later and return to the guide.'],
+  sections:[
+   {title:'Optional: Add through another lamp',paragraphs:[
+    'Choose this before Bluetooth pairing, while the new lamp is still unpaired. An existing lamp you own helps with setup. Normal Bluetooth setup does not use color matching.'
+   ],steps:[
+    'Keep the new lamp powered and near your existing lamp.',
+    'Choose Add through another lamp in the setup guide, then select the new lamp the app finds.',
+    'The app shows four colors. Watch the new lamp flash and check that the colors appear in the same order.',
+    'If they match, click the new lamp’s knob once. If they differ, choose Cancel. Wait until the app confirms the lamp was added.'
+   ]}
+  ],
+  paragraphsAfter:['A spinner means the app is working; wait for confirmation. You can finish later and return to the guide.'],
   action:{id:'setup',label:'Open the setup guide'}
  },
  {

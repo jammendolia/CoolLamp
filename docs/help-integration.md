@@ -22,6 +22,14 @@ explicit bounds of 2,500 words, 250 words per topic and 24 KiB serialized UTF-8;
 these are resource limits, not a reason to omit useful explanations. Copy uses
 current runtime labels without inventing household-sharing screens.
 
+In **Set up a lamp**, the ordinary phone/Bluetooth steps contain no comparison
+instruction. **Optional: Add through another lamp** explains that route separately:
+choose this method while the new lamp is still unpaired, select it, compare the
+four colors and their order, click the new lamp's
+knob once only when they match, otherwise cancel, and wait for confirmed addition.
+This moves guidance to its applicable route without changing enrollment security,
+ownership, discovery or approval behavior. Reading the section does not start setup.
+
 `mobile/src/help.js` contains immutable plain text and a small set of known
 navigation action IDs. Optional `sections` contain plain headings, paragraphs and
 steps, frozen just like the top-level content. `mobile/src/app-v2.js` escapes
@@ -92,6 +100,14 @@ personal settings it clears. Legacy firmware caveats remain explicit.
   this document. Bottom navigation, lamp protocols, firmware, native transports
   and release signing are inherited unchanged. Its journal and exact Apple status
   artifact establish the refined build's availability when present.
+- `.build/help-setup-comparison-mobile-tests-20261013.log` and the corresponding
+  production build log verify the comparison-placement correction.
+  `.build/help-setup-comparison-visual-20261013/result.json` verifies its named
+  optional subsection in the mounted Help page. The targeted content regression
+  rejects comparison instructions in the normal Bluetooth steps.
+  `.build/help-setup-comparison-app-release-20261013/` pins only content, that
+  regression and this document onto published build 72. Enrollment behavior and
+  physical comparison acceptance remain separate; no lamp is enrolled by these tests.
 
 Physical/native acceptance remains separate: on the released iPhone build, open
 Help from the bottom bar, read a topic with VoiceOver and enlarged text, and use
