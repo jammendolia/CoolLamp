@@ -6,16 +6,26 @@ same Help page. Home, Lamps, Effects and Settings retain their existing routes.
 
 ## Reading and actions
 
-Help is available without a lamp, an account or an Internet connection. Twelve
-native disclosure topics keep the first screen short: setup, power/brightness,
-effects/colors, saving light, names/rooms/designs, groups, sound, center, knob,
-updates, connection problems and advanced recovery. The full copy is bounded to
-900 words and 8 KiB of serialized data. It uses current runtime control labels;
-it does not invent household-sharing screens or expose every protocol detail.
+Help is available without a lamp, an account or an Internet connection. Fourteen
+native disclosure topics keep the first screen easy to scan: setup,
+power/brightness, effects/colors, saving light, names/rooms/designs, groups, sound,
+center, knob, updates, app readability, connection problems, reset/ownership and
+computer updates. Each opens independently.
+
+The revised copy uses complete explanations rather than the earlier compressed
+900-word guide. A topic introduces its purpose, gives practical steps and explains
+the result or a relevant limitation. Groups, knob use and updates can use titled
+subsections so distinct tasks do not run together. Text size, reduced motion and
+phone theme belong to app readability, not lamp brightness or physical design.
+Reset and computer upload now have separate topics. Static content retains
+explicit bounds of 2,500 words, 250 words per topic and 24 KiB serialized UTF-8;
+these are resource limits, not a reason to omit useful explanations. Copy uses
+current runtime labels without inventing household-sharing screens.
 
 `mobile/src/help.js` contains immutable plain text and a small set of known
-navigation action IDs. `mobile/src/app-v2.js` escapes all displayed strings and
-only routes the whitelisted actions. No Help data is received from a lamp or
+navigation action IDs. Optional `sections` contain plain headings, paragraphs and
+steps, frozen just like the top-level content. `mobile/src/app-v2.js` escapes
+these strings and only routes the whitelisted actions. No Help data is received from a lamp or
 executed as a command. Explicit setup guidance respects pending, unconfirmed
 setup review while remaining available when automatic later guides are off.
 Effects and center shortcuts open a target chooser first; they do not silently
@@ -66,14 +76,22 @@ personal settings it clears. Legacy firmware caveats remain explicit.
   mounted Help checks in Chromium, including 390-pixel layout, native keyboard
   disclosure, 320 pixels at 200% text, dark mode, reduced motion, visible footer
   actions and no lamp reads. Inspected screenshots are in that directory.
+- `.build/help-refinement-visual-20261013/result.json` records the expanded
+  guide's corresponding layout checks, including separate Power/brightness and
+  app readability topics, titled task sections and the longer instructions.
 - Full mobile tests and production build are saved in
-  `.build/help-mobile-tests-20261013.log` and
-  `.build/help-mobile-build-20261013.log`. The isolated release must pass the
+  `.build/help-refinement-mobile-tests-20261013.log` and
+  `.build/help-refinement-mobile-build-20261013.log`. The isolated release must pass the
   exact complete working test count and build before dispatch.
 - `.build/help-app-release-20261013/` freezes only reviewed web UI, copy, tests
   and this document onto the published build 70 source. Firmware, native
   transports, dependencies and signing workflow are unchanged. Exact GitHub and
   Apple status artifacts establish TestFlight availability when present.
+- `.build/help-refinement-app-release-20261013/` freezes the reading refinements
+  onto published build 71. It changes content, section rendering/styling, tests and
+  this document. Bottom navigation, lamp protocols, firmware, native transports
+  and release signing are inherited unchanged. Its journal and exact Apple status
+  artifact establish the refined build's availability when present.
 
 Physical/native acceptance remains separate: on the released iPhone build, open
 Help from the bottom bar, read a topic with VoiceOver and enlarged text, and use

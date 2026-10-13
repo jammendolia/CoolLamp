@@ -373,9 +373,9 @@ test('Help actions only open known destinations and audio guidance never starts 
 });
 
 test('Help renders plain content safely and ignores unsupported action metadata',()=>{
- const ui=fixture(undefined,{helpTopics:[{id:'future',title:'<script>bad()</script>',summary:'A & B',paragraphs:['<img src=x>'],steps:['<b>Step</b>'],paragraphsAfter:['Done & safe'],action:{id:'execute-code',label:'Run'}}]});
+ const ui=fixture(undefined,{helpTopics:[{id:'future',title:'<script>bad()</script>',summary:'A & B',paragraphs:['<img src=x>'],steps:['<b>Step</b>'],sections:[{title:'<b>More & help</b>',paragraphs:['<svg>'],steps:['<script>Still plain</script>']}],paragraphsAfter:['Done & safe'],action:{id:'execute-code',label:'Run'}}]});
  ui.ui.navigate('help');const html=ui.element('v2HelpContent').innerHTML;
- assert.match(html,/&lt;script&gt;/);assert.match(html,/A &amp; B/);assert.match(html,/&lt;img/);assert.match(html,/&lt;b&gt;Step/);assert.match(html,/Done &amp; safe/);assert.doesNotMatch(html,/data-help-action="execute-code"|<script>|<img/);ui.dispose();
+ assert.match(html,/&lt;script&gt;/);assert.match(html,/A &amp; B/);assert.match(html,/&lt;img/);assert.match(html,/&lt;b&gt;Step/);assert.match(html,/<h3>&lt;b&gt;More &amp; help&lt;\/b&gt;<\/h3>/);assert.match(html,/&lt;svg&gt;/);assert.match(html,/Still plain/);assert.match(html,/Done &amp; safe/);assert.doesNotMatch(html,/data-help-action="execute-code"|<script>|<img|<svg>/);ui.dispose();
 });
 
 test('the explicit Help setup guide works when automatic later guides are disabled and preserves pending review',()=>{

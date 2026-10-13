@@ -26,7 +26,7 @@ nav[aria-label="Main navigation"] button span{line-height:1.25;min-width:0;max-w
 .v2-help-topic{border:1px solid var(--line);border-radius:18px;background:var(--surface);overflow:hidden;padding:0;margin:0}
 .v2-help-topic>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:72px;padding:16px;list-style:none;cursor:pointer}
 .v2-help-topic>summary::-webkit-details-marker{display:none}
-.v2-help-topic>summary::after{content:none}
+.v2-help-topic>summary::after,.v2-help-topic[open]>summary::after{content:none}
 .v2-help-topic>summary>span:first-child{min-width:0;flex:1}
 .v2-help-topic strong,.v2-help-topic small{display:block;overflow-wrap:anywhere}
 .v2-help-topic strong{font-size:1.04rem;color:var(--ink)}
@@ -37,6 +37,8 @@ nav[aria-label="Main navigation"] button span{line-height:1.25;min-width:0;max-w
 .v2-help-content p{margin:0 0 12px}
 .v2-help-content ol{padding-left:24px;margin:0 0 14px}
 .v2-help-content li{margin-bottom:10px}
+.v2-help-subsection{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.v2-help-subsection h3{font-family:inherit;font-size:1.05rem;line-height:1.35;font-weight:600;margin:0 0 10px}
 .v2-help-content button{width:100%;margin-top:6px}
 .v2-help-guides{padding:20px;margin:26px 0}
 .v2-help-guides .check{display:flex;gap:12px;align-items:flex-start}
