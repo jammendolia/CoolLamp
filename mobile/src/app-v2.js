@@ -15,7 +15,7 @@ export function readAppPreferences(storage){
 }
 export function mountAppV2(api){
  const preferences=readAppPreferences(localStorage),home=document.getElementById('v2HomeContent'),dialog=document.getElementById('v2Dialog');
- let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null;
+ let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false;
  const persist=()=>{try{if(!preferenceWrites.has(preferences))throw Error('Read unavailable');const text=JSON.stringify(preferences);if(text.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');localStorage.setItem('coollamp-app2',text);return true;}catch{api.message('This phone could not remember the guide preferences. Your lamp’s confirmed changes are kept.');return false;}};
  let storedPreferences=true;try{storedPreferences=localStorage.getItem('coollamp-app2')!==null;}catch{}
  const guide=new OnboardingGuide(preferences,persist,{ownedIds:ownedGuideIds(api.model()),stored:storedPreferences});
@@ -24,9 +24,42 @@ export function mountAppV2(api){
  const groupName=(id,fallback)=>typeof preferences.groups[id]==='string'?preferences.groups[id]:fallback||'Lamp group';
  const applyTheme=()=>{document.documentElement.dataset.appTheme=preferences.theme;document.getElementById('v2Theme').value=preferences.theme;};applyTheme();
  function cancelSelection(){const task=selectionTask;if(!task)return;selectionTask=null;task.controller.abort();delete dialog.dataset.selectionLoading;for(const button of dialog.querySelectorAll('[data-v2="select-settings"]'))button.disabled=false;task.button.removeAttribute('aria-busy');if(task.hint)task.hint.textContent=task.originalHint;}
- const close=()=>{cancelSelection();if(dialog.open)dialog.close();dialog.replaceChildren();};
- function sheet(title,body){cancelSelection();dialog.innerHTML=`<div class="v2-sheet-title"><h2>${esc(title)}</h2><button type="button" data-v2="close" aria-label="Close">×</button></div><p id="v2DialogStatus" role="status" aria-live="polite" aria-atomic="true"></p><div class="v2-sheet-body">${body}</div>`;if(!dialog.open)dialog.showModal();dialog.querySelector('input,button')?.focus();}
- async function run(task){if(working)return;working=true;dialog.setAttribute('aria-busy','true');try{await task();}catch(error){const message=error.guideReview?error.message:error.uncertain?'We could not confirm that change. Check the lamp before trying again.':error.message;const target=document.getElementById('v2DialogStatus');if(target)target.textContent=message;api.message(message);}finally{working=false;dialog.removeAttribute('aria-busy');refresh(true);}}
+ function clearWorkingPresentation(owner){
+  if(!owner)return;
+  for(const [control,disabled]of owner.controls)control.disabled=disabled;
+  owner.controls.clear();owner.body?.removeAttribute('aria-busy');
+  if(owner.presenting){delete dialog.dataset.operationLoading;delete dialog.dataset.operation;owner.presenting=false;}
+  if(owner.status){delete owner.status.dataset.operation;if(owner.status.dataset.state==='working'){delete owner.status.dataset.state;owner.status.textContent='';}}
+ }
+ const close=()=>{cancelSelection();clearWorkingPresentation(workingTask);if(dialog.open)dialog.close();dialog.replaceChildren();};
+ function sheet(title,body){cancelSelection();clearWorkingPresentation(workingTask);dialog.innerHTML=`<div class="v2-sheet-title"><h2>${esc(title)}</h2><button type="button" data-v2="close" aria-label="Close">×</button></div><p id="v2DialogStatus" role="status" aria-live="polite" aria-atomic="true"></p><div class="v2-sheet-body">${body}</div>`;if(!dialog.open)dialog.showModal();dialog.querySelector('input,button')?.focus();}
+ // Semantic keys are localizable display metadata; only explicit client work
+ // selects a stage. They never authorize or replay a lamp operation.
+ const workMessages={pairing:'Connecting to your lamp…','saving-details':'Saving your lamp’s name and design…',
+  'saving-name':'Saving your lamp’s name…','saving-style':'Saving your lamp’s design…','saving-room':'Remembering its room…',
+  'saving-preference':'Saving your update preference…','finishing-setup':'Finishing your setup…',
+  'finding-lamps':'Looking for your lamps…','checking-groups':'Checking which lamps can play together…',
+  'creating-group':'Connecting your group…','joining-group':'Adding lamps to your group…','checking-group':'Checking your group’s connections…',
+  'opening-group':'Opening your group…','changing-power':'Changing your light…'};
+ async function run(task,{stage='pairing',targetId=null}={}){
+  if(working||disposed)return;
+  working=true;const owner={generation:guideGeneration,controls:new Map(),presenting:false,status:null,body:null};workingTask=owner;
+  const current=()=>!disposed&&workingTask===owner&&owner.generation===guideGeneration&&(!targetId||api.model().selected?.id===targetId);
+  const setStage=key=>{if(!current()||!Object.hasOwn(workMessages,key))return;
+   const status=document.getElementById('v2DialogStatus');if(!status||!dialog.open)return;
+   owner.status=status;owner.body=dialog.querySelector('.v2-sheet-body');owner.presenting=true;
+   dialog.dataset.operationLoading='true';dialog.dataset.operation=key;
+   owner.body?.setAttribute('aria-busy','true');
+   for(const control of dialog.querySelectorAll('button,input,select')){if(!owner.controls.has(control))owner.controls.set(control,control.disabled);control.disabled=true;}
+   status.dataset.state='working';status.dataset.operation=key;status.textContent=workMessages[key];status.scrollIntoView({block:'nearest'});
+  };
+  setStage(stage);
+  try{if(current())await task({setStage,isCurrent:current});}
+  catch(error){if(current()){
+   const message=error.guideReview?error.message:error.uncertain?'We could not confirm that change. Check the lamp before trying again.':error.cancelled?'Setup paused. You can continue when you’re ready.':error.message||'This step could not finish. Please try again.';
+   const status=document.getElementById('v2DialogStatus');if(status){status.dataset.state='error';status.textContent=message;status.scrollIntoView({block:'nearest'});}api.message(message);
+  }}finally{clearWorkingPresentation(owner);if(workingTask===owner){workingTask=null;working=false;}if(!disposed)refresh(true);}
+ }
  async function selectLight(button){
   if(working||selectionTask)return;
   const id=button.dataset.id,section=button.dataset.section||'lighting',name=api.model().lamps?.find(lamp=>lamp.id===id)?.name||'your lamp';
@@ -96,7 +129,7 @@ export function mountAppV2(api){
   const pending=guide.state.pending,owned=ownedGuideIds(api.model());
   if(pending&&Array.isArray(api.model().ownedLampIds)&&api.model().ownedLampIds.includes(pending.target)){setupId=pending.target;setupStep=2;setupNeedsReview=true;setup();return;}
   if(!guide.state.firstComplete&&owned?.length){const selectedId=api.model().selected?.id,id=owned.includes(selectedId)?selectedId:owned.length===1?owned[0]:null;if(id&&/^[0-9a-f]{12}$/.test(id)){guide.review(id);setupId=id;setupStep=2;setupNeedsReview=true;setup();}else chooseLight('overview');return;}
-  if(guide.state.firstComplete&&owned?.length>=2){if(!guide.state.laterGuides){void run(directAdd);return;}sheet('Add a little more light',`<p>Use the familiar setup guide, or connect a lamp and keep its existing choices.</p><button data-v2="guide-add">Use the setup guide</button><button class="secondary" data-v2="add-direct">Connect without the guide</button>`);return;}
+  if(guide.state.firstComplete&&owned?.length>=2){if(!guide.state.laterGuides){sheet('Connecting your lamp','<p>Keep your lamp powered on and your phone nearby.</p>');void run(directAdd,{stage:'pairing'});return;}sheet('Add a little more light',`<p>Use the familiar setup guide, or connect a lamp and keep its existing choices.</p><button data-v2="guide-add">Use the setup guide</button><button class="secondary" data-v2="add-direct">Connect without the guide</button>`);return;}
   beginSetup();
  }
  async function directAdd(){
@@ -104,27 +137,30 @@ export function mountAppV2(api){
   close();api.navigate('effects');offerSecondGuide();
  }
  function createGroup(){const model=api.model();sheet('Let your lamps play together',`<label for="v2GroupName">Group name</label><input id="v2GroupName" maxlength="48" placeholder="e.g. Bedroom"><p>Choose at least two lamps. We’ll choose the main lamp and confirm each connection.</p>${(model.available||[]).filter(l=>l.verified&&l.available&&l.role===0&&!l.sync?.membershipLocked).map(l=>`<label class="v2-select-row"><input type="checkbox" name="v2GroupMember" value="${esc(l.id)}"><span><strong>${esc(l.name)}</strong><small>Ready to join</small></span></label>`).join('')||'<p class="hint">Find two independent lamps first. Existing group members can be moved from group management.</p>'}<button data-v2="create-group-save">Create group</button><button class="text-button" data-v2="discover-groups">Find available lamps</button>`);}
- document.addEventListener('click',event=>{const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
+ function findLamps(groups=false){sheet(groups?'Finding your groups':'Finding your lamps',`<p>Keep your lamps powered on. We’re checking which ones are available.</p><button class="secondary" data-v2="${groups?'discover-groups':'discover'}">Try again</button>`);
+  void run(async({isCurrent})=>{await (groups?api.refreshGroups():api.discover());if(!isCurrent())return;close();api.navigate(groups?'groups':'lamps');},{stage:groups?'checking-groups':'finding-lamps'});
+ }
+ document.addEventListener('click',event=>{if(disposed)return;const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
   if(action==='close'){if(!working)close();return;}if(working||selectionTask)return;
   if(action==='add'){add();}
   else if(action==='guide-add'){if(guide.state.pending&&Array.isArray(api.model().ownedLampIds)&&api.model().ownedLampIds.includes(guide.state.pending.target))add();else beginSetup();}
-  else if(action==='add-direct')void run(directAdd);
+  else if(action==='add-direct')void run(directAdd,{stage:'pairing'});
   else if(action==='setup-next'){setupStep++;setup();}
   else if(action==='setup-back'){if(setupStep===2){setupName=document.getElementById('v2SetupName').value;setupRoom=document.getElementById('v2SetupRoom').value;}setupStep=Math.max(0,setupStep-1);setup();}
-  else if(action==='pair')void run(async()=>{const generation=guideGeneration,result=await api.pair(),model=api.model();if(generation!==guideGeneration)return;if(!confirmedGuideTarget(model,result))throw result?.error||Error('Pairing did not finish for your owned lamp. Keep the lamp flashing blue and try again.');setupId=model.selected.id;setupName=model.selected.name||'My lamp';setupStyle=model.selected.lampStyle?.id||model.selected.phoneLampStyle||'helix';setupRoom=model.selected.room||'Living room';setupAutomaticKnown=typeof model.selectedAutomatic==='boolean';setupAutomatic=setupAutomaticInitial=setupAutomaticKnown?model.selectedAutomatic:false;guide.paired(setupId);setupStep=2;setup();});
-  else if(action==='setup-save')void run(async()=>{setupName=document.getElementById('v2SetupName').value.trim();setupRoom=document.getElementById('v2SetupRoom').value.trim();setupStyle=document.getElementById('v2SetupStyle').value;if(!setupName)throw Error('Give your lamp a name.');const id=setupId,generation=guideGeneration,roomValue=setupRoom;try{await api.setupDetails({id,name:setupName,room:setupRoom,style:setupStyle});}catch(error){guide.review(id);if(generation!==guideGeneration)return;setupNeedsReview=true;setup();throw Object.assign(Error('Some choices may already be saved. Choose “Check this lamp” to see what it kept.'),{guideReview:true,uncertain:error.uncertain});}preferences.rooms[id]=roomValue||'My home';guide.details(id);persist();if(generation!==guideGeneration)return;setupStep=3;setup();});
-  else if(action==='setup-done'||action==='setup-wifi')void run(async()=>{setupAutomatic=Boolean(document.getElementById('v2SetupAutomatic').checked);const id=setupId,generation=guideGeneration;try{if(setupAutomatic!==setupAutomaticInitial)await api.setAutomatic(setupAutomatic,id);}catch(error){guide.review(id);if(generation!==guideGeneration)return;setupNeedsReview=true;setup();throw Object.assign(Error('Your name and room were kept. We could not confirm the update preference. Choose “Check this lamp” to see its current choice.'),{guideReview:true,uncertain:error.uncertain});}guide.complete(id);if(generation!==guideGeneration)return;close();api.navigate(action==='setup-wifi'?'settings':'effects',action==='setup-wifi'?'network':'lighting');if(action==='setup-done')offerSecondGuide();});
+  else if(action==='pair')void run(async({isCurrent})=>{const generation=guideGeneration,result=await api.pair(),model=api.model();if(generation!==guideGeneration||!isCurrent())return;if(!confirmedGuideTarget(model,result))throw result?.error||Error('Pairing did not finish for your owned lamp. Keep the lamp flashing blue and try again.');setupId=model.selected.id;setupName=model.selected.name||'My lamp';setupStyle=model.selected.lampStyle?.id||model.selected.phoneLampStyle||'helix';setupRoom=model.selected.room||'Living room';setupAutomaticKnown=typeof model.selectedAutomatic==='boolean';setupAutomatic=setupAutomaticInitial=setupAutomaticKnown?model.selectedAutomatic:false;guide.paired(setupId);setupStep=2;setup();},{stage:'pairing'});
+  else if(action==='setup-save')void run(async({setStage,isCurrent})=>{setupName=document.getElementById('v2SetupName').value.trim();setupRoom=document.getElementById('v2SetupRoom').value.trim();setupStyle=document.getElementById('v2SetupStyle').value;if(!setupName)throw Error('Give your lamp a name.');const id=setupId,generation=guideGeneration,roomValue=setupRoom;try{await api.setupDetails({id,name:setupName,room:setupRoom,style:setupStyle,onProgress:setStage});}catch(error){guide.review(id);if(generation!==guideGeneration||!isCurrent())return;setupNeedsReview=true;setup();throw Object.assign(Error('Some choices may already be saved. Choose “Check this lamp” to see what it kept.'),{guideReview:true,uncertain:error.uncertain});}preferences.rooms[id]=roomValue||'My home';guide.details(id);persist();if(generation!==guideGeneration||!isCurrent())return;setupStep=3;setup();},{stage:'saving-details',targetId:setupId});
+  else if(action==='setup-done'||action==='setup-wifi')void run(async({setStage,isCurrent})=>{setupAutomatic=Boolean(document.getElementById('v2SetupAutomatic').checked);const id=setupId,generation=guideGeneration;try{if(setupAutomatic!==setupAutomaticInitial){setStage('saving-preference');await api.setAutomatic(setupAutomatic,id);}}catch(error){guide.review(id);if(generation!==guideGeneration||!isCurrent())return;setupNeedsReview=true;setup();throw Object.assign(Error('Your name and room were kept. We could not confirm the update preference. Choose “Check this lamp” to see its current choice.'),{guideReview:true,uncertain:error.uncertain});}guide.complete(id);if(generation!==guideGeneration||!isCurrent())return;close();api.navigate(action==='setup-wifi'?'settings':'effects',action==='setup-wifi'?'network':'lighting');if(action==='setup-done')offerSecondGuide();},{stage:'finishing-setup',targetId:setupId});
   else if(action==='guide-keep-current'){if(Array.isArray(api.model().ownedLampIds)&&api.model().ownedLampIds.includes(setupId)){guide.complete(setupId);setupNeedsReview=false;close();api.message('The guide is finished. The earlier save remains unconfirmed until the lamp’s settings are checked.');}}
   else if(action==='mesh-setup'){close();api.navigate('lamps');api.findNewLamps();api.message('Keep the new lamp near one you already own. New lamps appear above your inventory.');}
-  else if(action==='discover'){close();api.navigate('lamps');void api.discover();}
-  else if(action==='discover-groups'){close();api.navigate('groups');void api.refreshGroups();}
+  else if(action==='discover'){findLamps();}
+  else if(action==='discover-groups'){findLamps(true);}
   else if(action==='lamps'){close();api.navigate('lamps');}
   else if(action==='choose-light'){chooseLight();}
   else if(action==='open-lamp'||action==='select-settings'){if(!dialog.open)chooseLight(button.dataset.section||'lighting');const choice=[...dialog.querySelectorAll('[data-v2="select-settings"]')].find(value=>value.dataset.id===button.dataset.id)||button;void selectLight(choice);}
   else if(action==='open-group'){close();api.navigate('groups');void api.openGroup(button.dataset.id);}
-  else if(action==='power')void run(()=>api.power(button.dataset.id));
-  else if(action==='create-group'){sheet('Finding your lamps','<p>We’re checking which lamps are ready to play together. This can take a little time when a lamp is out of reach.</p>');void run(async()=>{await api.refreshGroups();createGroup();});}
-  else if(action==='create-group-save')void run(async()=>{const name=document.getElementById('v2GroupName').value.trim(),ids=[...dialog.querySelectorAll('[name="v2GroupMember"]:checked')].map(input=>input.value);if(!name)throw Error('Give your group a name.');if(ids.length<2)throw Error('Choose at least two lamps.');const generation=guideGeneration;let result;try{result=await api.createGroup(ids);}catch(error){if(generation!==guideGeneration)return;sheet('Let’s check your group',`<p>Some lamps may already be playing together. Open Groups to see which lamps confirmed joining and finish the remaining steps.</p><p>${esc(error.message||'A lamp has not confirmed joining.')}</p><button data-v2="group-guide-review">Check my groups</button><button class="secondary" data-v2="close">Finish later</button>`);throw Object.assign(Error('Choose “Check my groups” to finish the existing group. We will not create it again.'),{guideReview:true,uncertain:error.uncertain});}preferences.groups[result.id]=name;persist();if(generation!==guideGeneration)return;close();api.navigate('groups');await api.openGroup(result.id);});
+  else if(action==='power')void run(()=>api.power(button.dataset.id),{stage:'changing-power'});
+  else if(action==='create-group'){sheet('Finding your lamps','<p>We’re checking which lamps are ready to play together. This can take a little time when a lamp is out of reach.</p>');void run(async({isCurrent})=>{await api.refreshGroups();if(isCurrent())createGroup();},{stage:'checking-groups'});}
+  else if(action==='create-group-save')void run(async({setStage,isCurrent})=>{const name=document.getElementById('v2GroupName').value.trim(),ids=[...dialog.querySelectorAll('[name="v2GroupMember"]:checked')].map(input=>input.value);if(!name)throw Error('Give your group a name.');if(ids.length<2)throw Error('Choose at least two lamps.');const generation=guideGeneration;let result;try{result=await api.createGroup(ids,{onProgress:setStage});}catch(error){if(generation!==guideGeneration||!isCurrent())return;sheet('Let’s check your group',`<p>Some lamps may already be playing together. Open Groups to see which lamps confirmed joining and finish the remaining steps.</p><p>${esc(error.message||'A lamp has not confirmed joining.')}</p><button data-v2="group-guide-review">Check my groups</button><button class="secondary" data-v2="close">Finish later</button>`);throw Object.assign(Error('Choose “Check my groups” to finish the existing group. We will not create it again.'),{guideReview:true,uncertain:error.uncertain});}preferences.groups[result.id]=name;persist();if(generation!==guideGeneration||!isCurrent())return;close();api.navigate('groups');await api.openGroup(result.id);},{stage:'creating-group'});
   else if(action==='updates'){close();api.navigate('lamps');document.getElementById('v2CarePanel').scrollIntoView({block:'start'});}
   else if(action==='lamp-settings'){chooseLight('overview');}
   else if(action==='network'){chooseLight('network');}
@@ -134,7 +170,7 @@ export function mountAppV2(api){
   else if(action==='guide-preference'){guide.setLater(document.getElementById('v2LaterGuides').checked);close();}
   else if(action==='guide-group'){groupGuide();}
   else if(action==='group-guide-skip'){guide.offeredGroup();close();}
-  else if(action==='group-guide-review'){close();api.navigate('groups');void api.refreshGroups();}
+  else if(action==='group-guide-review'){findLamps(true);}
   else if(action==='guide-center')sheet('Find the center that feels right',`<p>${guideHelp.center}</p><p>Your saved center stays in place until you explicitly save an adjustment.</p><button data-v2="hardware">Open a lamp’s center settings</button><button class="secondary" data-v2="help">Back to Help</button>`);
   else if(action==='guide-audio'){audioGuideStep=0;audioGuide();}
   else if(action==='guide-audio-next'){audioGuideStep=Math.min(3,audioGuideStep+1);audioGuide();}
@@ -147,5 +183,5 @@ export function mountAppV2(api){
  const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
  refresh(true);
  function startWelcome(){if(guide.welcome())beginSetup();}
- return {groupName,room,refresh,chooseLight,openSettings,startWelcome,navigate(name){const offerGroup=name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();refresh();if(offerGroup)offerSecondGuide();},destroy(){++guideGeneration;cancelSelection();clearInterval(interval);}};
+ return {groupName,room,refresh,chooseLight,openSettings,startWelcome,navigate(name){const offerGroup=name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
 }

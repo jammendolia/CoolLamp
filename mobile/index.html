@@ -525,6 +525,7 @@
 <label for="room">Room</label>
 <input id="room" maxlength="48">
 <button id="saveIdentity" disabled>Save name & room</button>
+<p id="identitySaveFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button id="identify" disabled type="button" class="secondary">Identify lamp</button>
 <p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p>
 </form>
@@ -538,7 +539,7 @@
 <button id="saveLampStyle" type="submit">Save lamp design</button>
 </fieldset>
 <p id="lampStyleScope" class="hint">Connect to a lamp to choose its physical design.</p>
-<p id="lampStyleFeedback" class="hint" role="status"></p>
+<p id="lampStyleFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button type="button" class="secondary" data-settings-section="hardware">LED count & strip setup</button>
 </form>
 <section class="panel sync-panel" aria-labelledby="syncTitle" data-settings-panel="groups">
@@ -623,7 +624,7 @@
 </div>
 </div>
 <p class="hint" id="wifiSettingsHint">Connect over Bluetooth to set up home Wi-Fi, or use a Wi-Fi connection to manage network and security settings.</p>
-<p id="wifiSetupFeedback" class="hint" role="status" aria-live="polite"></p>
+<p id="wifiSetupFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
 <label for="networks">Nearby networks</label>
 <select id="networks">

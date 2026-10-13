@@ -17,6 +17,7 @@ const bindAbortSource=extract('function bindRecoveryAbort(', '\nasync function c
 const cancelMeshSource=extract('function cancelMeshSelection(', '\nfunction bindRecoveryAbort(');
 const meshCardSource=extract('async function connectMeshCard(', '\nasync function connectCardWifiAsync(');
 const disconnectSource=extract('  onDisconnect() {', '\n};\nconst phonePlatform=');
+const setupActivitySource=extract('function setupActivity(', '\nfunction notifySetupProgress(');
 const recoverySource=extract('settingsRecovery=new SettingsConnectionRecovery({', '\nsetInterval(()=>settingsRecovery.check(),1000);');
 const settingsConnectionSource=extract('function renderSettingsConnection(){', '\nfunction resolvedStyle(');
 const id='aabbccddeeff',other='112233445566',deviceId='AAAAAAAA-0000-0000-0000-000000000001';
@@ -219,12 +220,13 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
   runInNewContext(`let busy=false,connecting=false,meshSelection=null,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3,liveLight={cancel(){calls.push('cancel-live-light');}};
     let selected={...entry},state=null,settingsView='network',settingsRecovery=null,styleSaving=false,settingsRestartWaitUntil=0;
     let wifiScanning=false,wifiScanSerial=0,centerTimer=null,centerStatus=null,centerWasActive=false,centerSerial=0,resetTarget=null;
-    let wifiSetupAbort=null,bleWifiStatus=null,wifiSetupSerial=0,firmware=null,firmwareReceivedAt=0,effectOptions=null,vuDirty=false,fountainDirty=false,audioDirty=false,paneMode=null,editingBrightness=false,savedDevice=entry;
+    let wifiSetupAbort=null,wifiHandoff=null,bleWifiStatus=null,wifiSetupSerial=0,firmware=null,firmwareReceivedAt=0,effectOptions=null,vuDirty=false,fountainDirty=false,audioDirty=false,paneMode=null,editingBrightness=false,savedDevice=entry;
     const settingsUnconfirmedIds=new Set(),app2Pending=new Map(),fleetStatuses=new Map(),bleLamp={};
     const oldLamp={identity:entry.id,async disconnect(){calls.push('disconnect-old');callbacks.onDisconnect();calls.push({kind:'handoff-context',context:settingsRecovery.context(),active:settingsRecovery.active});settingsRecovery.check();if(disconnectGate)await disconnectGate.promise;}};
     let lamp=oldLamp;const mergedLampEntries=()=>[entry];
     const verifiedSelectedLamp=()=>Boolean(!connecting&&state&&lamp.identity===selected?.id);
     const connectivity={get:()=>({wifi:{state:'disconnected'}})};
+    ${setupActivitySource}
     const callbacks={onState(next){state=next;settingsRecovery?.check();},onFirmware(next){firmware=next;},onOptions(){},${disconnectSource}};
     const transportCallbacks=()=>callbacks;
     const connected=(route,options)=>{calls.push({kind:'connected',route,options});$('reconnect').hidden=true;};

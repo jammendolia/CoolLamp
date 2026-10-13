@@ -23,6 +23,7 @@ const views=extract('function lampUpdateView(', '\nfunction resolvedStyle(');
 const settingsRender=extract('function renderSettings() {','\nfunction lampUpdateView(');
 const firmwareRender=extract('function renderFirmware() {','\nfunction verifiedOlderBluetoothSettings(');
 const playbackRender=extract('function renderPlaybackTools() {',"\n$('rotationForm').oninput=");
+const setupActivity=extract('function setupActivity(', '\nfunction notifySetupProgress(');
 const progressCallback=extract('  const progress=value=>','\n  const result=await updateCardFirmware',source.indexOf('async function updateLampCard('));
 
 // Only DOM presentation and unrelated controls are stubbed. The selected-target
@@ -68,13 +69,13 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   renderFirmwareFeedback(){},renderBluetoothFirmwareControls(){},renderPower(){},renderLampStyleSettings(){},renderCenterTool(){},
   connectivity:{get:()=>({group:null})},settingsView:'overview',wifiFailures:new Map(),advancedAvailable:()=>false,
   bluetoothWifiAvailable:()=>false,legacyWithoutGroups:()=>false,verifiedOlderBluetoothSettings:()=>false,
-  wifiScanning:false,connecting:false,wifiSetupAbort:null,bleWifiStatus:null,hideWifiPassword(){},
+  wifiScanning:false,connecting:false,wifiSetupAbort:null,wifiHandoff:null,identitySaving:null,bleWifiStatus:null,hideWifiPassword(){},
   groupsAvailable:()=>false,independentLightingAllowed:()=>true,playbackIdentity:null,rotationDirty:false,
   renderLamps:()=>{cardRenders++;},
   task:sender,current:()=>tasks.get(id)===sender,release:{version:'1.15.2'},bluetoothFirmwareConnectionSerial:0,
   acknowledgedBluetoothUpdateSource,firmwareUpdatePresentation,mergedLampEntries:()=>[owned],page:name=>pages.push(name)};
  const pages=[];
- runInNewContext(views+'\n'+settingsRender+'\n'+playbackRender+'\n'+firmwareRender+'\n'+progressCallback+'\nthis.ui={render:renderSettingsConnection,view:lampUpdateView,progress};',context);
+ runInNewContext(setupActivity+'\n'+views+'\n'+settingsRender+'\n'+playbackRender+'\n'+firmwareRender+'\n'+progressCallback+'\nthis.ui={render:renderSettingsConnection,view:lampUpdateView,progress};',context);
  context.ui.render();
  return {context,$,feedback,tasks,statuses,pending,sender,roots,journal,pages,render:context.ui.render,progress:context.ui.progress,
   view:()=>context.ui.view(context.selected),cardRenders:()=>cardRenders,

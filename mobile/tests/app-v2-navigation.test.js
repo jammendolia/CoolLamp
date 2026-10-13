@@ -25,6 +25,7 @@ function fixture(select=async()=>({connected:true}),options={}){
   set innerHTML(value){
    this._html=value;this.children=[];
    if(this.id==='v2Dialog'){
+    this.body=new Element('v2-sheet-body');
     elements.delete('v2DialogStatus');
     elements.delete('v2SetupStyle');
     const statusTag=value.match(/<p\b([^>]*\bid="v2DialogStatus"[^>]*)>/);
@@ -42,6 +43,7 @@ function fixture(select=async()=>({connected:true}),options={}){
      const id=tag[1].match(/\bid="([^"]+)"/)?.[1],input=id?element(id):new Element();
      input.value=tag[1].match(/\bvalue="([^"]*)"/)?.[1]||'';input.name=tag[1].match(/\bname="([^"]*)"/)?.[1]||'';input.checked=/\bchecked\b/.test(tag[1]);this.children.push(input);
     }
+    this.body.children=this.children.filter(child=>child.dataset.v2!=='close');
    }
   }
   get innerHTML(){return this._html;}
@@ -51,8 +53,9 @@ function fixture(select=async()=>({connected:true}),options={}){
   addEventListener(name,callback){const handlers=this.listeners.get(name)||[];handlers.push(callback);this.listeners.set(name,handlers);}
   showModal(){this.open=true;}
   close(){this.open=false;}
-  replaceChildren(){this._html='';this.children=[];if(this.id==='v2Dialog')elements.delete('v2DialogStatus');}
+  replaceChildren(){this._html='';this.children=[];this.body=null;if(this.id==='v2Dialog')elements.delete('v2DialogStatus');}
   querySelector(selector){
+   if(selector==='.v2-sheet-body')return this.body||null;
    if(selector==='small'){
     if(!this._html.includes('<small>'))return null;
     if(!this.small){this.small=new Element();this.small.textContent=this._html.match(/<small>(.*?)<\/small>/)?.[1]||'';}return this.small;
@@ -60,7 +63,7 @@ function fixture(select=async()=>({connected:true}),options={}){
    if(selector==='[data-v2="select-settings"]')return this.children.find(child=>child.dataset.v2==='select-settings')||null;
    return this.children[0]||null;
   }
-  querySelectorAll(selector){return this.children.filter(child=>selector==='[name="v2GroupMember"]:checked'?child.name==='v2GroupMember'&&child.checked:selector==='button'||selector==='[data-v2]'||selector.includes(`data-v2="${child.dataset.v2}"`));}
+  querySelectorAll(selector){return this.children.filter(child=>selector==='[name="v2GroupMember"]:checked'?child.name==='v2GroupMember'&&child.checked:selector==='button,input,select'||selector==='button'||selector==='[data-v2]'||selector.includes(`data-v2="${child.dataset.v2}"`));}
   closest(){return this;}
   contains(value){return this===value||this.children.includes(value);}
   focus(){document.activeElement=this;}
@@ -188,9 +191,9 @@ test('a connection for a different lamp cannot open its settings as the chosen l
  assert.match(ui.status(),/different lamp/);assert.equal(ui.dialog.open,true);assert.equal(ui.navigations.length,0);ui.dispose();
 });
 
-function setupFixture({count=0,error,gate,automaticGate,automatic=false,failStorage=false}={}){
+function setupFixture({count=0,error,gate,automaticGate,detailsGate,automatic=false,failStorage=false}={}){
  const other={id:'112233445566',name:'First lamp'},model={lamps:count?[other]:[],ownedLampIds:count?[other.id]:[],groups:[],statuses:{},selected:null,connected:false,selectedAutomatic:automatic};
- const writes=[],pairs=[],api={pair:async()=>{pairs.push(true);if(gate)await gate.promise;model.lamps.push(lamp);model.ownedLampIds.push(lamp.id);model.selected={...lamp,lampStyle:{id:'future-design'}};model.connected=true;return {connected:true,id:lamp.id};},setupDetails:async value=>{writes.push(['details',value]);if(error)throw error;},setAutomatic:async(...values)=>{writes.push(['automatic',...values]);if(automaticGate)await automaticGate.promise;}};
+ const writes=[],pairs=[],api={pair:async()=>{pairs.push(true);if(gate)await gate.promise;model.lamps.push(lamp);model.ownedLampIds.push(lamp.id);model.selected={...lamp,lampStyle:{id:'future-design'}};model.connected=true;return {connected:true,id:lamp.id};},setupDetails:async value=>{writes.push(['details',value]);if(detailsGate)await detailsGate.promise;if(error)throw error;},setAutomatic:async(...values)=>{writes.push(['automatic',...values]);if(automaticGate)await automaticGate.promise;}};
  const ui=fixture(undefined,{model,api,failStorage});return {...ui,model,writes,pairs};
 }
 test('genuinely fresh first-use opens guide once and never pairs or mutates without a button',()=>{
@@ -249,4 +252,104 @@ test('partial group creation routes to existing group review and never repeats c
  const ui=fixture(undefined,{model,api:{refreshGroups:async()=>{refreshes++;},createGroup:async()=>{creations++;throw Object.assign(Error('Main lamp ready; follower pending'),{uncertain:true});}}});
  ui.click('guide-group');ui.click('create-group');await settle();ui.element('v2GroupName').value='Evening';for(const input of ui.dialog.children)if(input.name==='v2GroupMember')input.checked=true;
  ui.click('create-group-save');await settle();assert.equal(creations,1);assert.match(ui.dialog.innerHTML,/Check my groups/);assert.doesNotMatch(ui.dialog.innerHTML,/data-v2="create-group-save"/);ui.click('group-guide-review');await settle();assert.equal(creations,1);assert.equal(refreshes,2);assert.deepEqual(ui.navigations,[['groups']]);ui.dispose();
+});
+
+function assertWorking(ui,key,message){
+ const status=ui.element('v2DialogStatus'),body=ui.dialog.querySelector('.v2-sheet-body');
+ assert.equal(ui.dialog.open,true);assert.equal(ui.dialog.dataset.operationLoading,'true');assert.equal(ui.dialog.dataset.operation,key);
+ assert.equal(status.dataset.state,'working');assert.equal(status.dataset.operation,key);assert.match(status.textContent,message);
+ assert.equal(status.getAttribute('role'),'status');assert.equal(status.getAttribute('aria-live'),'polite');assert.equal(status.getAttribute('aria-atomic'),'true');
+ assert.notEqual(ui.dialog.getAttribute('aria-busy'),'true');assert.equal(body.getAttribute('aria-busy'),'true');assert.equal(body.contains(status),false);
+ assert(ui.dialog.querySelectorAll('button,input,select').every(control=>control.disabled));
+}
+function assertWorkCleared(ui){
+ assert.equal(ui.dialog.dataset.operationLoading,undefined);assert.equal(ui.dialog.dataset.operation,undefined);
+ assert.notEqual(ui.element('v2DialogStatus').dataset.state,'working');
+ assert.notEqual(ui.dialog.querySelector('.v2-sheet-body')?.getAttribute('aria-busy'),'true');
+}
+
+test('wizard pairing visibly starts before the native call and duplicate/Back/Close taps send no second command',async()=>{
+ const gate=deferred(),ui=setupFixture({gate});ui.click('setup-next');ui.click('pair');
+ assert.equal(ui.pairs.length,1);assertWorking(ui,'pairing',/Connecting to your lamp/);
+ ui.click('pair');ui.click('setup-back');ui.click('close');assert.equal(ui.cancel(),true);assert.equal(ui.pairs.length,1);
+ await settle();assertWorking(ui,'pairing',/Connecting to your lamp/);
+ gate.resolve();await settle();assert.match(ui.dialog.innerHTML,/Make it yours/);assertWorkCleared(ui);
+ assert.equal(ui.dialog.children.find(button=>button.dataset.v2==='setup-save').disabled,false);assert.equal(ui.writes.length,0);ui.dispose();
+});
+
+test('actual wizard save forwards presentation-only stage callbacks and retains busy ownership through each delayed stage',async()=>{
+ const detailsGate=deferred(),ui=setupFixture({detailsGate});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');
+ assert.equal(ui.writes.length,1);assertWorking(ui,'saving-details',/Saving your lamp’s name and design/);
+ const progress=ui.writes[0][1].onProgress;assert.equal(typeof progress,'function');
+ for(const [key,message]of [['saving-name',/name/],['saving-style',/design/],['saving-room',/room/]]){progress(key);assertWorking(ui,key,message);}
+ const previous=ui.status();progress('<script>guess-a-wire-command</script>');assert.equal(ui.status(),previous);
+ ui.click('setup-save');assert.equal(ui.writes.length,1);
+ detailsGate.resolve();await settle();assert.match(ui.dialog.innerHTML,/Your lamp is ready/);assertWorkCleared(ui);assert.equal(ui.writes.length,1);ui.dispose();
+});
+
+test('unconfirmed delayed setup save clears its indicator and permits review only, without resending any settings',async()=>{
+ const detailsGate=deferred(),ui=setupFixture({detailsGate});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');
+ assertWorking(ui,'saving-details',/Saving/);detailsGate.reject(Object.assign(Error('Reply was lost after name save'),{uncertain:true}));await settle();
+ assertWorkCleared(ui);assert.equal(ui.element('v2DialogStatus').dataset.state,'error');assert.match(ui.status(),/Some choices may already be saved/);
+ assert.match(ui.dialog.innerHTML,/Check this lamp/);assert.doesNotMatch(ui.dialog.innerHTML,/data-v2="setup-save"/);
+ assert(ui.dialog.querySelectorAll('button,input,select').every(control=>!control.disabled));
+ ui.click('setup-save');await settle();assert.equal(ui.writes.length,1);assert.equal(JSON.parse(ui.preferences()).onboarding.pending.needsReview,true);ui.dispose();
+});
+
+test('update preference save immediately explains its work and duplicate finish taps do not repeat opt-in',async()=>{
+ const automaticGate=deferred(),ui=setupFixture({automaticGate});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');await settle();
+ ui.element('v2SetupAutomatic').checked=true;ui.click('setup-done');assertWorking(ui,'saving-preference',/Saving your update preference/);
+ ui.click('setup-done');ui.click('setup-wifi');assert.equal(ui.writes.filter(row=>row[0]==='automatic').length,1);
+ automaticGate.resolve();await settle();assert.equal(ui.dialog.open,false);assertWorkCleared(ui);assert.deepEqual(ui.navigations,[['effects','lighting']]);ui.dispose();
+});
+
+test('native pairing cancellation clears progress and gives a calm explicit result without claiming ownership',async()=>{
+ const gate=deferred(),ui=setupFixture({gate});ui.click('setup-next');ui.click('pair');assertWorking(ui,'pairing',/Connecting/);
+ gate.reject(Object.assign(Error('Native picker cancelled'),{cancelled:true}));await settle();assertWorkCleared(ui);
+ assert.match(ui.status(),/Setup paused/);assert.equal(ui.model.ownedLampIds.length,0);assert.equal(ui.writes.length,0);
+ assert.equal(ui.dialog.children.find(button=>button.dataset.v2==='pair').disabled,false);ui.dispose();
+});
+
+test('navigation fences old save stage callbacks/errors and clears old controls without altering a new chooser',async()=>{
+ const detailsGate=deferred(),ui=setupFixture({detailsGate});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');
+ const progress=ui.writes[0][1].onProgress;assertWorking(ui,'saving-details',/Saving/);
+ ui.ui.navigate('lamps');ui.ui.chooseLight('overview');assertWorkCleared(ui);assert.equal(ui.status(),'');
+ progress('saving-style');detailsGate.reject(Object.assign(Error('Old save reply missing'),{uncertain:true}));await settle();
+ assert.equal(ui.status(),'');assert.equal(ui.dialog.children.find(button=>button.dataset.v2==='select-settings').disabled,false);
+ assert.equal(ui.writes.length,1);assert(!ui.messages.some(message=>/Some choices may already/.test(message)));ui.dispose();
+});
+
+test('a changed selected target fences save-stage updates and cannot advance the original wizard',async()=>{
+ const detailsGate=deferred(),ui=setupFixture({detailsGate});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');
+ const progress=ui.writes[0][1].onProgress;ui.model.selected={...lamp,id:'112233445566',name:'Another lamp'};progress('saving-style');
+ assertWorking(ui,'saving-details',/name and design/);detailsGate.resolve();await settle();assertWorkCleared(ui);
+ assert.doesNotMatch(ui.dialog.innerHTML,/Your lamp is ready/);assert.equal(ui.navigations.length,0);assert.equal(ui.writes.length,1);ui.dispose();
+});
+
+for(const failed of [false,true])test('home discovery has visible work before its API call, bounded by completion '+(failed?'failure':'success'),async()=>{
+ const gate=deferred();let calls=0,ui;
+ ui=fixture(undefined,{api:{discover:async()=>{++calls;assertWorking(ui,'finding-lamps',/Looking for your lamps/);await gate.promise;}}});
+ ui.click('discover');assertWorking(ui,'finding-lamps',/Looking for your lamps/);ui.click('discover');assert.equal(calls,1);
+ if(failed)gate.reject(Error('No response from discovery'));else gate.resolve();await settle();assertWorkCleared(ui);
+ if(failed){assert.equal(ui.dialog.open,true);assert.match(ui.status(),/No response/);assert.equal(ui.dialog.children.find(button=>button.dataset.v2==='discover').disabled,false);}
+ else{assert.equal(ui.dialog.open,false);assert.deepEqual(ui.navigations,[['lamps']]);}
+ ui.dispose();
+});
+
+test('group wizard scanning/joining use real visible stages and a partial result exposes review without recreating',async()=>{
+ const other={...lamp,id:'112233445566'},model={lamps:[lamp,other],ownedLampIds:[lamp.id,other.id],groups:[],statuses:{},available:[lamp,other].map(entry=>({...entry,verified:true,available:true,role:0})),connected:false};
+ const finding=deferred(),creating=deferred();let checks=0,creations=0,progress;
+ const ui=fixture(undefined,{model,api:{refreshGroups:async()=>{++checks;if(checks===1)await finding.promise;},createGroup:async(_ids,options)=>{++creations;progress=options.onProgress;await creating.promise;}}});
+ ui.click('guide-group');ui.click('create-group');assertWorking(ui,'checking-groups',/Checking which lamps/);ui.click('create-group');assert.equal(checks,1);
+ finding.resolve();await settle();assertWorkCleared(ui);ui.element('v2GroupName').value='Evening';for(const input of ui.dialog.children)if(input.name==='v2GroupMember')input.checked=true;
+ ui.click('create-group-save');assertWorking(ui,'creating-group',/Connecting your group/);progress('joining-group');assertWorking(ui,'joining-group',/Adding lamps/);
+ progress('checking-group');assertWorking(ui,'checking-group',/Checking your group/);ui.click('create-group-save');assert.equal(creations,1);
+ creating.reject(Object.assign(Error('Follower has not confirmed'),{uncertain:true}));await settle();assertWorkCleared(ui);
+ assert.match(ui.dialog.innerHTML,/Check my groups/);assert.doesNotMatch(ui.dialog.innerHTML,/data-v2="create-group-save"/);
+ ui.click('group-guide-review');await settle();assert.equal(creations,1);assert.equal(checks,2);assert.deepEqual(ui.navigations,[['groups']]);ui.dispose();
+});
+
+test('destroy clears wizard work and fences late failures and delegated clicks from the old mounted UI',async()=>{
+ const gate=deferred(),ui=setupFixture({gate});ui.click('setup-next');ui.click('pair');assertWorking(ui,'pairing',/Connecting/);ui.dispose();
+ assertWorkCleared(ui);ui.click('pair');gate.reject(Error('Old callback'));await settle();assert.equal(ui.pairs.length,1);assert.equal(ui.messages.length,0);
 });
