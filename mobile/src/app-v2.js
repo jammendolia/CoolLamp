@@ -2,6 +2,7 @@ import './app-v2.css';
 import {lampArtworkSvg} from './lamp-artwork.js';
 import {resolveLampStyle} from './lamp-style.js';
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from './onboarding.js';
+import {HELP_TOPICS} from './help.js';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const preferenceWrites=new WeakSet();
@@ -121,7 +122,12 @@ export function mountAppV2(api){
   if(setupStep===2&&!setupNeedsReview)document.getElementById('v2SetupStyle').value=setupStyle;
  }
  function beginSetup(){++guideGeneration;setupStep=0;setupName='';setupRoom='Living room';setupStyle='helix';setupId=null;setupAutomatic=false;setupNeedsReview=false;setup();}
- function help(){sheet('Make yourself at home',`<p>${guideHelp.general}</p><button data-v2="guide-add">Set up a lamp</button><button data-v2="guide-group">Let lamps play together</button><button data-v2="guide-center">Understand the effect center</button><button data-v2="guide-audio">Try sound effects</button><button data-v2="help-knob">Use the lamp’s knob</button><label class="check"><input id="v2LaterGuides" type="checkbox" ${guide.state.laterGuides?'checked':''}>Offer guided setup when I add more lamps</label><button class="secondary" data-v2="guide-preference">Save guide preference</button>`);}
+ const helpActions=new Set(['setup','lamps','effects','settings','groups','audio-guide','center-settings','updates']);
+ function renderHelp(){
+  const content=document.getElementById('v2HelpContent');if(!content)return;
+  content.innerHTML=`<div class="v2-help-topics">${HELP_TOPICS.map(topic=>`<details class="v2-help-topic" id="help-${esc(topic.id)}"><summary><span><strong>${esc(topic.title)}</strong><small>${esc(topic.summary)}</small></span><span class="v2-help-chevron" aria-hidden="true">›</span></summary><div class="v2-help-content">${(topic.paragraphs||[]).map(text=>`<p>${esc(text)}</p>`).join('')}${topic.steps?.length?`<ol>${topic.steps.map(text=>`<li>${esc(text)}</li>`).join('')}</ol>`:''}${(topic.paragraphsAfter||[]).map(text=>`<p>${esc(text)}</p>`).join('')}${helpActions.has(topic.action?.id)?`<button type="button" data-v2="help-action" data-help-action="${esc(topic.action.id)}">${esc(topic.action.label)}</button>`:''}</div></details>`).join('')}</div><section class="panel v2-help-guides" aria-labelledby="v2GuideChoice"><h3 id="v2GuideChoice">A little help each time</h3><label class="check"><input id="v2LaterGuides" type="checkbox" ${guide.state.laterGuides?'checked':''}>Offer guided setup when I add more lamps</label><button type="button" class="secondary" data-v2="guide-preference">Save guide preference</button><p class="hint" id="v2GuideFeedback" role="status" aria-live="polite" aria-atomic="true"></p></section>`;
+ }
+ function help(){close();api.navigate('help');}
  function groupGuide(){sheet('Let your lamps play together',`<p>Choose two or more lamps. One main lamp keeps their effects moving together. If you choose sound effects, it supplies the sound response; the other lamps do not need microphones.</p><p>We’ll check each lamp before creating the group. A lamp that cannot confirm joining stays visible for you to finish later.</p><button data-v2="create-group">Choose my lamps</button><button class="secondary" data-v2="group-guide-skip">Keep them individual</button>`);}
  function offerSecondGuide(){if(guide.second(api.model())){guide.offeredGroup();groupGuide();return true;}return false;}
  function audioGuide(){const steps=[['Let your light respond to sound',guideHelp.audio],['Begin with your usual quiet room','Choose a lamp fitted with a microphone. A sound effect learns the room’s background level as it starts. Quiet sound does not prove that the microphone is absent.'],['Try the sounds you enjoy','Play your usual music or speak at a comfortable volume. Look for a light response that feels comfortable. Other lamps in a group can follow the main lamp’s sound response.'],['Make the response feel right',guideHelp.tuning]];const [title,text]=steps[audioGuideStep];sheet(title,`<div class="v2-step">${audioGuideStep+1} of ${steps.length} · Optional sound guide</div><p>${text}</p>${audioGuideStep<steps.length-1?'<button data-v2="guide-audio-next">Continue</button>':'<button data-v2="choose-light">Choose a lamp and open its sound controls</button>'}<button class="secondary" data-v2="help">Back to Help</button>`);}
@@ -167,7 +173,15 @@ export function mountAppV2(api){
   else if(action==='hardware'){chooseLight('hardware');}
   else if(action==='appearance'){chooseLight('design');}
   else if(action==='help'){help();}
-  else if(action==='guide-preference'){guide.setLater(document.getElementById('v2LaterGuides').checked);close();}
+  else if(action==='help-action'){
+   const key=button.dataset.helpAction;if(!helpActions.has(key))return;
+   if(key==='setup'){if(guide.state.pending&&Array.isArray(api.model().ownedLampIds)&&api.model().ownedLampIds.includes(guide.state.pending.target))add();else beginSetup();}
+   else if(key==='audio-guide'){audioGuideStep=0;audioGuide();}
+   else if(key==='center-settings')chooseLight('hardware');
+   else if(key==='effects')chooseLight();
+   else{close();api.navigate(key==='settings'?'app-settings':key==='updates'?'lamps':key);if(key==='updates')document.getElementById('v2CarePanel').scrollIntoView({block:'start'});}
+  }
+  else if(action==='guide-preference'){const kept=guide.setLater(document.getElementById('v2LaterGuides').checked);const feedback=document.getElementById('v2GuideFeedback');if(feedback)feedback.textContent=kept?'Guide preference saved on this phone.':'This phone could not save the guide preference.';else close();}
   else if(action==='guide-group'){groupGuide();}
   else if(action==='group-guide-skip'){guide.offeredGroup();close();}
   else if(action==='group-guide-review'){findLamps(true);}
@@ -183,5 +197,5 @@ export function mountAppV2(api){
  const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
  refresh(true);
  function startWelcome(){if(guide.welcome())beginSetup();}
- return {groupName,room,refresh,chooseLight,openSettings,startWelcome,navigate(name){const offerGroup=name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
+ return {groupName,room,refresh,chooseLight,openSettings,startWelcome,navigate(name){const offerGroup=name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
 }

@@ -118,7 +118,7 @@ function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
   if(name!=='groups')closeGroupEditor();
   if(name==='lamps'){$('status').textContent='Choose a lamp’s gear to open its settings, or add a new lamp.';renderLamps();refreshLampFirmware();refreshPublicFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();}
   else if(meshWizard&&!meshWizard.saving)void closeMeshWizard();
-  for (const item of ['home','lamps','groups','settings','app-settings']) $('page-'+item).hidden=item!==name;
+  for (const item of ['home','lamps','groups','settings','app-settings','help']) $('page-'+item).hidden=item!==name;
   scheduleLampStatusRefresh();
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===(name==='settings'?'lamps':name))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(name==='settings'){renderSettings();if(settingsView==='groups')refreshGroupCoordinators();}

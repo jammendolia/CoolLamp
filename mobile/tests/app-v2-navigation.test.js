@@ -5,6 +5,7 @@ import {runInNewContext} from 'node:vm';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {resolveLampStyle} from '../src/lamp-style.js';
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from '../src/onboarding.js';
+import {HELP_TOPICS} from '../src/help.js';
 
 // Exercise the mounted UI and its real delegated click handler. The small DOM
 // fixture supplies only browser presentation APIs; connection results and time
@@ -75,7 +76,7 @@ function fixture(select=async()=>({connected:true}),options={}){
   querySelector:()=>element('settings-navigation'),querySelectorAll:()=>[],createElement:()=>new Element(),
   addEventListener(name,callback){const handlers=listeners.get(name)||[];handlers.push(callback);listeners.set(name,handlers);}};
  let preferenceValue=options.preferences??null;
- const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,
+ const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,
   localStorage:{getItem:()=>preferenceValue,setItem(key,value){if(options.failStorage)throw Error('Storage full');preferenceValue=value;}},
   setInterval:()=>++nextTimer,clearInterval(){},
   setTimeout(callback,delay){const id=++nextTimer;timers.set(id,{callback,at:now+delay});return id;},clearTimeout:id=>timers.delete(id)};
@@ -232,12 +233,12 @@ test('full local storage never changes a successful lamp save into a failed muta
  const ui=setupFixture({failStorage:true});ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');await settle();assert.match(ui.dialog.innerHTML,/Your lamp is ready/);assert.equal(ui.writes.length,1);assert.match(ui.messages.join(' '),/could not remember/);ui.dispose();
 });
 test('Help offers optional sound steps and center guidance with no hidden lamp commands',()=>{
- const ui=setupFixture({count:1});ui.click('help');assert.match(ui.dialog.innerHTML,/Each lamp can play on its own/);ui.click('guide-center');assert.match(ui.dialog.innerHTML,/blinking white marker/);ui.click('help');ui.click('guide-audio');assert.match(ui.dialog.innerHTML,/No saved audio recordings/);ui.click('guide-audio-next');assert.match(ui.dialog.innerHTML,/usual quiet room/);assert.equal(ui.pairs.length+ui.writes.length,0);ui.dispose();
+ const ui=setupFixture({count:1});ui.click('help');assert.deepEqual(ui.navigations,[['help']]);ui.ui.navigate('help');assert.equal(ui.dialog.open,false);assert.match(ui.element('v2HelpContent').innerHTML,/v2-help-topic/);ui.click('guide-center');assert.match(ui.dialog.innerHTML,/blinking white marker/);ui.click('help');ui.ui.navigate('help');ui.click('help-action',{helpAction:'audio-guide'});assert.match(ui.dialog.innerHTML,/No saved audio recordings/);ui.click('guide-audio-next');assert.match(ui.dialog.innerHTML,/usual quiet room/);assert.equal(ui.pairs.length+ui.writes.length,0);ui.dispose();
 });
 test('preference migration preserves unknown fields and cannot overwrite unreadable records',()=>{
  const value={rooms:{[lamp.id]:'Den'},groups:{future:'Retain group'},theme:'dark',future:{version:8}},ui=fixture(undefined,{preferences:JSON.stringify(value)});
- ui.click('help');ui.element('v2LaterGuides').checked=false;ui.click('guide-preference');const saved=JSON.parse(ui.preferences());assert.deepEqual(saved.future,value.future);assert.deepEqual(saved.rooms,value.rooms);assert.deepEqual(saved.groups,value.groups);ui.dispose();
- for(const raw of ['{malformed',JSON.stringify({future:'x'.repeat(32768)})]){const bad=fixture(undefined,{preferences:raw});bad.click('help');bad.click('guide-preference');assert.equal(bad.preferences(),raw);bad.dispose();}
+ ui.click('help');ui.ui.navigate('help');ui.element('v2LaterGuides').checked=false;ui.click('guide-preference');const saved=JSON.parse(ui.preferences());assert.deepEqual(saved.future,value.future);assert.deepEqual(saved.rooms,value.rooms);assert.deepEqual(saved.groups,value.groups);ui.dispose();
+ for(const raw of ['{malformed',JSON.stringify({future:'x'.repeat(32768)})]){const bad=fixture(undefined,{preferences:raw});bad.click('help');bad.ui.navigate('help');bad.click('guide-preference');assert.equal(bad.preferences(),raw);bad.dispose();}
 });
 test('lost automatic opt-in reply becomes review-only without replaying the preference',async()=>{
  const ui=setupFixture();ui.click('setup-next');ui.click('pair');await settle();ui.click('setup-save');await settle();ui.element('v2SetupAutomatic').checked=true;
@@ -352,4 +353,49 @@ test('group wizard scanning/joining use real visible stages and a partial result
 test('destroy clears wizard work and fences late failures and delegated clicks from the old mounted UI',async()=>{
  const gate=deferred(),ui=setupFixture({gate});ui.click('setup-next');ui.click('pair');assertWorking(ui,'pairing',/Connecting/);ui.dispose();
  assertWorkCleared(ui);ui.click('pair');gate.reject(Error('Old callback'));await settle();assert.equal(ui.pairs.length,1);assert.equal(ui.messages.length,0);
+});
+
+test('Help opens without a lamp, a connection attempt, a setup mutation or a changed guide preference',()=>{
+ const ui=fixture(undefined,{model:{lamps:[],groups:[],statuses:{},ownedLampIds:[],connected:false},preferences:JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:false,laterGuides:true},future:{keep:1}})}),before=ui.preferences();
+ ui.click('help');assert.deepEqual(ui.navigations,[['help']]);ui.ui.navigate('help');
+ assert.equal(ui.dialog.open,false);assert.equal(ui.selections.length,0);assert.equal(ui.preferences(),before);
+ const html=ui.element('v2HelpContent').innerHTML;assert.equal((html.match(/class="v2-help-topic"/g)||[]).length,HELP_TOPICS.length);
+ assert.match(html,/<details/);assert.match(html,/<summary/);assert.match(html,/role="status" aria-live="polite"/);assert.equal(ui.element('body').dataset.v2Page,'help');
+ ui.dispose();
+});
+
+test('Help actions only open known destinations and audio guidance never starts a lamp operation',()=>{
+ const ui=setupFixture({count:1});ui.ui.navigate('help');ui.click('help-action',{helpAction:'install-now'});assert.equal(ui.navigations.length,0);assert.equal(ui.pairs.length+ui.writes.length,0);
+ ui.click('help-action',{helpAction:'audio-guide'});assert.match(ui.dialog.innerHTML,/Optional sound guide/);assert.equal(ui.pairs.length+ui.writes.length,0);
+ ui.click('help');assert.equal(ui.navigations.at(-1)[0],'help');ui.ui.navigate('help');ui.click('help-action',{helpAction:'settings'});assert.equal(ui.navigations.at(-1)[0],'app-settings');
+ ui.ui.navigate('help');ui.click('help-action',{helpAction:'center-settings'});assert.match(ui.dialog.innerHTML,/data-section="hardware"/);assert.equal(ui.selections.length,0);
+ ui.dispose();
+});
+
+test('Help renders plain content safely and ignores unsupported action metadata',()=>{
+ const ui=fixture(undefined,{helpTopics:[{id:'future',title:'<script>bad()</script>',summary:'A & B',paragraphs:['<img src=x>'],steps:['<b>Step</b>'],paragraphsAfter:['Done & safe'],action:{id:'execute-code',label:'Run'}}]});
+ ui.ui.navigate('help');const html=ui.element('v2HelpContent').innerHTML;
+ assert.match(html,/&lt;script&gt;/);assert.match(html,/A &amp; B/);assert.match(html,/&lt;img/);assert.match(html,/&lt;b&gt;Step/);assert.match(html,/Done &amp; safe/);assert.doesNotMatch(html,/data-help-action="execute-code"|<script>|<img/);ui.dispose();
+});
+
+test('the explicit Help setup guide works when automatic later guides are disabled and preserves pending review',()=>{
+ const second={...lamp,id:'112233445566'},model={lamps:[lamp,second],groups:[],ownedLampIds:[lamp.id,second.id],selected:lamp,connected:true,statuses:{}},pairs=[];
+ const preferences=JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:true,laterGuides:false}}),ui=fixture(undefined,{model,preferences,api:{pair:async()=>pairs.push('pair')}});
+ ui.ui.navigate('help');ui.click('help-action',{helpAction:'setup'});assert.match(ui.dialog.innerHTML,/Let’s meet your lamp/);assert.equal(pairs.length,0);ui.dispose();
+ const pending=fixture(undefined,{model,preferences:JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:true,laterGuides:false,pending:{target:lamp.id,stage:'paired',needsReview:true}}}),api:{pair:async()=>pairs.push('pair')}});
+ pending.ui.navigate('help');pending.click('help-action',{helpAction:'setup'});assert.match(pending.dialog.innerHTML,/Check this lamp/);assert.doesNotMatch(pending.dialog.innerHTML,/data-v2="pair"/);assert.equal(pairs.length,0);pending.dispose();
+});
+
+test('production bottom Help navigation hides lamp controls and preserves an active update sender',()=>{
+ const start=mainSource.indexOf('function page(name,'),end=mainSource.indexOf('\n\nconst $ =',start),calls=[],elements=new Map(),nav=[{dataset:{page:'help'},setAttribute(key,value){this[key]=value;},removeAttribute(key){delete this[key];}}],sender=new AbortController();
+ assert(start>=0&&end>start);
+ const element=id=>{if(!elements.has(id))elements.set(id,{hidden:false,textContent:'',querySelector:()=>({focus:()=>calls.push('focus-help')}),dataset:{}});return elements.get(id);};
+ const context={$:element,settingsView:'network',navigationSerial:0,wifiSettingsTarget:null,groupFocusSerial:0,pendingGroupFocus:null,meshWizard:null,
+  cancelMeshSelection:()=>calls.push('cancel-read-only-search'),hideWifiPassword:()=>calls.push('hide-password'),closeGroupEditor:()=>calls.push('close-group-editor'),scheduleLampStatusRefresh:()=>calls.push('schedule-visible-inventory'),
+  refreshLampFirmware:()=>calls.push('firmware-read'),refreshPublicFirmware:()=>calls.push('release-read'),refreshBasicBluetoothTelemetry:()=>calls.push('ble-read'),refreshNewMeshLamps:()=>calls.push('mesh-read'),refreshRoomGroups:()=>calls.push('group-read'),
+  appV2:{navigate:route=>calls.push('navigate-'+route)},settingsRecovery:{check:()=>calls.push('check-read-only-recovery')},window:{scrollTo(){}},
+  document:{querySelectorAll:()=>nav},cardFirmwareTasks:new Map([['aabbccddeeff',{abort:sender}]]),mergedLampEntries:()=>[]};
+ runInNewContext(mainSource.slice(start,end)+'\npage("help");',context);
+ assert.equal(element('page-help').hidden,false);for(const id of ['home','lamps','groups','settings','app-settings'])assert.equal(element('page-'+id).hidden,true);
+ assert.equal(nav[0]['aria-current'],'page');assert(calls.includes('navigate-help'));assert(calls.includes('focus-help'));assert.equal(sender.signal.aborted,false);assert(!calls.some(value=>value.endsWith('-read')));
 });
