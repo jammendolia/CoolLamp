@@ -9,10 +9,10 @@ const end=source.indexOf('\nasync function updateAllLamps(',start);
 assert(start>=0&&end>start);
 const handler=source.slice(start,end);
 const policy=source.slice(source.indexOf('function firmwareBackgroundWorkAllowed('),source.indexOf('function pauseFirmwareBackgroundWork('));
-function fixture({cards=[],bluetooth=null,updating=false,pending=null}={}){
+function fixture({cards=[],bluetooth=null,updating=false,pending=null,touring=false}={}){
  const calls=[],context={Set,firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),cardFirmwareTasks:new Map(cards.map(id=>[id,{}])),
   bluetoothFirmwareTask:bluetooth?{id:bluetooth}:null,fleetUpdating:updating,
-  foregroundConnectionHold:null,connecting:false,
+  foregroundConnectionHold:null,connecting:false,appTourActive:touring,
   fleetRefreshRun:pending,fleetRefreshQueued:false,fleetSummary:'',renderFleetControls(){},
   fleet:{refresh(options){calls.push([...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}}};
  runInNewContext(policy+handler+';globalThis.refresh=refreshLampFirmware;',context);
@@ -33,4 +33,13 @@ test('ordinary passive refresh has no excluded lamps; a pending or fleet update 
 });
 test('an older app’s pending receipt fences only its target from passive refresh',()=>{
  const f=fixture();f.context.legacyFirmwareReceipts.set('f0b950b2f180',{outcome:'verification-required'});f.refresh();assert.deepEqual(f.calls,[['f0b950b2f180']]);
+});
+
+test('tour navigation holds passive version reads and exit preserves per-target receipt fencing',async()=>{
+ const f=fixture({touring:true}),receipt={outcome:'verification-required'};
+ f.context.legacyFirmwareReceipts.set('f0b950b2f180',receipt);f.refresh();
+ assert.deepEqual(f.calls,[]);assert.equal(f.context.fleetRefreshRun,null);
+ assert.equal(f.context.legacyFirmwareReceipts.get('f0b950b2f180'),receipt);
+ f.context.appTourActive=false;f.refresh();await f.context.fleetRefreshRun;
+ assert.deepEqual(f.calls,[['f0b950b2f180']]);assert.equal(f.context.legacyFirmwareReceipts.get('f0b950b2f180'),receipt);
 });

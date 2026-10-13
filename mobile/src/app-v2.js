@@ -3,6 +3,8 @@ import {lampArtworkSvg} from './lamp-artwork.js';
 import {resolveLampStyle} from './lamp-style.js';
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from './onboarding.js';
 import {HELP_TOPICS} from './help.js';
+import {startGuidedTour} from './guided-tour.js';
+import './guided-tour.css';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const preferenceWrites=new WeakSet();
@@ -14,13 +16,34 @@ export const lampDrawingStyle=lamp=>resolveLampStyle(lamp?.lampStyle,lamp?.phone
 export function readAppPreferences(storage){
  try{const raw=storage.getItem('coollamp-app2')||'{}';if(raw.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw Error('Unsupported preferences');const value=parsed,result={...value,rooms:value.rooms&&typeof value.rooms==='object'&&!Array.isArray(value.rooms)?value.rooms:{},groups:value.groups&&typeof value.groups==='object'&&!Array.isArray(value.groups)?value.groups:{},theme:['light','dark','system'].includes(value.theme)?value.theme:'system'};preferenceWrites.add(result);return result;}catch{return {rooms:{},groups:{},theme:'system'};}
 }
+export function appTourSteps(model){
+ const steps=[
+  {id:'home',page:'home',selector:'nav [data-page="home"]',title:'Welcome home',text:'Home brings your lamps and groups together. The buttons along the bottom take you to different parts of CoolLamp.'},
+  {id:'add',page:'home',selector:'#page-home .v2-page-heading [data-v2="add"]',title:'Add a lamp',text:'This plus button starts the setup guide. It helps you connect a lamp, give it a name and choose its room. For now, we’re only looking.'},
+  {id:'lamps',page:'lamps',selector:'nav [data-page="lamps"]',title:'Find the lamp you want',text:'Tap Lamps here to see your saved lamps. Look for the name and room on each card. Tap a lamp’s card to open its lighting controls.'}
+ ];
+ if(model.lamps?.length)steps.push({id:'lamp-card',page:'lamps',selector:'#lampList .v2-lamp-card',title:'One card for each lamp',text:'This card belongs to the lamp named on it. The power label tells you whether it controls this lamp or its group. The gear opens its settings. Wait for a connection check before changing settings.'});
+ steps.push({id:'effects',page:'lamps',selector:'nav [data-page="effects"]',title:'Choose a lighting pattern',text:'Effects is where you choose a steady color, moving pattern or sound effect. Choose your lamp when asked. The available patterns and controls come from that lamp.'});
+ if(model.tourLightingReady===true&&model.connected&&model.selected?.id)steps.push(
+  {id:'power',page:'effects',selector:'#power',title:'Turn the light on or off',text:'This button changes the light on the connected lamp named above. Turning it off keeps the lamp connected. This tour leaves its current light alone.'},
+  {id:'brightness',page:'effects',selector:'#brightness',title:'Make it softer or brighter',text:'After the tour, slide Brightness toward Soft for less light or toward Luminous for more light. This changes the overall light level. Effect intensity changes the pattern instead.'},
+  {id:'patterns',page:'effects',selector:'#effectLibrary > summary',title:'Explore this lamp’s effects',text:'Open this collection to see the patterns your lamp supports. Tap a pattern to try it. Its color, motion or sound controls appear below, when that effect supports them.'}
+ );
+ if(model.lamps?.length>=2)steps.push({id:'groups',page:'home',selector:'#v2HomeContent [data-v2="create-group"]',title:'Let lamps play together',text:'New group guides you through choosing at least two lamps to share an effect. Each lamp must confirm joining. You can keep your lamps separate too.'});
+ steps.push(
+  {id:'settings',page:'app-settings',selector:'#page-app-settings [data-v2="lamp-settings"]',title:'Names and startup light',text:'Open Settings here, then Lamp details to choose a lamp’s name or the light it starts with. Home Wi-Fi and Lamp care are nearby for connections and updates.'},
+  {id:'designs',page:'app-settings',selector:'#page-app-settings [data-v2="appearance"]',title:'Lamp designs',text:'Lamp designs contains the physical shape and strip setup. A finished lamp normally comes configured. Use these settings only when you want to check or adjust its setup.'},
+  {id:'help',page:'help',selector:'nav [data-page="help"]',title:'Help is always here',text:'Tap Help whenever you need a reminder. Open a topic for step-by-step instructions. Give me a tour will show you around again. You’re ready to explore.'}
+ );
+ return steps;
+}
 export function mountAppV2(api){
  const preferences=readAppPreferences(localStorage),home=document.getElementById('v2HomeContent'),dialog=document.getElementById('v2Dialog');
  let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false;
  const persist=()=>{try{if(!preferenceWrites.has(preferences))throw Error('Read unavailable');const text=JSON.stringify(preferences);if(text.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');localStorage.setItem('coollamp-app2',text);return true;}catch{api.message('This phone could not remember the guide preferences. Your lamp’s confirmed changes are kept.');return false;}};
  let storedPreferences=true;try{storedPreferences=localStorage.getItem('coollamp-app2')!==null;}catch{}
  const guide=new OnboardingGuide(preferences,persist,{ownedIds:ownedGuideIds(api.model()),stored:storedPreferences});
- let setupNeedsReview=false,guideGeneration=0,audioGuideStep=0,setupAutomaticInitial=false,setupAutomaticKnown=false;
+ let setupNeedsReview=false,guideGeneration=0,audioGuideStep=0,setupAutomaticInitial=false,setupAutomaticKnown=false,tour=null,tourStarting=false;
  const room=(id)=>api.model().lamps?.find(l=>l.id===id)?.room||(typeof preferences.rooms[id]==='string'?preferences.rooms[id]:'My home');
  const groupName=(id,fallback)=>typeof preferences.groups[id]==='string'?preferences.groups[id]:fallback||'Lamp group';
  const applyTheme=()=>{document.documentElement.dataset.appTheme=preferences.theme;document.getElementById('v2Theme').value=preferences.theme;};applyTheme();
@@ -128,7 +151,21 @@ export function mountAppV2(api){
  const helpSections=sections=>(sections||[]).map(section=>`<section class="v2-help-subsection"><h3>${esc(section.title)}</h3>${helpParagraphs(section.paragraphs)}${helpSteps(section.steps)}</section>`).join('');
  function renderHelp(){
   const content=document.getElementById('v2HelpContent');if(!content)return;
-  content.innerHTML=`<div class="v2-help-topics">${HELP_TOPICS.map(topic=>`<details class="v2-help-topic" id="help-${esc(topic.id)}"><summary><span><strong>${esc(topic.title)}</strong><small>${esc(topic.summary)}</small></span><span class="v2-help-chevron" aria-hidden="true">›</span></summary><div class="v2-help-content">${helpParagraphs(topic.paragraphs)}${helpSteps(topic.steps)}${helpSections(topic.sections)}${helpParagraphs(topic.paragraphsAfter)}${helpActions.has(topic.action?.id)?`<button type="button" data-v2="help-action" data-help-action="${esc(topic.action.id)}">${esc(topic.action.label)}</button>`:''}</div></details>`).join('')}</div><section class="panel v2-help-guides" aria-labelledby="v2GuideChoice"><h3 id="v2GuideChoice">A little help each time</h3><label class="check"><input id="v2LaterGuides" type="checkbox" ${guide.state.laterGuides?'checked':''}>Offer guided setup when I add more lamps</label><button type="button" class="secondary" data-v2="guide-preference">Save guide preference</button><p class="hint" id="v2GuideFeedback" role="status" aria-live="polite" aria-atomic="true"></p></section>`;
+  content.innerHTML=`<section class="panel v2-help-tour"><h3>A quick look around</h3><p>See where to tap, one step at a time. The tour leaves your lamps’ settings alone.</p><button type="button" data-v2="tour">Give me a tour</button><p id="v2TourFeedback" class="hint" role="status" aria-live="polite"></p></section><div class="v2-help-topics">${HELP_TOPICS.map(topic=>`<details class="v2-help-topic" id="help-${esc(topic.id)}"><summary><span><strong>${esc(topic.title)}</strong><small>${esc(topic.summary)}</small></span><span class="v2-help-chevron" aria-hidden="true">›</span></summary><div class="v2-help-content">${helpParagraphs(topic.paragraphs)}${helpSteps(topic.steps)}${helpSections(topic.sections)}${helpParagraphs(topic.paragraphsAfter)}${helpActions.has(topic.action?.id)?`<button type="button" data-v2="help-action" data-help-action="${esc(topic.action.id)}">${esc(topic.action.label)}</button>`:''}</div></details>`).join('')}</div><section class="panel v2-help-guides" aria-labelledby="v2GuideChoice"><h3 id="v2GuideChoice">A little help each time</h3><label class="check"><input id="v2LaterGuides" type="checkbox" ${guide.state.laterGuides?'checked':''}>Offer guided setup when I add more lamps</label><button type="button" class="secondary" data-v2="guide-preference">Save guide preference</button><p class="hint" id="v2GuideFeedback" role="status" aria-live="polite" aria-atomic="true"></p></section>`;
+ }
+ function endTour(reason='closed'){tour?.close(reason);}
+ function beginTour({first=false}={}){
+  if(disposed||tourStarting||tour?.active||working||selectionTask)return;
+  const model=api.model();
+  if(model.tourBlocked||model.connecting||!api.tourNavigate){const message='Please finish the current connection, setup or update, then choose Give me a tour.';const feedback=document.getElementById('v2TourFeedback');if(feedback)feedback.textContent=message;else api.message(message);return;}
+  if(dialog.open&&!first)return;
+  const originalRoute=route==='groups'?'home':route==='settings'?'app-settings':route,target=model.selected?.id,steps=appTourSteps(model),pages=new Map(steps.map(step=>[step.id,step.page]));
+  close();tourStarting=true;
+  try{tour=startGuidedTour({steps:steps.map(({page,...step})=>step),onStep:step=>{api.tourNavigate(pages.get(step.id));},
+   isCurrent:()=>!disposed&&!working&&!selectionTask&&!api.model().tourBlocked&&!api.model().connecting&&api.model().selected?.id===target,
+   onClose:({reason})=>{tour=null;tourStarting=false;if(disposed)return;api.tourNavigate(originalRoute,{active:false});if(first&&['done','skip','escape'].includes(reason))beginSetup();else if(reason!=='navigation'&&!document.hidden)document.querySelector(originalRoute==='help'?'[data-v2="tour"]':'#page-'+(originalRoute==='effects'?'settings':originalRoute)+' h2')?.focus({preventScroll:true});}
+  });}catch{tourStarting=false;tour=null;api.tourNavigate(originalRoute,{active:false});api.message('The tour could not open. You can still read every topic in Help.');}
+  finally{tourStarting=false;}
  }
  function help(){close();api.navigate('help');}
  function groupGuide(){sheet('Let your lamps play together',`<p>Choose two or more lamps. One main lamp keeps their effects moving together. If you choose sound effects, it supplies the sound response; the other lamps do not need microphones.</p><p>We’ll check each lamp before creating the group. A lamp that cannot confirm joining stays visible for you to finish later.</p><button data-v2="create-group">Choose my lamps</button><button class="secondary" data-v2="group-guide-skip">Keep them individual</button>`);}
@@ -151,7 +188,9 @@ export function mountAppV2(api){
  }
  document.addEventListener('click',event=>{if(disposed)return;const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
   if(action==='close'){if(!working)close();return;}if(working||selectionTask)return;
-  if(action==='add'){add();}
+  if(action==='tour'||action==='welcome-tour'){beginTour({first:action==='welcome-tour'});}
+  else if(action==='welcome-skip'){beginSetup();}
+  else if(action==='add'){add();}
   else if(action==='guide-add'){if(guide.state.pending&&Array.isArray(api.model().ownedLampIds)&&api.model().ownedLampIds.includes(guide.state.pending.target))add();else beginSetup();}
   else if(action==='add-direct')void run(directAdd,{stage:'pairing'});
   else if(action==='setup-next'){setupStep++;setup();}
@@ -199,6 +238,6 @@ export function mountAppV2(api){
  document.getElementById('v2LampSearch').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();document.querySelectorAll('#lampList .lamp-entry').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(query);});});
  const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
  refresh(true);
- function startWelcome(){if(guide.welcome())beginSetup();}
- return {groupName,room,refresh,chooseLight,openSettings,startWelcome,navigate(name){const offerGroup=name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
+ function startWelcome(){if(guide.welcome())sheet('Welcome to CoolLamp',`<p>Would you like a quick look around? We’ll point out the buttons and explain what they do. Then we’ll help you add your first lamp.</p><button type="button" data-v2="welcome-tour">Show me around</button><button type="button" class="secondary" data-v2="welcome-skip">Skip tour and set up my lamp</button><p class="hint">You can take the tour later from Help.</p>`);}
+ return {groupName,room,refresh,chooseLight,openSettings,startWelcome,beginTour,endTour,navigate(name,{tour:tourNavigation=false}={}){if(!tourNavigation)endTour('navigation');const offerGroup=!tourNavigation&&name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(!tourNavigation&&name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;endTour('disposed');api.tourNavigate?.(route,{active:false});++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
 }

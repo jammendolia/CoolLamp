@@ -38,6 +38,7 @@ import { SettingsConnectionRecovery, settingsConnectionMessage, selectMeshRecove
 import { lampArtworkSvg } from './lamp-artwork.js';
 import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage} from './update-source.js';
 let appV2=null,app2Experience=null,app2ExperienceRun=null;
+let appTourActive=false,appTourSettingsView=null;
 let settingsRecovery=null;
 let settingsRestartWaitUntil=0;
 const settingsUnconfirmedIds=new Set();
@@ -109,6 +110,7 @@ async function credential(id, value) {
 const firmwareFleetTrust=new FirmwareFleetTrust({credential,getPairedLamps:()=>store.items.filter(entry=>entry.deviceId)});
 function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
 function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
+  appV2?.endTour?.('navigation');
   const route=name==='light'||name==='settings'&&settingsView==='lighting'?'effects':name;
   if(name==='effects'||name==='light'){name='settings';settingsView='lighting';}
   cancelMeshSelection();
@@ -349,7 +351,7 @@ function renderEffectPane() {
 
 function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask); }
 function bluetoothFirmwareOwner(){return bluetoothFirmwareTask||[...cardFirmwareTasks.values()].find(task=>task.path==='bluetooth')||null;}
-function firmwareBackgroundWorkAllowed(){return !bluetoothFirmwareTask&&!cardFirmwareTasks.size&&!fleetUpdating&&!connecting&&!foregroundConnectionHold;}
+function firmwareBackgroundWorkAllowed(){return !appTourActive&&!bluetoothFirmwareTask&&!cardFirmwareTasks.size&&!fleetUpdating&&!connecting&&!foregroundConnectionHold;}
 function pauseFirmwareBackgroundWork(){
  ++firmwareBackgroundGeneration;
  fleet?.cancelRefresh?.();meshOnboarding?.cancelDiscover?.();roomGroups?.cancel?.();
@@ -1309,7 +1311,7 @@ function observeLampLighting(id,raw,catalog,checkedAt=Date.now()){
 }
 function scheduleLampStatusRefresh() {
   clearTimeout(lampStatusTimer);lampStatusTimer=null;
-  if(document.hidden||$('page-lamps').hidden)return;
+  if(appTourActive||document.hidden||$('page-lamps').hidden)return;
   lampStatusTimer=setTimeout(()=>{if(!document.hidden&&!$('page-lamps').hidden){renderLamps();resumePendingFirmwareChecks();refreshLampFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();scheduleLampStatusRefresh();}},20000);
 }
 function refreshBasicBluetoothTelemetry() {
@@ -2876,8 +2878,25 @@ function filterScenes() {
   $('sceneSearchEmpty').hidden=count>0;
 }
 $('sceneSearch').oninput=filterScenes;
+// A tour changes presentation only. It does not run page() discovery/recovery,
+// acquire a transport, or alter pending commands and saved lamp settings.
+function tourPresentation(name,{active=true}={}){
+ if(!['home','lamps','effects','app-settings','help'].includes(name))return false;
+ if(active&&!appTourActive){appTourSettingsView=settingsView;++firmwareBackgroundGeneration;}
+ appTourActive=active;
+ if(!active&&appTourSettingsView!==null){settingsView=appTourSettingsView;appTourSettingsView=null;}
+ const visible=name==='effects'?'settings':name;
+ if(active&&name==='effects')settingsView='lighting';
+ for(const item of ['home','lamps','groups','settings','app-settings','help'])$('page-'+item).hidden=item!==visible;
+ if(name==='lamps')renderLamps();
+ if(visible==='settings'){renderSettings();renderOptions();}
+ appV2?.navigate(name,{tour:true});scheduleLampStatusRefresh();
+ return true;
+}
+function tourBlocked(){return Boolean(document.hidden||busy||connecting||liveLightSending||liveLight?.pending||styleSaving||identitySaving||wifiSetupAbort||wifiHandoff||wifiScanning||foregroundConnectionHold||wifiSettingsTarget||meshSelection||meshWizard||groupJoinPending||groupActions.size||groupEditorMutations.size||cardPowerTasks.size||groupEditor?.busy||resetTarget||state?.calibration?.active||centerStatus?.active||settingsRecovery?.active||firmwareConnectionBusy());}
 appV2=mountAppV2({
- model:()=>({lamps:mergedLampEntries(),ownedLampIds:store.items.map(entry=>entry.id),selectedAutomatic:verifiedSelectedLamp()&&typeof firmware?.automatic==='boolean'?firmware.automatic:null,statuses:Object.fromEntries(mergedLampEntries().map(entry=>[entry.id,connectivity?.get(entry.id)])),groups:groupsSnapshot.groups,available:groupsSnapshot.lamps,selected,connecting,connected:verifiedSelectedLamp(),state}),
+ model:()=>({lamps:mergedLampEntries(),ownedLampIds:store.items.map(entry=>entry.id),selectedAutomatic:verifiedSelectedLamp()&&typeof firmware?.automatic==='boolean'?firmware.automatic:null,statuses:Object.fromEntries(mergedLampEntries().map(entry=>[entry.id,connectivity?.get(entry.id)])),groups:groupsSnapshot.groups,available:groupsSnapshot.lamps,selected,connecting,connected:verifiedSelectedLamp(),state,tourBlocked:tourBlocked(),tourLightingReady:verifiedSelectedLamp()&&independentLightingAllowed()&&!app2Pending.has(selected?.id)&&!settingsUnconfirmedIds.has(selected?.id)}),
+ tourNavigate:tourPresentation,
  message:status,navigate:(name,section)=>{if(section)settingsView=section;page(name);},
  pair:async()=>{const result=await connect(null,{navigate:false});return result?.connected===true&&/^[0-9a-f]{12}$/.test(result.id||'')?Object.freeze({...result}):result;},discover:()=>discover(true),refreshGroups:refreshRoomGroups,
  findNewLamps:refreshNewMeshLamps,openGroup:openGroupEditor,
@@ -2905,7 +2924,7 @@ $('addLamp').querySelector('summary').textContent='Advanced connection & recover
 settingsRecovery=new SettingsConnectionRecovery({
  getContext:()=>{const owned=wifiSettingsTarget?.automaticReconnect===true&&settingsRecovery?.active;
   return {id:selected?.id,name:selected?.name,section:settingsView,navigation:navigationSerial,
-   active:!$('page-settings').hidden&&Boolean(selected)&&mergedLampEntries().some(entry=>entry.id===selected.id),connected:verifiedSelectedLamp(),
+   active:!appTourActive&&!$('page-settings').hidden&&Boolean(selected)&&mergedLampEntries().some(entry=>entry.id===selected.id),connected:verifiedSelectedLamp(),
    blocked:firmwareConnectionBusy()||Date.now()<settingsRestartWaitUntil||Boolean(styleSaving)||!owned&&Boolean(busy||connecting||meshSelection||wifiSettingsTarget),hidden:document.hidden};},
  reconnect:async context=>{const entry=mergedLampEntries().find(value=>value.id===context.id);if(!entry)throw Error('This lamp was removed from the phone.');
   try{const result=await openCardSettings(entry,{section:context.section,automaticReconnect:true,signal:context.signal,isCurrent:context.isCurrent});

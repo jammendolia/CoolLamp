@@ -84,6 +84,8 @@ test('color matching belongs only to the named optional setup-through-another-la
 });
 
 test('effects and saving distinguish real controls, previews, phone favorites and startup',()=>{
+ has(topic('light'),['Lamps in the bottom bar','name and room','card’s Lamp power','For brightness, tap the lamp’s card','lighting controls','connection check','lamp’s name at the top','softer light','stronger light']);
+ assert.doesNotMatch(topic('light'),/Choose the lamp before changing its light/);
  has(topic('light'),['overall light','pattern’s strength','brighten its particles','Use separately']);
  has(topic('effects'),['Solid effects','do not need motion speed','fixed-rainbow','Automatic spectrum','until you select custom colors','favorite on this phone','does not save tuning','standalone effects']);
  has(topic('saved-light'),['preview','without making it permanent','Remember this effect’s tuning','startup effect and brightness stay','Use these settings at startup','Older software may combine','Group appearance','Sound tuning','unconfirmed']);

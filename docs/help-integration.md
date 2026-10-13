@@ -45,6 +45,50 @@ Settings recovery inactive. It preserves the firmware sender, update owner and
 AbortController. Help does not start state/catalog reads, updates or provisioning.
 Choosing a destination such as Lamps or Groups invokes its ordinary read flow.
 
+## Guided tour
+
+Help now offers **Give me a tour**. A genuinely new, unowned installation first
+offers **Show me around** or **Skip tour and set up my lamp**. Both paths retain
+the existing first-lamp setup guide. Completing a tour never marks a lamp paired,
+owned or configured. Existing installations and unknown future preferences do
+not receive a surprise first-use dialog; they can start the tour from Help.
+
+The walkthrough highlights actual controls on Home, Lamps, Settings and Help,
+with **Back**, **Next**, **Skip tour** and **Done**. The introductory tour explains
+where to choose a lamp and what Effects does. A verified independent connection
+adds the real power button, brightness slider and effect collection. Saved lamp
+cards and group creation add context only when applicable. The plan is bounded
+to twelve steps, with no simulated lamp values or executable device metadata.
+Power and Brightness Help now names the bottom **Lamps** tab, the named card and
+the connection check before opening lighting controls.
+
+`guided-tour.js` owns a native modal overlay. Real controls remain visible under
+the spotlight but cannot receive clicks, key activation or focus. A missing
+control has a 750 ms resolution bound and an honest unavailable message; hidden
+or replaced targets are rechecked. Resize, viewport and scroll changes update
+the highlight. Backgrounding, navigation, changed target, active operation and
+disposal close the tour, clean up observers/timers and restore presentation.
+Returning to Help focuses the replacement tour button. Reduced motion avoids
+animated scrolling and large text keeps its actions usable.
+
+`main.js::tourPresentation` shows only cached UI; it never calls ordinary `page()`
+discovery, provisioning, settings recovery, update checks or connection routes.
+It preserves the prior settings section and all pending receipts/owners. Passive
+work and inventory polling pause while the tour is open, and a generation fence
+prevents a previously queued read from becoming admitted after exit. Active
+setup, calibration, transfer, connection or mutation blocks admission with a
+visible explanation. These checks also cover a twenty-lamp inventory fixture;
+they are not RF or physical scale validation.
+
+`guided-tour.test.js` exercises the production controller lifecycle, modal input
+guards, bounds, missing/replaced targets, timing, focus, viewport and cleanup.
+Mounted UI tests cover first-use/replay, conditional real steps, operation gates,
+preferences and actual presentation routes. The production browser fixture in
+`.build/guided-tour-visual-20261013` checks 390 px and 320 px/200% text, keyboard
+navigation, dark mode, reduced motion, highlights and zero additional lamp
+operations. This is browser validation; physical iPhone/Android screen-reader
+and tour acceptance remain pending.
+
 ## Accessibility
 
 The question-mark icon has a visible **Help** label; its SVG is decorative.

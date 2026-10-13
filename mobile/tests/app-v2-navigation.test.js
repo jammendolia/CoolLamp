@@ -6,6 +6,7 @@ import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {resolveLampStyle} from '../src/lamp-style.js';
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from '../src/onboarding.js';
 import {HELP_TOPICS} from '../src/help.js';
+import {startGuidedTour} from '../src/guided-tour.js';
 
 // Exercise the mounted UI and its real delegated click handler. The small DOM
 // fixture supplies only browser presentation APIs; connection results and time
@@ -76,18 +77,18 @@ function fixture(select=async()=>({connected:true}),options={}){
   querySelector:()=>element('settings-navigation'),querySelectorAll:()=>[],createElement:()=>new Element(),
   addEventListener(name,callback){const handlers=listeners.get(name)||[];handlers.push(callback);listeners.set(name,handlers);}};
  let preferenceValue=options.preferences??null;
- const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,
+ const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,startGuidedTour:options.startTour||startGuidedTour,
   localStorage:{getItem:()=>preferenceValue,setItem(key,value){if(options.failStorage)throw Error('Storage full');preferenceValue=value;}},
   setInterval:()=>++nextTimer,clearInterval(){},
   setTimeout(callback,delay){const id=++nextTimer;timers.set(id,{callback,at:now+delay});return id;},clearTimeout:id=>timers.delete(id)};
  const api={model:()=>options.model||({lamps:[lamp],groups:[],statuses:{},connected:false,connecting:false}),
   message:message=>messages.push(message),navigate:(...args)=>navigations.push(args),
   select(id,section,options){selections.push({id,section,options});return select(id,section,options);},...options.api};
- runInNewContext(source+'\nglobalThis.mount=mountAppV2;',context);
+ runInNewContext(source+'\nglobalThis.mount=mountAppV2;globalThis.getTourSteps=appTourSteps;',context);
  const ui=context.mount(api),dialog=element('v2Dialog');
  // Match main's initial navigation before offering the one-time guide.
  runInNewContext(startup,{page:name=>ui.navigate(name),appV2:ui});
- return {ui,dialog,messages,navigations,selections,element,preferences:()=>preferenceValue,
+ return {ui,dialog,messages,navigations,selections,element,tourSteps:context.getTourSteps,preferences:()=>preferenceValue,
   status:()=>elements.get('v2DialogStatus')?.textContent||'',
   click(action,dataset={}){const button=dialog.children.find(candidate=>candidate.dataset.v2===action&&Object.entries(dataset).every(([name,value])=>candidate.dataset[name]===value))||new Element();button.dataset={...button.dataset,v2:action,...dataset};for(const callback of listeners.get('click')||[])callback({target:button});},
   cancel(){let prevented=false;const event={preventDefault(){prevented=true;}};for(const callback of dialog.listeners.get('cancel')||[])callback(event);if(!prevented)dialog.close();return prevented;},
@@ -192,14 +193,14 @@ test('a connection for a different lamp cannot open its settings as the chosen l
  assert.match(ui.status(),/different lamp/);assert.equal(ui.dialog.open,true);assert.equal(ui.navigations.length,0);ui.dispose();
 });
 
-function setupFixture({count=0,error,gate,automaticGate,detailsGate,automatic=false,failStorage=false}={}){
+function setupFixture({count=0,error,gate,automaticGate,detailsGate,automatic=false,failStorage=false,offer=false}={}){
  const other={id:'112233445566',name:'First lamp'},model={lamps:count?[other]:[],ownedLampIds:count?[other.id]:[],groups:[],statuses:{},selected:null,connected:false,selectedAutomatic:automatic};
  const writes=[],pairs=[],api={pair:async()=>{pairs.push(true);if(gate)await gate.promise;model.lamps.push(lamp);model.ownedLampIds.push(lamp.id);model.selected={...lamp,lampStyle:{id:'future-design'}};model.connected=true;return {connected:true,id:lamp.id};},setupDetails:async value=>{writes.push(['details',value]);if(detailsGate)await detailsGate.promise;if(error)throw error;},setAutomatic:async(...values)=>{writes.push(['automatic',...values]);if(automaticGate)await automaticGate.promise;}};
- const ui=fixture(undefined,{model,api,failStorage});return {...ui,model,writes,pairs};
+ const ui=fixture(undefined,{model,api,failStorage});if(!count&&!offer)ui.click('welcome-skip');return {...ui,model,writes,pairs};
 }
 test('genuinely fresh first-use opens guide once and never pairs or mutates without a button',()=>{
- const ui=setupFixture();assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Let’s meet/);assert.equal(ui.pairs.length+ui.writes.length,0);
- ui.ui.startWelcome();assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Let’s meet/);
+ const ui=setupFixture({offer:true});assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Show me around/);assert.match(ui.dialog.innerHTML,/Skip tour and set up my lamp/);assert.equal(ui.pairs.length+ui.writes.length,0);
+ ui.ui.startWelcome();assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Show me around/);
  const saved=ui.preferences();ui.click('close');assert.equal(ui.dialog.open,false);ui.dispose();
  const reload=fixture(undefined,{model:{lamps:[],ownedLampIds:[],groups:[],statuses:{},connected:false},preferences:saved});assert.equal(reload.dialog.open,false);reload.dispose();
 });
@@ -398,4 +399,55 @@ test('production bottom Help navigation hides lamp controls and preserves an act
  runInNewContext(mainSource.slice(start,end)+'\npage("help");',context);
  assert.equal(element('page-help').hidden,false);for(const id of ['home','lamps','groups','settings','app-settings'])assert.equal(element('page-'+id).hidden,true);
  assert.equal(nav[0]['aria-current'],'page');assert(calls.includes('navigate-help'));assert(calls.includes('focus-help'));assert.equal(sender.signal.aborted,false);assert(!calls.some(value=>value.endsWith('-read')));
+});
+
+function tourFixture({first=false,blocked=false,preferences,model:provided}={}){
+ const calls=[],model=provided||{lamps:[],ownedLampIds:[],groups:[],statuses:{},connected:false,connecting:false,tourBlocked:blocked};let session;
+ const startTour=options=>{session=options;options.onStep(options.steps[0]);let active=true;return {get active(){return active;},close(reason){if(!active)return;active=false;options.onClose({reason,completed:reason==='done'});}};};
+ const ui=fixture(undefined,{model,preferences:first?undefined:preferences||JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:false}}),startTour,
+  api:{tourNavigate:(name,options)=>calls.push({name,options}),pair:()=>calls.push('pair'),power:()=>calls.push('power'),discover:()=>calls.push('discover')}});
+ return {...ui,model,calls,session:()=>session};
+}
+
+test('first-use invitation can run a read-only tour then offer the original setup without pairing',()=>{
+ const ui=tourFixture({first:true});assert.match(ui.dialog.innerHTML,/Show me around/);ui.click('welcome-tour');
+ assert.equal(ui.dialog.open,false);assert.equal(ui.session().steps[0].id,'home');assert.equal(ui.calls[0].name,'home');assert.equal(ui.navigations.length+ui.selections.length,0);
+ ui.ui.endTour('done');assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Let’s meet/);assert(!ui.calls.some(value=>typeof value==='string'));
+ const saved=JSON.parse(ui.preferences());assert.equal(saved.onboarding.firstComplete,false);assert.equal(saved.onboarding.pending,null);ui.dispose();
+});
+
+test('Help can replay the tour without changing existing guide preferences or pending setup',()=>{
+ const preferences=JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:false,laterGuides:false,pending:{target:lamp.id,stage:'paired',needsReview:true}},future:{keep:1}});
+ const model={lamps:[lamp],ownedLampIds:[lamp.id],selected:lamp,connected:false,groups:[],statuses:{}};
+ const ui=tourFixture({preferences,model});ui.ui.navigate('help');assert.match(ui.element('v2HelpContent').innerHTML,/Give me a tour/);ui.click('tour');
+ assert(ui.session());const before=ui.preferences();for(const step of ui.session().steps)ui.session().onStep(step);ui.ui.endTour('skip');
+ assert.equal(ui.calls.at(-1).name,'help');assert.equal(ui.calls.at(-1).options.active,false);assert.equal(ui.preferences(),before);assert.equal(ui.navigations.length+ui.selections.length,0);assert.equal(ui.dialog.open,false);ui.dispose();
+});
+
+test('active operation blocks tour admission and a later owner or selected-target change invalidates it',()=>{
+ const ui=tourFixture({blocked:true});ui.ui.navigate('help');ui.click('tour');assert.equal(ui.session(),undefined);assert.match(ui.element('v2TourFeedback').textContent,/finish the current/);
+ ui.model.tourBlocked=false;ui.click('tour');const session=ui.session();assert.equal(session.isCurrent(),true);ui.model.tourBlocked=true;assert.equal(session.isCurrent(),false);ui.ui.endTour('invalid');
+ ui.model.tourBlocked=false;ui.click('tour');ui.model.selected=lamp;assert.equal(ui.session().isCurrent(),false);ui.ui.endTour('invalid');assert.equal(ui.navigations.length+ui.selections.length,0);ui.dispose();
+});
+
+test('tour step plans use real context and only expose detailed lighting for a verified independent target',()=>{
+ const ui=tourFixture();const fresh=ui.tourSteps(ui.model);assert.equal(fresh.length,7);assert(!fresh.some(step=>['power','brightness','patterns','lamp-card'].includes(step.id)));
+ const connected=ui.tourSteps({...ui.model,lamps:[lamp,{...lamp,id:'112233445566'}],selected:lamp,connected:true,tourLightingReady:true});assert.equal(connected.length,12);
+ assert(connected.some(step=>step.selector==='#brightness'&&/overall light level/.test(step.text)));assert(connected.some(step=>step.id==='groups'));
+ const unknown=ui.tourSteps({...ui.model,lamps:[lamp],selected:lamp,connected:true,tourLightingReady:false});assert(!unknown.some(step=>step.id==='brightness'));
+ for(const step of connected){assert(step.selector.length<=256);assert(step.text.length<=1000);assert(['home','lamps','effects','app-settings','help'].includes(step.page));}
+ ui.dispose();
+});
+
+test('actual tour presentation routes only render cached controls and preserve the prior settings section',()=>{
+ const start=mainSource.indexOf('function tourPresentation('),end=mainSource.indexOf('\nfunction tourBlocked(',start),calls=[],elements=new Map();assert(start>=0&&end>start);
+ const element=id=>{if(!elements.has(id))elements.set(id,{hidden:false});return elements.get(id);};
+ const context={$:element,settingsView:'hardware',appTourActive:false,appTourSettingsView:null,firmwareBackgroundGeneration:3,
+  renderLamps:()=>calls.push('cached-lamps'),renderSettings:()=>calls.push('cached-settings'),renderOptions:()=>calls.push('cached-options'),scheduleLampStatusRefresh:()=>calls.push('schedule'),
+  appV2:{navigate:(...args)=>calls.push(args)},app2Pending:new Map([[lamp.id,{uncertain:true}]])};
+ runInNewContext(mainSource.slice(start,end),context);for(const name of ['home','lamps','effects','app-settings','help'])assert.equal(context.tourPresentation(name),true);
+ assert.equal(context.appTourActive,true);assert.equal(context.firmwareBackgroundGeneration,4);assert.equal(context.settingsView,'lighting');assert.equal(context.tourPresentation('groups'),false);
+ assert.equal(context.tourPresentation('help',{active:false}),true);assert.equal(context.appTourActive,false);assert.equal(context.settingsView,'hardware');assert.equal(context.app2Pending.get(lamp.id).uncertain,true);
+ assert.equal(element('page-help').hidden,false);assert(calls.filter(Array.isArray).every(([,options])=>options.tour===true));
+ assert(!calls.some(value=>typeof value==='string'&&/read|connect|command|reset|save/.test(value)));
 });

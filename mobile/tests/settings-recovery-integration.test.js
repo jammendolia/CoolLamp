@@ -203,7 +203,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
   const wifi={identity:null,epoch:1,async disconnect(){calls.push('disconnect-wifi');},schedule(){calls.push('schedule-wifi');}};
   const mesh={identity:id,epoch:1,isMesh:true,bridge:{identity:other},lease:{borrowed:false},raw,state:{mode:4},signal:null,isCurrent:null,
     guard(){calls.push('guard-mesh');},schedule(){calls.push('schedule-mesh');}};
-  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},Option:class{},...view,calls,posts,entry,wifiLamp:wifi,meshLamp:mesh,raw,
+  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},Option:class{},...view,calls,posts,entry,wifiLamp:wifi,meshLamp:mesh,raw,appTourActive:false,
     beginForegroundConnection:()=>()=>{},
     phonePlatform:'ios',document:{hidden:false},SettingsConnectionRecovery:class extends SettingsConnectionRecovery{constructor(options){super({...options,timeoutMs:1000,retryDelayMs:0,maxAttempts:1});}},
     WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',expected});Object.assign(this,{base:address,authorization:password,identity:expected,raw,state:{mode:4},catalog:[]});}async disconnect(){calls.push('disconnect-probe');}},

@@ -27,7 +27,7 @@ function fixture(names=[],overrides={}){
  const calls=[],entry={id:other,address:'192.0.2.2',deviceId:'paired-fixture',accessoryManaged:true};
  const context={Error,Map,Set,Promise,AbortController,clearTimeout,setTimeout,JSON,
   firmwareBackgroundGeneration:0,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
-  foregroundConnectionHold:null,connecting:false,app2Pending:new Map(),
+  foregroundConnectionHold:null,connecting:false,appTourActive:false,app2Pending:new Map(),
   firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),fleetRefreshRun:null,fleetRefreshQueued:false,fleetSummary:'',
   fleet:{cancelRefresh:()=>calls.push('cancel-fleet'),refresh:options=>{calls.push(['fleet',...options.excludeIds]);return Promise.resolve({results:[],cancelled:false});}},
   meshOnboarding:{cancelDiscover:()=>calls.push('cancel-mesh'),discover:()=>{calls.push('discover');return Promise.resolve();}},
@@ -51,6 +51,19 @@ for(const kind of ['confirm','wifi','bluetooth','reconciling','legacy','bulk'])t
  const f=fixture(['refreshLampFirmware','refreshNewMeshLamps','refreshRoomGroups','loadApp2EffectSchema'],{loadApp2Experience:()=>assert.fail('Unexpected metadata factory')});hold(f.context,kind);
  assert.equal(f.context.firmwareBackgroundWorkAllowed(),false);f.context.refreshLampFirmware();f.context.refreshNewMeshLamps();f.context.refreshRoomGroups();await f.context.loadApp2EffectSchema();
  assert.deepEqual(f.calls,[]);assert.equal(f.context.fleetRefreshRun,null);
+});
+
+test('a presentation tour admits no passive lamp work and preserves updater and unresolved receipt ownership',async()=>{
+ const f=fixture(['refreshLampFirmware','refreshNewMeshLamps','refreshRoomGroups','loadApp2EffectSchema'],{loadApp2Experience:()=>assert.fail('Tour requested lamp metadata')});
+ const receipt={outcome:'verification-required'},owner={path:'bluetooth',id};
+ f.context.legacyFirmwareReceipts.set(id,receipt);f.context.cardFirmwareTasks.set(id,owner);f.context.appTourActive=true;
+ f.context.refreshLampFirmware();f.context.refreshNewMeshLamps();f.context.refreshRoomGroups();await f.context.loadApp2EffectSchema();
+ assert.deepEqual(f.calls,[]);assert.equal(f.context.fleetRefreshRun,null);
+ assert.equal(f.context.cardFirmwareTasks.get(id),owner);assert.equal(f.context.legacyFirmwareReceipts.get(id),receipt);
+ f.context.appTourActive=false;assert.equal(f.context.firmwareBackgroundWorkAllowed(),false);
+ f.context.cardFirmwareTasks.clear();assert.equal(f.context.firmwareBackgroundWorkAllowed(),true);
+ f.context.refreshLampFirmware();await f.context.fleetRefreshRun;
+ assert.deepEqual(f.calls,[['fleet',id]]);assert.equal(f.context.legacyFirmwareReceipts.get(id),receipt);
 });
 test('pending receipts do not permanently pause unrelated inventory or initiate a new installation',async()=>{
  const f=fixture(['refreshLampFirmware','refreshNewMeshLamps']);f.context.firmwareAttempts.pending=()=>[{identity:id}];f.context.legacyFirmwareReceipts.set('112233445566',{});
@@ -151,6 +164,21 @@ test('schema queued before an update does not send or adopt a late page when its
  const f=fixture(['loadApp2EffectSchema'],{state:{mode:1},lamp:{catalog:[{id:1}]},loadApp2Experience:async()=>record,app2Experience:record,assertApp2Target:()=>{}});
  const run=f.context.loadApp2EffectSchema();await tick();f.context.pauseFirmwareBackgroundWork();
  try{gate.resolve(await queued());}catch(error){gate.reject(error);}await run;assert.equal(reads,0);assert.equal(record.mode,null);assert.equal(record.schemas.size,0);assert.equal(record.loading,false);
+});
+
+test('production tour entry fences a queued schema after exit, while a fresh schema read still works',async()=>{
+ const gate=deferred();let queued,reads=0;
+ const record={supported:true,loading:false,mode:null,schemas:new Map(),session:{descriptor:{capabilities:{catalogVersions:[2]}},schema:async()=>{reads++;return {entries:[{localId:1}]};}},target:{enqueue:action=>{queued=action;return gate.promise;}}};
+ const f=fixture(['loadApp2EffectSchema','tourPresentation'],{state:{mode:1},lamp:{catalog:[{id:1}]},loadApp2Experience:async()=>record,app2Experience:record,assertApp2Target:()=>{},
+  appTourSettingsView:null,settingsView:'network',appV2:{navigate(){}},scheduleLampStatusRefresh(){},renderSettings(){}});
+ const pending=f.context.loadApp2EffectSchema();await tick();
+ assert.equal(f.context.tourPresentation('help'),true);assert.equal(f.context.appTourActive,true);assert.equal(f.context.firmwareBackgroundGeneration,1);
+ f.context.tourPresentation('lamps');assert.equal(f.context.firmwareBackgroundGeneration,1);
+ f.context.tourPresentation('help',{active:false});assert.equal(f.context.appTourActive,false);assert.equal(f.context.settingsView,'network');
+ try{gate.resolve(await queued());}catch(error){gate.reject(error);}await pending;
+ assert.equal(reads,0);assert.equal(record.schemas.size,0);assert.equal(record.mode,null);assert.equal(record.loading,false);
+ record.target.enqueue=async action=>action();await f.context.loadApp2EffectSchema();
+ assert.equal(reads,1);assert.equal(record.mode,1);assert.equal(record.schemas.size,1);
 });
 async function metadataFixture(){
  const target={epoch:1,raw:{token:'fixture'},enqueue:async action=>action(),request:async(path,fields,epoch,guard,readGuard)=>{assert.equal(typeof readGuard,'function');assert.equal(guard,readGuard);guard();return {};}};

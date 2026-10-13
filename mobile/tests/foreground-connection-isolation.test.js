@@ -66,7 +66,7 @@ function fixture(){
   deviceId:'00000000-0000-0000-0000-'+(index+1).toString(16).padStart(12,'0'),accessoryManaged:true}));
  const radio=new NativeRegistry(entries),events=[],elements=new Map();
  const context={Map,Set,Promise,Object,Error,AbortController,clearTimeout,console,LampTransport,lampAddress,entries,events,
-  foregroundConnectionHold:null,firmwareBackgroundGeneration:0,connecting:false,busy:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+  foregroundConnectionHold:null,firmwareBackgroundGeneration:0,connecting:false,busy:false,appTourActive:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   wifiSettingsTarget:null,navigationSerial:1,bluetoothFirmwareConnectionSerial:0,cardSettingsSerial:0,selected:null,state:null,firmware:null,
   groupConnections:new Map(),groupRemovedIds:new Set(),cardPowerTasks:new Map(),groupEditor:null,liveGroupBluetooth:new Map(),
   groupScanRun:null,groupJoinPending:null,savedDevice:null,pairingRecoveryTarget:null,removedAccessoryIds:new Set(),cardConnectionMessages:new Map(),
@@ -102,6 +102,25 @@ test('nested foreground ownership retires passive work once and fences a 20-lamp
  assert.equal(f.context.groupConnections.size,0);assert.equal(f.radio.events.length,0);
  inner();inner();assert.equal(f.context.firmwareBackgroundWorkAllowed(),false);outer();assert.equal(f.context.firmwareBackgroundWorkAllowed(),true);
  f.context.connecting=true;assert.equal(f.context.firmwareBackgroundWorkAllowed(),false);f.context.connecting=false;
+});
+
+test('a tour blocks passive native acquisition across twenty lamps without changing foreground ownership',async()=>{
+ const f=fixture(),intent={id:entryId},release=f.context.beginForegroundConnection(intent),owner=f.context.foregroundConnectionHold;
+ f.context.appTourActive=true;
+ for(const entry of f.entries)await assert.rejects(f.context.acquireGroupLamp(entry.id,{readOnly:true}),error=>error.cancelled&&error.readAdmission);
+ assert.equal(f.context.groupConnections.size,0);assert.equal(f.radio.events.length,0);assert.equal(f.context.foregroundConnectionHold,owner);
+ f.context.appTourActive=false;assert.equal(f.context.firmwareBackgroundWorkAllowed(),false);release();
+ assert.equal(f.context.firmwareBackgroundWorkAllowed(),true);
+});
+
+test('a passive acquisition queued before a tour releases its late lease before any native connection',async()=>{
+ const f=fixture(),gate=deferred();let released=0;
+ f.context.createMeshLampLease=()=>gate.promise;
+ const pending=f.context.acquireGroupLamp(entryId,{readOnly:true}),rejected=assert.rejects(pending,error=>error.cancelled===true);
+ await tick();f.context.appTourActive=true;
+ gate.resolve({lamp:{},release:async()=>{released++;}});await rejected;
+ assert.equal(released,1);assert.equal(f.radio.events.length,0);assert.equal(f.context.groupConnections.size,0);assert(!f.events.includes('provision'));
+ f.context.appTourActive=false;assert.equal(f.context.firmwareBackgroundWorkAllowed(),true);
 });
 
 test('a late foreground release cannot clear a replacement connection intent',()=>{

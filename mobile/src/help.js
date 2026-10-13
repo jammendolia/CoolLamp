@@ -34,14 +34,14 @@ const topics=[
  },
  {
   id:'light',title:'Power and brightness',summary:'Turn a lamp on or off and choose its light level.',
-  paragraphs:['Choose the lamp before changing its light. Check its name to know which lamp the controls affect. Lamp power affects that lamp; Group power affects the group. Turning off keeps it connected.'],
+  paragraphs:['Tap Lamps in the bottom bar to see the lamps you have added. Each card shows a lamp’s name and room. Use that card’s Lamp power button to turn its light on or off. Turning the light off keeps the lamp connected to the app.'],
   steps:[
-   'Open Lamps and tap the lamp’s card. Wait until its connection is checked.',
+   'For brightness, tap the lamp’s card to open its lighting controls. Wait for the connection check, then check the lamp’s name at the top.',
    'Tap Lamp power to turn it on or off. Check its displayed state if your tap was unconfirmed.',
    'Move Brightness lower for softer light or higher for stronger light. This changes the overall light level.'
   ],
-  paragraphsAfter:['Effect intensity, glow or density changes the pattern’s strength or activity, and may brighten its particles. Group followers may take brightness from the main lamp. Choose Use separately before adjusting a follower’s own light.'],
-  action:{id:'lamps',label:'Choose a lamp'}
+  paragraphsAfter:['Group power changes the whole group. Followers may take brightness from the main lamp; choose Use separately before adjusting a follower’s own light. Effect intensity, glow or density changes the pattern’s strength or activity, and may brighten its particles.'],
+  action:{id:'lamps',label:'Open Lamps'}
  },
  {
   id:'effects',title:'Effects and colors',summary:'Choose a pattern, then make its colors feel right.',
