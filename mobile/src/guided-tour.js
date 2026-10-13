@@ -118,7 +118,7 @@ export function startGuidedTour({steps,onStep,onClose,isCurrent=()=>true,documen
   bubble.style.left=`${clamp(left,safe,Math.max(safe,view.width-width-safe))}px`;
   bubble.style.top=`${clamp(top,safe,Math.max(safe,contentHeight-height-safe))}px`;
  }
- function status(value){if(value!==announced){note.textContent=value;announced=value;}}
+ function status(value){note.hidden=!value;if(value!==announced||note.textContent!==value){note.textContent=value;announced=value;}}
  function resolve(){
   if(!current())return;
   let found=null,rect=null;
@@ -136,7 +136,7 @@ export function startGuidedTour({steps,onStep,onClose,isCurrent=()=>true,documen
   if(rect){const view=viewport();if(rect.right<=view.x||rect.left>=view.x+view.width||rect.bottom<=view.y||rect.top>=view.y+view.height)rect=null;}
   if(rect){
    shown.add(plan[index].id);dialog.dataset.state='showing';next.disabled=false;position(rect);
-   status(dialog.dataset.overlap?'The highlighted control is partly behind this explanation. The controls stay read-only during the tour.':'These are your real app controls. They stay read-only during the tour.');
+   status(dialog.dataset.overlap?'The highlighted control is partly behind this explanation.':'');
   }else{
    if(!found||!found.isConnected)target=null;position(null);
    if(clock()-missingAt>=GUIDED_TOUR_TARGET_WAIT_MS){dialog.dataset.state='missing';next.disabled=false;status('This control is not available on this screen. You can continue to the next step or skip the tour.');}

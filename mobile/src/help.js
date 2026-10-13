@@ -56,7 +56,7 @@ const topics=[
  },
  {
   id:'saved-light',title:'Save your favorite light',summary:'Understand what is saved and what returns after power-up.',
-  paragraphs:['A slider can preview a change without making it permanent. Supported lamps separate saving tuning from choosing startup light. Startup is the light that returns when power is disconnected and restored.'],
+  paragraphs:['A slider can preview a change without making it permanent. Supported lamps separate saving tuning from choosing the startup effect and brightness: the pattern and light level your lamp uses when you plug it in.'],
   steps:[
    'Choose an effect and adjust it to your liking.',
    'Where offered, choose Remember this effect’s tuning to save that effect’s appearance. Your chosen startup effect and brightness stay as they were.',

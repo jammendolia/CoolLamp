@@ -91,6 +91,7 @@ test('missing anchors have one bounded deadline and an honest usable fallback',(
 test('a newly mounted or replaced anchor is re-resolved without repeating onStep',()=>{
  const f=fixture(),tour=f.start(plan);f.advance(250);const lamp=f.add('#lamp');f.mutate();f.advance(16);
  assert.equal(f.dialog().dataset.state,'showing');assert.equal(f.outline().hidden,false);assert.deepEqual(f.steps,['lamp']);
+ assert.equal(f.find('guided-tour-note').hidden,true);assert.equal(f.find('guided-tour-note').textContent,'');
  lamp.remove();const replacement=f.add('#lamp',{left:20,top:500,width:140,height:50});f.mutate();f.advance(32);
  assert.equal(replacement.scrolls.length,1);assert.equal(parseFloat(f.outline().style.top),494);assert.deepEqual(f.steps,['lamp']);tour.close();
 });
@@ -99,6 +100,7 @@ test('offscreen or hidden anchors do not count as shown and scrolling is bounded
  const f=fixture(),lamp=f.add('#lamp',{left:40,top:2000,width:100,height:40});const tour=f.start(plan);
  f.advance(1000);assert.equal(f.dialog().dataset.state,'missing');assert.equal(lamp.scrolls.length,1);assert.equal(f.outline().hidden,true);
  lamp.rect={left:40,top:200,width:100,height:40};f.mutate();f.advance(16);assert.equal(f.dialog().dataset.state,'showing');
+ assert.equal(f.find('guided-tour-note').hidden,true);assert.equal(f.find('guided-tour-note').textContent,'');
  lamp.hidden=true;f.mutate();f.advance(16);assert.equal(f.outline().hidden,true);tour.close('skip');assert.deepEqual(f.closed[0].shownStepIds,['lamp']);
  const scrolled=fixture(),target=scrolled.add('#lamp',{left:40,top:2000,width:100,height:40});target.afterScroll={left:40,top:200,width:100,height:40};
  const second=scrolled.start(plan);assert.equal(scrolled.dialog().dataset.state,'showing');assert.equal(scrolled.outline().style.top,'194px');second.close();
@@ -118,6 +120,7 @@ test('Back revisits the real previous step and an overlap note clears after the 
  const f=fixture(),lamp=f.add('#lamp',{left:0,top:0,width:390,height:844});f.add('#effect');const tour=f.start(plan);
  assert.equal(f.dialog().dataset.overlap,'true');assert.match(f.find('guided-tour-note').textContent,/partly behind/);
  lamp.rect={left:30,top:100,width:120,height:40};f.mutate();f.advance(16);assert.equal(f.dialog().dataset.overlap,undefined);
+ assert.equal(f.find('guided-tour-note').hidden,true);assert.equal(f.find('guided-tour-note').textContent,'');
  f.button('Next').emit('click');f.button('Back').emit('click');assert.deepEqual(f.steps,['lamp','effect','lamp']);tour.close();
 });
 

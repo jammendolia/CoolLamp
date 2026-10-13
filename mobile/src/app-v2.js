@@ -31,7 +31,7 @@ export function appTourSteps(model){
  );
  if(model.lamps?.length>=2)steps.push({id:'groups',page:'home',selector:'#v2HomeContent [data-v2="create-group"]',title:'Let lamps play together',text:'New group guides you through choosing at least two lamps to share an effect. Each lamp must confirm joining. You can keep your lamps separate too.'});
  steps.push(
-  {id:'settings',page:'app-settings',selector:'#page-app-settings [data-v2="lamp-settings"]',title:'Names and startup light',text:'Open Settings here, then Lamp details to choose a lamp’s name or the light it starts with. Home Wi-Fi and Lamp care are nearby for connections and updates.'},
+  {id:'settings',page:'app-settings',selector:'#page-app-settings [data-v2="lamp-settings"]',title:'Name and startup effect',text:'Lamp details is where you choose a lamp’s name and room. The startup effect and brightness are the pattern and light level it uses when you plug it in. In Effects, choose Use these settings at startup to remember them.'},
   {id:'designs',page:'app-settings',selector:'#page-app-settings [data-v2="appearance"]',title:'Lamp designs',text:'Lamp designs contains the physical shape and strip setup. A finished lamp normally comes configured. Use these settings only when you want to check or adjust its setup.'},
   {id:'help',page:'help',selector:'nav [data-page="help"]',title:'Help is always here',text:'Tap Help whenever you need a reminder. Open a topic for step-by-step instructions. Give me a tour will show you around again. You’re ready to explore.'}
  );
