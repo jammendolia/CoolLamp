@@ -33,11 +33,14 @@ uint64_t boot=0,session=0,offerToken=0,expectedPeerBoot=0;
 uint32_t sequence=0,lastPeerSequence=0,imageSize=0,hashOffset=0,offeredSize=0,offset=0,touched=0,started=0,lastSent=0,lastOffer=0,retryAt=0;
 uint32_t describeRetryAt=0,lastSignedVerification=0;
 bool signedVerificationSeen=false;
+bool bootSettled=false;
 uint16_t offeredVersion[3]{},bleSequence=0;
 mbedtls_sha256_context hash;
 void erase(void* data,size_t size){volatile uint8_t* p=static_cast<volatile uint8_t*>(data);while(size--)*p++=0;}
 uint64_t randomSession(){return (uint64_t(esp_random())<<32|esp_random())|1;}
 bool newer(const uint16_t* a,const uint16_t* b){for(unsigned i=0;i<3;++i)if(a[i]!=b[i])return a[i]>b[i];return false;}
+bool startupReady(uint32_t now){if(now>=35000)bootSettled=true;return bootSettled;}
+bool retryPending(uint32_t now){if(!retryAt)return false;if(int32_t(now-retryAt)<0)return true;retryAt=0;return false;}
 // Local diagnostic builds still measure their running image for postboot
 // health, but must never start an implicit rollout to the owner's fleet.
 bool donationAllowedByBuild(){
@@ -56,7 +59,7 @@ bool send(const uint8_t* bytes,size_t size,const uint8_t* destination){
 void stop(uint32_t now){
  if(state==Receiving)abortLampRadioFirmwareReceiver();
  if(donorReserved){releaseLampManualUpdate();finishLampBluetoothUpdateRadio(false);donorReserved=false;}
- state=Idle;session=0;offset=0;senderReady=false;offerToken=0;retryAt=now+60000;erase(offeredHash,sizeof(offeredHash));
+ state=Idle;session=0;offset=0;senderReady=false;offerToken=0;retryAt=now+60000;if(!retryAt)retryAt=1;erase(offeredHash,sizeof(offeredHash));
 }
 void acknowledge(uint8_t code){uint8_t p[14]{Ack};put64(p+1,session);put32(p+9,offset);p[13]=code;send(p,sizeof(p),peer);}
 void request(){uint8_t p[49]{Request};put64(p+1,session);memcpy(p+9,offeredHash,32);put64(p+41,offerToken);send(p,sizeof(p),peer);}
@@ -97,6 +100,7 @@ bool startReceiver(){
 bool receiverStatus(uint8_t* status){getLampBleUpdateStatus(status);return status[1]==LampBleUpdateWire::Receiving;}
 }
 void begin(){
+ bootSettled=false;retryAt=0;describeRetryAt=0;
  esp_read_mac(self,ESP_MAC_WIFI_STA);boot=randomSession();sequence=0;
  Preferences prefs;if(prefs.begin("coollamp",true)){paired=prefs.getBytesLength("fleetKeyV1")==16&&prefs.getBytes("fleetKeyV1",fleet,16)==16;prefs.end();}
 }
@@ -104,7 +108,7 @@ bool ownsRadio(){return state==Receiving||state==Sending;}
 DiscoverySnapshot discoverySnapshot(uint32_t now){
  const auto radio=LampEspNow::status();DiscoverySnapshot out;out.state=state;out.paired=paired;
  out.radioAvailable=radio.active&&!radio.suspended;
- if(int32_t(now-retryAt)<0)out.retryInMs=retryAt-now;
+ if(retryAt&&int32_t(now-retryAt)<0)out.retryInMs=retryAt-now;
  return out;
 }
 void suspend(){if(state!=Idle)stop(millis());}
@@ -119,7 +123,7 @@ bool receive(const LampEspNow::Received& message){
  if(!opened)return true;
  const uint32_t now=millis(),incomingSequence=u32(message.data+12);const uint64_t incomingBoot=u64(message.data+4);
  if(body[0]==Offer||body[0]==SignedOffer){
-  if((UpdatePublisher::enforced()&&body[0]!=SignedOffer)||state!=Idle||int32_t(now-retryAt)<0||!lampAutomaticUpdateAllowed()||LampCommission::working()||lampUpdateOwnsResources()||now<35000)return true;
+  if((UpdatePublisher::enforced()&&body[0]!=SignedOffer)||state!=Idle||retryPending(now)||!lampAutomaticUpdateAllowed()||LampCommission::working()||lampUpdateOwnsResources()||!startupReady(now))return true;
   uint16_t version[3];for(unsigned i=0;i<3;++i)version[i]=LampBleUpdateWire::u16(body+1+2*i);
   if(!newer(version,current))return true;
   offeredSigned=body[0]==SignedOffer;
@@ -142,7 +146,7 @@ bool receive(const LampEspNow::Received& message){
   memcpy(peer,message.source,6);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;session=randomSession();while(!uint32_t(session))session=randomSession();state=AwaitDonor;started=touched=now;lastSent=0;offset=0;return true;
  }
  if(body[0]==Request){
-  if(!donationAllowedByBuild()||state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||now<35000||lampUpdateOwnsResources()||!donationAllowedByRollout())return true;
+  if(!donationAllowedByBuild()||state!=Idle||!described||!offerToken||u64(body+41)!=offerToken||memcmp(body+9,ownHash,32)||!startupReady(now)||lampUpdateOwnsResources()||!donationAllowedByRollout())return true;
   if(!reserveLampManualUpdate())return true;
   if(!beginLampBluetoothUpdateRadio()){releaseLampManualUpdate();return true;}
   donorReserved=true;state=Sending;memcpy(peer,message.source,6);session=u64(body+1);expectedPeerBoot=incomingBoot;lastPeerSequence=incomingSequence;offerToken=0;offset=0;senderReady=false;started=touched=now;lastSent=0;return true;
@@ -179,6 +183,11 @@ bool receive(const LampEspNow::Received& message){
  return true;
 }
 void service(uint32_t now){
+ // Packet handling samples millis() after the caller's loop timestamp. Use a
+ // current sample so a newly accepted request cannot look billions of
+ // milliseconds old when unsigned age subtraction sees that earlier time.
+ now=millis();
+ startupReady(now);retryPending(now);
  const auto radio=LampEspNow::status();
  if(state!=Idle){
   if(state==Receiving){uint8_t status[20];serviceLampRadioFirmwareReceiver();getLampBleUpdateStatus(status);if(status[1]==LampBleUpdateWire::Restarting){LampEspNow::holdChannel(now+5000);return;}if(!getLampUpdateStatus().automatic||status[1]==LampBleUpdateWire::Error){stop(now);return;}}
@@ -195,12 +204,13 @@ void service(uint32_t now){
  }
  // Installed-artifact measurement also serves postboot health/quarantine.
  // It must not depend on enrollment or donor-radio viability on one lamp.
- if(lampUpdateOwnsResources()||LampCommission::working()||now<35000)return;
+ if(lampUpdateOwnsResources()||LampCommission::working()||!bootSettled)return;
  if(!described){
-  if(int32_t(now-describeRetryAt)<0)return;
-  if(!hashing){if(!describe()){describeRetryAt=now+60000;return;}}
+  if(describeRetryAt&&int32_t(now-describeRetryAt)<0)return;
+  describeRetryAt=0;
+  if(!hashing){if(!describe()){describeRetryAt=now+60000;if(!describeRetryAt)describeRetryAt=1;return;}}
   const size_t n=min(uint32_t(sizeof(readBuffer)),imageSize-hashOffset);
-  if(esp_partition_read(running,hashOffset,readBuffer,n)!=ESP_OK||mbedtls_sha256_update(&hash,readBuffer,n)){mbedtls_sha256_free(&hash);hashing=false;describeRetryAt=now+60000;return;}
+  if(esp_partition_read(running,hashOffset,readBuffer,n)!=ESP_OK||mbedtls_sha256_update(&hash,readBuffer,n)){mbedtls_sha256_free(&hash);hashing=false;describeRetryAt=now+60000;if(!describeRetryAt)describeRetryAt=1;return;}
   constexpr char marker[]="COOLLAMP-PUBLIC-" LAMP_FIRMWARE_VERSION;
   for(size_t i=0;i<n;++i){if(readBuffer[i]==uint8_t(marker[ownMarkerAt])){if(++ownMarkerAt==sizeof(marker)){ownMarker=true;ownMarkerAt=0;}}else ownMarkerAt=readBuffer[i]==uint8_t(marker[0])?1:0;}
   hashOffset+=n;if(hashOffset<imageSize)return;
@@ -211,7 +221,7 @@ void service(uint32_t now){
      ownPublisher.image.size==imageSize&&!memcmp(ownPublisher.image.sha256,ownHash,32)&&!memcmp(ownPublisher.image.version,current,sizeof(current));
    ownSigned=okay;
   }
-  described=okay;if(!okay){describeRetryAt=now+60000;return;}
+  described=okay;if(!okay){describeRetryAt=now+60000;if(!describeRetryAt)describeRetryAt=1;return;}
  }
  if(!donationAllowedByBuild()||!paired||!radio.active||radio.suspended||!donationAllowedByRollout())return;
  if(now-lastOffer>=10000){lastOffer=now;offerToken=randomSession();uint8_t p[123]{};p[0]=ownSigned?SignedOffer:Offer;for(unsigned i=0;i<3;++i)LampBleUpdateWire::put16(p+1+2*i,current[i]);put32(p+7,imageSize);memcpy(p+11,ownHash,32);put64(p+43,offerToken);if(ownSigned){put32(p+51,ownPublisher.epoch);put32(p+55,ownPublisher.keyId);memcpy(p+59,ownPublisher.signature,64);}send(p,ownSigned?sizeof(p):51,broadcast);}

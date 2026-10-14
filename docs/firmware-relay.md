@@ -75,3 +75,17 @@ cross-group transfer with an offline receiver, test interruption before commit,
 verify saved settings and new boot, measure stack/heap and transfer time, then
 observe a subsequent donation to a third auto-update-enabled lamp. Do not publish
 this candidate as proven mesh OTA merely because host tests and CI succeed.
+
+Relay age checks sample the current main-loop clock after processing copied
+radio packets. A caller timestamp captured before receive/crypto work must not
+make a fresh session appear expired. The initial 35-second startup hold is
+latched once reached and does not recur at uptime rollover. Expired retry
+deadlines are cleared; a deadline that wraps exactly to zero is held one extra
+millisecond so it cannot be mistaken for an absent cooldown. These changes do
+not alter wire packets, persisted records, authentication or commit ownership.
+
+The [13 October bridge bench](bridge-donation-bench-2026-10-13.md) verifies one
+actual automatic one-hop donor install into a retained legacy group follower.
+It also records the unpassed lifetime animation-gap target and pending active
+group, range, interruption and fleet-scale physical tests. Diagnostic test
+images do not become automatic donors or ordinary published cache artifacts.

@@ -16,6 +16,7 @@ CASES = [
     ['node', '--test', 'tests/publisher-trust.test.cjs'],
     ['node', '--test', 'tests/compress-lamp-page.test.cjs'],
     ['node', 'tests/browser-upload-page.cjs'],
+    ['node', '--test', 'tests/bridge-bench-build.test.cjs'],
     *[[sys.executable, 'tests/' + name + '.py'] for name in [
         'experience-runtime', 'household-runtime', 'household-adapter-runtime',
         'commission-runtime', 'mesh-runtime', 'mesh-adapter-runtime',
@@ -28,6 +29,10 @@ CASES = [
         'update-attempt-runtime', 'update-http-runtime', 'update-automatic-download-runtime',
         'browser-upload-runtime',
         'update-publisher-receiver-runtime', 'firmware-relay-runtime',
+        'bridge-group-donation-runtime',
+        'bridge-lamp-links-runtime', 'bridge-links-http-runtime',
+        'bridge-mesh-http-paging-runtime',
+        'bridge-bench-runtime',
     ]],
     [sys.executable, 'tests/firmware-relay-runtime.py', '--publisher'],
     [sys.executable, 'tests/espnow-runtime.py', '--mbedtls-cache', '.build/tls-library'],

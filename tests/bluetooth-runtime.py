@@ -67,7 +67,10 @@ struct BLECharacteristicCallbacks;
 struct BLECharacteristic {
  static constexpr unsigned PROPERTY_WRITE=1,PROPERTY_WRITE_NR=2,PROPERTY_WRITE_ENC=4;
  String value;unsigned properties=0;BLECharacteristicCallbacks* callbacks=nullptr;
- String getValue(){return value;}void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}
+ bool failValueCopy=false;unsigned valueCopies=0;
+ String getValue(){++valueCopies;return failValueCopy?String():value;}
+ uint8_t* getData(){return reinterpret_cast<uint8_t*>(value.data());}size_t getLength()const{return value.length();}
+ void setValue(const uint8_t* p,size_t n){value.assign(reinterpret_cast<const char*>(p),n);}
  void setCallbacks(BLECharacteristicCallbacks* value){callbacks=value;}
 };
 struct BLEService {BLECharacteristic ota;BLECharacteristic* createCharacteristic(const char*,unsigned properties){ota.properties=properties;return &ota;}};
@@ -108,6 +111,25 @@ int main(){
  characteristic.value="status";read.onRead(&characteristic,&peer);assert(characteristic.value=="status");
  peer.sec_state.bonded=false;read.onRead(&characteristic,&peer);assert(characteristic.value.size()==20&&characteristic.value[2]==LampBleUpdateWire::Denied);peer.sec_state.bonded=true;
  room=false;characteristic.setValue(frame,8);write.onWrite(&characteristic,&peer);assert(copied==5&&instance.disconnects==1&&disconnectRequested);
+ // The SDK has already stored a valid244-byte frame. Fault its copying API
+ // at a zero-copy budget; the production callback must borrow its buffer and
+ // synchronously queue identical bytes before that storage changes again.
+ room=true;disconnectRequested=false;characteristic.failValueCopy=true;
+ uint8_t maximum[LampBleUpdateWire::MaxFrame]{};memcpy(maximum,data,sizeof(data));maximum[6]=9;
+ characteristic.setValue(maximum,sizeof(maximum));assert(characteristic.getValue().empty());const auto copies=characteristic.valueCopies;
+ write.onWrite(&characteristic,&peer);assert(copied==6&&instance.disconnects==1&&characteristic.valueCopies==copies);
+ memset(characteristic.getData(),0,characteristic.getLength());assert(queue.pop(saved)&&saved.length==sizeof(maximum)&&!memcmp(saved.bytes,maximum,sizeof(maximum))&&!queue.pop(saved));
+ // Size/malformed/security/queue-full behavior remains fail-closed. No raw
+ // pointer escapes into the queue, and this budget does not cover the SDK's
+ // initial characteristic allocation, which remains a separate prerequisite.
+ uint8_t oversized[LampBleUpdateWire::MaxFrame+1]{};memcpy(oversized,maximum,sizeof(maximum));
+ characteristic.setValue(oversized,sizeof(oversized));write.onWrite(&characteristic,&peer);assert(instance.disconnects==2&&copied==6);
+ disconnectRequested=false;characteristic.setValue(maximum,7);write.onWrite(&characteristic,&peer);assert(instance.disconnects==3&&copied==6);
+ disconnectRequested=false;maximum[0]=2;characteristic.setValue(maximum,sizeof(maximum));write.onWrite(&characteristic,&peer);assert(instance.disconnects==4&&copied==6);maximum[0]=1;
+ disconnectRequested=false;characteristic.setValue(maximum,sizeof(maximum));peer.sec_state.encrypted=false;write.onWrite(&characteristic,&peer);assert(instance.disconnects==4&&copied==6);peer.sec_state.encrypted=true;
+ for(unsigned i=0;i<8;++i){maximum[6]=i+10;characteristic.setValue(maximum,sizeof(maximum));write.onWrite(&characteristic,&peer);}assert(copied==14);
+ write.onWrite(&characteristic,&peer);assert(instance.disconnects==5&&copied==14&&disconnectRequested);
+ for(unsigned i=0;i<8;++i){assert(queue.pop(saved)&&saved.bytes[6]==i+10&&saved.length==244);}assert(!queue.pop(saved));
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-ota-auth-') as folder:

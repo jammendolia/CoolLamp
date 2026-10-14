@@ -37,7 +37,10 @@ struct TransmitCredit {
   uint16_t pendingBytes=0,pendingSegments=0;
 };
 TransmitCredit transmitCredit(int fd);
-bool start();
+// The first successful call owns the worker allocation. The lamp default is
+// unchanged; accessories must request their stack before starting any server.
+// Later calls are idempotent and do not resize an existing worker.
+bool start(uint32_t stackBytes=2048);
 bool enqueue(const Request& request);
 uint32_t taskStackMinimumBytes();
 Metrics metrics();

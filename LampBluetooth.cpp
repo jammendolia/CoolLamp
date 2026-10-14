@@ -250,8 +250,12 @@ ControlReads controlReadCallbacks;
 class OtaWrites final : public BLECharacteristicCallbacks {
  void onWrite(BLECharacteristic* characteristic,ble_gap_conn_desc* peer) override {
   if(!peer||!authorizeEncryptedPeer(*peer)||!peer->sec_state.bonded)return;
-  const String value=characteristic->getValue();
-  if(!enqueueLampBleUpdate(reinterpret_cast<const uint8_t*>(value.c_str()),value.length(),generation)){
+  // Core3.3.11 invokes this callback synchronously after storing the write.
+  // Borrow only until enqueue copies the bounded bytes; getValue() would make
+  // another heap allocation and can turn a valid frame into empty on failure.
+  const size_t size=characteristic->getLength();
+  const uint8_t* bytes=characteristic->getData();
+  if(!enqueueLampBleUpdate(bytes,size,generation)){
    disconnectRequested=true;server->disconnect(peer->conn_handle);
   }
  }

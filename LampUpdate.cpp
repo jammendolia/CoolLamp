@@ -630,10 +630,11 @@ static LampUpdatePolicy::Eligibility policyEligibility(){
     converted?uint16_t(local.tm_hour*60+local.tm_min):1440,millis(),userUseObserved,lastUserUse);
 }
 bool lampAutomaticUpdateAllowed(){
-  // Opt-in and quiet policy do not establish a safe group rollout. Every
-  // grouped receiver needs a current staged permit before either automatic
-  // internet or donor admission; explicit manual requests keep their own
-  // exact-artifact rollout fence.
+  // Opt-in and quiet policy do not establish a staged group rollout. An
+  // unarmed, unpaused legacy follower can update individually while keeping membership;
+  // legacy coordinators and expanded groups still need their coordination
+  // fence. Both internet and donor admission share this gate, and explicit
+  // manual requests keep the separate exact-artifact rollout fence.
   return policyEligibility()==LampUpdatePolicy::Ready&&lampRolloutAutomaticAdmissionReason()==0;
 }
 bool lampAutomaticUpdateArtifactAllowed(const FirmwareManifest& artifact){

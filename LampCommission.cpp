@@ -151,6 +151,13 @@ bool receiveReveal(const LampEspNow::Received& message,uint32_t now,bool brokerR
 bool working(){return session.phase==Exchange||session.phase==Confirm||session.phase==Approved;}
 void begin(){clearSecrets();releaseRadio();session=Session{};for(auto& c:candidates)c=Candidate{};esp_read_mac(self,ESP_MAC_WIFI_STA);boot=nonce();advertBoot=0;nextAdvert=cooldownUntil=millis();blocked=false;advertiseV2=false;}
 bool physicalPending(){return session.role==TargetRole&&session.phase==Confirm&&!blocked&&uint32_t(millis()-session.started)<Lifetime;}
+bool comparisonSnapshot(LampCommissionComparisonSnapshot& out){
+ out={};if(!physicalPending())return false;
+ out.version=session.transcript.version;out.count=out.version==2?7:4;
+ memcpy(out.symbols,out.version==2?session.comparison:session.pattern,out.version==2?6:4);
+ if(out.version==2)out.symbols[6]=LampCommissionCue::check(session.comparison);
+ out.approvalReady=out.version!=2||session.cueComplete;return true;
+}
 void approvePhysical(){
  if(!physicalPending()||!lampMeshEnrollmentEligible()||(session.transcript.version==2&&!session.cueComplete))return;
  session.approved=true;session.phase=Approved;prepare(LampCommissionCrypto::Approved);

@@ -13,8 +13,9 @@ void service(uint32_t now); // Owning loop loads/retries storage and expires vol
 }
 bool lampRolloutAllowsAutomaticUpdate(const FirmwareManifest& artifact);
 // New automatic admission only: exact-artifact checks remain separate.
-// 0 ready/independent, 1 staged coordination required, 2 legacy bootstrap,
-// 3 storage unavailable, 4 permit unavailable/expired/rebooted.
+// 0 ready/independent or unarmed active legacy follower, 1 staged coordination required,
+// 2 legacy coordinator bootstrap/coordination,
+// 3 storage unavailable, 4 permit/context unavailable/expired/rebooted or volatile legacy pause.
 uint8_t lampRolloutAutomaticAdmissionReason();
 uint8_t lampRolloutAutomaticAdmissionSnapshotReason(); // Read-only RAM/status: no storage or expiry mutation.
 bool lampRolloutAllowsAutomaticAdmission();

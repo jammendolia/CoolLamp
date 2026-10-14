@@ -139,10 +139,11 @@ bool Owner::step(uint32_t now){
   // and honest pending metrics, rather than leaking or touching a reused fd.
   increment(failures);return false;
 }
-bool start(){
+bool start(uint32_t stackBytes){
+  if(stackBytes<2048||stackBytes>8192)return false;
   if(closeQueue)return true;
   closeQueue=xQueueCreate(4,sizeof(Request));if(!closeQueue)return false;
-  if(xTaskCreate(closeWorker,"lamp-http-close",2048,nullptr,1,&closeTask)!=pdPASS){vQueueDelete(closeQueue);closeQueue=nullptr;closeTask=nullptr;return false;}
+  if(xTaskCreate(closeWorker,"lamp-http-close",stackBytes,nullptr,1,&closeTask)!=pdPASS){vQueueDelete(closeQueue);closeQueue=nullptr;closeTask=nullptr;return false;}
   return true;
 }
 bool enqueue(const Request& request){

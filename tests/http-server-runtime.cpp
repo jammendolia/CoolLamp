@@ -191,7 +191,7 @@ static Metrics fixtureMetrics;
 static void fixtureCloser(void*){
   for(;;){int fd=-1;if(xQueueReceive(fixtureQueue,&fd,portMAX_DELAY)==pdTRUE&&fd>=0){++fixtureMetrics.closeAttempts;close(fd);--fixtureMetrics.pendingOwned;}}
 }
-bool start(){if(fixtureQueue)return true;fixtureQueue=xQueueCreate(4,sizeof(int));return xTaskCreate(fixtureCloser,"lamp-http-close",2048,nullptr,1,nullptr)==pdPASS;}
+bool start(uint32_t stackBytes){if(fixtureQueue)return true;fixtureQueue=xQueueCreate(4,sizeof(int));return xTaskCreate(fixtureCloser,"lamp-http-close",stackBytes,nullptr,1,nullptr)==pdPASS;}
 bool enqueue(const Request& request){
   assert(!inCloseWorker);if(request.fd<0)return true;if(!fixtureQueue)return false;
   if(xQueueSend(fixtureQueue,&request.fd,0)!=pdTRUE)return false;
