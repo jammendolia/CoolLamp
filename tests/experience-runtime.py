@@ -22,7 +22,7 @@ network=(ROOT/'LampNetwork.ino').read_text()
 functions='\n'.join(extract['function'](network,name) for name in ['String jsonText(', 'bool readNumber('])
 sync=(ROOT/'LampSync.cpp').read_text()
 sync_types=sync[sync.index('struct Config {'):sync.index('uint8_t wireVersion=')]
-sync_functions='\n'.join(extract['function'](sync,name) for name in ['bool configureLampSyncPause(', 'void pauseLampSync()', 'uint8_t lampSyncRole()', 'bool lampSyncPaused()'])
+sync_functions='\n'.join(extract['function'](sync,name) for name in ['bool configureLampSyncPause(', 'void pauseLampSync()', 'uint8_t lampSyncRole()', 'uint8_t lampSyncProtocol()', 'bool lampSyncPaused()'])
 with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
     folder=Path(tmp)
     prefs=(ROOT/'tests/control-stubs/Preferences.h').read_text().replace('  bool begin(','''  size_t getBytesLength(const char* key){return storage[key].size();}
@@ -30,7 +30,9 @@ with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
   size_t getBytes(const char* key,void* out,size_t length){if(failReadback||storage[key].size()!=length)return 0;memcpy(out,storage[key].data(),length);return length;}
   bool begin(''')
     prefs=prefs.replace('++writes;return length;', '++writes;return commitThenFail?0:length;')
+    prefs=prefs.replace('inline static unsigned writes=0;', 'inline static unsigned writes=0,opens=0;').replace('bool begin(const char*,bool){return !failOpen;}', 'bool begin(const char*,bool){++opens;return !failOpen;}')
     (folder/'Preferences.h').write_text(prefs)
+    (folder/'nvs.h').write_text((ROOT/'tests/factory-absent-nvs.h').read_text())
     arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text()
     arduino=arduino.replace('[[maybe_unused]] inline struct','inline uint32_t fakeFreeHeap=65536,fakeLargestBlock=65536;\n[[maybe_unused]] inline struct')
     arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return fakeFreeHeap;}uint32_t getMaxAllocHeap(){return fakeLargestBlock;}uint64_t getEfuseMac()')
@@ -69,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
 #include "LampUpdate.h"
 #include "LampSync.h"
 #include "LampModel.h"
+#include "LampJsonSink.h"
 #include "UpdatePublisher.h"
 LampControlHttpAdapter lampServer(80);LampSettings lampSettings{};
 String lampToken="private-token";uint32_t now=100;uint32_t millis(){return now;}
@@ -80,6 +83,7 @@ const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
 bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
+void appendLampStyleJson(LampJsonSink& out){out.concat(lampStyleJson());}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void syncLampKnob(){}
 using namespace LampSyncWire;
 SYNC_TYPES
@@ -230,6 +234,46 @@ int main(int argc,char** argv){
  const auto rejectionReceipt=result.body;result=lampServer.executeControl(42,true,command);assert(result.status==409&&result.body==rejectionReceipt&&!paused&&Preferences::writes==membershipWrites);
  paused=true;command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
  result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==87&&!PowerOn&&paused&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
+ // A restarted legacy follower may be disconnected but ON from its startup
+ // effect. A compact absolute OFF may restore its volatile pause without NVS.
+ wireVersion=LegacyVersion;paused=false;PowerOn=true;observeLampAppearance();
+ const auto offOpens=Preferences::opens,offUses=uses,offClears=followerClears;
+ const auto offMode=Mode,offBrightness=Brightness;const auto offSettings=lampSettings;
+ fakeFreeHeap=15384;fakeLargestBlock=7668;
+ command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0";
+ result=lampServer.executeControl(42,true,command);
+ assert(result.status==200&&!PowerOn&&paused&&Mode==offMode&&Brightness==offBrightness);
+ assert(Preferences::opens==offOpens&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
+ assert(lampSettings.startupMode==offSettings.startupMode&&lampSettings.brightness==offSettings.brightness&&uses==offUses+2&&followerClears==offClears+1);
+ const auto offReceipt=result.body;const auto offRevision=lightCommands.currentRevision();
+ result=lampServer.executeControl(42,true,command);
+ assert(result.status==200&&result.body==offReceipt&&lightCommands.currentRevision()==offRevision&&uses==offUses+2&&followerClears==offClears+1&&Preferences::opens==offOpens);
+ // No extra field, ON, missing/ambiguous power, active playback, other wire
+ // version, updater, calibration or reset may take this exceptional lane.
+ paused=false;PowerOn=true;observeLampAppearance();
+ const auto guardUses=uses,guardClears=followerClears,guardOpens=Preferences::opens;
+ const auto guardId=lightCommands.nextId();const auto guardRevision=lightCommands.currentRevision();
+ lampServer.arguments={{"target",lampIdentity()},{"scope","lamp"},{"bootSession",commandHex(lightCommands.boot())},{"commandId",commandHex(guardId)},{"expectedRevision",String(guardRevision)},{"power","0"}};
+ lampServer.httpAuthorized=false;lampServer.headers["X-Lamp-Token"]=lampToken;lampServer.invokeHttp("/api/state/patch",HTTP_POST);
+ assert(lampServer.responseStatus==401&&lightCommands.nextId()==guardId&&PowerOn&&!paused);
+ lampServer.httpAuthorized=true;lampServer.headers["X-Lamp-Token"]="wrong";lampServer.invokeHttp("/api/state/patch",HTTP_POST);
+ assert(lampServer.responseStatus==403&&lightCommands.nextId()==guardId&&PowerOn&&!paused);
+ result=patch(guardId,guardRevision-1,"&power=0");assert(result.status==409&&lightCommands.nextId()==guardId&&PowerOn&&!paused);
+ for(const char* fields:{"&power=1","","&power=00","&power=0&mode=4","&power=0&brightness=87","&power=0&speed=50","&power=0&intensity=50","&power=0&dual=0","&power=0&r=1","&power=0&g=1","&power=0&b=1","&power=0&r2=1","&power=0&g2=1","&power=0&b2=1","&power=0&resetPalette=1"}){
+  result=patch(lightCommands.nextId(),lightCommands.currentRevision(),fields);assert(result.status==409&&PowerOn&&!paused);
+ }
+ for(uint8_t protocol:{ExpandedVersion,uint8_t(4)}){
+  wireVersion=protocol;assert(lampSyncProtocol()==protocol);
+  result=patch(lightCommands.nextId(),lightCommands.currentRevision(),"&power=0");assert(result.status==409&&PowerOn&&!paused);
+ }
+ wireVersion=LegacyVersion;
+ for(unsigned guard=0;guard<5;++guard){
+  following=guard==0;scene=guard==1?1:0;updating=guard==2;calibrating=guard==3;resetting=guard==4;
+  result=patch(lightCommands.nextId(),lightCommands.currentRevision(),"&power=0");assert(result.status==409&&PowerOn&&!paused);
+ }
+ following=updating=calibrating=resetting=false;scene=0;
+ assert(uses==guardUses&&followerClears==guardClears&&Preferences::opens==guardOpens&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
+ fakeFreeHeap=fakeLargestBlock=65536;
  // The old setter still performs its explicit pause behavior unchanged.
  paused=false;wireVersion=LegacyVersion;assert(setLampControl(Mode,88,false)&&paused&&Brightness==88&&Preferences::writes==membershipWrites);
  wireVersion=ExpandedVersion;paused=false;assert(configureLampSyncPause(true)&&paused&&Preferences::writes==membershipWrites+1&&Preferences::storage.count("syncV2"));
@@ -253,12 +297,15 @@ int main(int argc,char** argv){
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra',*SANITIZERS,*includes,*define,str(cpp),str(ROOT/'LampModel.cpp'),str(ROOT/'LampUpdatePolicy.cpp'),*objects,'-o',str(exe)],check=True)
     subprocess.run([str(exe),str(output)],check=True)
     values=json.loads(output.read_text());assert values[0]['descriptorVersion']==2
+    assert 'mesh-neighborhood-v1' in values[0]['capabilities']['control']
     # Parse exact production serialization with the actual mobile contract model.
     validator=folder/'verify.mjs'
     validator.write_text("import fs from 'node:fs';import {lampDescriptor,effectSchemaPage} from '"+(ROOT/'mobile/src/experience-contracts.js').as_uri()+"';const values=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));lampDescriptor(values[0],values[0].deviceId);for(const page of values.slice(1))effectSchemaPage(page,values[0].deviceId);")
     subprocess.run(['node',str(validator),str(output)],check=True)
     effects=[entry for page in values[1:] if page['kind']=='effects' for entry in page['entries']]
     assert len(effects)==47 and len({entry['key'] for entry in effects})==47
+    assert all(entry['compatibleStyles']==[] and entry['styleRecommendations']==[] for page in values[1:] for entry in page['entries'])
+    assert [entry['localId'] for entry in effects]==list(range(1,48))
     assert all(not entry['motion'] and not entry['parameters'] for entry in effects[20:29])
     prism=[entry for page in values[1:] if page['kind']=='scenes' for entry in page['entries'] if entry['localId']==15][0]
     assert prism['palette']['modes']==['fixed'] and prism['palette']['colorRoles']==[]

@@ -64,7 +64,7 @@ inline bool readReplyReady(size_t freeHeap,size_t largestBlock,size_t bytes){
 inline bool readEndpoint(uint8_t id,bool mutation){
   using namespace LampControlEndpoint;
   if(mutation)return id==SchemaPage||id==Receipt||id==GroupPage;
-  return id==State||id==Sync||id==Audio||id==Firmware||id==Effects||id==Descriptor||id==Revision;
+  return id==State||id==Sync||id==Audio||id==Firmware||id==Effects||id==Descriptor||id==Revision||id==MeshStatus;
 }
 inline bool readHttpPath(const char* path,bool post){
   if(!path)return false;
@@ -72,7 +72,7 @@ inline bool readHttpPath(const char* path,bool post){
   return !strcmp(path,"/api/state")||!strcmp(path,"/api/state/current")||!strcmp(path,"/api/firmware")||!strcmp(path,"/api/effects")||
     !strcmp(path,"/api/audio")||
     !strcmp(path,"/api/descriptor")||!strcmp(path,"/api/revision")||!strcmp(path,"/api/diagnostics")||
-    !strcmp(path,"/api/firmware/upload/status");
+    !strcmp(path,"/api/firmware/upload/status")||!strcmp(path,"/api/mesh/status");
 }
 inline bool replyReady(size_t freeHeap,size_t largestBlock){
   return freeHeap>=MinFreeHeapBytes&&largestBlock>=MinLargestBlockBytes;

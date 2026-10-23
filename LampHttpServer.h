@@ -55,7 +55,7 @@ private:
     char responseHeader[512]{};size_t headerLength=0;uint32_t received=0;
     uint8_t input[128]{};size_t inputAt=0,inputSize=0;
     int route=-1;bool uploadStarted=false, uploadAccepted=false,staticPage=false,readResponse=false;
-    bool closeAbandoned=false,awaitingAck=false;uint32_t closeTimeoutMs=LampHttpParser::RequestTimeoutMs;
+    bool closeAbandoned=false,awaitingAck=false,localSendDeferred=false;uint32_t closeTimeoutMs=LampHttpParser::RequestTimeoutMs;
     uint16_t ackPendingBytes=0,ackPendingSegments=0;bool ackObserved=false;
     uint16_t closeKnownPendingBytes=0;
   };

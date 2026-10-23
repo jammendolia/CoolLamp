@@ -26,7 +26,7 @@ bool lampUpdateOwnsResources(){return updater;}
 String lampToken="fixture-private-control-token";
 LampControlHttpAdapter resourceAdapter(80);
 bool exerciseResourceAdapter=false;
-LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint!=LampControlEndpoint::State)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));if(exerciseResourceAdapter)return resourceAdapter.executeControl(endpoint,mutation,form,confidential);++calls;return {replyStatus,replyBody};}
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::MeshStatus||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));if(exerciseResourceAdapter)return resourceAdapter.executeControl(endpoint,mutation,form,confidential);++calls;return {replyStatus,replyBody};}
 namespace LampFirmwareRelay {bool copyFleetKey(uint8_t* out){memcpy(out,fleet,16);return true;}String fleetId(){return "1122334455667788";}}
 namespace LampEspNow {
 bool enqueue(const uint8_t* bytes,size_t size,const uint8_t*,bool){assert(size<=250);frames.push_back({side,{bytes,bytes+size}});return true;}
@@ -43,7 +43,11 @@ namespace Bridge {LampControlReply result(const String&,const String&,const Stri
 #undef LampMeshAdapter
 namespace Target {LampControlReply result(const String&,const String&,const String&,bool=false);}
 #define LampMeshAdapter Target
+#ifdef COOLLAMP_LEGACY_NEIGHBORHOOD_TARGET
+#include "LampMeshAdapterLegacy.generated.cpp"
+#else
 #include "LampMeshAdapter.cpp"
+#endif
 #undef LampMeshAdapter
 const String targetId="060302010002",otherId="070302010002",requestId="0000000000000001";
 void deliver(){
@@ -84,7 +88,53 @@ int main(int argc,char** argv){
   std::cout<<"PASS actual mesh adapter idle-auth-hold unknown/off-fleet ignored, idle proof extends hold, expiry releases seeking\n";return 0;
  }
  setup();
- if(scenario=="resource-denied-no-replay"){
+ if(scenario=="neighborhood-bounds"){
+  auto* peers=const_cast<LampMesh::Peer*>(Target::core.peers());
+  for(unsigned i=0;i<LampMesh::MaxPeers;++i){
+   auto& p=peers[i];p=LampMesh::Peer{};p.mac[0]=2;p.mac[5]=uint8_t(i+16);p.boot=UINT64_MAX-i;p.active=true;p.lastSeen=now;p.hops=uint8_t(1+i%4);memset(p.name,'"',48);memset(p.version,'\\',24);
+  }
+  fakeFreeHeap=23000;fakeLargestBlock=20468;const auto before=frames.size();const String full=Target::statusJson();assert(!full.isEmpty()&&full.length()<=8192&&frames.size()==before&&!calls);
+  unsigned count=0;for(size_t at=0;(at=full.find("\"id\":",at))!=std::string::npos;++at)++count;assert(count==16);
+  fakeFreeHeap=8703;assert(Target::statusJson().isEmpty());fakeFreeHeap=23000;fakeLargestBlock=100;assert(Target::statusJson().isEmpty());fakeLargestBlock=20468;
+  for(unsigned i=0;i<LampMesh::MaxPeers;++i){memset(peers[i].name,1,48);memset(peers[i].version,2,24);}assert(Target::statusJson().isEmpty());
+  std::cout<<"BUDGET counted16-peer reply="<<full.length()<<" post-core heap=23000 max=8192; oversize/low-memory fail closed\n";
+ }
+ else if(scenario=="neighborhood-read"||scenario=="legacy-neighborhood"){
+  exerciseResourceAdapter=true;fakeFreeHeap=23000;fakeLargestBlock=20468;
+  resourceAdapter.on("/api/mesh/status",HTTP_GET,[]{assert(side==2&&resourceAdapter.controlActive()&&resourceAdapter.uri()=="/api/mesh/status");++calls;replyBody=Target::statusJson();resourceAdapter.send(200,"application/json",replyBody);});
+  resourceAdapter.on("/api/state",HTTP_GET,[]{++calls;resourceAdapter.send(200,"application/json","{\"power\":true}");});
+  side=0;assert(Origin::request(targetId,requestId,"28","1","").status==202);complete();
+  if(scenario=="legacy-neighborhood"){
+   assert(numberField(result().body,"httpStatus")==403&&!calls);decode(result().body);
+  }else{
+   std::string body;for(unsigned offset=0;offset<Origin::core.result().length;offset+=256)body+=decode(result(offset).body);
+   assert(body==replyBody&&body.find("\"localPresence\":16")!=std::string::npos&&body.find("local-neighborhood")!=std::string::npos&&calls==1);
+   side=0;assert(Origin::request(targetId,"0000000000000002","28","2","").status==400);
+  }
+  // Older clients still use the unchanged State read; a denied optional
+  // neighborhood read never requires mutation replay or a lamp reset.
+  side=0;assert(Origin::request(targetId,"0000000000000003","1","1","").status==202);complete();assert(decode(result(0,"0000000000000003").body)=="{\"power\":true}");
+ }
+ else if(scenario=="remote-neighborhood-mutation"){
+  const uint8_t payload[2]{LampControlEndpoint::MeshStatus,2};assert(Origin::core.startRequest(addresses[2],1,payload,sizeof(payload),now));complete();assert(Origin::core.result().status==403&&!calls);
+ }
+ else if(scenario=="clock-peer"||scenario=="clock-peer-rollover"){
+  if(scenario=="clock-peer-rollover")now=UINT32_MAX;
+  const uint32_t loopAt=now;++now;
+  Packet p;memcpy(p.origin,addresses[2],6);p.boot=Target::boot;p.sequence=100000;p.kind=Presence;p.totalSize=p.payloadSize=3;
+  const uint8_t metadata[3]{};LampEspNow::Received message;size_t size=0;
+  assert(LampMeshCrypto::seal(p,metadata,fleet,addresses[2],3,0,message.data,size));message.length=size;message.receivedAt=now;memcpy(message.source,addresses[2],6);
+  side=0;assert(Origin::receive(message));Origin::service(loopAt,false);assert(Origin::online(addresses[2]));
+  frames.clear();now+=LampMesh::PeerTimeout;Origin::service(now,false);assert(!Origin::online(addresses[2]));
+ }
+ else if(scenario=="clock-receipt"){
+  const uint32_t loopAt=now;++now;assert(start().status==202);side=0;Origin::service(loopAt,false);assert(Origin::core.result().state==LampMesh::State::Pending);
+  while(!calls)run(1);
+  // Execution happened in the previous drain at now-1. An older loop clock
+  // must retain its target receipt/response and must never repeat execution.
+  side=2;Target::service(now-2,false);complete();assert(calls==1&&decode(result().body)==replyBody);assert(start().status==200&&calls==1);
+ }
+ else if(scenario=="resource-denied-no-replay"){
   exerciseResourceAdapter=true;
   resourceAdapter.on("/api/power",HTTP_POST,[]{assert(side==2&&resourceAdapter.controlActive()&&resourceAdapter.uri()=="/api/power"&&resourceAdapter.arg("power")=="1");++calls;resourceAdapter.send(200,"text/plain","Applied once.");});
   fakeFreeHeap=16384;fakeLargestBlock=24000;

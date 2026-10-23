@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <type_traits>
 
 // Three overlapping bands at 16 kHz. Fixed-point one-pole crossovers keep
 // work and memory bounded: bass low-pass, mid difference, treble residual.
@@ -17,10 +18,13 @@ class AudioSpectrum {
   }
 public:
   struct Result { uint16_t bass,mid,treble; uint32_t beat,bassBeat; };
-  Result process(const int32_t* samples,size_t frames,uint8_t level,uint32_t now) {
+  template<size_t Stride=2,typename Sample=int32_t>
+  Result process(const Sample* samples,size_t frames,uint8_t level,uint32_t now) {
+    static_assert(Stride==1||Stride==2,"Only mono or interleaved stereo capture");
+    static_assert(std::is_same<Sample,int32_t>::value||std::is_same<Sample,int16_t>::value,"Signed microphone words only");
     uint64_t energy[3]{};
     for(size_t i=0;i<frames;++i){
-      const int32_t sample=(samples[i*2]>>16)*256;
+      const int32_t sample=(sizeof(Sample)==2 ? int32_t(samples[i*Stride]) : samples[i*Stride]>>16)*256;
       if(!initialized){dc=sample;initialized=true;}
       dc+=(sample-dc)/256;
       const int32_t ac=sample-dc;

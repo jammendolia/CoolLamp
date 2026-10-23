@@ -1,6 +1,10 @@
 #include "LampStyle.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include "LampModel.h"
+#include "LampJsonSink.h"
+#include "LampEffectSchema.h"
+#include <cstring>
 
 namespace {
 LampPhysicalStyle current=LampPhysicalStyle::Unspecified;
@@ -21,10 +25,14 @@ void beginLampStyle() {
   }
   preferences.end();
 }
-LampPhysicalStyle getLampStyle(){return current;}
-uint8_t lampStyleCode(){return static_cast<uint8_t>(current);}
+LampPhysicalStyle getLampStyle(){
+  if(!LampModel::locked())return current;
+  const char* const id=LampModel::factoryStyle();
+  return !strcmp(id,"helix")?LampPhysicalStyle::Helix:!strcmp(id,"large-helix")?LampPhysicalStyle::LargeHelix:!strcmp(id,"corkscrew")?LampPhysicalStyle::Corkscrew:LampPhysicalStyle::Unspecified;
+}
+uint8_t lampStyleCode(){return static_cast<uint8_t>(getLampStyle());}
 const char* lampStyleId(){
-  switch(current){
+  switch(getLampStyle()){
     case LampPhysicalStyle::Helix:return "helix";
     case LampPhysicalStyle::LargeHelix:return "large-helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
@@ -32,18 +40,24 @@ const char* lampStyleId(){
   }
 }
 const char* lampStyleFamily(){
-  switch(current){
+  switch(getLampStyle()){
     case LampPhysicalStyle::Helix:
     case LampPhysicalStyle::LargeHelix:return "helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
     default:return "unspecified";
   }
 }
-String lampStyleJson(){
-  return String("{\"version\":1,\"code\":")+String(lampStyleCode())+",\"id\":\""+lampStyleId()+"\",\"family\":\""+lampStyleFamily()+"\"}";
+bool lampStyleLocked(){return LampModel::locked();}
+bool lampStyleSupportsEffect(uint8_t localId,bool scene){return LampEffectSchema::compatible(LampEffectSchema::styles(localId,scene),LampModel::factoryAvailable()?LampModel::factoryStyle():lampStyleId());}
+void appendLampStyleJson(LampJsonSink& out){
+  out+="{\"version\":1,\"code\":";out+=lampStyleCode();out+=",\"id\":";out.quote(lampStyleId());out+=",\"family\":";out.quote(lampStyleFamily());out+=",\"locked\":";out+=lampStyleLocked()?"true":"false";
+  if(LampModel::factoryAvailable()){out+=",\"factoryStyle\":";out.quote(LampModel::factoryStyle());out+=",\"model\":";LampModel::appendJson(out);}
+  else if(lampStyleLocked())out+=",\"factoryStatus\":\"unavailable\"";
+  out+='}';
 }
+String lampStyleJson(){return lampJsonReply(appendLampStyleJson);}
 bool configureLampStyle(uint8_t code){
-  if(!valid(code))return false;
+  if(lampStyleLocked()||!valid(code))return false;
   if(saved&&code==lampStyleCode())return true;
   Preferences preferences;
   if(!preferences.begin("coollamp",false))return false;

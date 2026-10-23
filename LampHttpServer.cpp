@@ -78,7 +78,7 @@ void LampHttpServer::release(unsigned index,bool cancelled){
   // fields have been decoded, so cancelling it cannot disturb BLE control.
   if(dispatchContext_==int(index)&&current_!=int(index))clearDispatchRequest();
   erase(c.body);c.staticBody=nullptr;c.staticPage=c.readResponse=false;c.bodyLength=c.sent=c.headerSent=c.headerLength=0;
-  c.awaitingAck=c.ackObserved=false;c.ackPendingBytes=c.ackPendingSegments=0;
+  c.awaitingAck=c.ackObserved=c.localSendDeferred=false;c.ackPendingBytes=c.ackPendingSegments=0;
   LampHttpParser::wipe(c.input,sizeof(c.input));c.inputAt=c.inputSize=0;
   closeSlot(index);
 }
@@ -88,7 +88,7 @@ bool LampHttpServer::prepareResponse(int code,const char* type,size_t length){
   const int n=snprintf(c.responseHeader,sizeof(c.responseHeader),"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n%s\r\n",code,statusText(code),type,unsigned(length),responseHeaders_.length()?responseHeaders_.c_str():"");
   if(n<0||size_t(n)>=sizeof(c.responseHeader))return false;
   c.readResponse=c.readResponse&&code>=200&&code<300&&length>4096&&!strcmp(type,"application/json");
-  c.headerLength=size_t(n);c.bodyLength=length;c.sent=c.headerSent=0;c.state=ClientState::Send;c.awaitingAck=c.ackObserved=false;c.ackPendingBytes=c.ackPendingSegments=0;
+  c.headerLength=size_t(n);c.bodyLength=length;c.sent=c.headerSent=0;c.state=ClientState::Send;c.awaitingAck=c.ackObserved=c.localSendDeferred=false;c.ackPendingBytes=c.ackPendingSegments=0;
   // A complete request may have waited for server RAM. The response's idle
   // interval starts when it exists; the original absolute lifetime never moves.
   c.deadline.progress(millis());responseSet_=true;increment(metrics_.responses);return true;
@@ -250,8 +250,16 @@ void LampHttpServer::serviceTransport(){
     if(LampHttpParser::elapsed(now,c.deadline.acceptedAt,absoluteTimeout(c))){increment(metrics_.deadlines);release(index,true);continue;}
     LampHttpSocketCleanup::TransmitCredit credit;bool creditSampled=false;
     if(c.state==ClientState::Send){credit=sampleTransmitCredit(index);creditSampled=true;if(credit.disconnected){release(index,true);continue;}}
+    // Local priority/heap withholding is not peer inactivity. Only an unsent
+    // page can defer its idle interval; copied data keeps the original ACK
+    // fence. Leaving deferral starts an idle interval, not synthetic ACK
+    // progress, and never changes this connection's absolute deadline.
+    const bool localWait=c.state==ClientState::Send&&c.staticPage&&!c.awaitingAck&&
+      (ESP.getFreeHeap()<StaticPageHeapFloorBytes||priorityResponsePending(index));
+    if(c.localSendDeferred&&!localWait&&!c.awaitingAck)c.deadline.progress(millis());
+    c.localSendDeferred=localWait;
     const uint32_t idle=c.state==ClientState::Send&&c.awaitingAck?LampHttpSocketCleanup::AckWaitTimeoutMs:LampHttpParser::IdleTimeoutMs;
-    if(!completeInput&&LampHttpParser::elapsed(millis(),c.deadline.progressAt,idle)){increment(metrics_.deadlines);release(index,true);continue;}
+    if(!completeInput&&!localWait&&LampHttpParser::elapsed(millis(),c.deadline.progressAt,idle)){increment(metrics_.deadlines);release(index,true);continue;}
     if(uint32_t(micros()-began)>=TurnBudgetUs)break;
     if(c.state==ClientState::Ready&&!callback){
       // Free the completed parser before asking whether a reply allocation is
@@ -266,6 +274,9 @@ void LampHttpServer::serviceTransport(){
       uint8_t probe=0;const int available=recv(c.fd,&probe,1,MSG_DONTWAIT|MSG_PEEK);
       if(available<0&&!wouldBlock()){release(index,true);continue;}
       if(available>0)++rx;
+      // A retained reply is temporary local pressure, not a rejected command.
+      // Keep one immutable request until it drains or the original5s expires.
+      if(queuedBodyBytes()>1024)continue;
       // Wait before executing any mutation until its ordinary reply has a
       // viable allocation budget. 6160 includes pinned WString's rounding for
       // the common 6144-byte reserve. Waiting does not renew request lifetime.
@@ -333,9 +344,9 @@ void LampHttpServer::serviceTransport(){
       // copies queued TCP bytes. A non-reading setup-page peer must not spend
       // the heap needed by a verified ordinary control read, even while another
       // accepted request is still receiving input. Errors and JSON
-      // responses keep draining; withholding page bytes does not renew either
-      // its idle or absolute deadline.
-      if(c.staticPage&&(ESP.getFreeHeap()<StaticPageHeapFloorBytes||priorityResponsePending(index))){increment(metrics_.blockedSends);continue;}
+      // responses keep draining. Track a newly observed local wait separately;
+      // neither the absolute lifetime nor an owned ACK interval is renewed.
+      if(c.staticPage&&(ESP.getFreeHeap()<StaticPageHeapFloorBytes||priorityResponsePending(index))){if(!c.awaitingAck)c.localSendDeferred=true;increment(metrics_.blockedSends);continue;}
       if(!creditSampled)credit=sampleTransmitCredit(index);
       if(credit.disconnected){release(index,true);continue;}
       if(!credit.bytes){increment(metrics_.blockedSends);continue;}
@@ -344,7 +355,7 @@ void LampHttpServer::serviceTransport(){
       if(!length){release(index);continue;}
       const int n=::send(c.fd,bytes,length,MSG_DONTWAIT);
       if(n<0){if(wouldBlock())increment(metrics_.blockedSends);else release(index,true);}
-      else if(n>0){tx+=size_t(n);c.awaitingAck=true;c.ackObserved=false;c.ackPendingBytes=uint16_t(n);c.ackPendingSegments=0;c.deadline.progress(millis());if(headers)c.headerSent+=size_t(n);else c.sent+=size_t(n);if(c.headerSent==c.headerLength&&c.sent==c.bodyLength)release(index);}
+      else if(n>0){tx+=size_t(n);c.localSendDeferred=false;c.awaitingAck=true;c.ackObserved=false;c.ackPendingBytes=uint16_t(n);c.ackPendingSegments=0;c.deadline.progress(millis());if(headers)c.headerSent+=size_t(n);else c.sent+=size_t(n);if(c.headerSent==c.headerLength&&c.sent==c.bodyLength)release(index);}
       else release(index,true);
     }
   }

@@ -9,36 +9,53 @@
 #include "LampControlResourcePolicy.h"
 #include "LampHttpJson.h"
 
+// Pinned ESP32 GCC supports noipa. Keep one ODR-merged encoder instead of
+// cloning decimal/escape loops in every firmware translation unit. Other
+// compilers retain the same implementation and correctness without the hint.
+#if defined(__has_attribute)
+#if __has_attribute(noipa)
+#define LAMP_JSON_SHARED __attribute__((noipa))
+#elif __has_attribute(noinline)
+#define LAMP_JSON_SHARED __attribute__((noinline))
+#endif
+#endif
+#ifndef LAMP_JSON_SHARED
+#define LAMP_JSON_SHARED
+#endif
+
 // One bounded encoder is evaluated first in count mode, then against one owned
 // String reservation. No full static scratch buffer or growing response copy.
 // Callers capture worker-owned/clock snapshots before creating the encoder.
 class LampJsonSink {
   String* output_;size_t maximum_,used_=0;bool good_=true;
+  LAMP_JSON_SHARED bool number(uint64_t magnitude,bool negative){
+    char digits[21];size_t at=sizeof(digits);
+    do{digits[--at]=char('0'+magnitude%10);magnitude/=10;}while(magnitude);
+    if(negative)digits[--at]='-';
+    return concat(digits+at,sizeof(digits)-at);
+  }
 public:
   explicit LampJsonSink(String* output=nullptr,size_t maximum=8192):output_(output),maximum_(maximum){}
   void fail(){good_=false;}
   bool okay()const{return good_;}size_t size()const{return good_?used_:0;}
-  bool concat(const char* value,size_t length){
+  LAMP_JSON_SHARED bool concat(const char* value,size_t length){
     if(!good_||!value||length>maximum_-used_){fail();return false;}
     if(output_&&!output_->concat(value,length)){fail();return false;}
     used_+=length;return true;
   }
-  bool concat(const char* value){return value?concat(value,strlen(value)):(fail(),false);}
+  LAMP_JSON_SHARED bool concat(const char* value){return value?concat(value,strlen(value)):(fail(),false);}
   bool concat(const String& value){return value.length()?concat(value.c_str(),value.length()):good_;}
-  bool concat(char value){return concat(&value,1);}
+  LAMP_JSON_SHARED bool concat(char value){return concat(&value,1);}
   template<class T,typename std::enable_if<std::is_integral<T>::value&&!std::is_same<T,char>::value,int>::type=0>
   bool concat(T value){
-    char digits[21];size_t at=sizeof(digits);const bool negative=std::is_signed<T>::value&&value<0;
-    uint64_t magnitude=negative?uint64_t(-(int64_t(value)+1))+1:uint64_t(value);
-    do{digits[--at]=char('0'+magnitude%10);magnitude/=10;}while(magnitude);
-    if(negative)digits[--at]='-';
-    return concat(digits+at,sizeof(digits)-at);
+    const bool negative=std::is_signed<T>::value&&value<0;
+    return number(negative?uint64_t(-(int64_t(value)+1))+1:uint64_t(value),negative);
   }
   template<class T>LampJsonSink& operator+=(const T& value){concat(value);return *this;}
   template<class T>LampJsonSink& operator=(const T& value){
     if(used_){fail();return *this;}concat(value);return *this;
   }
-  bool quote(const char* value){
+  LAMP_JSON_SHARED bool quote(const char* value){
     if(!value){fail();return false;}concat('"');
     const char* begin=value;
     for(;*value;++value){const uint8_t c=*value;if(c=='"'||c=='\\'||c<32){
@@ -49,6 +66,7 @@ public:
   }
   bool quote(const String& value){return quote(value.length()?value.c_str():"");}
 };
+#undef LAMP_JSON_SHARED
 inline void clearLampJson(String& value){
   volatile char* bytes=const_cast<char*>(value.c_str());for(size_t i=0;i<value.length();++i)bytes[i]=0;
   value=static_cast<const char*>(nullptr);

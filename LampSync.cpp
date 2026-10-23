@@ -341,7 +341,7 @@ uint32_t lampSyncEffectClock(uint32_t local){
   return received.clock+(delta<Timeout?uint32_t(uint64_t(delta)*(received.mode>38?256:rate(received.speed))/256):0);
 }
 void serviceLampSync(const String& name,bool blocked,bool scanning){
-  const uint32_t now=millis();
+  uint32_t now=millis();
   serviceBlocked=blocked;
   const bool connected=WiFi.status()==WL_CONNECTED;
   wifi_ap_record_t association{};
@@ -352,7 +352,7 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
     if(started){udp.stop();started=false;}if(receiver.locked)clearFollower();
     LampEspNow::holdChannel(now+5000);LampEspNow::service(now,false,scanning,associated,false);
     LampEspNow::Received message;for(unsigned n=0;n<4&&LampEspNow::receive(message);++n)LampFirmwareRelay::receive(message);
-    LampFirmwareRelay::service(now);LampEspNow::service(now,false,scanning,associated,false);return;
+    LampFirmwareRelay::service(millis());LampEspNow::service(millis(),false,scanning,associated,false);return;
   }
   const auto ip=WiFi.localIP();
   if(started&&(!connected||ip!=bound)){udp.stop();started=false;if(receiver.locked&&!followingRadio)clearFollower();}
@@ -381,18 +381,22 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
     if(fromRadio){
       if(LampMeshAdapter::receive(message)||LampCommission::receive(message))continue;
       if(LampFirmwareRelay::receive(message))continue;
-      if(now-message.receivedAt>200)continue;
+      const uint32_t receivedNow=millis();
+      if(receivedNow-message.receivedAt>200)continue;
       char sender[13];if(!LampSyncRadioCrypto::identityFromMac(message.source,sender))continue;
       if(message.length==sizeof(p)&&!memcmp(message.data,"CLSY",4)){
         memcpy(&p,message.data,sizeof(p));if(!valid(p,sizeof(p))||p.kind!=Discover||strcmp(p.sender,sender))continue;
       }else if(!config.role||(!LampSyncRadioCrypto::open(message.data,message.length,message.source,identity,keyBytes,p)&&
         !(wireVersion==ExpandedVersion&&LampSyncRadioCrypto::openBroadcast(message.data,message.length,message.source,keyBytes,p)))){++authFailures;continue;}
-      receivePacket(p,now,true,message.source,message.channel,IPAddress(),name);
+      receivePacket(p,receivedNow,true,message.source,message.channel,IPAddress(),name);
     }else{
       const auto source=udp.remoteIP();const int read=udp.read(reinterpret_cast<uint8_t*>(&p),sizeof(p));udp.clear();
       if(size==sizeof(p)&&read==sizeof(p))receivePacket(p,now,false,nullptr,0,source,name);
     }
   }
+  // Callbacks/handlers above may have advanced the clock, including rollover.
+  // Later service must not mistake newly stamped state for an expired lifetime.
+  now=millis();
   if(config.role==1){
     const auto audio=getLampAudioFeatures();
     if(int32_t(now-sceneMotionAt)>=0){
@@ -440,9 +444,9 @@ void serviceLampSync(const String& name,bool blocked,bool scanning){
     }
     }
   }
-  LampFirmwareRelay::service(now);
-  LampMeshAdapter::service(now,scanning);LampCommission::service(now,scanning);
-  LampEspNow::service(now,false,scanning,associated,config.role!=1&&!receiver.locked);
+  LampFirmwareRelay::service(millis());
+  LampMeshAdapter::service(millis(),scanning);LampCommission::service(millis(),scanning);
+  LampEspNow::service(millis(),false,scanning,associated,config.role!=1&&!receiver.locked);
 }
 String lampSyncIncarnation(){
   if(!config.role)return String();
@@ -534,6 +538,7 @@ String lampSyncJson(uint8_t peerCursor,uint8_t peerLimit){
 }
 
 uint8_t lampSyncRole(){return config.role;}
+uint8_t lampSyncProtocol(){return wireVersion;}
 bool lampSyncPaused(){return paused;}
 bool lampSyncGroupContext(LampSyncGroupContext& out){
   out={};out.role=config.role;out.protocol=wireVersion;out.boot=nonce;

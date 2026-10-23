@@ -236,6 +236,9 @@ bool receive(const LampEspNow::Received& message){
  LampCommissionCrypto::erase(body,sizeof(body));return true;
 }
 void service(uint32_t now,bool busy){
+ // receive() and physical/API handlers stamp sessions with millis(). Never
+ // expire their newer state against a caller's earlier loop-clock snapshot.
+ now=millis();
  blocked=busy;
  if(busy){if(working())fail("Commissioning interrupted");clearSecrets();releaseRadio();return;}
  if(session.role!=NoRole&&uint32_t(now-session.started)>=Lifetime){

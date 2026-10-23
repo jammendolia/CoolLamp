@@ -2,6 +2,7 @@
 #include "LampControlHttpAdapter.h"
 #include "LampCommandLedger.h"
 #include "LampModel.h"
+#include "LampStyle.h"
 #include "LampEffectSchema.h"
 #include "LampVersion.h"
 #include "UpdatePublisher.h"
@@ -96,28 +97,15 @@ String lampRevisionJson(){
   },512);
 }
 String lampDescriptorJson(){
-  const String identitySnapshot=lampIdentity(),modelSnapshot=LampModel::json(),revisionSnapshot=lampRevisionJson(),styleSnapshot=lampStyleJson();
-  if(identitySnapshot.length()!=12||modelSnapshot.isEmpty()||revisionSnapshot.isEmpty()||styleSnapshot.isEmpty())return String();
-  String out=lampJsonReply([&](LampJsonSink& out){
-  out.concat("{\"descriptorVersion\":2,\"deviceId\":");out.quote(identitySnapshot);out.concat(",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":");out.concat(modelSnapshot);out.concat(",\"state\":");out.concat(revisionSnapshot);
-  out.concat(",\"hardware\":{\"ledCount\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat(",\"motionPath\":");if(lampMotionPathSaveUncertain())out.concat("null");else out.concat(lampMotionPath);out.concat(",\"currentBudgetMa\":");out.concat(lampSettings.milliAmps);out.concat(",\"microphone\":");out.concat((lampHasMicrophone()?"true":"false"));out.concat(",\"style\":");out.concat(styleSnapshot);out.concat("}");
-  out.concat(",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\",\"current-state-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":");out.concat(UpdatePublisher::enforced()?"true":"false");out.concat(",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}");
+  const String identitySnapshot=lampIdentity(),revisionSnapshot=lampRevisionJson();
+  if(identitySnapshot.length()!=12||revisionSnapshot.isEmpty())return String();
+  return lampJsonReply([&](LampJsonSink& out){
+  out.concat("{\"descriptorVersion\":2,\"deviceId\":");out.quote(identitySnapshot);out.concat(",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":");LampModel::appendJson(out);out.concat(",\"state\":");out.concat(revisionSnapshot);
+  out.concat(",\"hardware\":{\"ledCount\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat(",\"motionPath\":");if(lampMotionPathSaveUncertain())out.concat("null");else out.concat(lampMotionPath);out.concat(",\"currentBudgetMa\":");out.concat(lampSettings.milliAmps);out.concat(",\"microphone\":");out.concat((lampHasMicrophone()?"true":"false"));out.concat(",\"style\":");appendLampStyleJson(out);out.concat("}");
+  out.concat(",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\",\"current-state-v1\",\"mesh-neighborhood-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":");out.concat(UpdatePublisher::enforced()?"true":"false");out.concat(",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}");
   out.concat(",\"motionPathVersion\":1,\"audioCaptureVersion\":1,\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":");out.concat(lampAppearanceMigrationPending()?"true":"false");out.concat(",\"inventory\":\"multi-broker-local-snapshots\"}}");
   });
-  // A failed String temporary can omit a complete member and still leave valid
-  // JSON. Negotiate only the complete source-backed descriptor; the transports
-  // reject an empty reply rather than claiming successful capabilities.
-  static const char* const keys[]={"descriptorVersion","deviceId","firmwareVersion","model","state","hardware","capabilities","limits","compatibility"};
-  if(!LampHttpJson::requiredKeys(out.c_str(),out.length(),keys,sizeof(keys)/sizeof(keys[0])))return String();
-  const auto required=[&](const char* name,const auto& names){const auto member=LampHttpJson::member(out.c_str(),out.length(),name);return LampHttpJson::requiredKeys(member.bytes,member.length,names,sizeof(names)/sizeof(names[0]));};
-  static const char* const model[]={"version","id","displayName","artworkFamily","hardwareRevision","preconfigured"};
-  static const char* const state[]={"version","target","bootSession","revision","nextCommandId","mode","brightness","power"};
-  static const char* const hardware[]={"ledCount","midpoint","currentBudgetMa","microphone","style"};
-  static const char* const capabilities[]={"catalogVersions","sceneVersions","control","persistence","updates","commissioning","publisherProvisioned"};
-  static const char* const limits[]={"groupMembers","legacyGroupMembers","localPresence","forwardingHops","bleConnections","bleBonds","householdPhones","requestBytes","responseBytes","schemaPageEntries","schemaPageBytes","receipts","receiptLifetimeMs","appearanceWriteIntervalMs"};
-  static const char* const compatibility[]={"legacyCatalog","expandedGroupRequiresEveryMember","appearanceMigrationPending","inventory"};
-  if(!required("model",model)||!required("state",state)||!required("hardware",hardware)||!required("capabilities",capabilities)||!required("limits",limits)||!required("compatibility",compatibility))return String();
-  return out;
+
 }
 String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
   static const char* const sceneKeys[]={"mirror","portal","ping-pong","stereo-fountain","duet","orbit","storm-front","ember-exchange","color-wave","newtons-cradle","conversation","constellation","tidal-basin","firefly-courtship","rocket-relay","prism-split","rhythm-section","beat-chase","shared-heartbeat","bass-cathedral","spectrum-loom","resonant-rings","velvet-thunder","prism-chorus","twin-vortex","electric-bloom","room-groove","chromatic-screw","mercury-ribbon","bass-turbine","prism-torque","echo-coils","aurora-braid"};
@@ -139,7 +127,9 @@ String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
       if(scenes)out.concat(",\"defaults\":[[70,220,255],[255,65,170]]");
       else {const auto c=defaultLampColor(id);out.concat(",\"defaults\":[[");out.concat(c.r);out.concat(",");out.concat(c.g);out.concat(",");out.concat(c.b);out.concat("],[35,160,255]]");}
     }
-    out.concat("},\"audio\":{\"required\":");out.concat(audio?"true":"false");out.concat(",\"optional\":");out.concat((scenes&&id==2?"true":"false"));out.concat(",\"source\":\"");out.concat((scenes?"coordinator":audio?"local-or-coordinator":"none"));out.concat("\"},\"persistence\":\"");out.concat((scenes?"shared-group":zones?"dedicated-palette-and-per-effect":"per-effect"));out.concat("\",\"requirements\":{\"catalogVersion\":2,\"sceneProtocol\":");out.concat(scenes?2:0);out.concat(",\"expandedSceneProtocol\":3,\"coordinatorMicrophone\":");out.concat((scenes&&audio?"true":"false"));out.concat("},\"styleRecommendations\":[]}");
+    out.concat("},\"audio\":{\"required\":");out.concat(audio?"true":"false");out.concat(",\"optional\":");out.concat((scenes&&id==2?"true":"false"));out.concat(",\"source\":\"");out.concat((scenes?"coordinator":audio?"local-or-coordinator":"none"));out.concat("\"},\"persistence\":\"");out.concat((scenes?"shared-group":zones?"dedicated-palette-and-per-effect":"per-effect"));out.concat("\",\"requirements\":{\"catalogVersion\":2,\"sceneProtocol\":");out.concat(scenes?2:0);out.concat(",\"expandedSceneProtocol\":3,\"coordinatorMicrophone\":");out.concat((scenes&&audio?"true":"false"));out.concat("},\"compatibleStyles\":[");const auto styles=LampEffectSchema::styles(id,scenes);
+    for(uint8_t style=0;style<styles.count;++style){if(style)out.concat(',');out.quote(styles.ids[style]);}
+    out.concat("],\"styleRecommendations\":[]}");
   }out.concat("]}");
   },4096);
 }
@@ -147,9 +137,11 @@ void handleLampStatePatch(){
   LampCommands::Receipt* receipt=nullptr;if(!admitLampCommand(LampControlEndpoint::StatePatch,receipt))return;
   using Outcome=LampCommands::Outcome;
   if(!lampServer.fieldsAllowed(lightCommandFields,sizeof(lightCommandFields)/sizeof(lightCommandFields[0]))){finishLampCommand(*receipt,400,Outcome::Rejected);return;}
-  // A disconnected follower still belongs to its group. Pausing it can write
-  // durable membership; this volatile lane never synthesizes that operation.
-  if(lampUpdateOwnsResources()||lampCalibrationActive()||lampSyncFollowing()||lampGroupScene()||(lampSyncRole()==2&&!lampSyncPaused())||lampFactoryResetPending()){finishLampCommand(*receipt,409,Outcome::Rejected);return;}
+  // A disconnected follower still belongs to its group. Only legacy V2 has a
+  // volatile pause: permit absolute OFF alone, never a durable V3 pause or tuning.
+  const char* const offFields[]={"target","bootSession","commandId","expectedRevision","scope","power"};
+  const bool legacyOff=lampSyncProtocol()==LampSyncWire::LegacyVersion&&lampServer.arg("power")=="0"&&lampServer.fieldsAllowed(offFields,6);
+  if(lampUpdateOwnsResources()||lampCalibrationActive()||lampSyncFollowing()||lampGroupScene()||(lampSyncRole()==2&&!lampSyncPaused()&&!legacyOff)||lampFactoryResetPending()){finishLampCommand(*receipt,409,Outcome::Rejected);return;}
   const auto state=getLampControlState();uint32_t mode=state.mode,brightness=state.brightness,power=state.power;
   auto number=[](const char* key,uint32_t low,uint32_t high,uint32_t& value){return !lampServer.hasArg(key)||readNumber(key,low,high,value);};
   if(!number("mode",1,lampAvailableEffectCount(),mode)||!number("brightness",1,255,brightness)||!number("power",0,1,power)){finishLampCommand(*receipt,400,Outcome::Rejected);return;}

@@ -34,6 +34,7 @@ jobs:
           node tests/wifi-page.cjs
           python3 tests/debug-wifi.py
           python3 tests/audio-usb.py
+          python3 tests/audio-health-runtime.py
           python3 tests/diagnostics.py
           python3 tests/temperature-runtime.py
           python3 tests/wifi-setup-runtime.py
@@ -74,6 +75,8 @@ jobs:
           /tmp/wifi-recovery-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/audio.cpp -o /tmp/audio-test
           /tmp/audio-test
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/audio-layout.cpp -o /tmp/audio-layout-test
+          /tmp/audio-layout-test
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined tests/spectrum.cpp -o /tmp/spectrum-test
           /tmp/spectrum-test
           g++ -std=c++17 -Itests/stubs -Wall -Wextra -Werror -fsanitize=address,undefined tests/geometry.cpp -o /tmp/geometry-test

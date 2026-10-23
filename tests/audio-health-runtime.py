@@ -37,7 +37,8 @@ inline uint32_t now=1000;
 inline bool taskActive=false,finished=false,cooperativeStop=true,failTask=false,failSemaphore=false;
 inline void (*taskFn)(void*)=nullptr;
 inline int creates=0,deletes=0,channelCreates=0,channelDeletes=0,reads=0,readBudget=100,readError=0,driverError=0;
-inline bool signal=false;
+inline bool signal=false,emptyRead=false;
+inline int failStage=0;inline size_t readBytes=0;
 struct PauseCapture{};
 }
 using TaskHandle_t=void*;using SemaphoreHandle_t=bool*;
@@ -52,12 +53,12 @@ inline int xSemaphoreTake(SemaphoreHandle_t semaphore,uint32_t timeout){
 }
 inline int uxSemaphoreGetCount(SemaphoreHandle_t semaphore){return semaphore&&*semaphore;}
 inline int xTaskCreate(void (*fn)(void*),const char*,uint32_t stack,void*,int priority,TaskHandle_t* task){
- assert(stack==4096&&priority==1);++Fixture::creates;
+ assert(stack==2048&&priority==1);++Fixture::creates;
  if(Fixture::failTask)return 0;Fixture::taskFn=fn;Fixture::taskActive=true;*task=reinterpret_cast<void*>(1);return pdPASS;
 }
 inline void vTaskDelete(TaskHandle_t task){assert(task&&Fixture::taskActive);Fixture::taskActive=false;++Fixture::deletes;}
 inline void vTaskSuspend(void*){}
-inline uint32_t uxTaskGetStackHighWaterMark(void*){return 3000;}
+inline uint32_t uxTaskGetStackHighWaterMark(void*){return 1372;}
 using esp_err_t=int;
 constexpr int ESP_OK=0,ESP_FAIL=-1,ESP_ERR_NO_MEM=0x101;
 using gpio_num_t=int;
@@ -65,29 +66,30 @@ constexpr int GPIO_PULLDOWN_ONLY=1;
 inline void gpio_reset_pin(gpio_num_t pin){assert(pin>=5&&pin<=7);}
 inline void gpio_set_pull_mode(gpio_num_t pin,int pull){assert(pin==7&&pull==GPIO_PULLDOWN_ONLY);}
 using i2s_chan_handle_t=void*;struct i2s_event_data_t{};
-constexpr int I2S_NUM_0=0,I2S_ROLE_MASTER=1,I2S_GPIO_UNUSED=-1,I2S_DATA_BIT_WIDTH_32BIT=32,I2S_SLOT_MODE_STEREO=2;
+constexpr int I2S_NUM_0=0,I2S_ROLE_MASTER=1,I2S_GPIO_UNUSED=-1,I2S_DATA_BIT_WIDTH_16BIT=16,I2S_SLOT_MODE_MONO=1,I2S_STD_SLOT_LEFT=1,I2S_SLOT_BIT_WIDTH_32BIT=32;
 struct i2s_chan_config_t{int dma_desc_num=0,dma_frame_num=0;};
-struct i2s_std_config_t{int clk_cfg=0,slot_cfg=0;struct{int mclk=0,bclk=0,ws=0,dout=0,din=0;}gpio_cfg;};
+struct SlotConfig{int data_bit_width,mode,slot_mask=3,slot_bit_width=16,ws_width=16;bool bit_shift=true,left_align=true,big_endian=false,bit_order_lsb=false;};
+struct i2s_std_config_t{int clk_cfg=0;SlotConfig slot_cfg{};struct{int mclk=0,bclk=0,ws=0,dout=0,din=0;}gpio_cfg;};
 struct i2s_event_callbacks_t{bool (*on_recv_q_ovf)(i2s_chan_handle_t,i2s_event_data_t*,void*)=nullptr;};
 #define I2S_CHANNEL_DEFAULT_CONFIG(port,role) i2s_chan_config_t{}
 #define I2S_STD_CLK_DEFAULT_CONFIG(rate) (rate)
-#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(width,mode) (width)
+#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(width,mode) SlotConfig{width,mode}
 inline int i2s_new_channel(const i2s_chan_config_t* config,void*,i2s_chan_handle_t* receiver){
  assert(config->dma_desc_num==4&&config->dma_frame_num==256);++Fixture::channelCreates;
- if(Fixture::driverError)return Fixture::driverError;*receiver=reinterpret_cast<void*>(2);return ESP_OK;
+ if(Fixture::driverError||Fixture::failStage==1)return ESP_ERR_NO_MEM;*receiver=reinterpret_cast<void*>(2);return ESP_OK;
 }
-inline int i2s_channel_init_std_mode(i2s_chan_handle_t,const i2s_std_config_t* config){assert(config->clk_cfg==16000&&config->gpio_cfg.din==7&&config->gpio_cfg.bclk==5&&config->gpio_cfg.ws==6);return ESP_OK;}
-inline int i2s_channel_register_event_callback(i2s_chan_handle_t,const i2s_event_callbacks_t* value,void*){assert(value->on_recv_q_ovf);return ESP_OK;}
-inline int i2s_channel_enable(i2s_chan_handle_t){return ESP_OK;}
+inline int i2s_channel_init_std_mode(i2s_chan_handle_t,const i2s_std_config_t* config){assert(config->clk_cfg==16000&&config->gpio_cfg.din==7&&config->gpio_cfg.bclk==5&&config->gpio_cfg.ws==6);const auto s=config->slot_cfg;assert(s.data_bit_width==16&&s.mode==1&&s.slot_mask==1&&s.slot_bit_width==32&&s.ws_width==32&&s.bit_shift&&s.left_align&&!s.big_endian&&!s.bit_order_lsb);return Fixture::failStage==2?ESP_ERR_NO_MEM:ESP_OK;}
+inline int i2s_channel_register_event_callback(i2s_chan_handle_t,const i2s_event_callbacks_t* value,void*){assert(value->on_recv_q_ovf);return Fixture::failStage==3?ESP_ERR_NO_MEM:ESP_OK;}
+inline int i2s_channel_enable(i2s_chan_handle_t){return Fixture::failStage==4?ESP_ERR_NO_MEM:ESP_OK;}
 inline int i2s_channel_disable(i2s_chan_handle_t){return ESP_OK;}
 inline int i2s_del_channel(i2s_chan_handle_t){++Fixture::channelDeletes;return ESP_OK;}
 inline int i2s_channel_read(i2s_chan_handle_t,void* samples,size_t length,size_t* bytes,uint32_t timeout){
- assert(Fixture::taskActive&&timeout==40&&length==2048&&criticalDepth==0);
+ assert(Fixture::taskActive&&timeout==40&&length==512&&criticalDepth==0);
  if(Fixture::reads>=Fixture::readBudget)throw Fixture::PauseCapture{};
  ++Fixture::reads;Fixture::now+=16;
  if(Fixture::readError){*bytes=0;return Fixture::readError;}
- auto data=static_cast<int32_t*>(samples);for(unsigned i=0;i<512;++i)data[i]=Fixture::signal&&i%2==0?int32_t(i%4?1<<25:-(1<<25)):0;
- *bytes=length;return ESP_OK;
+ auto data=static_cast<int16_t*>(samples);for(unsigned i=0;i<256;++i)data[i]=Fixture::signal?int16_t(i%2?512:-512):0;
+ *bytes=Fixture::emptyRead?0:Fixture::readBytes?Fixture::readBytes:length;return ESP_OK;
 }
 '''
 
@@ -178,6 +180,22 @@ int main(int argc,char** argv){assert(argc==2);const std::string scenario=argv[1
   assert(lampAvailableEffectCount()==47&&setLampControl(47,100,true));assert(Mode==47&&!setLampControl(48,100,true));
   assert(saveLampMicrophoneEnabled(false)&&Preferences::writes==writes);diagnoseLampAudio();serviceLampAudio(true,false);assert(!worker);output();
   enabled=true;enabledStored=false;beginLampAudio();assert(!lampMicrophoneEnabled());assert(saveLampMicrophoneEnabled(true));serviceLampAudio(true,false);assert(worker);assert(stopLampAudio());
+ }else if(scenario=="capture-layout"||scenario=="partial-read"||scenario=="odd-read"||scenario=="oversize-read"||scenario=="empty-read"){
+  seed();beginLampAudio();Fixture::signal=true;
+  if(scenario=="partial-read")Fixture::readBytes=510;
+  if(scenario=="odd-read")Fixture::readBytes=511;
+  if(scenario=="oversize-read")Fixture::readBytes=514;
+  if(scenario=="empty-read")Fixture::emptyRead=true;
+  serviceLampAudio(true,false);assert(worker&&samples&&sizeof(*samples)==2&&CaptureStackBytes==2048);
+  runCapture();const bool invalid=scenario=="odd-read"||scenario=="oversize-read"||scenario=="empty-read";
+  assert(invalid?getLampAudioFeatures().errors==5:getLampAudioFeatures().valid);
+  assert(stopLampAudio()&&!worker&&!samples&&!receiver&&!Fixture::taskActive);
+  assert(Fixture::channelCreates==1&&Fixture::channelDeletes==1&&Fixture::creates==1&&Fixture::deletes==1);
+  assert(stopLampAudio()&&Fixture::channelDeletes==1&&Fixture::deletes==1);output();
+ }else if(scenario=="init-error"||scenario=="callback-error"||scenario=="enable-error"){
+  seed();beginLampAudio();Fixture::failStage=scenario=="init-error"?2:scenario=="callback-error"?3:4;
+  serviceLampAudio(true,false);assert(!worker&&!samples&&!receiver&&Fixture::channelDeletes==1&&Fixture::creates==0);
+  assert(lampAudioCaptureStatus()==LampAudioCaptureStatus::Error);assert(stopLampAudio()&&Fixture::channelDeletes==1);output();
  }else if(scenario=="health"||scenario=="wrap"){
   seed();beginLampAudio();if(scenario=="wrap")Fixture::now=std::numeric_limits<uint32_t>::max()-500;
   serviceLampAudio(true,false);assert(lampAudioCaptureStatus()==LampAudioCaptureStatus::Starting);output();
@@ -274,6 +292,9 @@ class AudioHealthTests(unittest.TestCase):
         cls.binary = directory/'test'
         subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-misleading-indentation',
                         *SANITIZERS, '-I'+str(directory), '-I'+str(ROOT), str(source), '-o', str(cls.binary)], check=True)
+        cls.layout_binary=directory/'layout'
+        subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
+                        str(ROOT/'tests/audio-layout.cpp'),'-o',str(cls.layout_binary)],check=True)
 
     def scenario(self, name):
         result = subprocess.run([str(self.binary), name], check=True, text=True, capture_output=True, timeout=5)
@@ -284,6 +305,14 @@ class AudioHealthTests(unittest.TestCase):
         self.assertTrue(value['installed'] and value['enabled'])
         self.assertEqual(value['captureVersion'], 1)
         self.assertEqual(value['captureStatus'], 0)
+
+    def test_mono_processed_values_match_existing_stereo_analysis(self):
+        subprocess.run([str(self.layout_binary)],check=True,capture_output=True,timeout=10)
+
+    def test_compact_capture_layout_partial_reads_and_exact_teardown(self):
+        for scenario in ('capture-layout','partial-read','odd-read','oversize-read','empty-read',
+                         'init-error','callback-error','enable-error'):
+            self.scenario(scenario)
 
     def test_manufacturing_provisioning_and_legacy_precedence(self):
         self.assertTrue(self.scenario('hardware')[0]['installed'])

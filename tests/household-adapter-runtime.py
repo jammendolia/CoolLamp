@@ -25,6 +25,7 @@ preferences=next(ast.literal_eval(n.value) for n in reset.body if isinstance(n,a
 with tempfile.TemporaryDirectory(prefix='household-adapter-',dir=ROOT/'.build') as tmp:
     folder=Path(tmp)
     (folder/'Preferences.h').write_text('#pragma once\n#include "Arduino.h"\n'+preferences)
+    (folder/'nvs.h').write_text((ROOT/'tests/factory-absent-nvs.h').read_text())
     arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text().replace('0xaabbccddeeffULL','0x050403020102ULL').replace('  bool isEmpty()', '  void remove(size_t at){std::string::erase(at);}\n  bool isEmpty()')
     arduino=arduino.replace('uint64_t getEfuseMac()','uint32_t getFreeHeap(){return 65536;}uint32_t getMaxAllocHeap(){return 65536;}uint64_t getEfuseMac()')
     (folder/'Arduino.h').write_text(arduino)
@@ -52,6 +53,7 @@ with tempfile.TemporaryDirectory(prefix='household-adapter-',dir=ROOT/'.build') 
 #include "LampUpdate.h"
 #include "LampSync.h"
 #include "LampModel.h"
+#include "LampJsonSink.h"
 #include "UpdatePublisher.h"
 #include "LampHousehold.h"
 #include "esp_mac.h"
@@ -64,9 +66,10 @@ uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=100;bool PowerO
 uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
-bool lampSyncFollowing(){return following;}uint8_t lampSyncRole(){return following?2:0;}bool lampSyncPaused(){return false;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
+bool lampSyncFollowing(){return following;}uint8_t lampSyncRole(){return following?2:0;}uint8_t lampSyncProtocol(){return LampSyncWire::ExpandedVersion;}bool lampSyncPaused(){return false;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
 bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
+void appendLampStyleJson(LampJsonSink& out){out.concat("{\"id\":\"corkscrew\"}");}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}
 struct CRGB {inline static int Black=0;};int* leds=nullptr;void fill_solid(int*,uint16_t,int){}
 struct {void setBrightness(uint8_t){}} FastLED;

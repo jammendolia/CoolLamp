@@ -15,6 +15,10 @@ uint8_t lampStyleCode();
 const char* lampStyleId();
 const char* lampStyleFamily();
 bool configureLampStyle(uint8_t code);
+bool lampStyleLocked();
+bool lampStyleSupportsEffect(uint8_t localId,bool scene=false);
+class LampJsonSink;
+void appendLampStyleJson(LampJsonSink& out);
 #ifdef ARDUINO
 #include <Arduino.h>
 String lampStyleJson();

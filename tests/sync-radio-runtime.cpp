@@ -45,5 +45,16 @@ int main(){
  assert(clock&&stream&&sceneConfig.count==2&&!started);
  const String json=lampSyncJson();assert(json.find("\"transport\":\"esp-now\"")!=std::string::npos);assert(json.find("\"address\":\"\"")!=std::string::npos);assert(json.find("aes-gcm-128")!=std::string::npos);assert(json.find("0123456789abcdef0123456789abcdef")==std::string::npos);
  sequence=UINT32_MAX;const auto oldSession=nonce;const auto rollover=packet(Frame,"Leader");assert(rollover.sequence==1&&rollover.session!=oldSession); // no AEAD nonce wrap
- std::cout<<"PASS: offline sealed discovery/subscribe/clock/audio/frame path, replay/tamper/downgrade rejection, short scan holdover, pause/resume, AP/DHCP channel ownership, OTA shutdown/NVS isolation, encrypted coordinator stream and nonce rollover\n";
+ // A callback can arrive after the loop captured its clock, including at
+ // rollover. Run the actual Sync drain/age checks and service boundaries.
+ for(uint32_t at:{uint32_t(10000),UINT32_MAX}){
+  fakeNow=at;const auto before=discoveries;
+  fixtureMeshServiceHook=[](uint32_t){fixtureMeshServiceHook=nullptr;++fakeNow;beacon();};
+  serviceLampSync("Leader",false);
+  assert(discoveries==before+1);
+  assert(fixtureMeshServiceAt==fakeNow&&fixtureCommissionServiceAt==fakeNow);
+  auto stale=remote(Discover,1);FakeRadio::receive(leaderMac,reinterpret_cast<uint8_t*>(&stale),sizeof(stale));
+  fakeNow+=201;const auto fresh=discoveries;serviceLampSync("Leader",false);assert(discoveries==fresh);
+ }
+ std::cout<<"PASS: fresh mid-turn callbacks/service clocks, real stale expiry/rollover; offline sealed discovery/subscribe/clock/audio/frame path, replay/tamper/downgrade rejection, short scan holdover, pause/resume, AP/DHCP channel ownership, OTA shutdown/NVS isolation, encrypted coordinator stream and nonce rollover\n";
 }

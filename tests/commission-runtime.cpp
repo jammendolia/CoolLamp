@@ -132,6 +132,21 @@ int main(int argc,char** argv){
   assert(brokerStatus().find("\"phase\":\"complete\"")!=std::string::npos&&power==1&&group==0);assert(!radioHeld[0]&&!radioHeld[1]);
   std::cout<<"PASS "<<scenario<<" full 24-bit cue, one durable write, no replay\n";return 0;
  }
+ if(scenario=="clock-session"||scenario=="clock-session-rollover"||scenario=="clock-session-expiry"){
+  if(scenario=="clock-session-rollover")now=UINT32_MAX-1000;
+  for(unsigned i=0;i<16;++i)fleet[0][i]=uint8_t(i+1);
+  side=0;Broker::begin();side=1;Target::begin();run(1000);
+  side=0;assert(Broker::start(targetId,requestId,brokerId).status==202);Broker::service(now,false);
+  const uint32_t loopAt=now;++now;deliver();side=1;assert(Target::session.started==now&&Target::working());
+  Target::service(loopAt,false);assert(Target::working()&&radioHeld[1]&&!writes);
+  run(1500);side=1;assert(Target::physicalPending());
+  if(scenario=="clock-session-expiry"){
+   run(121000);side=1;assert(!Target::physicalPending()&&!writes&&!radioHeld[0]&&!radioHeld[1]);
+  }else{
+   dropFinish=true;approve();run(1500);assert(paired[1]&&writes==1);dropFinish=false;run(1500);assert(brokerStatus().find("\"phase\":\"complete\"")!=std::string::npos&&writes==1);
+  }
+  std::cout<<"PASS commission "<<scenario<<" fresh receive, service retention, physical approval and expiry\n";return 0;
+ }
  if(scenario=="fresh-only"){
   for(unsigned i=0;i<16;++i)fleet[0][i]=uint8_t(i+1);
   eligible[1]=false;side=0;Broker::begin();side=1;Target::begin();run(2000);side=0;assert(Broker::candidatesJson().find(targetId)==std::string::npos);assert(!writes);std::cout<<"PASS commission fresh-only\n";return 0;

@@ -38,6 +38,7 @@ LampControlReply removeLampGroupMember(const String& target,const String& order,
 LampSyncWire::Visual lampGroupVisual();
 uint8_t lampGroupScene();
 uint8_t lampSyncRole();
+uint8_t lampSyncProtocol(); // Saved group wire version; loop-only read.
 bool lampSyncPaused();
 bool configureLampSyncPause(bool pause);
 void resumeLampSync();

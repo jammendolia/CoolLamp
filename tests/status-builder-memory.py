@@ -172,6 +172,7 @@ struct RGB {uint8_t r=255,g=255,b=255;};RGB fountainPaletteColor(unsigned){retur
 bool lampCalibrationActive(){return false;}bool lampCalibrationCenter(){return false;}unsigned lampCalibrationPosition(){return NUM_LEDS-1;}
 struct {bool enabled=false,random=false;uint8_t category=255;uint32_t seconds=UINT32_MAX;} lampRotation;
 String lampStyleJson(){return "{\"version\":1,\"code\":3,\"id\":\"corkscrew\",\"family\":\"corkscrew\"}";}
+void appendLampStyleJson(LampJsonSink& out){out.concat("{\"version\":1,\"code\":3,\"id\":\"corkscrew\",\"family\":\"corkscrew\"}");}
 uint8_t lampStyleCode(){return 3;}const char* lampStyleId(){return "corkscrew";}const char* lampStyleFamily(){return "corkscrew";}
 enum wifi_ps_type_t {WIFI_PS_NONE=0};constexpr int ESP_OK=0;
 int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}int esp_reset_reason(){return INT32_MIN;}
@@ -312,6 +313,19 @@ void checkSinkBounds(){
   LampJsonSink invalid(nullptr,32);assert(!invalid.concat(nullptr,0)&&!invalid.okay());
   LampJsonSink numbers(nullptr,64);numbers+=INT64_MIN;numbers+=',';numbers+=UINT64_MAX;
   assert(numbers.okay()&&numbers.size()==41&&stats.calls==0);
+  {String values=lampJsonReply([](LampJsonSink& s){
+    s+='[';s+=INT8_MIN;s+=',';s+=INT8_MAX;s+=',';s+=UINT8_MAX;s+=',';s+=INT16_MIN;s+=',';s+=INT16_MAX;s+=',';s+=UINT16_MAX;s+=',';
+    s+=INT32_MIN;s+=',';s+=INT32_MAX;s+=',';s+=UINT32_MAX;s+=',';s+=INT64_MIN;s+=',';s+=INT64_MAX;s+=',';s+=UINT64_MAX;s+=',';s+=0;s+=']';
+   });
+   assert(values=="[-128,127,255,-32768,32767,65535,-2147483648,2147483647,4294967295,-9223372036854775808,9223372036854775807,18446744073709551615,0]");
+  }assert(stats.live==0);
+  {const char controlAndUtf8[]={char(1),'"','\\',char(31),char(0xc3),char(0xa9),0};
+   String escaped=lampJsonReply([&](LampJsonSink& s){s.quote(controlAndUtf8);});
+   assert(escaped=="\"\\u0001\\\"\\\\\\u001f\xc3\xa9\"");
+   for(unsigned c=1;c<32;++c){const char text[]={char(c),0};String encoded=lampJsonReply([&](LampJsonSink& s){s.quote(text);});
+    char expected[9];std::snprintf(expected,sizeof(expected),"\"\\u%04x\"",c);assert(encoded==expected);
+   }
+  }assert(stats.live==0);
   unsigned pass=0;
   {String changed=lampJsonReply([&](LampJsonSink& s){++pass;s.concat(pass==1?"{}":"{\"changed\":1}");});assert(changed.isEmpty());}
   assert(pass==2&&stats.live==0);

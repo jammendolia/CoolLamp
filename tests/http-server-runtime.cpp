@@ -342,9 +342,11 @@ int main(int argc,char** argv){
     turn(f.server);assert(peer.unackedBytes==FlightBytes);peer.ackBlocked=true;
     // Observed partial ACKs preserve the copied-data idle fence but never
     // renew the original8s lifetime or allow another application flight.
+    int other=-1;
     for(unsigned second=1;second<8;++second){--peer.unackedBytes;turn(f.server,second*1000-uint32_t(millis()-began));runCloser();assert(!peer.closed);
-      if(second==3){const int other=connect(f.listener,get("/api/revision"));const uint32_t queuedAt=millis();f.finish(other,30);contains(other,"503 Service Unavailable");assert(uint32_t(millis()-queuedAt)<100&&f.reads==1);}
+      if(second==3){other=connect(f.listener,get("/api/revision"));for(unsigned i=0;i<30;++i)turn(f.server);assert(!sockets[other].closed&&sockets[other].outgoing.empty()&&f.reads==1);}
     }
+    sockets[other].disconnected=true;turn(f.server);runCloser();assert(sockets[other].closed&&detachedRequests.at(other).cancelled&&f.reads==1);
     turn(f.server,8000-uint32_t(millis()-began));runCloser();assert(peer.closed&&f.server.metrics().deadlines==1&&f.reads==1&&!f.mutations);
     assert(detachedRequests.at(fd).cancelled&&detachedRequests.at(fd).absoluteTimeoutMs==8000&&uint32_t(millis()-began)>=8000&&uint32_t(millis()-began)<8010);
     const int recovered=connect(f.listener,get("/api/revision"));f.finish(recovered);contains(recovered,"200 OK");assert(f.reads==2&&detachedRequests.at(recovered).absoluteTimeoutMs==5000);
@@ -822,7 +824,8 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<30;++i)turn(f.server);
     assert(f.reads==1&&!sockets[slow].closed&&fakeFreeHeap>=LampHttpServer::DispatchHeapFloorBytes&&sockets[slow].unackedBytes<=FlightBytes);
     const int healthy=connect(f.listener,get());for(unsigned i=0;i<12;++i)turn(f.server);
-    f.finish(healthy);contains(healthy,"503 Service Unavailable");contains(healthy,"This request was not executed");assert(f.reads==1);
+    turn(f.server,1000);assert(!sockets[healthy].closed&&sockets[healthy].outgoing.empty()&&f.reads==1);
+    sockets[healthy].disconnected=true;turn(f.server);runCloser();assert(sockets[healthy].closed&&detachedRequests.at(healthy).cancelled&&f.reads==1);
     turn(f.server,5001);runCloser();assert(sockets[slow].closed&&fakeFreeHeap==initialHeap);
     // The bounded pending immutable reply is still protected independently of
     // TCP flight memory; a verified fresh read succeeds after idle cleanup.
@@ -912,10 +915,37 @@ int main(int argc,char** argv){
     fakeFreeHeap=fakeLargestFreeBlock=65536;for(unsigned i=0;i<6;++i)turn(f.server);assert(f.mutations==1&&!sockets[late].closed&&sockets[late].outgoing.empty());
     turn(f.server,500);runCloser();assert(sockets[late].closed&&f.mutations==1);
     for(unsigned i=0;i<30;++i)turn(f.server);assert(f.mutations==1);
+  }else if(scenario=="prepared-reply-drain"){
+    Fixture f;const int slow=connect(f.listener,get("/large"));sockets[slow].ackDelayMs=100;
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(f.reads==1);
+    const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    turn(f.server,500);assert(!f.mutations&&!sockets[mutation].closed&&sockets[mutation].outgoing.empty());
+    const int other=connect(f.listener,get());f.finish(mutation,1000,10);f.finish(other,1000,10);
+    contains(mutation,"200 OK");contains(other,"200 OK");assert(sockets[slow].closed&&f.mutations==1&&f.reads==2&&!f.server.metrics().deadlines);
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1);
+  }else if(scenario=="prepared-reply-deadline-rollover"){
+    clockUs=uint64_t(UINT32_MAX-1000)*1000;Fixture f(5551);const int slow=connect(f.listener,get("/api/state/current"));auto& peer=sockets[slow];peer.ackBlocked=true;
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(peer.unackedBytes>8&&f.reads==1);
+    const uint32_t accepted=millis();const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    for(unsigned i=0;i<5;++i){--peer.unackedBytes;turn(f.server,1000);runCloser();assert(!f.mutations&&!peer.closed);}
+    assert(sockets[mutation].closed&&sockets[mutation].outgoing.empty()&&detachedRequests.at(mutation).cancelled);
+    assert(detachedRequests.at(mutation).absoluteTimeoutMs==5000&&uint32_t(millis()-accepted)>=5000&&uint32_t(millis()-accepted)<5020);
+    peer.ackBlocked=false;peer.unackedBytes=0;peer.unackedSegments=0;f.finish(slow);contains(slow,"200 OK");
+    for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations);
+    const int fresh=connect(f.listener,post("/api/power","on=1"));f.finish(fresh);contains(fresh,"200 OK");assert(f.mutations==1);
+  }else if(scenario=="prepared-reply-cancel"||scenario=="prepared-reply-stop"){
+    Fixture f;const int slow=connect(f.listener,get("/large"));sockets[slow].sendBlocked=true;
+    for(unsigned i=0;i<20;++i)turn(f.server);
+    const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    assert(!f.mutations&&sockets[mutation].outgoing.empty()&&!liveParsers);
+    if(scenario=="prepared-reply-stop")f.server.stop();
+    else{sockets[mutation].disconnected=true;turn(f.server);sockets[slow].disconnected=true;turn(f.server);}
+    runCloser();assert(sockets[mutation].closed&&sockets[slow].closed&&detachedRequests.at(mutation).cancelled&&!f.mutations);
+    f.server.begin();const int fresh=connect(int(lastListener),post("/api/power","on=1"));f.finish(fresh);contains(fresh,"200 OK");assert(f.mutations==1);
   }else if(scenario=="response-budget"){
     Fixture f;const int fd=connect(f.listener,get("/large"));sockets[fd].sendBlocked=true;for(unsigned i=0;i<30;++i)turn(f.server);assert(f.reads==1);
-    const int busy=connect(f.listener,post("/api/power","on=1"));f.finish(busy);contains(busy,"503 Service Unavailable");assert(!f.mutations);
-    turn(f.server,1501);runCloser();assert(sockets[fd].closed);
+    const int busy=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);assert(!f.mutations&&sockets[busy].outgoing.empty());
+    f.finish(busy,1000,10);contains(busy,"200 OK");assert(sockets[fd].closed&&f.mutations==1);
     const int giant=connect(f.listener,get("/giant"));f.finish(giant);contains(giant,"507 Insufficient Storage");assert(f.server.metrics().responseFailures>=1);
   }else if(scenario=="owned-state-two-copy-dma-pressure"){
     Fixture f;f.requireParserReleased=true;const uint32_t began=millis();
@@ -1045,8 +1075,11 @@ int main(int argc,char** argv){
     Fixture f;const int page=connect(f.listener,get("/setup-page"));sockets[page].ackDelayMs=3000;
     for(unsigned i=0;i<12;++i)turn(f.server);assert(sockets[page].unackedBytes&&!sockets[page].closed);
     fakeFreeHeap=LampHttpServer::StaticPageHeapFloorBytes-1;turn(f.server,3000);assert(!sockets[page].unackedBytes&&!sockets[page].closed);
-    // Once ACK drain was observed, the static memory floor cannot keep an
-    // unsent page alive using the longer ACK-only allowance.
+    // Once ACK drain was observed, local memory withholding is separate from
+    // peer inactivity. Leaving that wait restores ordinary unsent idle; an
+    // actual EAGAIN without local withholding still cannot live indefinitely.
+    turn(f.server,1499);runCloser();assert(!sockets[page].closed);turn(f.server,2);runCloser();assert(!sockets[page].closed);
+    fakeFreeHeap=65536;sockets[page].sendBlocked=true;turn(f.server);
     turn(f.server,1499);runCloser();assert(!sockets[page].closed);turn(f.server,2);runCloser();assert(sockets[page].closed);
     assert(detachedRequests.at(page).absoluteTimeoutMs==15000&&detachedRequests.at(page).cancelled&&f.server.metrics().deadlines==1);
   }else if(scenario=="mapped-page-idle-cancel-and-request-bound"){
@@ -1126,14 +1159,16 @@ int main(int argc,char** argv){
     for(unsigned i=0;i<20;++i)turn(f.server);assert(f.reads==1&&!sockets[blocked].closed);
     const int good=connect(f.listener,upload(multipartBody(std::string(1024,char(0xe9)))));f.finish(good);
     contains(good,"200 OK");contains(good,"Verified.");assert(f.uploadEnds==1&&f.uploadFinalCalls==1&&f.restarts==1&&!f.updateOwned&&!f.uploadAborts);
-    // Ordinary commands still get the truthful pre-execution busy result.
-    const int mutation=connect(f.listener,post("/api/power","on=1"));f.finish(mutation);contains(mutation,"This request was not executed");assert(!f.mutations);
+    // Ordinary commands wait without execution; multipart final handlers must
+    // still run exactly once while this immutable request owns staging.
+    const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);assert(sockets[mutation].outgoing.empty()&&!f.mutations);
     const int denied=connect(f.listener,upload(multipartBody("bad"),"wrong-token"));f.finish(denied);
     contains(denied,"403 Forbidden");assert(f.uploadFinalCalls==2&&f.uploadEnds==1&&f.restarts==1&&!f.updateOwned&&!f.uploadAborts);
     f.failWrite=true;const int failed=connect(f.listener,upload(multipartBody(std::string(1024,char(0xe9)))));f.finish(failed);
     contains(failed,"400 Bad Request");contains(failed,"Not completed.");assert(f.uploadFinalCalls==3&&f.uploadEnds==1&&f.restarts==1&&!f.updateOwned&&!f.uploadAborts);
     const int lost=connect(f.listener,upload(multipartBody(std::string(1024,char(0xe9)))));sockets[lost].sendBlocked=true;
     for(unsigned i=0;i<80;++i)turn(f.server);assert(f.uploadEnds==2&&f.uploadFinalCalls==4&&f.restarts==2&&!f.updateOwned&&!f.uploadAborts);
+    sockets[mutation].disconnected=true;turn(f.server);runCloser();assert(sockets[mutation].closed&&detachedRequests.at(mutation).cancelled&&!f.mutations);
     turn(f.server,1501);runCloser();assert(sockets[blocked].closed&&sockets[lost].closed);
     for(unsigned i=0;i<30;++i)turn(f.server);assert(f.uploadEnds==2&&f.uploadFinalCalls==4&&f.restarts==2&&!f.mutations&&!f.uploadAborts);
   }else if(scenario=="fleet-twenty"){

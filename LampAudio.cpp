@@ -21,12 +21,15 @@ i2s_chan_handle_t receiver = nullptr;
 bool receiverEnabled = false;
 TaskHandle_t worker = nullptr;
 SemaphoreHandle_t finished = nullptr;
-int32_t* samples = nullptr;
+int16_t* samples = nullptr;
 std::atomic<bool> stopping{false};
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 LampAudioFeatures features{};
 uint32_t diagnosticUntil = 0, retryAt = 0;
 constexpr size_t FRAMES = 256;
+// C3 measurements show 3,412/4,096 bytes unused after sustained capture.
+// Keep >1 KiB measured task margin; revalidate after driver/platform changes.
+constexpr uint32_t CaptureStackBytes=2048;
 constexpr uint32_t CaptureFreshMs = 100, CaptureStartupMs = 2000;
 constexpr const char* UseKey = "audioUseV1";
 constexpr const char* HardwareKey = "audioHwV1";
@@ -78,16 +81,16 @@ void capture(void*) {
   unsigned failures = 0;
   while (!stopping.load()) {
     size_t bytes = 0;
-    const esp_err_t result = i2s_channel_read(receiver, samples, FRAMES * 8, &bytes, 40);
+    const esp_err_t result = i2s_channel_read(receiver, samples, FRAMES * sizeof(*samples), &bytes, 40);
     if (stopping.load()) break;
-    if (result != ESP_OK || !bytes || bytes % 8) {
+    if (result != ESP_OK || !bytes || bytes>FRAMES*sizeof(*samples) || bytes % sizeof(*samples)) {
       error(result == ESP_OK ? ESP_FAIL : result);
       if (++failures >= 5) break;
       continue;
     }
     failures = 0;
-    const size_t count = bytes / 8;
-    const auto level = analysis.process(samples, count, gain, noiseFloor.cutoff(gate), scale);
+    const size_t count = bytes / sizeof(*samples);
+    const auto level = analysis.process<1>(samples, count, gain, noiseFloor.cutoff(gate), scale);
     if (warmup) { warmup = count >= warmup ? 0 : warmup - count; continue; }
     const bool wasCalibrated=noiseFloor.calibrated();
     noiseFloor.observe(level.rms,count);
@@ -98,7 +101,7 @@ void capture(void*) {
       continue;
     }
     const uint32_t capturedAt = millis();
-    const auto bands = spectrum.process(samples,count,level.level,capturedAt);
+    const auto bands = spectrum.process<1>(samples,count,level.level,capturedAt);
     const uint8_t heldLevel = peakHold.process(level.level, capturedAt);
     const uint32_t stackFree = uxTaskGetStackHighWaterMark(nullptr);
     portENTER_CRITICAL(&mux);
@@ -132,7 +135,7 @@ void releaseReceiver() {
 }
 bool start() {
   if (!finished) finished = xSemaphoreCreateBinary();
-  samples = new (std::nothrow) int32_t[FRAMES * 2];
+  samples = new (std::nothrow) int16_t[FRAMES];
   if (!finished || !samples) { error(ESP_ERR_NO_MEM); releaseReceiver(); return false; }
   xSemaphoreTake(finished, 0);
   i2s_chan_config_t channel = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -141,7 +144,17 @@ bool start() {
   if (result == ESP_OK) {
     i2s_std_config_t config{};
     config.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000);
-    config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    config.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+    // Analysis already used only each LEFT word's upper 16 bits. Capture those
+    // same values directly; retain 32-bit Philips wire slots and 64 BCLK/frame.
+    // HW v2's mono macro defaults to BOTH, so explicitly select LEFT.
+    config.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+    config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+    config.slot_cfg.ws_width = 32;
+    config.slot_cfg.bit_shift = true;
+    config.slot_cfg.left_align = true;
+    config.slot_cfg.big_endian = false;
+    config.slot_cfg.bit_order_lsb = false;
     config.gpio_cfg.mclk = I2S_GPIO_UNUSED;
     config.gpio_cfg.bclk = gpio_num_t(LAMP_AUDIO_SCK);
     config.gpio_cfg.ws = gpio_num_t(LAMP_AUDIO_WS);
@@ -166,7 +179,7 @@ bool start() {
   features.running = true; features.valid = false; features.signalSeen = false; features.error = 0;
   capturedSinceStart = false;captureStartedAt=millis();
   portEXIT_CRITICAL(&mux);
-  if (xTaskCreate(capture, "lamp-audio", 4096, nullptr, 1, &worker) != pdPASS) {
+  if (xTaskCreate(capture, "lamp-audio", CaptureStackBytes, nullptr, 1, &worker) != pdPASS) {
     worker = nullptr; error(ESP_ERR_NO_MEM); releaseReceiver(); return false;
   }
   return true;
@@ -310,18 +323,18 @@ void appendLampAudioJson(LampJsonSink& out,const LampAudioJsonSnapshot& snapshot
   const auto& f=snapshot.features;
   const auto add=[&](const auto& value){out.concat(value);};
   add("{\"installed\":");
-  add((snapshot.installed?"true":"false"));add(",\"liveTuning\":true,\"automaticGain\":true,\"gain\":");add(String(snapshot.gain));
-  add(",\"captureVersion\":1,\"enabled\":");add(snapshot.enabledKnown?(snapshot.enabled?"true":"false"):"null");add(",\"captureStatus\":");add(String(snapshot.captureStatus));
-  add(",\"gate\":");add(String(snapshot.gate));add(",\"scale\":");add(String(snapshot.scale));
+  add((snapshot.installed?"true":"false"));add(",\"liveTuning\":true,\"automaticGain\":true,\"gain\":");add(snapshot.gain);
+  add(",\"captureVersion\":1,\"enabled\":");add(snapshot.enabledKnown?(snapshot.enabled?"true":"false"):"null");add(",\"captureStatus\":");add(snapshot.captureStatus);
+  add(",\"gate\":");add(snapshot.gate);add(",\"scale\":");add(snapshot.scale);
   add(",\"running\":");add((f.running?"true":"false"));add(",\"valid\":");add((f.valid?"true":"false"));
-  add(",\"signalSeen\":");add((f.signalSeen?"true":"false"));add(",\"level\":");add(String(f.level));
-  add(",\"noiseFloor\":");add(String(f.noiseFloor));add(",\"effectiveGate\":");add(String(f.effectiveGate));add(",\"effectiveGain\":");add(String(f.effectiveGain));
-  add(",\"rms\":");add(String(f.rms));add(",\"peak\":");add(String(f.peak));add(",\"blocks\":");add(String(f.sequence));
-  add(",\"errors\":");add(String(f.errors));add(",\"overruns\":");add(String(f.overruns));add(",\"stackFree\":");add(String(f.stackFree));
-  add(",\"bass\":");add(String(f.bass));add(",\"mid\":");add(String(f.mid));add(",\"treble\":");add(String(f.treble));
-  add(",\"beat\":");add(String(f.beat));add(",\"bassBeat\":");add(String(f.bassBeat));
-  add(",\"heap\":");add(String(snapshot.heap));add(",\"frames\":");add(String(snapshot.frames));
-  add(",\"maxRenderUs\":");add(String(snapshot.maxRender));add(",\"error\":");add(String(f.error));add('}');
+  add(",\"signalSeen\":");add((f.signalSeen?"true":"false"));add(",\"level\":");add(f.level);
+  add(",\"noiseFloor\":");add(f.noiseFloor);add(",\"effectiveGate\":");add(f.effectiveGate);add(",\"effectiveGain\":");add(f.effectiveGain);
+  add(",\"rms\":");add(f.rms);add(",\"peak\":");add(f.peak);add(",\"blocks\":");add(f.sequence);
+  add(",\"errors\":");add(f.errors);add(",\"overruns\":");add(f.overruns);add(",\"stackFree\":");add(f.stackFree);
+  add(",\"bass\":");add(f.bass);add(",\"mid\":");add(f.mid);add(",\"treble\":");add(f.treble);
+  add(",\"beat\":");add(f.beat);add(",\"bassBeat\":");add(f.bassBeat);
+  add(",\"heap\":");add(snapshot.heap);add(",\"frames\":");add(snapshot.frames);
+  add(",\"maxRenderUs\":");add(snapshot.maxRender);add(",\"error\":");add(f.error);add('}');
 }
 String lampAudioJson() {
   const auto snapshot=captureLampAudioJson();

@@ -48,6 +48,7 @@ bool lampHasMicrophone(){return true;}bool lampSyncFollowing(){return following;
 bool lampCalibrationActive(){return calibrating;}bool lampUpdateOwnsResources(){return updating;}
 bool lampFactoryResetPending(){return resetting;}uint8_t lampGroupScene(){return scene;}
 uint8_t lampSyncRole(){return 0;}bool lampSyncPaused(){return false;}
+uint8_t lampSyncProtocol(){return LampSyncWire::ExpandedVersion;}
 bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}void noteLampUpdateUse(){}
 struct CRGB {inline static int Black=0;};int* leds=nullptr;void fill_solid(int*,uint16_t,int){}
 struct {void setBrightness(uint8_t){}} FastLED;

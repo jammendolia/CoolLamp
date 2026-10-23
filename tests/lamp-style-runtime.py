@@ -98,10 +98,11 @@ class LampStyleRuntime(unittest.TestCase):
     def test_actual_style_model(self):
         with tempfile.TemporaryDirectory(prefix='coollamp-style-') as folder:
             directory = Path(folder)
-            (directory / 'Arduino.h').write_text(ARDUINO)
+            arduino=(ROOT/'tests/control-stubs/Arduino.h').read_text().replace('uint64_t getEfuseMac()', 'uint32_t getFreeHeap(){return 65536;}uint32_t getMaxAllocHeap(){return 65536;}uint64_t getEfuseMac()')
+            (directory / 'Arduino.h').write_text(arduino)
             (directory / 'Preferences.h').write_text(PREFERENCES)
             cpp, executable = directory / 'test.cpp', directory / 'test.exe'
-            cpp.write_text('#include "LampStyle.h"\n#include <Preferences.h>\n' + SCENARIOS)
+            cpp.write_text('#include "LampStyle.h"\n#include "LampJsonSink.h"\n#include <Preferences.h>\nnamespace LampModel {bool locked(){return false;}bool factoryAvailable(){return false;}const char* factoryStyle(){return "";}void appendJson(LampJsonSink&){} }\n' + SCENARIOS)
             subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', *SANITIZERS, '-DARDUINO=1',
                             '-I' + str(directory), '-I' + str(ROOT), str(cpp), str(ROOT / 'LampStyle.cpp'), '-o', str(executable)], check=True)
             for scenario in ['defaults', 'styles', 'invalid', 'corrupt', 'failures', 'unavailable-store']:
@@ -110,7 +111,8 @@ class LampStyleRuntime(unittest.TestCase):
                     rows = [json.loads(line) for line in result.stdout.splitlines()]
                     self.assertTrue(rows)
                     for row in rows:
-                        self.assertEqual(set(row), {'version', 'code', 'id', 'family'})
+                        self.assertEqual(set(row), {'version', 'code', 'id', 'family', 'locked'})
+                        self.assertFalse(row['locked'])
                         self.assertEqual(row['version'], 1)
                         self.assertIn(row['code'], range(4))
                         self.assertEqual(row['id'], ['unspecified', 'helix', 'large-helix', 'corkscrew'][row['code']])

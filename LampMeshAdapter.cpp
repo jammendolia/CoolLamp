@@ -2,6 +2,7 @@
 #include "LampMeshCore.h"
 #include "LampFirmwareRelay.h"
 #include "LampSyncRadioCrypto.h"
+#include "LampMeshInventoryJson.h"
 #include "LampUpdate.h"
 #include "LampCommission.h"
 #include "LampVersion.h"
@@ -43,7 +44,7 @@ bool allowed(uint8_t endpoint,uint8_t method){
  const bool confidential=method&0x80;method&=0x7f;
  if(confidential&&endpoint!=Household)return false;
  if(endpoint==Household)return confidential&&method==2;
- if(method==1)return endpoint==State||endpoint==Sync||endpoint==Audio||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew||endpoint==Descriptor||endpoint==Revision;
+ if(method==1)return endpoint==State||endpoint==Sync||endpoint==Audio||endpoint==Firmware||endpoint==Effects||endpoint==MeshNew||endpoint==Descriptor||endpoint==Revision||endpoint==MeshStatus;
  if(method!=2)return false;
  return (endpoint>=SyncInvite&&endpoint<=AudioTest)||endpoint==FirmwareAutomatic||endpoint==Style||(endpoint>=Power&&endpoint<=EffectOptions)||(endpoint>=EnrollStart&&endpoint<=EnrollCancel)||(endpoint>=SchemaPage&&endpoint<=LampControlEndpoint::Receipt)||endpoint==UpdatePolicy||endpoint==GroupPage||endpoint==Rollout||endpoint==GroupRemove;
 }
@@ -65,6 +66,9 @@ bool receive(const LampEspNow::Received& message){
  return true;
 }
 void service(uint32_t now,bool blocked){
+ // Compatibility keeps the loop-clock argument, but receive/HTTP work may have
+ // stamped newer state. Unsigned ages must use the current owner-task clock.
+ now=millis();
  if(blocked){core.service(now,false);paused=true;return;}
  if(!core.active()&&LampFirmwareRelay::copyFleetKey(key)){
   LampMesh::Hooks hooks;hooks.trusted=trusted;hooks.send=send;hooks.execute=execute;
@@ -86,9 +90,17 @@ bool working(){return !paused&&core.working();}
 bool enabled(){return core.active();}
 bool online(const uint8_t* mac){return !paused&&core.online(mac,millis());}
 String statusJson(){
- String out="{\"version\":1,\"deviceId\":"+quote(id(self).c_str())+",\"fleetId\":"+quote(LampFirmwareRelay::fleetId().c_str())+",\"available\":"+(!paused&&core.active()?"true":"false")+",\"peers\":[";bool comma=false;
- const auto* peers=core.peers();for(unsigned i=0;i<LampMesh::MaxPeers;++i){const auto& p=peers[i];if(!p.boot||!p.active)continue;if(comma)out+=',';comma=true;out+="{\"id\":"+quote(id(p.mac).c_str())+",\"name\":"+quote(p.name)+",\"firmwareVersion\":"+quote(p.version)+",\"online\":"+(core.online(p.mac,millis())?"true":"false")+",\"hops\":"+String(p.hops)+",\"connected\":"+(p.wifiConnected?"true":"false")+",\"boot\":\""+hex(p.boot)+"\"}";}
- return out+"],\"limits\":{\"localPresence\":16,\"forwardingHops\":4},\"snapshotUptimeMs\":"+String(millis())+",\"boot\":\""+hex(boot)+"\",\"inventoryScope\":\"local-neighborhood\",\"globalFleetCeiling\":null}";
+ const uint32_t now=millis();const bool available=!paused&&core.active();
+ const String household=LampFirmwareRelay::fleetId();char identityText[13]{},bootText[17]{};
+ if(!LampSyncRadioCrypto::identityFromMac(self,identityText)||(!household.isEmpty()&&household.length()!=16))return String();
+ snprintf(bootText,sizeof(bootText),"%08lx%08lx",static_cast<unsigned long>(boot>>32),static_cast<unsigned long>(uint32_t(boot)));
+ 
+ return lampJsonReply([&](LampJsonSink& out){
+  out+="{\"version\":1,\"deviceId\":";out.quote(identityText);out+=",\"fleetId\":";out.quote(household);
+  out+=",\"available\":";out+=available?"true":"false";out+=",\"peers\":";appendLampMeshPeersJson(out,core,now);
+  out+=",\"limits\":{\"localPresence\":16,\"forwardingHops\":4}";
+  out+=",\"snapshotUptimeMs\":";out+=now;out+=",\"boot\":";out.quote(bootText);out+=",\"inventoryScope\":\"local-neighborhood\",\"globalFleetCeiling\":null}";
+ },LampMeshWire::ResponseLimit);
 }
 LampControlReply request(const String& target,const String& requestId,const String& endpoint,const String& method,const String& form,bool confidential){
  uint8_t mac[6]{};uint64_t tx=0;uint32_t ep=0,op=0;

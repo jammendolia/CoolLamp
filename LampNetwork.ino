@@ -252,8 +252,10 @@ String lampEffectCatalogEntry(uint8_t mode)
   if (mode < 1 || mode > lampAvailableEffectCount()) return "{}";
   const bool calm = mode == 1 || mode == 2 || mode == 3 || mode == 13 || mode == 30 || mode == 32 || mode == 33 || mode >= 36;
   const char* category = mode > LAMP_BASE_EFFECT_COUNT ? "audio" : mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
-  return "{\"id\":" + String(mode) + ",\"name\":" + jsonText(effectNames[mode-1]) +
-    ",\"category\":" + jsonText(category) + ",\"speed\":" + String(mode >= 21 && mode <= 29 ? "false" : "true") + "}";
+  return lampJsonReply([&](LampJsonSink& out){
+    out+="{\"id\":";out+=mode;out+=",\"name\":";out.quote(effectNames[mode-1]);
+    out+=",\"category\":";out.quote(category);out+=",\"speed\":";out+=mode>=21&&mode<=29?"false":"true";out+='}';
+  });
 }
 
 // Read-only support snapshot. Deliberately excludes session tokens, SSIDs,
@@ -370,13 +372,12 @@ void sendLampState()
   const bool currentView=statePath=="/api/state/current"||(lampServer.controlActive()&&lampServer.hasArg("view"));
   if(currentView&&!(lampServer.controlActive()?lampServer.controlConfidential()&&lampServer.arg("view")=="current":lampServer.fieldsAllowed(nullptr,0))){lampServer.send(400,"text/plain","Invalid state view.");return;}
   const uint32_t snapshotTime=millis();
+  const uint8_t effectCount=lampAvailableEffectCount();
   const auto firmwareSnapshot=captureLampUpdateJson();const auto audioSnapshot=captureLampAudioJson();
   const auto syncSnapshot=captureLampSyncJson(snapshotTime);
   char identitySnapshot[13]{},hostname[64]{},address[64]{},gateway[64]{},dns0[64]{},dns1[64]{};
-  const uint8_t styleCode=lampStyleCode();
-  const char* const styleId=lampStyleId();const char* const styleFamily=lampStyleFamily();
   if(!captureLampNetworkText(identitySnapshot,sizeof(identitySnapshot),lampIdentity())||strlen(identitySnapshot)!=12||
-     !captureLampNetworkText(hostname,sizeof(hostname)-6,lampHost)||!styleId||!styleFamily){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
+     !captureLampNetworkText(hostname,sizeof(hostname)-6,lampHost)){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
   memcpy(hostname+lampHost.length(),".local",7);
   const bool wifiConnected=WiFi.status()==WL_CONNECTED;
   if(!captureLampNetworkAddress(address,sizeof(address),WiFi.localIP())||
@@ -389,7 +390,7 @@ void sendLampState()
   state.concat(",\"name\":");state.quote(lampName);state.concat(",\"uptimeMs\":");state.concat(snapshotTime);
   state.concat(",\"controlVersion\":1");
   if(currentView)state.concat(",\"stateView\":1");
-  state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
+  state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampSettings.startupMode <= effectCount ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
   state.concat(",\"catalogVersion\":1");
   state.concat(",\"factoryReset\":true");
   state.concat(",\"usingDefaultPassword\":");state.concat(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
@@ -399,8 +400,7 @@ void sendLampState()
   // Keep the complete lighting/settings/status reply within the shared 8 KiB
   // bound. Route hints continue on /api/sync/page; durable order is never cut.
   state.concat(",\"sync\":");if(!appendLampSyncJson(state,0,1,syncSnapshot)){state.fail();return;}
-  state.concat(",\"lampStyle\":{\"version\":1,\"code\":");state.concat(styleCode);
-  state.concat(",\"id\":");state.quote(styleId);state.concat(",\"family\":");state.quote(styleFamily);state.concat('}');
+  state.concat(",\"lampStyle\":");appendLampStyleJson(state);
   state.concat(",\"calibration\":{\"active\":");state.concat(lampCalibrationActive()?"true":"false");state.concat(",\"position\":");state.concat(lampCalibrationPosition());state.concat(",\"kind\":\"");state.concat((lampCalibrationCenter()?"center":"leds"));state.concat("\",\"centerSupported\":true}");
   state.concat(",\"rotation\":{\"enabled\":");state.concat(lampRotation.enabled?"true":"false");state.concat(",\"random\":");state.concat(lampRotation.random?"true":"false");state.concat(",\"category\":");state.concat(lampRotation.category);state.concat(",\"seconds\":");state.concat(lampRotation.seconds);state.concat("}");
   state.concat(",\"fountainColors\":[");
@@ -420,43 +420,24 @@ void sendLampState()
   state.concat(",\"gateway\":");state.quote(gateway);
   state.concat(",\"dns\":[");state.quote(dns0);state.concat(",");state.quote(dns1);state.concat("]");
   state.concat(",\"hostname\":");state.quote(hostname);state.concat(",\"effects\":[");
-  for (size_t i = 0; i < lampAvailableEffectCount(); i++) { if (i) state.concat(','); state.quote(effectNames[i]); }
+  for (size_t i = 0; i < effectCount; i++) { if (i) state.concat(','); state.quote(effectNames[i]); }
   state.concat("],\"colors\":[");
-  for (uint16_t mode = 1; mode <= lampAvailableEffectCount(); ++mode) {
+  for (uint16_t mode = 1; mode <= effectCount; ++mode) {
     if (mode > 1) state.concat(',');
     if(currentView&&mode!=Mode){state.concat("null");continue;}
     const auto c = getLampColor(mode);
     state.concat("[");state.concat(c.enabled);state.concat(",");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");
   }
   state.concat("],\"effectOptions\":[");
-  for (uint16_t mode=1;mode<=lampAvailableEffectCount();++mode) {
+  for (uint16_t mode=1;mode<=effectCount;++mode) {
     if(mode>1) state.concat(',');if(currentView&&mode!=Mode){state.concat("null");continue;} const auto o=getLampEffectOptions(mode);
     state.concat("[");state.concat(o.speed);state.concat(",");state.concat(o.intensity);state.concat(",");state.concat(o.dual);state.concat(",");state.concat(o.r);state.concat(",");state.concat(o.g);state.concat(",");state.concat(o.b);state.concat("]");
   }
   state.concat("]}");
   });
   if(state.isEmpty()){lampServer.send(503,"text/plain","State response memory unavailable. Nothing changed.");return;}
-  const char* const stateKeys[]={"deviceId","name","uptimeMs","controlVersion","apiVersion","startupMode","startupBrightness","catalogVersion","factoryReset","usingDefaultPassword","protocol","firmware","audio","sync","lampStyle","calibration","rotation","fountainColors","vuColors","midpoint","effectiveMidpoint","mode","brightness","leds","milliamps","power","ssid","connected","address","gateway","dns","hostname"};
-  const char* const appearanceKeys[]={"effects","colors","effectOptions"};
-  const auto firmware=LampHttpJson::member(state.c_str(),state.length(),"firmware");
-  const char* const firmwareKeys[]={"version","phase","automatic","bootHealthy"};
-  if(!LampHttpJson::requiredKeys(state.c_str(),state.length(),stateKeys,sizeof(stateKeys)/sizeof(stateKeys[0]))||
-     !LampHttpJson::requiredKeys(state.c_str(),state.length(),appearanceKeys,sizeof(appearanceKeys)/sizeof(appearanceKeys[0]))||
-     !LampHttpJson::requiredKeys(firmware.bytes,firmware.length,firmwareKeys,sizeof(firmwareKeys)/sizeof(firmwareKeys[0]))){
-    lampServer.send(503,"text/plain","State response incomplete. Nothing changed.");return;
-  }
-  // A transient allocation failure can omit both a separator and an entry,
-  // leaving valid JSON with a shorter array. Fence the complete appearance.
-  const char* const countedArrays[]={"effects","colors","effectOptions","fountainColors","vuColors"};
-  for(unsigned i=0;i<sizeof(countedArrays)/sizeof(countedArrays[0]);++i){
-    // The guards above already validated the whole immutable reply. Avoid
-    // repeating that full scan when locating each bounded array.
-    const auto array=LampHttpJson::Check(state.c_str(),state.length()).member(countedArrays[i]);
-    size_t count=0;
-    if(!LampHttpJson::arrayCount(array.bytes,array.length,count)||count!=(i<3?lampAvailableEffectCount():3)){
-      lampServer.send(503,"text/plain","State response incomplete. Nothing changed.");return;
-    }
-  }
+  // Every member is appended through the strict counted sink. A short or
+  // dishonest concat fails its exact byte count, even if JSON is still valid.
   lampServer.send(200, "application/json", std::move(state));
 }
 
@@ -945,6 +926,7 @@ void beginLampNetwork()
   });
   lampServer.on("/api/style", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
+    if(lampStyleLocked()){lampServer.send(409,"text/plain","Lamp design is factory set. USB service is required to change it.");return;}
     if (lampUpdateOwnsResources() || otaActive || lampCalibrationActive() || lampWifiSetupBusy() || lampFactoryResetPending()) {
       lampServer.send(409,"text/plain","Finish setup or updating before changing lamp design."); return;
     }

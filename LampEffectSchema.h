@@ -1,6 +1,17 @@
 #pragma once
 #include <stdint.h>
+#include <string.h>
 namespace LampEffectSchema {
+// Empty requirements mean every physical design, independent of artwork
+// recommendations. Future effects may supply an explicit canonical style list.
+struct StyleRequirement {const char* const* ids=nullptr;uint8_t count=0;};
+inline StyleRequirement styles(uint8_t /*localId*/,bool /*scene*/){return {};}
+inline bool compatible(StyleRequirement required,const char* style){
+  if(!required.count)return true;
+  if(!style||!required.ids)return false;
+  for(uint8_t i=0;i<required.count;++i)if(!strcmp(required.ids[i],style))return true;
+  return false;
+}
 inline const char* key(uint8_t id){
   static const char* const keys[]={"pacifica","aurora","rain","fire","split-fire-rising","split-fire-falling","split-fire-rising-reversed-colors","blue-gas-fire","witch-fire","purple-fire","embers","lava","plasma","rainbow","rainbow-glitter","confetti","comet-collision","sinelon","bpm","juggle","white","red","green","blue","purple","pink","yellow","cyan","custom-solid","droplets-rising","lightning-storm","color-tide","fireflies","heartbeat","shooting-stars","breathing-glow","lava-blobs","droplets-falling","sound-glow","sound-meter","spectrum-rise","bass-launch","spectral-embers","beat-bloom","three-band-fountain","vu-meter","rainbow-embers"};
   return id>=1&&id<=47?keys[id-1]:"unknown";

@@ -105,6 +105,8 @@ class ControlHttpAdapterTests(unittest.TestCase):
 #include "LampRuntimeMetrics.h"
 #include "LampJsonSink.h"
 #include "Preferences.h"
+bool factoryLocked=false;
+namespace LampModel {bool locked(){return factoryLocked;}bool factoryAvailable(){return false;}const char* factoryStyle(){return "";}void appendJson(LampJsonSink&){} }
 LampControlHttpAdapter lampServer(80);
 LampRuntimeMetrics::Snapshot diagnosticMetrics;
 const LampRuntimeMetrics::Snapshot& getLampRuntimeMetrics(){return diagnosticMetrics;}
@@ -311,6 +313,10 @@ int main(int argc,char** argv){
  following=true;auto styleResult=lampControlRequest(LampControlEndpoint::Style,true,"style=3");
  assert(styleResult.status==200&&lampStyleCode()==3&&!restartAt&&Preferences::storage.at("settings")==hardwareBefore&&Mode==4&&Brightness==55&&PowerOn);
  following=false;
+ const auto factoryWrites=Preferences::writes;factoryLocked=true;
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=3").status==409&&lampStyleCode()==0&&Preferences::writes==factoryWrites);
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&Preferences::writes==factoryWrites);
+ assert(!configureLampStyle(1));factoryLocked=false;assert(lampStyleCode()==3);
  for(const char* body:{"","style=-1","style=4","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
  Preferences::failWrites=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==500&&lampStyleCode()==3);Preferences::failWrites=false;
  resetPending=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);resetPending=false;
@@ -471,6 +477,13 @@ int main(int argc,char** argv){
  assert(lampServer.responseBody=="State response memory unavailable. Nothing changed.");
  assert(lampDiagnosticsJson().isEmpty()&&String::concatFailures>=concatFailuresBefore+2&&Preferences::writes==writesBeforeReserveFailure);
  String::failedConcatLiteral=nullptr;
+ // A dishonest successful append that omits a complete, optional member can
+ // leave syntactically valid JSON. Exact count/write ownership still rejects
+ // it before sending success, without reparsing all keys/array lengths.
+ String::droppedPrefix=",\"factoryReset\":true";
+ lampServer.invokeHttp("/api/state",HTTP_GET);
+ assert(lampServer.responseStatus==503&&Preferences::writes==writesBeforeReserveFailure);
+ String::droppedPrefix=nullptr;
  const auto commonReservationsBefore=String::reserveCalls;
  lampServer.httpAuthorized=true;lampServer.invokeHttp("/api/state",HTTP_GET);
  assert(lampServer.responseStatus==200&&String::reserveCalls>commonReservationsBefore);
@@ -648,6 +661,7 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
   inline static size_t reserveFailures=0,reserveCalls=0;
   bool reserve(size_t size){++reserveCalls;if(failNextReserve){failNextReserve=false;++reserveFailures;return false;}std::string::reserve(size);return true;}''')
             arduino=arduino.replace('bool concat(const char* value,size_t size){append(value,size);return true;}',r'''bool concat(const char* value,size_t size){
+    if(droppedPrefix&&std::string(value,size).rfind(droppedPrefix,0)==0)return true;
     if(failedConcatLiteral&&std::string(value,size).find(failedConcatLiteral)!=std::string::npos){++concatFailures;return false;}
     append(value,size);return true;}''')
             # Arduino String concatenates integer types as decimal numbers.
@@ -679,7 +693,7 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
             value = json.loads(snapshot.read_text())
             self.assertEqual(value['deviceId'], 'aabbccddeeff')
             self.assertEqual(value['controlVersion'], 1)
-            self.assertEqual(value['lampStyle'], {'version': 1, 'code': 3, 'id': 'corkscrew', 'family': 'corkscrew'})
+            self.assertEqual(value['lampStyle'], {'version': 1, 'code': 3, 'id': 'corkscrew', 'family': 'corkscrew', 'locked': False})
             self.assertEqual(value['startupMode'], 4)
             self.assertEqual(value['startupBrightness'], 88)
             self.assertEqual(len(value['effects']), 47)

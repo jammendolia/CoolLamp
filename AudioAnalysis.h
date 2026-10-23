@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <type_traits>
 
 // A lower-quartile RMS floor measured over one second at 16kHz. Track downward
 // after calibration so music present at startup cannot permanently mute the lamp.
@@ -59,13 +60,16 @@ public:
     const int32_t mapped = 255 - (255 - int32_t(level)) * scale / 100;
     return mapped <= 0 ? 0 : uint8_t(mapped);
   }
-  AudioLevel process(const int32_t* stereo, size_t frames, uint8_t gain, uint16_t gate, uint16_t scale = 100, bool automatic = true) {
+  template<size_t Stride=2,typename Sample=int32_t>
+  AudioLevel process(const Sample* stereo, size_t frames, uint8_t gain, uint16_t gate, uint16_t scale = 100, bool automatic = true) {
+    static_assert(Stride==1||Stride==2,"Only mono or interleaved stereo capture");
+    static_assert(std::is_same<Sample,int32_t>::value||std::is_same<Sample,int16_t>::value,"Signed microphone words only");
     if (!frames) return {};
     uint64_t squares = 0; uint32_t peak = 0;
     int32_t low = 32767, high = -32768;
     for (size_t i = 0; i < frames; ++i) {
       // Discard unused low bits and scale to 16 bits before squaring.
-      const int32_t sample = stereo[i * 2] >> 16;
+      const int32_t sample = sizeof(Sample)==2 ? int32_t(stereo[i*Stride]) : stereo[i*Stride] >> 16;
       if (!initialized) { dc = sample * 256; initialized = true; }
       dc += (sample * 256 - dc) / 256;
       const int32_t ac = sample - dc / 256;
