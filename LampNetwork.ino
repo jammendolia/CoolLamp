@@ -11,6 +11,7 @@
 #include <new>
 #include <freertos/task.h>
 #include "LampFactory.h"
+#include "LampEffectSchema.h"
 #ifdef COOL_LAMP_PAGE_GZIP
 #include "LampPageGzip.generated.h"
 #else
@@ -103,7 +104,8 @@ const char* const effectNames[] = {
   "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
   "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
   "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain", "VU Meter", "Rainbow Embers"
+  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain", "VU Meter", "Rainbow Embers",
+  "Filament", "Eureka", "Orbit", "Induction", "Sound Filament"
 };
 static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
 
@@ -125,7 +127,7 @@ void loadLampSettings()
   prefs.end();
   if (!found || saved.version != 1 || saved.ledCount < 1 || saved.ledCount > MAX_LED_COUNT ||
       saved.milliAmps < 100 || saved.milliAmps > 20000 || saved.brightness < 1 ||
-      saved.startupMode < 1 || saved.startupMode > MODE_MAX ||
+      saved.startupMode < 1 || saved.startupMode > LAMP_EFFECT_COUNT ||
       saved.ssid[32] != '\0' || saved.wifiPassword[63] != '\0' || saved.adminPassword[63] != '\0' ||
       strlen(saved.adminPassword) < 8) return;
   lampSettings = saved;
@@ -251,10 +253,13 @@ String lampEffectCatalogEntry(uint8_t mode)
 {
   if (mode < 1 || mode > lampAvailableEffectCount()) return "{}";
   const bool calm = mode == 1 || mode == 2 || mode == 3 || mode == 13 || mode == 30 || mode == 32 || mode == 33 || mode >= 36;
-  const char* category = mode > LAMP_BASE_EFFECT_COUNT ? "audio" : mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
+  const char* category = lampEffectNeedsAudio(mode) ? "audio" : mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
   return lampJsonReply([&](LampJsonSink& out){
     out+="{\"id\":";out+=mode;out+=",\"name\":";out.quote(effectNames[mode-1]);
-    out+=",\"category\":";out.quote(category);out+=",\"speed\":";out+=mode>=21&&mode<=29?"false":"true";out+='}';
+    out+=",\"category\":";out.quote(category);out+=",\"speed\":";out+=LampEffectSchema::motion(mode)?"true":"false";
+    if(lampEdisonProfileMatches()){out+=",\"available\":";out+=lampEffectAvailable(mode)?"true":"false";}
+    if(mode>LAMP_EFFECT_COUNT)out+=",\"startupSupported\":false";
+    out+='}';
   });
 }
 
@@ -390,7 +395,7 @@ void sendLampState()
   state.concat(",\"name\":");state.quote(lampName);state.concat(",\"uptimeMs\":");state.concat(snapshotTime);
   state.concat(",\"controlVersion\":1");
   if(currentView)state.concat(",\"stateView\":1");
-  state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampSettings.startupMode <= effectCount ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
+  state.concat(",\"apiVersion\":2,\"startupMode\":");state.concat(lampEffectAvailable(lampSettings.startupMode) ? lampSettings.startupMode : MODE_FIRE);state.concat(",\"startupBrightness\":");state.concat(lampSettings.brightness);
   state.concat(",\"catalogVersion\":1");
   state.concat(",\"factoryReset\":true");
   state.concat(",\"usingDefaultPassword\":");state.concat(lampUsesFactoryPassword(lampSettings.adminPassword) ? "true" : "false");
@@ -455,7 +460,7 @@ void saveLampConfiguration()
   if (otaActive || lampRemoteUpdateBusy() || lampWifiSetupBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware update or Bluetooth Wi-Fi setup to finish."); return; }
   uint32_t count, powerLimit, brightness, mode;
   if (!readNumber("leds", 1, MAX_LED_COUNT, count) || !readNumber("milliamps", 100, 20000, powerLimit) ||
-      !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, lampAvailableEffectCount(), mode)) {
+      !readNumber("brightness", 1, 255, brightness) || !readNumber("mode", 1, LAMP_EFFECT_COUNT, mode) || !lampEffectAvailable(uint8_t(mode))) {
     lampServer.send(400, "text/plain", "Check LED count, power limit, brightness, and effect."); return;
   }
   LampSettings next = lampSettings;
@@ -931,7 +936,7 @@ void beginLampNetwork()
       lampServer.send(409,"text/plain","Finish setup or updating before changing lamp design."); return;
     }
     uint32_t style;
-    if (!readNumber("style",0,3,style)) {
+    if (!readNumber("style",0,LAMP_PHYSICAL_STYLE_MAX,style)) {
       lampServer.send(400,"text/plain","Choose a supported lamp design."); return;
     }
     if (!configureLampStyle(static_cast<uint8_t>(style))) {
@@ -1063,6 +1068,7 @@ void beginLampNetwork()
   lampServer.on("/api/defaults", HTTP_POST, []() {
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
+    if(Mode>LAMP_EFFECT_COUNT){lampServer.send(409,"text/plain","Choose another startup effect. Nothing saved.");return;}
     const bool saved = saveLampDefaults();
     lampServer.send(saved ? 200 : 500, "text/plain", saved ? "Startup effect and brightness saved." : "Could not save defaults.");
   });
@@ -1071,7 +1077,7 @@ void beginLampNetwork()
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
     if (!readNumber("mode", 1, lampAvailableEffectCount(), mode) || !readNumber("brightness", 1, 255, brightness)) { lampServer.send(400, "text/plain", "Invalid effect or brightness."); return; }
-    setLampControl(mode, brightness, lampServer.arg("keepPower") == "1" ? PowerOn : true);
+    if(!setLampControl(mode, brightness, lampServer.arg("keepPower") == "1" ? PowerOn : true)){lampServer.send(409,"text/plain","Invalid effect or brightness.");return;}
     lampServer.send(200, "text/plain", "Preview applied. Save settings to keep it after restart.");
   });
   lampServer.on("/api/power", HTTP_POST, []() {
@@ -1079,7 +1085,7 @@ void beginLampNetwork()
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t on;
     if (!readNumber("on", 0, 1, on)) { lampServer.send(400, "text/plain", "Invalid power value."); return; }
-    setLampControl(Mode, Brightness, on); lampShowFrame(PowerOn?LampRuntimeMetrics::FrameKind::Control:LampRuntimeMetrics::FrameKind::Off);
+    if(!setLampControl(Mode, Brightness, on)){lampServer.send(409,"text/plain","Invalid power value.");return;}lampShowFrame(PowerOn?LampRuntimeMetrics::FrameKind::Control:LampRuntimeMetrics::FrameKind::Off);
     lampServer.send(200, "text/plain", PowerOn ? "Light on." : "Light off.");
   });
   lampServer.on("/api/mesh/status", HTTP_GET, [](){
@@ -1218,6 +1224,8 @@ void serviceLampUSB()
     if (command == 't' && !lampUpdateOwnsResources()) { diagnoseLampAudio(); audioPending = true; }
     if (command == 'u') audioPending = true;
     if (!lampUpdateOwnsResources()) {
+        // USB bench selectors; ordinary knob/app behavior and startup stay intact.
+        if(command>='E'&&command<='I')setLampControl(MODE_EDISON_FILAMENT+command-'E',Brightness,true);
       if (command == '+' || command == '-') { adjustLampAudioGain(command == '+'); audioPending = true; }
       if (command >= '1' && command <= '5') setLampControl(MODE_SPECTRUM_RISE + command - '1', Brightness, true);
       if (command == '6') setLampControl(MODE_VU_METER, Brightness, true);
@@ -1383,7 +1391,7 @@ void serviceLampNetwork()
 
 bool saveLampDefaults()
 {
-  if(lampSyncFollowing()) return false;
+  if(lampSyncFollowing() || Mode>LAMP_EFFECT_COUNT) return false;
   LampSettings next = lampSettings;
   next.brightness = Brightness;
   next.startupMode = Mode;

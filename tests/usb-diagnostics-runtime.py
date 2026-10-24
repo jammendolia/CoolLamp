@@ -79,12 +79,13 @@ struct {
   size_t print(const String& text){return write(reinterpret_cast<const uint8_t*>(text.c_str()),text.length());}
 }Serial;
 static unsigned mutationCalls=0;
+static int lastControlMode=0;
 static bool setupAP=false,lastAPStartOK=true,otaActive=false,PowerOn=true,scanActive=false;
 static uint32_t restartAt=0,scanStartedAt=0,scanDuration=120,scanPolls=0;
 static int scanCount=0;
 static uint8_t Brightness=100;
 static String lampAPName="fixture";
-constexpr int MODE_SPECTRUM_RISE=41,MODE_VU_METER=46,MODE_SOUND_GLOW=39,MODE_SOUND_METER=40,MODE_FIRE=4;
+constexpr int MODE_SPECTRUM_RISE=41,MODE_VU_METER=46,MODE_SOUND_GLOW=39,MODE_SOUND_METER=40,MODE_FIRE=4,MODE_EDISON_FILAMENT=48;
 namespace WifiSetupWire {constexpr uint8_t CONTROL=1;}
 static uint32_t nowMillis=12345;
 uint32_t millis(){return nowMillis;}
@@ -100,7 +101,7 @@ void beginLampScan(){++mutationCalls;}
 void toggleLampSetup(){++mutationCalls;}
 void diagnoseLampAudio(){++mutationCalls;}
 void adjustLampAudioGain(bool){++mutationCalls;}
-void setLampControl(int,int,bool){++mutationCalls;}
+void setLampControl(int mode,int,bool){++mutationCalls;lastControlMode=mode;}
 bool saveLampAudioConfiguration(bool,int,int){++mutationCalls;return true;}
 static std::vector<std::string> builtKinds;
 String reply(const char* kind){
@@ -139,7 +140,15 @@ int main(int argc,char** argv){
   assert(argc==2);const std::string scenario=argv[1];
   runtimeInput.identity="74b950b2f180";runtimeInput.version="1.15.1";runtimeInput.uptime=77;
   runtimeInput.frames=44;runtimeMetrics.currentWindow.sequence=3;runtimeMetrics.currentWindow.maxAnimationGapUs=16000;
-  if(scenario=="retention-model"){
+  if(scenario=="edison-selectors"){
+    // The USB adapter must dispatch the existing IDs exactly; the production
+    // control admission suite separately verifies profile/mic/group rejection.
+    for(char command='E';command<='I';++command){
+      input(std::string(1,command));serviceLampUSB();
+      assert(mutationCalls==1&&lastControlMode==48+command-'E');mutationCalls=0;
+    }
+    input("DJK");turn(0);assert(!mutationCalls&&Serial.input.empty());
+  }else if(scenario=="retention-model"){
     String example(std::string(2048,'x'));const size_t bytes=retainedBytes;assert(bytes>=2048);
     example="";assert(example.isEmpty()&&retainedBytes==bytes);
     example=static_cast<const char*>(nullptr);assert(example.isEmpty()&&retainedBytes==0);
@@ -264,7 +273,7 @@ with tempfile.TemporaryDirectory(prefix='usb-diagnostics-',dir=ROOT/'.build') as
     cpp=Path(folder)/'test.cpp';cpp.write_text(fixture+handler+main);binary=Path(folder)/'test.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',
                     *SANITIZERS,'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
-    for scenario in ('retention-model','partial-and-release','pending-json-fairness','coalesced-input-bound',
+    for scenario in ('edison-selectors','retention-model','partial-and-release','pending-json-fairness','coalesced-input-bound',
                      'runtime-partial-zero-room','runtime-then-rich-pending','rich-then-runtime-pending',
                      'runtime-coalesced-input','runtime-then-status-text','runtime-then-scan-text',
                      'runtime-invalid-fails-closed','zero-room-idle-expiry-and-recovery',

@@ -216,7 +216,15 @@ test('malformed or late Wi-Fi catalogs cannot populate a new connection',async()
 });
 
 test('center setting validates strip boundaries, authenticates, and stays connected',async()=>{
-  const {lamp,calls,setRaw}=setup();
+  const {lamp,http,calls,setRaw}=setup();
+  const request=http.request;
+  http.request=options=>{
+    if(options.method==='POST'&&options.url.endsWith('/api/geometry')) {
+      const midpoint=Number(new URLSearchParams(options.data).get('midpoint'));
+      setRaw({...lamp.raw,midpoint,effectiveMidpoint:midpoint||Math.ceil(lamp.raw.leds/2)});
+    }
+    return request(options);
+  };
   setRaw({...fixture(),leds:134,midpoint:0,effectiveMidpoint:67});
   await lamp.connect('192.168.1.9','test');
   try {

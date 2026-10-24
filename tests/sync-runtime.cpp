@@ -8,7 +8,7 @@ bool lampHasMicrophone(){return microphone;}
 LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures a{};a.valid=true;a.level=100;a.beat=1;return a;}
 unsigned applied=0,restored=0;
 void applyLampSyncControl(const Visual* v){if(v)++applied;else ++restored;}
-void captureLampSyncVisual(Visual& v){v={};v.mode=46;v.power=1;v.brightness=150;v.speed=50;v.audioValid=1;v.level=140;}
+void captureLampSyncVisual(Visual& v){v={};v.mode=fixtureControlState.mode;v.power=1;v.brightness=150;v.speed=50;v.audioValid=1;v.level=140;}
 void receive(Packet p,bool sign=true){if(sign)digest(p,p.mac);const auto* b=reinterpret_cast<uint8_t*>(&p);WiFiUDP::incoming.emplace_back(b,b+sizeof(p));}
 Packet leaderPacket(Kind kind,uint64_t target,uint32_t seq){
  Packet p=packet(kind,"Coordinator");strcpy(p.sender,"112233445566");strcpy(p.leader,p.sender);p.role=1;p.session=888;p.target=target;p.sequence=seq;captureLampSyncVisual(p.visual);return p;

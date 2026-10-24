@@ -31,7 +31,7 @@ struct ResetStyleRecord {
   bool valid() const {
     uint8_t check=0x3c;for(unsigned i=0;i<13;++i)check^=data[i];
     FactoryResetRecord reset;memcpy(reset.data,data+3,sizeof(reset.data));
-    return data[0]==1&&data[1]<=1&&data[2]<=uint8_t(LampPhysicalStyle::Corkscrew)&&
+    return data[0]==1&&data[1]<=1&&data[2]<=LAMP_PHYSICAL_STYLE_MAX&&
       data[13]==check&&reset.valid()&&reset.data[1]==0;
   }
   bool matches(const FactoryResetRecord& reset) const {
@@ -47,7 +47,7 @@ bool readStoredStyle(uint8_t& style) {
   Preferences prefs;if(!prefs.begin("coollamp",false))return false;
   if(prefs.getType("lampStyle")==PT_U8){
     const uint8_t value=prefs.getUChar("lampStyle",255);
-    if(value<=uint8_t(LampPhysicalStyle::Corkscrew))style=value;
+    if(value<=LAMP_PHYSICAL_STYLE_MAX)style=value;
   }
   prefs.end();return true;
 }

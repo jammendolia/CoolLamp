@@ -2,6 +2,7 @@ import { lampAddress, validFirmwareVersion } from './lamps.js';
 import { wifiObservation,groupObservation,lightingObservation } from './lamp-connectivity.js';
 import {normalizeLampStyle} from './lamp-style.js';
 import {validateCatalog} from './catalog.js';
+import {automaticUpdateEvidence,observedReceiverUpdate} from './update-source.js';
 
 const busyPhases = [1, 3, 4];
 const updateErrors = ['','Lamp is offline.','Lamp could not set its clock.','Lamp cannot reach the update server.',
@@ -16,10 +17,10 @@ const newer = (a, b) => {
 const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
 const parse = response => {
   try { return typeof response.data === 'string' ? JSON.parse(response.data) : response.data; }
-  catch { throw failure('Invalid firmware response from lamp.'); }
+  catch { throw failure('Invalid firmware response from lamp.', {invalidRead: true}); }
 };
 function firmwareStatus(value) {
-  if (!validFirmwareVersion(value?.version)) throw failure('Invalid firmware version from lamp.');
+  if (!validFirmwareVersion(value?.version)) throw failure('Invalid firmware version from lamp.', {invalidRead: true});
   // Some older lamps expose their installed version without the OTA controls.
   const supported = Number.isInteger(value.phase) && value.phase >= 0 && value.phase <= 5 &&
     Number.isInteger(value.progress) && value.progress >= 0 && value.progress <= 100 &&
@@ -27,7 +28,7 @@ function firmwareStatus(value) {
     typeof value.wifi === 'boolean' && typeof value.available === 'boolean' && typeof value.automatic === 'boolean' &&
     (value.latest === '0.0.0' || Boolean(validFirmwareVersion(value.latest)));
   if (!supported && Object.keys(value).some(key => ['phase','available','error','progress'].includes(key))) {
-    throw failure('Invalid firmware status from lamp.');
+    throw failure('Invalid firmware status from lamp.', {invalidRead: true});
   }
   return {...value, supported, latest: validFirmwareVersion(value.latest)};
 }
@@ -53,8 +54,10 @@ function target(entry) {
 // GET-only refresh and explicit bulk installs have independent lifetimes.
 export class FirmwareFleet {
   constructor({http, credential, getLamps, onStatus, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
-    requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000} = {}) {
+    requestTimeout = 9000, pollInterval = 3000, checkTimeout = 180000, updateTimeout = 240000, healthyUptime = 35000,beforeMutation,getLatestVersion=()=>null} = {}) {
     this.http = http; this.credential = credential; this.getLamps = getLamps; this.onStatus = onStatus;
+    this.beforeMutation=beforeMutation;
+    this.getLatestVersion=getLatestVersion;
     Object.assign(this, {now, sleep, requestTimeout, pollInterval, checkTimeout, updateTimeout, healthyUptime});
     this.statuses = new Map(); this.catalogues=new Map();this.refreshRun = null; this.bulkRun = null; this.bulkPromise = null;this.singleRuns=new Map();
   }
@@ -74,7 +77,11 @@ export class FirmwareFleet {
   }
   emit(lamp, run, status) {
     this.assertCurrent(lamp, run);
-    const value = {...this.statuses.get(lamp.id), verified: false, fresh: false, ...status};
+    const previous=this.statuses.get(lamp.id),evidence=status.automaticEvidence;
+    const attention=evidence?.kind==='receiving'||evidence?.kind==='healthy'?null:
+      ['attention','pending'].includes(evidence?.kind)?evidence:previous?.automaticAttention??null;
+    const value = {...previous, verified: false, fresh: false, receiverSnapshot:null,receiverSnapshotAt:0,
+      ...status,automaticAttention:attention,automaticContext:evidence??previous?.automaticContext??null};
     this.statuses.set(lamp.id, value);
     this.onStatus?.(lamp.id, value);
     return {id: lamp.id, ...value};
@@ -88,6 +95,9 @@ export class FirmwareFleet {
     const attemptedAt=this.now();
     let timer;
     const mutation = token !== undefined;
+    // Durable phone fences must succeed before an update POST can leave.
+    // Observer failure is a local failure, never an uncertain native send.
+    if(mutation){await this.beforeMutation?.({identity:lamp.id,path,expectedVersion:run.expectedVersion});this.assertCurrent(lamp,run);}
     const options = {url: lamp.base + path, method: mutation ? 'POST' : 'GET',
       headers: {Authorization: lamp.authorization, ...(mutation ? {'X-Lamp-Token': token, 'Content-Type': 'application/x-www-form-urlencoded'} : {})},
       ...(mutation ? {data: ''} : {}), responseType: 'text', connectTimeout: 5000, readTimeout: 8000, disableRedirects: true};
@@ -116,7 +126,7 @@ export class FirmwareFleet {
     const identity = raw?.deviceId || raw?.hostname?.replace(/\.local$/, '');
     if (identity !== lamp.id) throw failure('This address belongs to a different lamp. Refresh the Wi-Fi list.', {identity: true});
   }
-  async identify(lamp, run, state = false) {
+  async identify(lamp, run, state = false, {automaticServiceRead=false}={}) {
     let response, wifiObservedAt=this.now();
     if (!state) {
       try { response = await this.request(lamp, run, '/api/diagnostics'); }
@@ -126,25 +136,47 @@ export class FirmwareFleet {
     const raw = parse(response);
     this.verifyIdentity(lamp, raw);
     const firmware = firmwareStatus(raw.firmware);
-    if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.');
+    if (state && (typeof raw.token !== 'string' || !raw.token || raw.token.length > 128)) throw failure('Lamp did not provide an update token.', {missingUpdateToken: true});
     const lampStyle=raw.lampStyle&&typeof raw.lampStyle==='object'?normalizeLampStyle(raw.lampStyle):null;
     const catalogueKey=JSON.stringify([lamp.base,firmware.version,raw.audio?.installed??null]);
     const cached=this.catalogues.get(lamp.id);
     const lighting=lightingObservation(raw,cached?.key===catalogueKey?cached.entries:null);
-    return {firmware, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle,lighting,catalogueKey, wifiObservedAt, uptimeMs: Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
+    let latestVersion=null;try{latestVersion=this.getLatestVersion();}catch{}
+    const evidenceAt=this.now(),baseEvidence=automaticUpdateEvidence(raw,lamp.id,{verified:true,fresh:true,observedAt:evidenceAt,now:evidenceAt,latestVersion});
+    let compact=null;
+    // One extra bounded read under the existing status owner. It cannot scan,
+    // provision, install or start a phone transfer. Old receivers keep their
+    // already verified full snapshot when this additive endpoint is unavailable.
+    if(automaticServiceRead&&firmware.automatic===true){
+      try{compact=await this.compact(lamp,run);}
+      catch(error){if(error.identity||error.cancelled||error.stale)throw error;}
+      this.assertCurrent(lamp,run);
+    }
+    const effective=compact?.compactTargetVerified&&compact.supported?compact:firmware,versionChanged=effective.version!==firmware.version;
+    return {firmware:effective, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle,lighting:versionChanged?null:lighting,
+      catalogueKey:versionChanged?JSON.stringify([lamp.base,effective.version,raw.audio?.installed??null]):catalogueKey, wifiObservedAt,
+      automaticEvidence:compact?.compactTargetVerified?compact.automaticEvidence:baseEvidence,receiverSnapshot:compact?.receiverSnapshot??null,receiverSnapshotAt:compact?.receiverSnapshotAt??0,
+      uptimeMs: !versionChanged&&Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
   }
   live(lamp, run, identity, state = 'ready', message = '') {
     const fw = identity.firmware;
+    if(identity.receiverSnapshot)state='updating'; // The compact target read is newer than the full snapshot.
     return this.emit(lamp, run, {state, installedVersion: fw.version, latestVersion: fw.latest,
       available: fw.available === true && newer(fw.latest, fw.version), progress: fw.progress ?? 0,
-      checkedAt: this.now(), verified: true, fresh: true, wifi:identity.wifi ?? null,
+      // This timestamp verifies the installed version. `latest` is the lamp's
+      // cached offer; reading diagnostics does not contact the public server.
+      checkedAt: this.now(), installedObservedAt: this.now(), latestSource:'lamp-cache',
+      releaseCheckUptimeMs:Number.isInteger(fw.checkedAt)&&fw.checkedAt>=0?fw.checkedAt:null,
+      verified: true, fresh: true, wifi:identity.wifi ?? null,
+      automaticEnabled:fw.automatic,automaticEvidence:identity.automaticEvidence,
+      receiverSnapshot:identity.receiverSnapshot??null,receiverSnapshotAt:identity.receiverSnapshotAt??0,
       wifiObservedAt:identity.wifi?identity.wifiObservedAt:null,group:identity.group ?? null,
       groupObservedAt:identity.group?identity.wifiObservedAt:null,lampStyle:identity.lampStyle ?? null,
       styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null,lighting:identity.lighting??null,
       lightingObservedAt:identity.lighting?identity.wifiObservedAt:null, message, error: ''});
   }
   async enrichLighting(lamp,run,identity,row){
-    if(!identity.lighting||identity.lighting.kind==='group'&&identity.lighting.scene!==0||identity.lighting.name||busyPhases.includes(identity.firmware.phase))return row;
+    if(!identity.lighting||identity.lighting.kind==='group'&&identity.lighting.scene!==0||identity.lighting.name||identity.receiverSnapshot||busyPhases.includes(identity.firmware.phase))return row;
     if(this.catalogues.get(lamp.id)?.key===identity.catalogueKey)return row;
     try{
       const value=parse(await this.request(lamp,run,'/api/effects'));
@@ -191,11 +223,14 @@ export class FirmwareFleet {
       return {id: entry.id, ...value};
     }
   }
-  async refresh() {
-    if (this.bulkRun && !this.bulkRun.cancelled||this.singleRuns.size) return {results: [], cancelled: false, busy: true};
+  async refresh({excludeIds=[]}={}) {
+    const excluded=new Set(excludeIds);
+    if (this.bulkRun && !this.bulkRun.cancelled||[...this.singleRuns.keys()].some(id=>!excluded.has(id))) return {results: [], cancelled: false, busy: true};
     this.cancelRefresh();
     const run = this.run(); this.refreshRun = run;
-    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()], results = [];
+    // Exclusion belongs only to this passive workload. Target validation and
+    // mutative tasks continue to consult the complete owned-lamp inventory.
+    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()].filter(entry=>!excluded.has(entry.id)), results = [];
     let index = 0;
     const worker = async () => {
       while (!run.cancelled && index < entries.length) {
@@ -203,7 +238,7 @@ export class FirmwareFleet {
         try {
           const lamp = await this.prepare(entry, run);
           this.emit(lamp, run, {state: 'checking', message: 'Reading installed firmware…', attemptedAt: this.now()});
-          const identity = await this.identify(lamp, run);
+          const identity = await this.identify(lamp, run,false,{automaticServiceRead:true});
           const state = identity.firmware.supported ? busyPhases.includes(identity.firmware.phase) ?
             identity.firmware.phase === 4 ? 'restarting' : identity.firmware.phase === 3 ? 'updating' : 'checking' : 'ready' : 'unsupported';
           const row=this.live(lamp, run, identity, state, identity.firmware.supported ? '' : 'This lamp does not support Wi-Fi updates.');
@@ -215,16 +250,19 @@ export class FirmwareFleet {
     if (this.refreshRun === run) this.refreshRun = null;
     return {results, cancelled: run.cancelled};
   }
-  updateAll() {
+  updateAll(expectedVersion,{excludeIds=[]}={}) {
     if (this.bulkPromise) return this.bulkPromise;
     if(this.singleRuns.size)return Promise.reject(failure('Finish the current lamp update first.'));
+    if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))return Promise.reject(failure('Check the selected public release before updating.'));
     this.cancelRefresh();
-    const run = this.run(); this.bulkRun = run;
+    const run = this.run();run.expectedVersion=expectedVersion; this.bulkRun = run;
+    const excluded=new Set(excludeIds);
     const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()];
     this.bulkPromise = (async () => {
       const results = [];
       for (const entry of entries) {
         if (run.cancelled) break;
+        if(excluded.has(entry.id)){results.push({id:entry.id,state:'pending',verified:false,fresh:false,message:'The previous update needs confirmation.'});continue;}
         try { results.push(await this.updateOne(await this.prepare(entry, run), run)); }
         catch (error) { const result = this.errorStatus(entry, run, error); if (result) results.push(result); }
       }
@@ -232,9 +270,19 @@ export class FirmwareFleet {
     })().finally(() => {if (this.bulkRun === run) this.bulkRun = null; this.bulkPromise = null;});
     return this.bulkPromise;
   }
-  async post(lamp, run, path) {
+  async post(lamp, run, path, {allowPreflightFallback=false}={}) {
     // Refresh identity and boot token directly before EVERY mutative operation.
-    const identity = await this.identify(lamp, run, true);
+    let identity;
+    try { identity = await this.identify(lamp, run, true); }
+    catch(error) {
+      // This catch ends before the first check POST. A malformed/token-less
+      // read or timeout cannot have started our update. Authentication,
+      // identity, lifetime and uncertain execution failures never reroute.
+      if(allowPreflightFallback&&path==='/api/firmware/check'&&!run.cancelled&&
+        !error.uncertain&&!error.identity&&!error.needsPassword&&!error.stale&&!error.cancelled&&
+        (error.offline||error.invalidRead||error.missingUpdateToken))error.safeBluetoothFallback=true;
+      throw error;
+    }
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if (busyPhases.includes(identity.firmware.phase)) return {identity, busy: true};
     if(path.endsWith('/install')&&run.expectedVersion&&identity.firmware.latest!==run.expectedVersion)throw failure('The available release changed. Refresh before updating.');
@@ -247,7 +295,21 @@ export class FirmwareFleet {
       throw error;
     }
   }
-  async compact(lamp, run) { return firmwareStatus(parse(await this.request(lamp, run, '/api/firmware'))); }
+  async compact(lamp, run) {
+    const raw=parse(await this.request(lamp,run,'/api/firmware'));
+    if(Object.hasOwn(raw??{},'deviceId'))this.verifyIdentity(lamp,raw);
+    const value=firmwareStatus(raw);
+    value.compactTargetVerified=raw.deviceId===lamp.id;
+    if(raw.deviceId!==lamp.id)return value; // Legacy compact status has no target proof.
+    const at=this.now(),proof={verified:true,fresh:true,observedAt:at,now:at};
+    let latestVersion=null;try{latestVersion=this.getLatestVersion();}catch{}
+    value.automaticEvidence=automaticUpdateEvidence(raw,lamp.id,{...proof,latestVersion});
+    const receiver=observedReceiverUpdate(raw,lamp.id,proof);
+    value.receiverSnapshot=receiver?{deviceId:lamp.id,firmware:{updateContractVersion:raw.updateContractVersion,receiver:true,phase:raw.phase,
+      route:Number.isInteger(raw.route)&&raw.route>=0&&raw.route<=255?raw.route:0,progress:raw.progress,writtenOffset:raw.writtenOffset,totalBytes:raw.totalBytes}}:null;
+    value.receiverSnapshotAt=receiver?at:0;
+    return value;
+  }
   async updateOne(lamp, run) {
     this.emit(lamp, run, {state: 'checking', message: 'Checking for updates…', attemptedAt: this.now()});
     let identity = await this.identify(lamp, run);
@@ -257,7 +319,7 @@ export class FirmwareFleet {
     if(run.expectedVersion&&!newer(run.expectedVersion,identity.firmware.version))return this.live(lamp,run,identity,'ready','Already up to date.');
     const originalVersion = identity.firmware.version;
     if (!busyPhases.includes(identity.firmware.phase)) {
-      const check = await this.post(lamp, run, '/api/firmware/check');
+      const check = await this.post(lamp, run, '/api/firmware/check', {allowPreflightFallback:true});
       identity = check.identity;
       if (check.busy) return this.observe(lamp, run, originalVersion, identity.firmware);
       return this.observe(lamp, run, originalVersion, null, {uncertain: check.uncertain, conflict: check.conflict});
@@ -302,11 +364,12 @@ export class FirmwareFleet {
       } else if (fw.version !== originalVersion) {
         throw failure('Lamp firmware changed unexpectedly. Refresh the Wi-Fi list.');
       } else if (fw.phase === 5) {
-        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
+        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{firmwareError:fw.error,firmwarePhase:fw.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
       } else if ([3,4].includes(fw.phase)) {
         if (!updating) deadline = this.now() + this.updateTimeout;
         updating = true; observedActivity = true;
-        this.emit(lamp, run, {state: fw.phase === 4 ? 'restarting' : 'updating', progress: fw.progress,
+        this.emit(lamp, run, {state: fw.phase === 4 ? 'restarting' : 'updating', progress: fw.progress,automaticEnabled:fw.automatic,
+          automaticEvidence:fw.automaticEvidence,receiverSnapshot:fw.receiverSnapshot??null,receiverSnapshotAt:fw.receiverSnapshotAt??0,
           message: fw.phase === 4 ? 'Lamp is restarting…' : 'Installing firmware…'});
       } else if (fw.phase === 1) {
         observedActivity = true;
@@ -327,7 +390,7 @@ export class FirmwareFleet {
         if (busyPhases.includes(identity.firmware.phase) || (identity.firmware.available && newer(identity.firmware.latest, identity.firmware.version))) {
           fw = identity.firmware; continue;
         }
-        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
+        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{firmwareError:identity.firmware.error,firmwarePhase:identity.firmware.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
         if(run.expectedVersion&&newer(run.expectedVersion,identity.firmware.version))throw failure('The lamp did not find the selected release. Refresh before trying again.');
         return this.live(lamp, run, identity, 'ready', 'Already up to date.');
       }
@@ -339,6 +402,7 @@ export class FirmwareFleet {
   }
   async updateLamp(entry,expectedVersion){
     if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update is already running.');
+    if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))throw failure('Check the selected public release before updating.');
     this.cancelRefresh();const run=this.run();run.expectedVersion=expectedVersion;this.singleRuns.set(entry.id,run);
     try{
       let lamp;try{lamp=await this.prepare(entry,run);await this.identify(lamp,run);}catch(error){if(error.offline||error.unsupported)error.safeBluetoothFallback=true;throw error;}

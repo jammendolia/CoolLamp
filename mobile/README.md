@@ -1,5 +1,36 @@
 # CoolLamp phone app
 
+Update progress is shown in both Lamps and the selected lamp's Settings, even
+while ordinary Settings controls are hidden during connection recovery. Both
+views use `lamp-update-progress.js`: only confirmed receiver-written bytes fill
+the model artwork and percentage. Download, cancellation, restart and unresolved
+commit stages retain indeterminate progress. Existing callbacks refresh the
+display; rendering adds no network requests or mutations. A global update hold
+does not claim that the selected lamp is updating.
+
+Phone Bluetooth transfer still requires CoolLamp in the foreground. A captured
+1.15.0 receiver attempt stopped at 134,792/2,029,600 bytes when the user switched
+apps (`app-hidden`), before a final commit was attempted. Sending stopped, while
+receiver cancellation remains unconfirmed until a fresh protected read; the app
+must not claim unchanged firmware or automatically restart installation. The
+Settings view displays the stopped/checking result and keeps this receipt.
+
+Reliable iOS background transfer is a separate native milestone. The current
+JavaScript sender and pinned bridge do not provide a native transfer owner,
+Core Bluetooth restoration or an enabled `bluetooth-central` background mode.
+A finite UIKit background grant alone does not prove WKWebView continues the
+sender. Before offering that capability, implement and test a native bounded
+artifact/ACK/lease/receipt owner, expiry and restoration, exact foreground
+reconciliation, and physical lock/app-switch/system-termination cases. Internet
+and trusted-donor receivers run on the lamp once their installation starts.
+
+Version 2.0.0 introduces the new Home, Lamps, Effects and Settings experience,
+guided physical pairing, room names, group creation and adaptive effect controls.
+The warm paper and olive design supports light, dark and system appearance,
+native safe areas, reduced motion and large touch targets. iOS and Android use
+the same application and lamp contracts; their icons and native versions are
+updated together.
+
 Capacitor app with a bundled web interface, Wi-Fi discovery/control, and the community BLE plugin.
 No cloud or Wi-Fi is required for Bluetooth control.
 See [implementation and protocol](../docs/bluetooth-app.md).
@@ -37,7 +68,8 @@ Bluetooth is not available in the iOS simulator.
 
 The registered app ID is com.coollamp.controller and the Apple Team ID is
 P3XKA54Q3B. Both Debug and Release use automatic signing for this team.
-No signing credentials or store releases are configured.
+Signing credentials stay in the personal repository's Actions secrets. The
+application does not embed Apple credentials.
 
 ### Build from Windows using GitHub Actions
 
@@ -54,10 +86,19 @@ configured in the build service. Never commit Apple private keys or certificates
 
 ### TestFlight signing and upload
 
-The `iOS TestFlight upload` workflow runs only when manually started. It builds
+The `iOS TestFlight upload` workflow supports manual dispatch and selected release
+branches. It builds
 and validates an IPA, then uploads it to Apple for processing. It does not submit
-an App Store release or an external beta review. After processing, add the build
-to an internal testing group in App Store Connect and install it with TestFlight.
+an App Store release or an external beta review. A read-only verification step
+checks this exact marketing version and build number after upload and saves a
+sanitized `testflight-status` artifact. Successful upload, Apple processing and
+internal testing availability are reported separately. Existing internal groups
+with access to all builds receive eligible builds automatically.
+
+New firmware capabilities are discovered from the selected lamp. Rich effect
+schemas, confirmed partial commands and separately saved effect tuning are
+enabled only when advertised; older firmware retains its supported controls.
+The firmware's private update animation is never a user-selectable effect.
 
 In the personal `jammendolia/CoolLamp` repository, configure these Actions settings:
 
@@ -85,6 +126,35 @@ References: [Codemagic CLI with GitHub Actions](https://blog.codemagic.io/deploy
 [signing command](https://github.com/codemagic-ci-cd/cli-tools/blob/master/docs/app-store-connect/fetch-signing-files.md).
 
 ## Verification
+
+Settings entry points use `appV2.openSettings(id, section)` for a single saved
+lamp, or `chooseLight(section)` for the lamp chooser. Both use the same pinned
+selection, 25-second deadline and cancellation lifecycle. The gear immediately
+opens a target-specific loading sheet; a persistent live status and decorative
+spinner stay visible while connecting and reading settings. Close cancels the
+attempt, failures expose Try again, and stale completions cannot open another
+lamp. Reduced-motion preferences stop the spinner. Progress has no invented
+percentage or time estimate.
+
+Settings reuse a verified active connection. Fresh, confirmed Wi-Fi is tried
+first; when Wi-Fi evidence is stale, saved authorized Bluetooth is tried before
+direct Wi-Fi and bounded mesh recovery. Successful direct Wi-Fi settings do not
+require Bluetooth range. Only the explicit Bluetooth action forces that route.
+The loading UI does not change authentication, target verification, route
+selection or provision other lamps. `app-v2-navigation.test.js` exercises the
+actual gear and mounted UI, including a 20-second wait, cancellation, late
+completion, timeout and retry; the route tests cover Wi-Fi priority and fallback.
+These changes require a new native app build and are not in TestFlight 61.1.
+
+Transient busy responses on eight explicitly audited GET reads retry only on
+the same fenced connection, at most six calls. POSTs, scans, enrollment, firmware
+installation and uncertain network failures never retry. Wi-Fi Settings now has
+one shared nine-second State/catalog budget inside the chooser's 25-second total;
+individual native timeouts shrink with the remaining budget. CapacitorHttp offers
+no cancellation operation, so late native responses are ignored rather than
+claimed cancelled. A physical Node adapter test of the production client opened
+Settings/catalog in 8.44 seconds with two parked readers; native iOS/Android
+validation of this additional retry remains a separate gate.
 
 pnpm test exercises the actual transport code with a fake radio: input boundaries,
 effect consistency, notifications, reconnect, ordered writes, acknowledgments,

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  LAMP_STYLES,styleDefinition,normalizeLampStyle,styleFamily,styleLabel,resolveLampStyle,
+  LAMP_STYLES,styleDefinition,normalizeLampStyle,normalizeLampModel,lampStyleLocked,lampDesignLabel,styleFamily,styleLabel,resolveLampStyle,
   effectRecommendation,effectRecommended,recommendedEffects
 } from '../src/lamp-style.js';
 
@@ -19,13 +19,27 @@ const actualCatalog=[...catalogBlock[1].matchAll(/"([^"]*)"/g)].map((match,index
 test('stable physical choices expose only trusted labels and immutable definitions',()=>{
   assert.deepEqual(LAMP_STYLES.map(({id,code,family,label})=>[id,code,family,label]),[
     ['unspecified',0,'unspecified','Not specified'],['helix',1,'helix','Helix'],
-    ['large-helix',2,'helix','Large helix'],['corkscrew',3,'corkscrew','Corkscrew']
+    ['large-helix',2,'helix','Large helix'],['corkscrew',3,'corkscrew','Corkscrew'],
+    ['edison',4,'edison','Edison']
   ]);
   assert(Object.isFrozen(LAMP_STYLES));
   for(const value of LAMP_STYLES)assert(Object.isFrozen(value));
   assert.throws(()=>{styleDefinition('helix').label='Wrong';});
   assert.equal(styleLabel('<img onerror="unsafe">'),'Not specified');
   assert.equal(styleFamily('large-helix'),'helix');
+});
+
+test('Edison is independent display metadata, with no invented geometry or effect restrictions',()=>{
+  const value={...descriptor('edison'),locked:true,factoryStyle:'edison',model:{version:1,id:'edison-v1',displayName:'CoolLamp Edison',artworkFamily:'edison',hardwareRevision:'unspecified',preconfigured:true}};
+  assert.deepEqual(normalizeLampStyle(value),value);
+  assert.equal(styleLabel(value),'Edison');assert.equal(styleFamily(value),'edison');
+  assert.deepEqual(resolveLampStyle(value,'helix'),{id:'edison',source:'lamp'});
+  assert.equal(lampDesignLabel(value),'CoolLamp Edison');assert.equal(lampStyleLocked(value),true);
+  assert(!Object.hasOwn(styleDefinition('edison'),'ledCount'));assert(!Object.hasOwn(styleDefinition('edison'),'midpoint'));
+  assert.equal(effectRecommendation(effect('Rain'),'edison'),'general');
+  const supported=effect('Future Edison effect',99,{styles:['edison']});
+  assert.equal(effectRecommendation(supported,'edison'),'recommended');
+  assert.equal(supported.id,99);
 });
 
 test('firmware descriptors require consistent version, numeric code, string ID and family',()=>{
@@ -61,6 +75,30 @@ test('a valid explicit lamp style takes precedence and strips untrusted descript
   assert.deepEqual(resolveLampStyle({...descriptor('corkscrew'),label:'Injected',key:'private'},'helix'),{id:'corkscrew',source:'lamp'});
   assert.deepEqual(resolveLampStyle('large-helix','corkscrew'),{id:'large-helix',source:'lamp'});
   assert.equal(styleDefinition({...descriptor('helix'),label:'Injected'}).label,'Helix');
+});
+
+test('factory design metadata preserves bounded future identity without guessing artwork or accepting secrets',()=>{
+  const model={version:1,id:'future-coil-2070',displayName:'Future Coil',artworkFamily:'future-art',hardwareRevision:'rev-z',preconfigured:true};
+  const raw={...descriptor('unspecified'),locked:true,factoryStyle:'future-coil',model:{...model,password:'private'},token:'private'};
+  const normalized=normalizeLampStyle(raw);
+  assert.deepEqual(normalized,{...descriptor('unspecified'),locked:true,factoryStyle:'future-coil',model});
+  assert.equal(lampStyleLocked(normalized),true);assert.equal(lampDesignLabel(normalized),'Future Coil');
+  assert.deepEqual(resolveLampStyle(normalized,'corkscrew'),{id:'unspecified',source:'lamp'});
+  assert(!JSON.stringify(normalized).includes('private'));assert.notEqual(normalized.model,raw.model);
+  assert.equal(lampStyleLocked(descriptor('helix')),false);assert.equal(lampStyleLocked({...descriptor('helix'),locked:'true'}),false);
+  for(const bad of [{...model,id:'<script>'},{...model,id:'a'.repeat(65)},{...model,displayName:'a'.repeat(65)},{...model,displayName:'bad\nname'},{...model,version:2},{...model,preconfigured:1}]){
+    assert.equal(normalizeLampModel(bad),null);
+    const locked=normalizeLampStyle({...raw,model:bad});assert.equal(locked.locked,true);assert.equal(locked.model,undefined);
+    assert.deepEqual(resolveLampStyle(locked,'helix'),{id:'unspecified',source:'lamp'});
+  }
+  const unavailable=normalizeLampStyle({...descriptor('unspecified'),locked:true,factoryStatus:'unavailable'});
+  assert.equal(lampDesignLabel(unavailable),'Factory design unavailable');assert.equal(unavailable.factoryStatus,'unavailable');
+});
+
+test('model limits match the firmware record byte capacities exactly',()=>{
+  const model={version:1,id:'m'.repeat(48),displayName:'é'.repeat(32),artworkFamily:'a'.repeat(32),hardwareRevision:'h'.repeat(32),preconfigured:true};
+  assert.deepEqual(normalizeLampModel(model),model);
+  for(const [field,value] of [['id','m'.repeat(49)],['displayName','é'.repeat(33)],['artworkFamily','a'.repeat(33)],['hardwareRevision','h'.repeat(33)]])assert.equal(normalizeLampModel({...model,[field]:value}),null,field);
 });
 
 test('legacy or unspecified lamp style uses only a validated phone choice',()=>{
@@ -108,6 +146,29 @@ test('recommendations meaningfully narrow the real 47-effect catalog and share h
   assert.deepEqual(large,helix);assert.notDeepEqual(corkscrew,helix);
   for(const style of ['helix','large-helix','corkscrew'])
     assert(reviewed.every(entry=>effectRecommendation(entry,style)!=='unclassified'));
+});
+
+test('the five real Edison effects are recommended only for Edison without changing wire IDs or order',()=>{
+  const edison=actualCatalog.slice(47);
+  assert.deepEqual(edison.map(({name})=>name),['Filament','Eureka','Orbit','Induction','Sound Filament']);
+  assert.deepEqual(edison.map(({id})=>id),[48,49,50,51,52]);
+  assert.deepEqual(recommendedEffects(actualCatalog,'edison'),edison);
+  for(const entry of edison){
+    assert.equal(effectRecommendation(entry,'edison'),'recommended');
+    assert.equal(effectRecommendation(effect(entry.name.toUpperCase(),220),'edison'),'recommended');
+    for(const style of ['helix','large-helix','corkscrew'])assert.equal(effectRecommendation(entry,style),'general');
+  }
+  assert.deepEqual(recommendedEffects(edison,'helix'),[]);
+  assert.deepEqual(recommendedEffects(edison,'corkscrew'),[]);
+  recommendedEffects(actualCatalog,'edison').forEach((entry,index)=>assert.equal(entry,edison[index]));
+  assert.deepEqual(recommendedEffects(actualCatalog,'unspecified'),actualCatalog);
+});
+
+test('firmware recommendation metadata overrides Edison name fallbacks',()=>{
+  assert.equal(effectRecommendation(effect('Filament',48,{styles:[]}),'edison'),'general');
+  assert.equal(effectRecommendation(effect('Orbit',50,{styles:['corkscrew']}),'edison'),'general');
+  assert.equal(effectRecommendation(effect('Orbit',50,{styles:['corkscrew']}),'corkscrew'),'recommended');
+  assert.equal(effectRecommendation(effect('Eureka',49,{styles:['future']}),'edison'),'unclassified');
 });
 
 test('classification uses actual names rather than local wire IDs or categories',()=>{

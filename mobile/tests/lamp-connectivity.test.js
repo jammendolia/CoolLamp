@@ -80,6 +80,20 @@ test('membership has independent freshness and exact identity guards; Wi-Fi cann
   cache.observeGroup(id,{deviceId:id,group:{role:0}});assert.equal(cache.get(id).group.state,'independent');
   assert(!JSON.stringify(cache.get(id)).includes('private'));
 });
+
+test('expanded groups require a valid negotiated capacity and retain exact membership guards',()=>{
+  const {cache,id,other,setNow}=setup();
+  const sync={version:3,maxMembers:32,role:2,leader:other,active:true,paused:false,transport:'esp-now',key:'private'};
+  assert.deepEqual(groupObservation({deviceId:id,sync}),{role:2,leader:other,active:true,paused:false,transport:'esp-now'});
+  assert(cache.observeGroup(id,{deviceId:id,group:sync}));
+  assert.equal(cache.get(id).group.state,'follower');
+  assert.equal(groupCardPresentation(cache.get(id).group).badge,'NOW');
+  for(const maxMembers of [undefined,0,33,32.5,'32'])assert.equal(groupObservation({deviceId:id,sync:{...sync,maxMembers}}),null);
+  for(const patch of [{leader:id},{role:1,leader:other},{version:4}])assert.equal(groupObservation({deviceId:id,sync:{...sync,...patch}}),null);
+  assert.equal(cache.observeGroup(id,{deviceId:id,group:{...sync,maxMembers:33}}),false);
+  assert(!JSON.stringify(cache.get(id)).includes('private'));
+  setNow(1101);assert.equal(cache.get(id).group.state,'unknown');
+});
 test('late membership, old failed requests and removal cannot overwrite or revive newer membership',()=>{
   const {cache,id,other,setNow}=setup();
   cache.observeGroup(id,{deviceId:id,group:{role:2,leader:other}});

@@ -133,7 +133,7 @@ void normal(){
 void powerLoss(){
  // Complete sequence has two preparation, seven recovery and two cleanup commits.
  // Cut immediately after every commit, then reboot and resume with no fault.
- for(int style:{0,1,2,3}){
+ for(int style:{0,1,2,3,4}){
   seed(style);assert(requestLampFactoryReset());reboot();assert(recoverLampFactoryReset());assert(completeLampFactoryReset());
   const int commits=Preferences::operation;assert(commits==(style?11:10));
   for(int cut=1;cut<=commits;++cut){
@@ -147,7 +147,7 @@ void powerLoss(){
    }else{finish();assertFactory(style);}
   }
  }
- std::cout<<"PASS: all 43 request/recovery/cleanup power-loss boundaries retain typed physical style\n";
+ std::cout<<"PASS: all 54 request/recovery/cleanup power-loss boundaries retain typed physical style, including Edison\n";
 }
 void failedWrites(){
  for(int failure=1;failure<=11;++failure){
@@ -167,7 +167,7 @@ void failedWrites(){
 }
 void compatibility(){
  // Legacy phase-zero marker captures typed style before destructive clear.
- for(int style:{-1,0,1,2,3,255}){seed(style);putMarker(resetRecord());finish();assertFactory(style>=1&&style<=3?style:0);}
+ for(int style:{-1,0,1,2,3,4,5,255}){seed(style);putMarker(resetRecord());finish();assertFactory(style>=1&&style<=4?style:0);}
  // Incorrect NVS types never classify a lamp or infer a model from its hardware.
  seed();Preferences p;p.begin("coollamp",false);uint8_t raw=2;p.putBytes("lampStyle",&raw,1);putMarker(resetRecord());finish();assertFactory(0);
  // A valid unrelated snapshot must not override the current lamp's style.
@@ -188,7 +188,7 @@ void malformed(){
   putMarker(record);putSnapshot(snapshot);auto& bytes=Preferences::storage["coollamp-reset"]["styleV1"];
   if(variant==0)bytes.pop_back();
   if(variant==1)bytes[13]^=1;
-  if(variant==2){snapshot.data[2]=4;snapshot.data[13]=0x3c;for(unsigned i=0;i<13;++i)snapshot.data[13]^=snapshot.data[i];putSnapshot(snapshot);}
+  if(variant==2){snapshot.data[2]=5;snapshot.data[13]=0x3c;for(unsigned i=0;i<13;++i)snapshot.data[13]^=snapshot.data[i];putSnapshot(snapshot);}
   if(variant==3){snapshot.data[1]=2;snapshot.data[13]=0x3c;for(unsigned i=0;i<13;++i)snapshot.data[13]^=snapshot.data[i];putSnapshot(snapshot);}
   if(variant==4)Preferences::types["coollamp-reset"]["styleV1"]=PT_U8;
   if(variant==5){snapshot.data[3]=2;snapshot.data[13]=0x3c;for(unsigned i=0;i<13;++i)snapshot.data[13]^=snapshot.data[i];putSnapshot(snapshot);}

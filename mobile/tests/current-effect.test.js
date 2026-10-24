@@ -38,3 +38,11 @@ test('Mirror groups retain their actual catalogue effect and disclose unknown na
  cache.observeLighting(id,{deviceId:id,lighting:value});assert.equal(cache.get(id).lighting.label,'Group mirror · This lamp effect');
  cache.observeLighting(id,{deviceId:id,lighting:lightingObservation(groupRaw)});assert.equal(cache.get(id).lighting.label,'Group · Mirror effects');
 });
+
+test('expanded groups report actual shared scenes and restore local labels when paused',()=>{
+ const sync={version:3,maxMembers:32,role:2,leader,active:true,paused:false,scene:27,sceneCount:32};
+ assert.deepEqual(lightingObservation({...raw,sync}),{kind:'group',name:'Chromatic screw',mode:3,power:true,scene:27});
+ assert.equal(lightingObservation({...raw,sync:{...sync,paused:true}},[{id:3,name:'My local light'}]).name,'My local light');
+ assert.equal(lightingObservation({...raw,sync:{...sync,maxMembers:33}}),null);
+ assert.equal(lightingObservation({...raw,sync:{...sync,leader:id}}),null);
+});

@@ -5,7 +5,7 @@ import {validateCatalog} from '../src/catalog.js';
 import {recommendedEffects} from '../src/lamp-style.js';
 
 const identity='aabbccddeeff';
-const descriptor=code=>({version:1,code,id:['unspecified','helix','large-helix','corkscrew'][code],family:['unspecified','helix','helix','corkscrew'][code]});
+const descriptor=code=>({version:1,code,id:['unspecified','helix','large-helix','corkscrew','edison'][code],family:['unspecified','helix','helix','corkscrew','edison'][code]});
 async function fixture(t,{supported=true,accept=true,lost=false}={}) {
   const raw={token:'fresh-token',deviceId:identity,hostname:'coollamp-test.local',name:'Test',mode:1,brightness:100,power:true,effects:['Rain'],...(supported?{lampStyle:descriptor(1)}:{})};
   const calls=[];let read;
@@ -33,6 +33,22 @@ test('old firmware and invalid style never issue a style mutation',async t=>{
   const {lamp,calls}=await fixture(t,{supported:false});await assert.rejects(lamp.configureLampStyle('helix'),/1.10.1/);
   assert(calls.every(call=>call.method==='GET'));calls.length=0;await assert.rejects(lamp.configureLampStyle('lamp-name'),/valid/);assert.equal(calls.length,0);
 });
+
+test('legacy-editable Edison sends only additive code4 and retains physical calibration',async t=>{
+  const {lamp,raw,calls}=await fixture(t);Object.assign(raw,{leds:181,midpoint:53});
+  await lamp.enqueue(()=>lamp.configureLampStyle('edison'));
+  assert.equal(calls.find(call=>call.method==='POST').data,'style=4');
+  assert.deepEqual(lamp.raw.lampStyle,descriptor(4));assert.equal(raw.leds,181);assert.equal(raw.midpoint,53);
+  assert.equal(raw.mode,1);assert.equal(raw.brightness,100);
+});
+
+test('fresh factory lock prevents a style POST even when the caller held an earlier editable snapshot',async t=>{
+  const {lamp,raw,calls}=await fixture(t);assert.equal(lamp.raw.lampStyle.locked,undefined);
+  raw.lampStyle={...descriptor(1),locked:true};
+  await assert.rejects(lamp.configureLampStyle('corkscrew'),/set at the factory/);
+  assert.deepEqual(calls.map(call=>call.method),['GET']);assert.equal(lamp.raw.lampStyle.locked,true);
+  assert.equal(raw.mode,1);assert.equal(raw.brightness,100);assert.equal(raw.power,true);
+});
 test('disconnect or changed locator during fresh style read prevents POST',async t=>{
   for(const change of [lamp=>lamp.disconnect(),lamp=>{lamp.base='http://192.168.1.10';}]){
     const {lamp,calls,setRead}=await fixture(t);let release,ready;const waiting=new Promise(resolve=>ready=resolve);
@@ -55,4 +71,12 @@ test('declared catalog recommendations retain original wire IDs and omit untrust
     {id:2,name:'Rain',category:'calm',speed:true,styles:['future-style']},{id:3,name:'Split fire - rising',category:'calm',speed:true}];
   const catalog=validateCatalog(source,3);assert.deepEqual(catalog[0].styles,['corkscrew']);assert(!('secret' in catalog[0]));assert.equal(catalog[1].styles,null);
   assert.deepEqual(recommendedEffects(catalog,'corkscrew').map(entry=>entry.id),[1,3]);assert.deepEqual(recommendedEffects(catalog,'helix').map(entry=>entry.id),[3]);assert.equal(catalog[2].styles,undefined);
+});
+
+test('catalog accepts an explicit Edison recommendation without reordering or guessing future styles',()=>{
+ const catalog=validateCatalog([{id:1,name:'Future',category:'other',speed:true,styles:['edison']},
+  {id:2,name:'Rain',category:'calm',speed:true,styles:['helix','large-helix','corkscrew','edison']},
+  {id:3,name:'Unknown',category:'other',speed:false,styles:['edison','future-model']}],3);
+ assert.deepEqual(catalog[0].styles,['edison']);assert.equal(catalog[2].styles,null);
+ assert.deepEqual(recommendedEffects(catalog,'edison').map(value=>value.id),[1,2]);
 });

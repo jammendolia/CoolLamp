@@ -1,80 +1,190 @@
-import { legacyCatalog, validateCatalog } from './catalog.js';
+import { legacyCatalog, validateCatalog, effectAvailable } from './catalog.js';
 import { lampAddress } from './lamps.js';
 import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
-import { styleDefinition, normalizeLampStyle } from './lamp-style.js';
+import { styleDefinition, normalizeLampStyle, lampStyleLocked } from './lamp-style.js';
+import {validCurrentStateView} from './state-current.js';
 const reportedLampStyle=value=>value&&typeof value==='object'&&!Array.isArray(value)?normalizeLampStyle(value):null;
+// These GET handlers only read current state. Scan, enrollment, firmware check,
+// installation and every POST are deliberately absent, including receipt reads
+// whose legacy transport uses POST. A confirmed busy reply is not a lost reply.
+const busyReadPaths=new Set(['/api/state','/api/state/current','/api/effects','/api/audio','/api/firmware',
+  '/api/descriptor','/api/revision','/api/diagnostics','/api/firmware/upload/status']);
+const busyReadReplies=new Set(['Another response is pending. This request was not executed.',
+  'Read resources unavailable. Nothing changed.']);
+// A parked response can occupy the firmware's large-response lane for five
+// seconds. Six attempts span that lifetime while retaining the caller's total
+// deadline; these waits never reserve a new budget for the following catalog.
+const busyReadDelays=[500,1000,1500,1000,1000];
+const requestBudgetMs=13000;
+
+// One absolute durable field per request. A lost reply permits a fresh read,
+// never a second POST or automatic route change. Call from the owning queue.
+async function verifiedSetting(lamp,{supported,path,data,matches,message,refreshBefore=true,unconfirmedMessage}) {
+  const id=lamp.deviceIdentity||lamp.identity,epoch=lamp.epoch,address=lamp.base;
+  const guard=()=>{if(!/^[0-9a-f]{12}$/.test(id||'')||(lamp.deviceIdentity||lamp.identity)!==id||lamp.epoch!==epoch||lamp.base!==address)throw Error('Connection changed.');};
+  guard();if(refreshBefore)await lamp.refresh(id);guard();
+  if(lamp.raw?.deviceId!==id||!supported(lamp.raw))throw Error('This lamp does not support this setting yet.');
+  let reply,submitted=false,readbackStarted=false;
+  try{
+    guard();reply=await lamp.request(path,data,epoch,()=>{guard();submitted=true;});
+    guard();readbackStarted=true;await lamp.refresh(id);guard();
+    if(!supported(lamp.raw)||!matches(lamp.raw))throw Error(unconfirmedMessage||'The lamp has not confirmed this setting. Its current settings need to be checked.');
+    return reply;
+  }
+  catch(error){
+    if(!submitted)throw error;
+    const rejected=!readbackStarted&&error.confirmed&&!error.cancelled&&(error.noRoute===true||Number.isInteger(error.status)&&((error.status>=400&&error.status<500)||error.status===503));
+    if(rejected)throw error;
+    const uncertain=Object.assign(error,{uncertain:true,confirmed:false});
+    // At most one fresh readback after a submitted operation. A malformed
+    // snapshot, locator/epoch change or failure after ACK remains uncertainty.
+    if(!readbackStarted)try{guard();readbackStarted=true;await lamp.refresh(id);guard();if(supported(lamp.raw)&&matches(lamp.raw))return message;}catch{}
+    if(unconfirmedMessage)uncertain.message=unconfirmedMessage;
+    throw uncertain;
+  }
+}
 
 export class WifiTransport {
-  constructor(http, callbacks = {}) { this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve(); }
-  async request(path, data, epoch=this.epoch, beforeWrite=null) {
+  constructor(http, callbacks = {}, {backgroundAllowed=()=>true,backgroundGeneration=()=>0,
+    now=()=>performance.now(),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
+    this.http=http; this.callbacks=callbacks; this.epoch=0; this.tail=Promise.resolve();
+    this.backgroundAllowed=backgroundAllowed;this.backgroundGeneration=backgroundGeneration;
+    this.now=now;this.wait=wait;
+  }
+  readFence(epoch,guard=null) {
+    if(!guard){if(epoch!==this.epoch)throw Error('Connection changed.');return;}
+    try{if(epoch!==this.epoch||guard()===false)throw Error();}
+    catch{throw Object.assign(Error('Background lamp read cancelled.'),{confirmed:true,cancelled:true,backgroundCancelled:true});}
+  }
+  backgroundFence(epoch=this.epoch) {
+    let generation,valid=true;
+    try{generation=this.backgroundGeneration();}catch{valid=false;}
+    return (expectedEpoch=epoch)=>{if(!valid||expectedEpoch!==this.epoch||this.backgroundAllowed()!==true||this.backgroundGeneration()!==generation)
+      throw Object.assign(Error('Background lamp read cancelled.'),{confirmed:true,cancelled:true,backgroundCancelled:true});};
+  }
+  async request(path, data, epoch=this.epoch, beforeWrite=null, readGuard=null, deadline=null) {
     let response;
+    const base=this.base,authorization=this.authorization,identity=this.identity,token=this.raw?.token;
+    const fence=()=>{this.readFence(epoch,readGuard);if(this.base!==base||this.authorization!==authorization||this.identity!==identity||this.raw?.token!==token)throw Error('Connection changed.');};
+    const expires=deadline??this.now()+requestBudgetMs;
+    const timeout=()=>Object.assign(Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true,requestDeadline:true});
+    fence();
     beforeWrite?.();
-    try { response = await this.http.request({url:this.base+path,method:data===undefined?'GET':'POST',
-      headers:{Authorization:this.authorization,...(data===undefined?{}:{'X-Lamp-Token':this.raw.token,'Content-Type':'application/x-www-form-urlencoded'})},
-      ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',connectTimeout:5000,readTimeout:8000,disableRedirects:true}); }
-    catch { throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true}); }
-    if (epoch!==this.epoch) throw new Error('Connection changed.');
-    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true});
-    if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true});
+    fence();
+    for(let attempt=0;;attempt++){
+      fence();const remaining=Math.floor(expires-this.now());if(remaining<=0)throw timeout();
+      let timer;
+      try {
+        // CapacitorHttp has no public cancellation operation. Its read timeout
+        // can reset on incoming data; this JS deadline also ignores late native
+        // completion and never issues another request after a timed-out call.
+        response=await Promise.race([this.http.request({url:base+path,method:data===undefined?'GET':'POST',
+          headers:{Authorization:authorization,...(data===undefined?{}:{'X-Lamp-Token':token,'Content-Type':'application/x-www-form-urlencoded'})},
+          ...(data===undefined?{}:{data:new URLSearchParams(data).toString()}),responseType:'text',
+          connectTimeout:Math.min(5000,remaining),readTimeout:Math.min(8000,remaining),disableRedirects:true}),
+          new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeout()),remaining);})]);
+      }
+      catch(error){fence();if(error?.requestDeadline)throw error;throw Object.assign(new Error('Lamp did not respond. Reconnect before trying again.'),{uncertain:true});}
+      finally{clearTimeout(timer);}
+      fence();if(this.now()>=expires)throw timeout();
+      if(data!==undefined||!busyReadPaths.has(path)||response.status!==503||!busyReadReplies.has(response.data)||attempt>=busyReadDelays.length)break;
+      const delay=busyReadDelays[attempt];
+      // Return the last confirmed refusal if the next wait would consume the
+      // remaining budget. Retry only this identical, side-effect-free route.
+      if(expires-this.now()<=delay)break;
+      fence();await this.wait(delay);fence();
+    }
+    if (response.status===401) throw Object.assign(new Error('Check the lamp access password.'),{confirmed:true,needsPassword:true,status:401});
+    if (response.status<200 || response.status>=300) throw Object.assign(new Error(typeof response.data==='string'?response.data:'Lamp rejected the request.'),{confirmed:true,status:response.status});
     return response.data;
   }
-  async connect(address,password,expectedId) {
+  async connect(address,password,expectedId,{guard=null,timeoutMs=null,currentStateRead=false}={}) {
+    if(timeoutMs!==null&&(!Number.isFinite(timeoutMs)||timeoutMs<=0))throw Error('Choose a valid connection timeout.');
+    const deadline=timeoutMs===null?null:this.now()+timeoutMs;
+    this.readFence(this.epoch,guard);
     await this.disconnect(); this.base=lampAddress(address);
+    this.currentStateRead=currentStateRead===true;
+    const epoch=this.epoch;
     this.authorization='Basic '+btoa(unescape(encodeURIComponent('lamp:'+password)));
-    try { await this.refresh(expectedId); this.schedule(); return this.raw; }
-    catch(e) { await this.disconnect(); throw e; }
+    try { this.readFence(epoch,guard);await this.refresh(expectedId,true,guard,deadline);this.readFence(epoch,guard);this.schedule();return this.raw; }
+    catch(e) { if(epoch===this.epoch)await this.disconnect();throw e; }
   }
-  async refresh(expectedId,retryCatalog=true) {
-    const result=await this.request('/api/state');
+  async refresh(expectedId,retryCatalog=true,guard=null,deadline=null) {
+    const epoch=this.epoch;
+    const readDeadline=deadline??this.now()+requestBudgetMs;
+    let current=this.currentStateRead===true||this.raw?.stateView===1;
+    let result;
+    try{result=await this.request(current?'/api/state/current':'/api/state',undefined,epoch,null,guard,readDeadline);}
+    catch(error){if(!current||error.status!==404||!error.confirmed||error.uncertain)throw error;
+      this.currentStateRead=false;current=false;result=await this.request('/api/state',undefined,epoch,null,guard,readDeadline);}
+    this.readFence(epoch,guard);
     const raw=typeof result==='string'?JSON.parse(result):result;
+    if(current&&!validCurrentStateView(raw))throw Error('Invalid current settings response.');
+    if(current&&(!/^[a-f0-9]{12}$/.test(raw.deviceId||'')||expectedId&&raw.deviceId!==expectedId))throw Error('This address belongs to a different lamp. Find your lamp again.');
     if (typeof raw.token!=='string'||!Array.isArray(raw.effects)||!Number.isInteger(raw.mode)||raw.mode<1||raw.mode>raw.effects.length||!Number.isInteger(raw.brightness)||raw.brightness<1||raw.brightness>255||typeof raw.hostname!=='string') throw new Error('Invalid lamp response.');
     const identity=raw.deviceId || raw.hostname.replace(/\.local$/,'');
     const legacyIdentity=raw.hostname.replace(/\.local$/,'');
     if (expectedId && identity!==expectedId && expectedId!==legacyIdentity) throw new Error('This address belongs to a different lamp. Find your lamp again.');
     if (this.identity && identity!==this.identity) throw new Error('Lamp identity changed. Reconnect before controlling it.');
-    if (!this.catalog || this.raw?.token!==raw.token || this.catalog.length!==raw.effects.length) {
+    let catalog=this.catalog;
+    if (!catalog || this.raw?.token!==raw.token || catalog.length!==raw.effects.length) {
       if (raw.catalogVersion===1) {
-        const data=await this.request('/api/effects');
+        const data=await this.request('/api/effects',undefined,epoch,null,guard,readDeadline);
+        this.readFence(epoch,guard);
         const entries=typeof data==='string'?JSON.parse(data):data;
-        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog)return this.refresh(expectedId,false);
-        this.catalog=validateCatalog(entries,raw.effects.length);
-      } else this.catalog=legacyCatalog(raw.effects);
+        if(Array.isArray(entries)&&entries.length!==raw.effects.length&&retryCatalog){this.readFence(epoch,guard);return this.refresh(expectedId,false,guard,readDeadline);}
+        catalog=validateCatalog(entries,raw.effects.length);
+      } else catalog=legacyCatalog(raw.effects);
     }
-    if(this.catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
-    this.identity=identity; this.raw=raw;
+    if(catalog.length!==raw.effects.length)throw new Error('Lamp effects changed. Reconnect to reload them.');
+    this.readFence(epoch,guard);this.catalog=catalog;this.identity=identity;this.raw=raw;
     const c=raw.colors?.[raw.mode-1];
     this.state={...raw,effectCount:raw.effects.length,capabilities:4|(c?2:0)|(raw.effectOptions?8:0)|(raw.factoryReset?128:0),supportsColor:Boolean(c),color:c?{enabled:Boolean(c[0]),r:c[1],g:c[2],b:c[3]}:null};
-    this.callbacks.onState?.(this.state); this.callbacks.onFirmware?.(raw.firmware);
+    this.readFence(epoch,guard);this.callbacks.onState?.(this.state);
+    this.readFence(epoch,guard);this.callbacks.onFirmware?.(raw.firmware);
     const o=raw.effectOptions?.[raw.mode-1];
-    this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
+    this.readFence(epoch,guard);this.callbacks.onOptions?.(o?{mode:raw.mode,speed:o[0],intensity:o[1],dual:o[2],r:o[3],g:o[4],b:o[5]}:null);
     return raw;
   }
-  async refreshFirmware() {
-    const result=await this.request('/api/firmware');
+  async refreshFirmware(guard=null) {
+    const epoch=this.epoch;
+    const result=await this.request('/api/firmware',undefined,epoch,null,guard);
+    this.readFence(epoch,guard);
     const next=typeof result==='string'?JSON.parse(result):result;
     if(!next || typeof next.version!=='string' || typeof next.latest!=='string' || !Number.isInteger(next.phase) || next.phase<0 || next.phase>5 ||
        !Number.isInteger(next.progress) || next.progress<0 || next.progress>100 ||
        !Number.isInteger(next.error) || next.error<0 || next.error>8 || typeof next.wifi!=='boolean' ||
        typeof next.available!=='boolean' || typeof next.automatic!=='boolean')throw Error('Invalid firmware status from lamp.');
     // A restart requires a fresh identity, token and catalog before controls.
-    if(next.version!==this.raw?.firmware?.version){await this.refresh();return this.raw.firmware;}
+    if(next.version!==this.raw?.firmware?.version){await this.refresh(undefined,true,guard);this.readFence(epoch,guard);return this.raw.firmware;}
+    this.readFence(epoch,guard);
     this.raw.firmware=next;this.state.firmware=next;
-    this.callbacks.onFirmware?.(next);return next;
+    this.readFence(epoch,guard);this.callbacks.onFirmware?.(next);return next;
   }
-  async poll() {
+  async poll(guard=this.backgroundFence()) {
+    const epoch=this.epoch;this.readFence(epoch,guard);
     if(Number.isInteger(this.raw?.firmware?.phase)) {
       const version=this.raw.firmware.version;
-      const next=await this.refreshFirmware();
+      const next=await this.refreshFirmware(guard);this.readFence(epoch,guard);
       if([1,3,4].includes(next.phase)||next.version!==version)return;
     }
-    await this.refresh();
+    await this.refresh(undefined,true,guard);this.readFence(epoch,guard);
   }
   schedule() {
-    const epoch=this.epoch;
+    clearTimeout(this.timer);
+    const epoch=this.epoch,guard=this.backgroundFence(epoch);
     this.timer=setTimeout(async()=>{
-      try { await this.enqueue(()=>this.poll()); if(epoch===this.epoch)this.schedule(); }
-      catch(e) { if(epoch===this.epoch){await this.disconnect();this.callbacks.onError?.(e);} }
+      try { this.readFence(epoch,guard);await this.enqueue(()=>this.poll(guard));this.readFence(epoch,guard);if(epoch===this.epoch)this.schedule(); }
+      catch(e) {
+        if(epoch!==this.epoch)return;
+        try{this.readFence(epoch,guard);}catch{this.schedule();return;}
+        if(e.backgroundCancelled){this.schedule();return;}
+        const disconnectedEpoch=this.epoch+1;
+        await this.disconnect();
+        try{guard(disconnectedEpoch);}catch{return;}
+        this.callbacks.onError?.(e);
+      }
     },2500);
   }
   enqueue(fn) { const epoch=this.epoch; const next=this.tail.then(()=>{if(epoch!==this.epoch)throw new Error('Connection changed.');return fn();});this.tail=next.catch(()=>{});return next; }
@@ -164,6 +274,21 @@ export class WifiTransport {
     if(!this.raw?.calibration?.centerSupported)throw Error('Update this lamp to firmware 1.9.1 or newer to fine-tune its center.');
     if(!['start','move','save','cancel'].includes(action))throw Error('Choose a valid center action.');
     if(action==='move'&&(!Number.isInteger(position)||position<1||position>=this.raw.leds))throw Error('Choose a boundary inside this strip.');
+    if(action==='save') {
+      const leds=this.raw.leds,center=this.raw.calibration.position;
+      if(this.raw.calibration.active!==true||this.raw.calibration.kind!=='center'||!Number.isInteger(leds)||leds<2||leds>1024||
+        !Number.isInteger(center)||center<1||center>=leds)
+        throw Object.assign(Error('The center adjustment has ended. Start it again to choose a new center.'),{confirmed:true});
+      // Save immediately: another full snapshot before this POST can consume
+      // the physical tool's ten-second inactivity window. Its owning queue has
+      // already selected the target; the exact saved boundary is checked after
+      // the one save, including a lost reply. Never replay the save.
+      return verifiedSetting(this,{supported:raw=>raw.leds===leds&&raw.calibration?.centerSupported===true&&Number.isInteger(raw.midpoint)&&raw.midpoint>=0&&raw.midpoint<leds,
+        path:'/api/calibration',data:{action:'save',kind:'center'},refreshBefore:false,
+        matches:raw=>raw.midpoint===center&&raw.calibration.active===false,
+        message:'Center saved and checked. Normal lighting restored.',
+        unconfirmedMessage:'We could not confirm your new center. The lamp needs to check its settings before you try again.'});
+    }
     const message=await this.request('/api/calibration',{action,kind:'center',...(action==='move'?{position}:{})});
     await this.refresh();return message;
   }
@@ -176,16 +301,29 @@ export class WifiTransport {
   }
   async configureGeometry(midpoint) {
     if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');
-    if(!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
-    const message=await this.request('/api/geometry',{midpoint});
-    await this.refresh();
-    return message;
+    if(!Number.isInteger(this.raw.leds)||this.raw.leds<1||this.raw.leds>1024||!Number.isInteger(midpoint) || midpoint<0 || midpoint>=this.raw.leds) throw new Error('Center must be 0 (automatic) or a boundary before the last LED.');
+    const leds=this.raw.leds;
+    return verifiedSetting(this,{supported:raw=>raw.leds===leds&&Number.isInteger(raw.midpoint)&&raw.midpoint>=0&&raw.midpoint<leds,
+      path:'/api/geometry',data:{midpoint},matches:raw=>raw.midpoint===midpoint,
+      message:'Center saved and checked.',
+      unconfirmedMessage:'We could not confirm your new center. The lamp needs to check its settings before you try again.'});
+  }
+  async configureMotionPath(path) {
+    if(![0,1].includes(path))throw Error('Choose a centered or whole-strip path.');
+    return verifiedSetting(this,{supported:raw=>raw.motionVersion===1&&[0,1].includes(raw.motionPath),
+      path:'/api/geometry',data:{pathVersion:1,path},matches:raw=>raw.motionPath===path,message:'Animation path verified.'});
+  }
+  async setAudioReactionEnabled(enabled) {
+    if(typeof enabled!=='boolean')throw Error('Choose whether the lamp responds to sound.');
+    return verifiedSetting(this,{supported:raw=>raw.audio?.captureVersion===1&&raw.audio.installed===true&&typeof raw.audio.enabled==='boolean',
+      path:'/api/audio',data:{action:'use',useVersion:1,enabled:Number(enabled)},matches:raw=>raw.audio.enabled===enabled,message:'Sound setting verified.'});
   }
   async configureLampStyle(value) {
     const definition=styleDefinition(value);if(!definition)throw Error('Choose a valid lamp design.');
     const id=this.identity,epoch=this.epoch,address=this.base;
     const guard=()=>{if(!id||this.identity!==id||this.epoch!==epoch||this.base!==address)throw Error('Connection changed.');};
     guard();await this.refresh(id);guard();
+    if(lampStyleLocked(this.raw?.lampStyle))throw Error('This lamp’s physical design is set at the factory. LED count and strip setup can still be adjusted separately.');
     if(this.id&&this.raw?.firmware?.version==='1.10.1')throw Error('Connect over Wi-Fi or update to firmware 1.10.2 to save its design on the lamp.');
     if(!reportedLampStyle(this.raw?.lampStyle))throw Error('Update this lamp to firmware 1.10.1 to save its design on the lamp.');
     let message;
@@ -253,7 +391,8 @@ export class WifiTransport {
     if(['brightness','effect'].includes(op) && !this.state.power && !this.raw.apiVersion) throw new Error('Turn the lamp on first, or use Bluetooth to adjust it while off. Firmware 1.4 adds this Wi-Fi control.');
     const paths={power:['/api/power',{on:value}],brightness:['/api/preview',{mode:this.state.mode,brightness:value,keepPower:1}],effect:['/api/preview',{mode:value,brightness:this.state.brightness,keepPower:1}],saveDefaults:['/api/defaults',{}],color:['/api/color',value],resetColor:['/api/color',{mode:value,reset:1}],effectOptions:['/api/effect-options',value],checkFirmware:['/api/firmware/check',{}],installFirmware:['/api/firmware/install',{}],autoUpdate:['/api/firmware/automatic',{enabled:value}]};
     const mode=op==='effect'||op==='resetColor'?value:['color','effectOptions'].includes(op)?value.mode:null;
-    if(mode!==null && !this.catalog?.some(x=>x.id===mode))throw new Error('This effect is not available on the selected lamp.');
+    if(mode!==null && !effectAvailable(this.catalog,mode))throw Object.assign(new Error('This effect is not available on the selected lamp.'),{confirmed:true});
+    if(op==='saveDefaults'&&this.catalog?.some(entry=>entry.id===this.state.mode&&entry.startupSupported===false))throw Object.assign(Error('Choose a different effect for the lamp’s startup light.'),{confirmed:true});
     if(!paths[op])throw new Error('Unsupported command.');
     try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene){fence();await this.configureGroupScene({scene:0});}fence(); await this.request(...paths[op]);
       if(['checkFirmware','installFirmware','autoUpdate'].includes(op))await this.refreshFirmware();else await this.refresh(); }

@@ -1,4 +1,4 @@
-import {normalizeLampStyle} from './lamp-style.js';
+import {normalizeLampStyle,lampStyleLocked} from './lamp-style.js';
 
 // Only display metadata lives here. Passwords belong in the native credential vault.
 // Discovery lasts for this app session only, including lamps not yet connected.
@@ -64,6 +64,7 @@ export class LampStore {
     const entry=this.items.find(item=>item.id===id),style=normalizeLampStyle(value);
     if(!entry||!style||!['phone','lamp'].includes(source))return false;
     if(source==='phone') {
+      if(lampStyleLocked(entry.lampStyle)&&style.id!=='unspecified')return false;
       if(style.id==='unspecified') {
         if(!Object.hasOwn(entry,'phoneLampStyle'))return entry;
         delete entry.phoneLampStyle;
@@ -73,7 +74,7 @@ export class LampStore {
       }
     } else {
       const prior=normalizeLampStyle(entry.lampStyle);
-      if(prior?.id===style.id&&typeof entry.lampStyle==='object')return entry;
+      if(prior&&JSON.stringify(prior)===JSON.stringify(style)&&typeof entry.lampStyle==='object')return entry;
       entry.lampStyle=style;
       entry.styleSeenAt=Date.now();
     }

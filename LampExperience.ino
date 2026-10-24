@@ -28,7 +28,8 @@ bool commandRevisionParse(const String& text,uint32_t& value){
 void observeLampAppearance(){
   uint8_t bytes[LampCommands::SnapshotBytes]{};size_t at=0;
   const auto state=getLampControlState();bytes[at++]=state.mode;bytes[at++]=state.brightness;bytes[at++]=state.power;
-  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode){const auto c=getLampColor(mode);const auto o=getLampEffectOptions(mode);
+  static_assert(3+LAMP_EFFECT_CAPACITY*10+18+3<=LampCommands::SnapshotBytes,"Receipt snapshot must include every effect slot");
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_CAPACITY;++mode){const auto c=getLampColor(mode);const auto o=getLampEffectOptions(mode);
     bytes[at++]=c.enabled;bytes[at++]=c.r;bytes[at++]=c.g;bytes[at++]=c.b;
     bytes[at++]=o.speed;bytes[at++]=o.intensity;bytes[at++]=o.dual;bytes[at++]=o.r;bytes[at++]=o.g;bytes[at++]=o.b;
   }
@@ -115,7 +116,7 @@ String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
   return lampJsonReply([&](LampJsonSink& out){
   out.concat("{\"schemaVersion\":2,\"target\":");out.quote(identitySnapshot);out.concat(",\"kind\":\"");out.concat((scenes?"scenes":"effects"));out.concat("\",\"offset\":");out.concat(offset);out.concat(",\"next\":");out.concat(end);out.concat(",\"total\":");out.concat(total);out.concat(",\"entries\":[");
   for(uint8_t index=offset;index<end;++index){const uint8_t id=scenes?index:index+1;if(index!=offset)out.concat(',');
-    const bool motion=scenes?id!=0:LampEffectSchema::motion(id),intensity=scenes?id!=0:LampEffectSchema::intensity(id),zones=!scenes&&LampEffectSchema::zonePalette(id),audio=scenes?LampSyncWire::sceneNeedsAudio(id):id>38,fixed=scenes&&id==15;
+    const bool motion=scenes?id!=0:LampEffectSchema::motion(id),intensity=scenes?id!=0:LampEffectSchema::intensity(id),zones=!scenes&&LampEffectSchema::zonePalette(id),audio=scenes?LampSyncWire::sceneNeedsAudio(id):lampEffectNeedsAudio(id),fixed=scenes&&id==15;
     out.concat("{\"key\":\"");out.concat((scenes?"scene.":"effect."));out.concat((scenes?sceneKeys[id]:LampEffectSchema::key(id)));out.concat("\",\"localId\":");out.concat(id);out.concat(",\"motion\":");out.concat((motion?"true":"false"));out.concat(",\"parameters\":[");bool comma=false;
     if(motion){appendSchemaParameter(out,"speed",1,100,50,scenes?"scene-motion":audio?"audio-response":"motion","percent");comma=true;}
     if(intensity){if(comma)out.concat(',');appendSchemaParameter(out,"intensity",0,100,scenes?85:id==31?35:100,scenes?"glow":LampEffectSchema::intensityRole(id),"percent");}
@@ -125,7 +126,7 @@ String lampEffectSchemaPage(uint8_t offset,uint8_t count,bool scenes){
     if(zones)out.concat(id==46?",\"defaults\":[[0,255,0],[255,255,0],[255,0,0]]":",\"defaults\":[[255,65,0],[0,230,130],[75,30,255]]");
     else if(!fixed&&!(scenes&&id==0)){
       if(scenes)out.concat(",\"defaults\":[[70,220,255],[255,65,170]]");
-      else {const auto c=defaultLampColor(id);out.concat(",\"defaults\":[[");out.concat(c.r);out.concat(",");out.concat(c.g);out.concat(",");out.concat(c.b);out.concat("],[35,160,255]]");}
+      else {const auto c=defaultLampColor(id);const auto o=defaultEffectOptions(id);out.concat(",\"defaults\":[[");out.concat(c.r);out.concat(",");out.concat(c.g);out.concat(",");out.concat(c.b);out.concat("],[");out.concat(o.r);out.concat(',');out.concat(o.g);out.concat(',');out.concat(o.b);out.concat("]]");}
     }
     out.concat("},\"audio\":{\"required\":");out.concat(audio?"true":"false");out.concat(",\"optional\":");out.concat((scenes&&id==2?"true":"false"));out.concat(",\"source\":\"");out.concat((scenes?"coordinator":audio?"local-or-coordinator":"none"));out.concat("\"},\"persistence\":\"");out.concat((scenes?"shared-group":zones?"dedicated-palette-and-per-effect":"per-effect"));out.concat("\",\"requirements\":{\"catalogVersion\":2,\"sceneProtocol\":");out.concat(scenes?2:0);out.concat(",\"expandedSceneProtocol\":3,\"coordinatorMicrophone\":");out.concat((scenes&&audio?"true":"false"));out.concat("},\"compatibleStyles\":[");const auto styles=LampEffectSchema::styles(id,scenes);
     for(uint8_t style=0;style<styles.count;++style){if(style)out.concat(',');out.quote(styles.ids[style]);}

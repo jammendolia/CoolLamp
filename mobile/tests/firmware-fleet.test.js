@@ -8,7 +8,7 @@ const status = (version = '1.9.4', phase = 0, latest = '0.0.0') => ({version, ph
 const response = (data, code = 200) => ({status: code, data: typeof data === 'string' ? data : JSON.stringify(data)});
 function setup(count = 1) {
   let now = 1000;
-  let entries = ids.slice(0, count).map((id, i) => ({id, address: `192.168.1.${20 + i}`}));
+  let entries = Array.from({length:count},(_,i)=>({id:ids[i]||(i+1).toString(16).padStart(12,'0'),address:`192.168.1.${20+i}`}));
   const devices = entries.map((lamp, i) => ({...lamp, firmware: status(), uptimeMs: 100,
     token: `token-${i}`, password: `password-${i}`, polls: [], diagnosticReads: 0}));
   const calls = [], changes = [];
@@ -64,6 +64,22 @@ test('single card update rejects an available release changing before the instal
 test('single card update never confirms a different newer installed release as its target',async()=>{
  const {fleet,devices,entries}=setup();devices[0].polls=[status('1.9.6')];
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),/different release/);
+});
+
+test('fresh diagnostics distinguish installed observation from the lamp cached release check',async()=>{
+ const {fleet,devices}=setup();devices[0].firmware={...status('1.14.0',2,'1.14.1'),checkedAt:500};
+ const row=(await fleet.refresh()).results[0];assert.equal(row.checkedAt,1000);assert.equal(row.installedObservedAt,1000);
+ assert.equal(row.latestSource,'lamp-cache');assert.equal(row.releaseCheckUptimeMs,500);assert.equal(row.latestVersion,'1.14.1');
+});
+test('bulk pinned public release never silently installs a different lamp-cached or newly offered version',async()=>{
+ for(const version of ['1.9.5','1.9.7']){
+  const {fleet,devices,calls}=setup();devices[0].polls=[status('1.9.4',2,version)];
+  const result=await fleet.updateAll('1.9.6');assert.equal(result.results[0].state,'failed');assert.match(result.results[0].message,/release changed/);
+  assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
+ }
+});
+test('invalid pinned public release cannot start single or bulk lamp requests',async()=>{
+ const {fleet,calls,entries}=setup();await assert.rejects(fleet.updateLamp(entries()[0],'invalid'));await assert.rejects(fleet.updateAll('invalid'));assert.equal(calls.length,0);
 });
 
 test('page refresh reads every lamp independently and displays installed, never offered firmware', async () => {
@@ -437,4 +453,86 @@ test('failed catalogue enrichment preserves known firmware and busy updater neve
  const row=(await fleet.refresh()).results[0];assert.equal(row.verified,true);assert.equal(row.installedVersion,'1.9.4');assert.equal(row.lighting.name,null);
  devices[0].request=()=>response({deviceId:ids[0],firmware:status('1.9.4',1),render:{mode:1,power:true}});
  await fleet.refresh();assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,1);
+});
+
+const automaticService=()=>({version:1,state:5,reason:14,retryInMs:75000,donorWaitMs:0,internetAttempts:0,donorOffers:0,attention:false,phoneFallback:false,newerSeen:false});
+const automaticCompact=id=>({deviceId:id,...status('1.15.1',0,'1.15.1'),automatic:true,bootHealthy:true,
+ updateContractVersion:2,receiver:false,route:0,writtenOffset:0,totalBytes:0,automaticService:automaticService()});
+
+test('twenty already verified auto-enabled targets receive one bounded read-only compact check each',async()=>{
+ const {fleet,devices,calls}=setup(20);fleet.getLatestVersion=()=> '1.15.2';let inFlight=0,maximum=0;
+ for(const device of devices){
+  device.firmware={...status('1.15.1'),automatic:true};
+  device.request=async(_options,path)=>{inFlight++;maximum=Math.max(maximum,inFlight);try{await tick();return path==='/api/firmware'?response(automaticCompact(device.id)):undefined;}finally{inFlight--;}};
+ }
+ const rows=(await fleet.refresh()).results;assert.equal(rows.length,20);assert(maximum<=2);
+ assert.equal(calls.filter(call=>call.url.endsWith('/api/firmware')).length,20);assert.equal(calls.filter(call=>call.url.endsWith('/api/diagnostics')).length,20);assert.equal(writes(calls).length,0);
+ for(const row of rows){assert.equal(row.verified,true);assert.equal(row.automaticAttention.target,row.id);assert.equal(row.automaticAttention.kind,'attention');assert.equal(row.automaticAttention.offerPhone,true);}
+});
+
+test('auto-disabled targets do not get an extra request and legacy 404/missing-service remains compatible',async()=>{
+ for(const mode of ['disabled','404','missing-service','missing-identity']){
+  const {fleet,devices,calls}=setup();devices[0].firmware={...status('1.15.1'),automatic:mode!=='disabled'};
+  devices[0].request=(_options,path)=>{
+   if(path!=='/api/firmware')return undefined;
+   if(mode==='404')return response('Not supported',404);
+   const compact=automaticCompact(devices[0].id);if(mode==='missing-service')delete compact.automaticService;if(mode==='missing-identity')delete compact.deviceId;
+   return response(compact);
+  };
+  const row=(await fleet.refresh()).results[0];assert.equal(row.verified,true);assert.equal(row.installedVersion,'1.15.1');assert.equal(row.automaticAttention,null);assert.equal(writes(calls).length,0);
+  assert.equal(calls.filter(call=>call.url.endsWith('/api/firmware')).length,mode==='disabled'?0:1);
+ }
+});
+
+test('declared compact identity mismatch is rejected without borrowing another lamp source or making a mutation',async()=>{
+ const {fleet,devices,calls}=setup();devices[0].firmware={...status('1.15.1'),automatic:true};
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response(automaticCompact(ids[1])):undefined;
+ const row=(await fleet.refresh()).results[0];assert.equal(row.state,'failed');assert.equal(row.verified,false);assert.equal(row.receiverSnapshot,null);assert.equal(row.automaticAttention,null);assert.equal(writes(calls).length,0);
+});
+
+test('cancellation fences a late compact reply and never adopts attention or continues more reads',async()=>{
+ const {fleet,devices,calls,changes}=setup();devices[0].firmware={...status('1.15.1'),automatic:true};let finish;
+ devices[0].request=(_options,path)=>path==='/api/firmware'?new Promise(resolve=>{finish=()=>resolve(response(automaticCompact(ids[0])));}):undefined;
+ const pending=fleet.refresh();await tick();assert.equal(typeof finish,'function');fleet.cancelRefresh();
+ const result=await pending;assert.equal(result.cancelled,true);assert.equal(result.results.length,0);finish();await tick();
+ assert(!changes.some(row=>row.automaticAttention));assert.equal(calls.length,2);assert.equal(writes(calls).length,0);
+});
+
+test('automatic attention survives stale/offline checks and clears only on actual receiving or fresh installed health',async()=>{
+ const {fleet,devices}=setup();fleet.getLatestVersion=()=> '1.15.2';devices[0].firmware={...status('1.15.1'),automatic:true};let compact=automaticCompact(ids[0]);
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response(compact):undefined;
+ assert.equal((await fleet.refresh()).results[0].automaticAttention.kind,'attention');
+ devices[0].request=()=>{throw Error('Offline');};assert.equal((await fleet.refresh()).results[0].automaticAttention.kind,'attention');
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response(compact):undefined;
+ compact={...compact,automaticService:{...automaticService(),state:1,reason:3}};
+ assert.equal((await fleet.refresh()).results[0].automaticAttention.kind,'attention','A quiet hold is not proof of a completed update.');
+ compact={...compact,receiver:true,phase:3,route:3,writtenOffset:500,totalBytes:1000,progress:50};
+ const receiving=(await fleet.refresh()).results[0];assert.equal(receiving.automaticAttention,null);assert.equal(receiving.receiverSnapshot.firmware.route,3);assert.equal(receiving.receiverSnapshotAt,1000);
+ compact={...automaticCompact(ids[0]),version:'1.15.2',latest:'1.15.2'};devices[0].firmware={...status('1.15.2'),automatic:true};
+ assert.equal((await fleet.refresh()).results[0].automaticAttention,null);
+});
+
+test('current healthy firmware never receives automatic attention even after a failed service attempt',async()=>{
+ const {fleet,devices}=setup();fleet.getLatestVersion=()=> '1.15.1';devices[0].firmware={...status('1.15.1'),automatic:true};
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response({...automaticCompact(ids[0]),phase:5,error:3,
+  automaticService:{...automaticService(),reason:13,attention:true,phoneFallback:true,internetAttempts:1,newerSeen:true}}):undefined;
+ const row=(await fleet.refresh()).results[0];assert.equal(row.automaticAttention,null);assert.equal(row.installedVersion,'1.15.1');assert.equal(row.verified,true);
+});
+
+test('a newer canonical compact read replaces stale version and does not reuse preceding uptime or effect name',async()=>{
+ const {fleet,devices,calls}=setup();fleet.getLatestVersion=()=> '1.15.2';devices[0].firmware={...status('1.15.1'),automatic:true};
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response({...automaticCompact(ids[0]),version:'1.15.2',latest:'1.15.2'}):
+  path==='/api/diagnostics'?response({deviceId:ids[0],firmware:devices[0].firmware,uptimeMs:50000,render:{mode:1,power:true},audio:{installed:true}}):undefined;
+ const run=fleet.run(),lamp=await fleet.prepare({id:ids[0],address:devices[0].address},run),identity=await fleet.identify(lamp,run,false,{automaticServiceRead:true});
+ assert.equal(identity.firmware.version,'1.15.2');assert.equal(identity.uptimeMs,null);assert.equal(identity.lighting,null);assert.match(identity.catalogueKey,/1\.15\.2/);
+ const row=fleet.live(lamp,run,identity);assert.equal(row.installedVersion,'1.15.2');assert.equal(row.automaticAttention,null);assert.equal(row.verified,true);
+ assert.equal(calls.length,2);assert.equal(writes(calls).length,0);
+});
+
+test('a compact receiving snapshot disables ordinary controls and never starts catalog enrichment',async()=>{
+ const {fleet,devices,calls}=setup();devices[0].firmware={...status('1.15.1'),automatic:true};
+ devices[0].request=(_options,path)=>path==='/api/firmware'?response({...automaticCompact(ids[0]),receiver:true,phase:3,route:1,writtenOffset:250,totalBytes:1000,progress:25}):
+  path==='/api/diagnostics'?response({deviceId:ids[0],firmware:devices[0].firmware,render:{mode:1,power:true}}):undefined;
+ const row=(await fleet.refresh()).results[0];assert.equal(row.state,'updating');assert.equal(row.progress,25);assert.equal(row.receiverSnapshot.firmware.route,1);
+ assert.equal(calls.filter(call=>call.url.endsWith('/api/effects')).length,0);assert.equal(writes(calls).length,0);
 });

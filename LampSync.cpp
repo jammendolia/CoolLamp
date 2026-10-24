@@ -1,4 +1,5 @@
 #include "LampSync.h"
+#include "LampControl.h"
 #include "LampJsonSink.h"
 #include "LampAudio.h"
 #include "LampEspNow.h"
@@ -252,6 +253,9 @@ void beginLampSync(){
 }
 bool configureLampSync(uint8_t role,const String& leader,const String& key,uint8_t protocol,const String& expectedIncarnation){
   if(lampRolloutPinsMembership())return false;
+  // Region-specific Edison effects are standalone: legacy/expanded group
+  // packets do not negotiate this measured construction or appended IDs.
+  if(role&&getLampControlState().mode>LAMP_EFFECT_COUNT)return false;
   if(expectedIncarnation.length()){
     if(expectedIncarnation.length()!=32)return false;
     for(unsigned i=0;i<32;++i){const char c=expectedIncarnation[i];if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;}

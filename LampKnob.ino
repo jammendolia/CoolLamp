@@ -151,7 +151,7 @@ bool serviceLampKnob() {
       const auto* c = knobPalette[knobColorIndex];
       if (delta) { setLampColor(knobEffect,c[0],c[1],c[2]); noteLampUpdateUse(); knobDirty = true; }
     } else {
-      const int next = (int(Mode)-1 + delta % lampAvailableEffectCount() + lampAvailableEffectCount()) % lampAvailableEffectCount() + 1;
+      const int next = lampNextAvailableEffect(Mode,delta);
       setLampControl(next, Brightness, PowerOn);
     }
     syncLampKnob(); changed = true;

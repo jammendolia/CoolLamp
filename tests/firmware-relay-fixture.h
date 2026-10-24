@@ -2,6 +2,9 @@
 #include "../LampFirmwareRelay.h"
 #include "../LampMeshAdapter.h"
 #include "../LampCommission.h"
+#include "../LampControl.h"
+inline LampControlState fixtureControlState{46,100,true};
+inline LampControlState getLampControlState(){return fixtureControlState;}
 inline bool fixtureRolloutPins=false;
 inline bool lampRolloutPinsMembership(){return fixtureRolloutPins;}
 namespace LampFirmwareRelay {

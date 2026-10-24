@@ -1,5 +1,5 @@
 import { LampTransport } from './transport.js';
-import { parseGroupCode } from './sync.js';
+import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 
 export async function initializeGroupRadio({transport,ble,platform,pairing,accessories,knownDevices,onAuthorized=()=>{}}) {
   if(transport.initialization)return transport.initialization;
@@ -53,11 +53,13 @@ export class BluetoothGroups {
     if(!target.lamp.initialization)throw Error('Bluetooth radio is not ready. Reconnect this lamp.');
     const lease=this.acquire?await this.acquire(entry.id,{entry,readOnly,purpose:'offline-groups'}):null;
     const link=lease?.lamp||this.createTransport({sharedInitialization:target.lamp.initialization,expectedDeviceIdentity:entry.id,controlOnly:true});
-    const cleanup=lease?lease.release:()=>link.disconnect();
+    let cleanupRun;
+    const cleanup=()=>cleanupRun??=Promise.resolve().then(()=>lease?lease.release():link.disconnect());
     const owned={disconnect:cleanup};this.links.add(owned);
     try{
       if(!lease)await link.connect({...entry,lampId:entry.id});
-      this.guard(target,generation);await link.enqueue(()=>link.refresh(entry.id));this.guard(target,generation);
+      const readGuard=readOnly?()=>this.guard(target,generation):null;
+      this.guard(target,generation);await link.enqueue(()=>{this.guard(target,generation);return link.refresh(entry.id,true,readGuard);});this.guard(target,generation);
       if(!link.supportsOfflineGroups||link.identity!==entry.id)throw Error('Update the coordinator to firmware 1.10.0 for offline groups.');
       if(link.raw?.sync?.role!==1)throw Object.assign(Error('This lamp is not a coordinator.'),{notCoordinator:true});
       return await action(link);
@@ -65,7 +67,8 @@ export class BluetoothGroups {
   }
   async scan() {
     const target=this.snapshot(),generation=++this.generation,results=[];
-    await target.lamp.enqueue(()=>target.lamp.refresh(target.id));this.guard(target,generation);
+    const readGuard=()=>this.guard(target,generation);
+    await target.lamp.enqueue(()=>{readGuard();return target.lamp.refresh(target.id,true,readGuard);});this.guard(target,generation);
     for(const entry of this.candidates(target)){
       this.guard(target,generation);
       const publish=value=>{this.guard(target,generation);const status={id:entry.id,name:entry.name||'CoolLamp',...value};results.push(status);this.onStatus(entry.id,status);};
@@ -74,8 +77,9 @@ export class BluetoothGroups {
       try{await this.withCoordinator(entry,target,generation,async link=>{
         const sync=link.raw.sync;
         publish({state:'coordinator',verified:true,role:1,members:sync.members??0,checkedAt:Date.now(),
-          joinable:sync.version===target.wire&&(sync.members??0)<8,message:sync.version!==target.wire?'Update both lamps to compatible group firmware.':
-            (sync.members??0)>=8?'Group is full.':'Coordinator · '+(sync.members??0)+' following · Bluetooth'});
+          joinable:supportsGroupProtocol(target.lamp.raw?.sync,sync.version)&&groupMemberLimit(sync)>0&&(sync.members??0)<groupMemberLimit(sync)-1,
+          message:!supportsGroupProtocol(target.lamp.raw?.sync,sync.version)?'Update both lamps to compatible group firmware.':
+            !groupMemberLimit(sync)||(sync.members??0)>=groupMemberLimit(sync)-1?'Group is full.':'Coordinator · '+(sync.members??0)+' following · Bluetooth'});
       },true);}catch(error){this.guard(target,generation);publish({state:error.notCoordinator?'not-coordinator':'failed',verified:false,
         message:error.notCoordinator?'Independent lamp.':'Could not verify this saved Bluetooth lamp. Bring it nearby or open its six-second pairing window and reconnect.'});}
     }
@@ -88,12 +92,13 @@ export class BluetoothGroups {
     const entry=this.candidates(target).find(value=>value.id===id);
     return this.withCoordinator(entry,target,generation,async link=>{
       const sync=link.raw.sync;
-      if(sync.version!==target.wire)throw Error('Update both lamps to compatible group firmware.');
-      if(!Number.isInteger(sync.members)||sync.members>=8)throw Error('The coordinator group is full or unavailable.');
+      if(!supportsGroupProtocol(target.lamp.raw?.sync,sync.version))throw Error('Update both lamps to compatible group firmware.');
+      if(!groupMemberLimit(sync)||!Number.isInteger(sync.members)||sync.members>=groupMemberLimit(sync)-1||
+        (sync.order?.length??0)>=groupMemberLimit(sync))throw Error('The coordinator group is full or unavailable.');
       const code=await link.enqueue(()=>link.syncInvite());this.guard(target,generation);
       if(parseGroupCode(code).leader!==id)throw Error('The coordinator invitation changed. Refresh and try again.');
       await link.enqueue(()=>link.refresh(id));this.guard(target,generation);
-      if(link.raw.sync.role!==1||link.raw.sync.version!==target.wire)throw Error('The coordinator changed. Refresh and try again.');
+      if(link.raw.sync.role!==1||!supportsGroupProtocol(target.lamp.raw?.sync,link.raw.sync.version))throw Error('The coordinator changed. Refresh and try again.');
       return {id,code,targetId:target.id};
     });
   }

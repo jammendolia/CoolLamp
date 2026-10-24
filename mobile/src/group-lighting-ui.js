@@ -1,4 +1,5 @@
 import {effectSettings} from './effect-settings.js';
+import {selectableCatalog} from './catalog.js';
 
 const integer=(value,low,high)=>Number.isInteger(value)&&value>=low&&value<=high;
 const rgb=value=>Array.isArray(value)&&value.length===3&&value.every(channel=>integer(channel,0,255));
@@ -11,7 +12,7 @@ const publicFields=(value,keys)=>value&&typeof value==='object'?Object.fromEntri
 export function coordinatorLightingContext(editor) {
   const lamp=editor?.lamp,raw=lamp?.raw,state=lamp?.state || raw,id=editor?.id;
   if(!/^[0-9a-f]{12}$/.test(id||'')||!lamp||lamp.identity!==id||lamp.epoch!==editor.epoch||raw?.deviceId!==id||
-    ![1,2].includes(raw.sync?.version)||raw.sync.role!==1||raw.sync.leader!==id)return null;
+    ![1,2,3].includes(raw.sync?.version)||raw.sync.role!==1||raw.sync.leader!==id)return null;
   const catalog=lamp.catalog;
   if(!Array.isArray(catalog)||!catalog.length||!catalog.every(entry=>integer(entry?.id,1,255)&&typeof entry.name==='string')||
     !catalog.some(entry=>entry.id===raw.mode)||!integer(raw.brightness,1,255)||typeof raw.power!=='boolean')return null;
@@ -20,7 +21,8 @@ export function coordinatorLightingContext(editor) {
     integer(options[2],0,1)&&options.slice(3).every(value=>integer(value,0,255));
   const color=Array.isArray(saved)&&saved.length===4&&[0,1].includes(saved[0])&&saved.slice(1).every(value=>integer(value,0,255))?
     {enabled:Boolean(saved[0]),rgb:saved.slice(1)}:null;
-  const entries=catalog.map(({id,name,category,speed})=>({id,name,category,speed}));
+  const entries=selectableCatalog(catalog).map(({id,name,category,speed,startupSupported})=>({id,name,category,speed,
+    ...(typeof startupSupported==='boolean'?{startupSupported}:{})}));
   return {id,name:typeof raw.name==='string'?raw.name:'Coordinator',mode:raw.mode,scene:raw.sync.scene??0,
     brightness:raw.brightness,power:raw.power,catalog:entries,entry:entries.find(value=>value.id===entry.id),profile:effectSettings(entry),color,
     supportsColor:Boolean(state?.supportsColor&&color),options:validOptions&&Boolean(state?.capabilities&8)?options.slice():null,
@@ -43,7 +45,10 @@ function checkIntent(intent,context) {
     if(value.dual&&!context.color?.enabled)throw Error('Apply a primary color before enabling two colors.');
     return;
   }
-  if(action==='saveDefaults')return;
+  if(action==='saveDefaults'){
+    if(context.entry?.startupSupported===false)throw Error('Choose a different effect for the lamp’s startup light.');
+    return;
+  }
   if(action==='rotation') {
     if(!context.rotation||!value||typeof value.enabled!=='boolean'||typeof value.random!=='boolean'||
       ![0,1,2].includes(value.category)||!integer(value.seconds,5,86400)||value.enabled&&value.category===2&&!context.audio?.installed)

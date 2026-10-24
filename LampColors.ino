@@ -2,11 +2,16 @@
 #include "LampSync.h"
 
 // Separate, versioned storage preserves the existing Wi-Fi/settings layout.
-static LampColor effectColors[LAMP_EFFECT_COUNT];
+static LampColor effectColors[LAMP_EFFECT_CAPACITY];
 static bool colorsDirty = false;
-static LampEffectOptions effectOptions[LAMP_EFFECT_COUNT];
+static LampEffectOptions effectOptions[LAMP_EFFECT_CAPACITY];
 static bool optionsDirty = false;
-static bool appearanceV2[LAMP_EFFECT_COUNT]{};
+static bool appearanceV2[LAMP_EFFECT_CAPACITY]{};
+// Appended effects have no legacy blob slot. Track their first unsaved edit,
+// including when lookNN does not exist yet, separately from the old formats.
+static uint8_t appendedAppearanceDirty=0;
+static_assert(LAMP_EFFECT_CAPACITY-LAMP_EFFECT_COUNT<=8,"Appended appearance dirty bits must fit");
+static uint8_t appendedAppearanceBit(uint8_t mode){return mode>LAMP_EFFECT_COUNT&&mode<=LAMP_EFFECT_CAPACITY?uint8_t(1u<<(mode-LAMP_EFFECT_COUNT-1)):0;}
 static bool appearanceSaveReady=false;
 static uint32_t appearanceSavedAt=0;
 LampColor defaultLampColor(uint8_t mode);
@@ -33,7 +38,7 @@ static void legacyAppearanceBytes(Preferences& prefs,uint8_t mode,uint8_t* out){
     if((length==117||length==149||length==153)&&prefs.getBytes("colors",blob,length)==length&&blob[0]==1){bool valid=true;for(size_t i=1;i<length;i+=4)if(blob[i]>1)valid=false;if(valid&&mode<=(length-1)/4){const auto* p=blob+1+(mode-1)*4;c={p[0],p[1],p[2],p[3]};}}
     length=prefs.getBytesLength("effectOptions");
     if((length==223||length==229)&&prefs.getBytes("effectOptions",blob,length)==length&&blob[0]==1&&mode<=(length-1)/6){const auto* p=blob+1+(mode-1)*6;if(p[0]>=1&&p[0]<=100&&p[1]<=100&&p[2]<=1)o={p[0],p[1],p[2],p[3],p[4],p[5]};}
-  }else{
+  }else if(mode<=LAMP_EFFECT_COUNT){
     const size_t length=prefs.getBytesLength("audioEffectsV1");
     if((length==21||length==71||length==81||length==91)&&prefs.getBytes("audioEffectsV1",blob,length)==length&&blob[0]==1&&mode<=LAMP_BASE_EFFECT_COUNT+(length-1)/10){const auto* p=blob+1+(mode-LAMP_BASE_EFFECT_COUNT-1)*10;if(p[0]<=1)c={p[0],p[1],p[2],p[3]};if(p[4]>=1&&p[4]<=100&&p[5]<=100&&p[6]<=1)o={p[4],p[5],p[6],p[7],p[8],p[9]};}
   }
@@ -44,24 +49,25 @@ static bool validAppearance(const uint8_t* data,uint8_t mode){return data[0]==2&
 void loadLampAppearanceV2(){
   memset(appearanceV2,0,sizeof(appearanceV2));appearanceSaveReady=false;appearanceMigrationPending=false;uint64_t rebases=0;
   Preferences prefs;if(!prefs.begin("coollamp",true))return;
-  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode){char key[9];appearanceKey(mode,key);uint8_t data[AppearanceBytes]{},legacy[12]{};legacyAppearanceBytes(prefs,mode,legacy);
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_CAPACITY;++mode){char key[9];appearanceKey(mode,key);uint8_t data[AppearanceBytes]{},legacy[12]{};legacyAppearanceBytes(prefs,mode,legacy);
     if(prefs.getBytesLength(key)!=sizeof(data)||prefs.getBytes(key,data,sizeof(data))!=sizeof(data)||!validAppearance(data,mode))continue;
     appearanceV2[mode-1]=true;
-    if(memcmp(data+12,legacy,sizeof(legacy))){rebases|=uint64_t(1)<<(mode-1);continue;}
+    // Older firmware has no appended slots that could supersede these records.
+    if(mode<=LAMP_EFFECT_COUNT&&memcmp(data+12,legacy,sizeof(legacy))){rebases|=uint64_t(1)<<(mode-1);continue;}
     effectColors[mode-1]={data[2],data[3],data[4],data[5]};effectOptions[mode-1]={data[6],data[7],data[8],data[9],data[10],data[11]};appearanceV2[mode-1]=true;
   }prefs.end();
   if(!rebases)return;
   // Record the newer legacy save durably. Without this rebase, a subsequent
   // downgrade returning to the original v1 color could resurrect stale v2 data.
   Preferences migration;if(!migration.begin("coollamp",false)){appearanceMigrationPending=true;return;}
-  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode)if(rebases&(uint64_t(1)<<(mode-1))){char key[9];appearanceKey(mode,key);uint8_t record[AppearanceBytes]{},readback[AppearanceBytes]{};appearanceBytes(mode,record);legacyAppearanceBytes(migration,mode,record+12);
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_CAPACITY;++mode)if(rebases&(uint64_t(1)<<(mode-1))){char key[9];appearanceKey(mode,key);uint8_t record[AppearanceBytes]{},readback[AppearanceBytes]{};appearanceBytes(mode,record);legacyAppearanceBytes(migration,mode,record+12);
     const bool saved=migration.putBytes(key,record,sizeof(record))==sizeof(record);
     const bool reconciled=saved||(migration.getBytesLength(key)==sizeof(readback)&&migration.getBytes(key,readback,sizeof(readback))==sizeof(readback)&&memcmp(record,readback,sizeof(record))==0);
     if(!reconciled)appearanceMigrationPending=true;
   }migration.end();
 }
 LampAppearanceResult saveLampAppearanceAccepted(uint8_t mode,uint32_t now){
-  if(lampSyncFollowing()||mode<1||mode>lampAvailableEffectCount())return LampAppearanceResult::Failed;
+  if(lampSyncFollowing()||!lampEffectAvailable(mode))return LampAppearanceResult::Failed;
   uint8_t data[AppearanceBytes]{},old[AppearanceBytes]{};appearanceBytes(mode,data);char key[9];appearanceKey(mode,key);
   Preferences prefs;if(!prefs.begin("coollamp",false))return LampAppearanceResult::Failed;
   legacyAppearanceBytes(prefs,mode,data+12);
@@ -74,12 +80,13 @@ LampAppearanceResult saveLampAppearanceAccepted(uint8_t mode,uint32_t now){
     if(read&&memcmp(readback,data,sizeof(data))==0){ok=true;result=LampAppearanceResult::Persisted;}
     else if(read&&hadOld&&memcmp(readback,old,sizeof(old))==0)result=LampAppearanceResult::Failed;
   }prefs.end();
-  if(ok){appearanceV2[mode-1]=true;if(!same){appearanceSavedAt=now;appearanceSaveReady=true;}}return result;
+  if(ok){appearanceV2[mode-1]=true;appendedAppearanceDirty&=uint8_t(~appendedAppearanceBit(mode));if(!same){appearanceSavedAt=now;appearanceSaveReady=true;}}return result;
 }
 bool saveLampAppearanceV2(uint8_t mode,uint32_t now){return saveLampAppearanceAccepted(mode,now)==LampAppearanceResult::Persisted;}
 
 LampColor defaultLampColor(uint8_t mode)
 {
+  if (mode > LAMP_EFFECT_COUNT && mode <= LAMP_EFFECT_CAPACITY) return {1,255,150,35};
   if (mode >= 41) return {0,255,80,0};
   if (mode == 3) return {0, 128, 160, 255};
   if (mode == 31) return {1, 190, 215, 255};
@@ -88,12 +95,14 @@ LampColor defaultLampColor(uint8_t mode)
 }
 
 LampEffectOptions defaultEffectOptions(uint8_t mode) {
+  if (mode > LAMP_EFFECT_COUNT && mode <= LAMP_EFFECT_CAPACITY) return {50,100,1,255,65,8};
   return {50, static_cast<uint8_t>(mode == 31 ? 35 : 100), static_cast<uint8_t>(mode >= 30), 35, 160, 255};
 }
 
 void loadLampColors()
 {
-  for (uint8_t i = 0; i < LAMP_EFFECT_COUNT; ++i) {
+  colorsDirty=optionsDirty=false;appendedAppearanceDirty=0;
+  for (uint8_t i = 0; i < LAMP_EFFECT_CAPACITY; ++i) {
     effectColors[i] = defaultLampColor(i + 1);
     effectOptions[i] = defaultEffectOptions(i + 1);
   }
@@ -140,16 +149,18 @@ void loadLampColors()
 LampColor getLampColor(uint8_t mode)
 {
   if(lampSyncVisual && mode==lampSyncVisual->mode){const auto* c=lampSyncVisual->primary;return {c[0],c[1],c[2],c[3]};}
-  return mode >= 1 && mode <= LAMP_EFFECT_COUNT ? effectColors[mode - 1] : LampColor{0, 0, 0, 0};
+  return mode >= 1 && mode <= LAMP_EFFECT_CAPACITY ? effectColors[mode - 1] : LampColor{0, 0, 0, 0};
 }
 
 bool setLampColor(uint8_t mode, uint8_t r, uint8_t g, uint8_t b)
 {
   if(lampSyncFollowing()) return false;
-  if (mode < 1 || mode > lampAvailableEffectCount()) return false;
+  if (!lampEffectAvailable(mode)) return false;
   const LampColor next{1, r, g, b};
   const auto old = effectColors[mode - 1];
-  colorsDirty |= old.enabled != 1 || old.r != r || old.g != g || old.b != b;
+  const bool changed=old.enabled != 1 || old.r != r || old.g != g || old.b != b;
+  if(mode<=LAMP_EFFECT_COUNT)colorsDirty|=changed;
+  else if(changed)appendedAppearanceDirty|=appendedAppearanceBit(mode);
   effectColors[mode - 1] = next;
   return true;
 }
@@ -157,20 +168,24 @@ bool setLampColor(uint8_t mode, uint8_t r, uint8_t g, uint8_t b)
 bool resetLampColor(uint8_t mode)
 {
   if(lampSyncFollowing()) return false;
-  if (mode < 1 || mode > lampAvailableEffectCount()) return false;
+  if (!lampEffectAvailable(mode)) return false;
   const auto next = defaultLampColor(mode);
   const auto old = effectColors[mode - 1];
-  colorsDirty |= old.enabled != next.enabled || old.r != next.r || old.g != next.g || old.b != next.b;
+  const auto oldOptions=effectOptions[mode-1],nextOptions=defaultEffectOptions(mode);
+  const bool colorChanged=old.enabled != next.enabled || old.r != next.r || old.g != next.g || old.b != next.b;
+  const bool changed=colorChanged || memcmp(&oldOptions,&nextOptions,sizeof(oldOptions));
+  if(mode<=LAMP_EFFECT_COUNT){colorsDirty|=colorChanged;optionsDirty=true;}
+  else if(changed)appendedAppearanceDirty|=appendedAppearanceBit(mode);
   effectColors[mode - 1] = next;
   effectOptions[mode - 1] = defaultEffectOptions(mode);
-  optionsDirty = true;
   return true;
 }
 
 bool saveLampColors()
 {
   if(lampSyncFollowing()) return false;
-  if (!colorsDirty && !optionsDirty) return true;
+  if (!colorsDirty && !optionsDirty && !appendedAppearanceDirty) return true;
+  const bool legacyDirty=colorsDirty||optionsDirty;
   uint8_t data[1 + LAMP_BASE_EFFECT_COUNT * 4] = {1};
   for (uint8_t i = 0; i < LAMP_BASE_EFFECT_COUNT; ++i) {
     const auto c = effectColors[i];
@@ -193,12 +208,14 @@ bool saveLampColors()
     p[0]=c.enabled;p[1]=c.r;p[2]=c.g;p[3]=c.b;
     p[4]=o.speed;p[5]=o.intensity;p[6]=o.dual;p[7]=o.r;p[8]=o.g;p[9]=o.b;
   }
-  const bool savedAudio = prefs.putBytes("audioEffectsV1", audio, sizeof(audio)) == sizeof(audio);
+  const bool savedAudio = !legacyDirty || prefs.putBytes("audioEffectsV1", audio, sizeof(audio)) == sizeof(audio);
   bool savedV2=true;
-  for(uint8_t mode=1;mode<=LAMP_EFFECT_COUNT;++mode)if(appearanceV2[mode-1]){
+  for(uint8_t mode=1;mode<=LAMP_EFFECT_CAPACITY;++mode)if(appearanceV2[mode-1]||(appendedAppearanceDirty&appendedAppearanceBit(mode))){
     char key[9];appearanceKey(mode,key);uint8_t current[AppearanceBytes]{},old[AppearanceBytes]{};appearanceBytes(mode,current);legacyAppearanceBytes(prefs,mode,current+12);
     const bool same=prefs.getBytesLength(key)==sizeof(old)&&prefs.getBytes(key,old,sizeof(old))==sizeof(old)&&memcmp(old,current,sizeof(old))==0;
-    if(!same)savedV2=(prefs.putBytes(key,current,sizeof(current))==sizeof(current))&&savedV2;
+    const bool written=same||prefs.putBytes(key,current,sizeof(current))==sizeof(current);
+    if(written){appearanceV2[mode-1]=true;appendedAppearanceDirty&=uint8_t(~appendedAppearanceBit(mode));}
+    savedV2=written&&savedV2;
   }
   prefs.end();
   if (!savedAudio||!savedV2) return false;
@@ -209,13 +226,15 @@ bool saveLampColors()
 
 LampEffectOptions getLampEffectOptions(uint8_t mode) {
   if(lampSyncVisual && mode==lampSyncVisual->mode){const auto& v=*lampSyncVisual;return {v.speed,v.intensity,v.dual,v.secondary[0],v.secondary[1],v.secondary[2]};}
-  return mode >= 1 && mode <= LAMP_EFFECT_COUNT ? effectOptions[mode - 1] : defaultEffectOptions(1);
+  return mode >= 1 && mode <= LAMP_EFFECT_CAPACITY ? effectOptions[mode - 1] : defaultEffectOptions(1);
 }
 bool setLampEffectOptions(uint8_t mode, LampEffectOptions o) {
   if(lampSyncFollowing()) return false;
-  if (mode < 1 || mode > lampAvailableEffectCount() || o.speed < 1 || o.speed > 100 || o.intensity > 100 || o.dual > 1) return false;
+  if (!lampEffectAvailable(mode) || o.speed < 1 || o.speed > 100 || o.intensity > 100 || o.dual > 1) return false;
   const auto old = effectOptions[mode - 1];
-  optionsDirty |= old.speed!=o.speed || old.intensity!=o.intensity || old.dual!=o.dual || old.r!=o.r || old.g!=o.g || old.b!=o.b;
+  const bool changed=old.speed!=o.speed || old.intensity!=o.intensity || old.dual!=o.dual || old.r!=o.r || old.g!=o.g || old.b!=o.b;
+  if(mode<=LAMP_EFFECT_COUNT)optionsDirty|=changed;
+  else if(changed)appendedAppearanceDirty|=appendedAppearanceBit(mode);
   effectOptions[mode - 1] = o; return true;
 }
 void getLampEffectPacket(uint8_t* out) {

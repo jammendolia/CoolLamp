@@ -8,6 +8,8 @@
 #include "LampConfig.h"
 #include "LampGeometry.h"
 #include "LampStyle.h"
+#include "LampModel.h"
+#include "LampEdisonEffects.h"
 #include "LampControl.h"
 #include "LampControlEndpoint.h"
 #include "LampExperience.h"
@@ -96,7 +98,12 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_BAND_FOUNTAIN 45
 #define MODE_VU_METER 46
 #define MODE_RAINBOW_EMBERS 47
-#define MODE_MAX MODE_RAINBOW_EMBERS
+#define MODE_EDISON_FILAMENT 48
+#define MODE_EDISON_EUREKA 49
+#define MODE_EDISON_ORBIT 50
+#define MODE_EDISON_INDUCTION 51
+#define MODE_EDISON_SOUND_FILAMENT 52
+#define MODE_MAX MODE_EDISON_SOUND_FILAMENT
 static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
@@ -134,6 +141,7 @@ void setup() {
   beginLampAudio();
   loadLampSettings();
   loadLampGeometry();
+  LampModel::begin();
   beginLampStyle();
   loadLampRotation();
   loadLampColors();
@@ -153,7 +161,7 @@ void setup() {
   const uint16_t split = lampMotionSplitCount(NUM_LEDS, lampMidpoint);
   if (split < NUM_LEDS) splitHeat[split] = 200;
   Brightness = lampSettings.brightness;
-  Mode = lampSettings.startupMode <= lampAvailableEffectCount() ? lampSettings.startupMode : MODE_FIRE;
+  Mode = lampEffectAvailable(lampSettings.startupMode) ? lampSettings.startupMode : MODE_FIRE;
 
   FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS)
       .setCorrection(TypicalLEDStrip);
@@ -188,7 +196,7 @@ void loop() {
   serviceLampFactoryReset();
   serviceLampRotation();
   const uint8_t groupScene=lampGroupScene();
-  const bool needsAudio=groupScene?(groupScene==2||LampSyncWire::sceneNeedsAudio(groupScene)):Mode>LAMP_BASE_EFFECT_COUNT;
+  const bool needsAudio=groupScene?(groupScene==2||LampSyncWire::sceneNeedsAudio(groupScene)):lampEffectNeedsAudio(Mode);
   serviceLampAudio(PowerOn && needsAudio && !lampSyncFollowing(), lampUpdateOwnsResources() || lampSyncFollowing() || lampFactoryResetPending());
   bool renderNow = serviceLampKnob();
   lampRuntimeMetrics.service(LampRuntimeMetrics::Service::BeforeRender, uint32_t(micros() - loopTiming.startedAt()));
@@ -248,12 +256,12 @@ void loop() {
   unsigned steps = min(effectBudget / 4096, uint32_t(4));
   effectBudget -= steps * 4096;
   if (renderNow && steps == 0) steps = 1;
-  if (lampGroupScene() || Mode > LAMP_BASE_EFFECT_COUNT) steps = 1; // Audio follows real time, independently of speed.
+  if (lampGroupScene() || lampEffectNeedsAudio(Mode)) steps = 1; // Audio follows real time, independently of speed.
   if (lampSyncFollowing()) {
     const uint32_t target = lampSyncEffectClock(effectClockMs) & ~uint32_t(15);
     const int32_t distance = int32_t(target - effectClockMs);
-    steps = Mode > LAMP_BASE_EFFECT_COUNT ? 1 : distance > 0 ? min(uint32_t(distance) / 16, uint32_t(4)) : 0;
-    if (distance < 0 || distance > 64 || Mode > LAMP_BASE_EFFECT_COUNT) { steps = 1; effectClockMs = target - 16; }
+    steps = lampEffectNeedsAudio(Mode) ? 1 : distance > 0 ? min(uint32_t(distance) / 16, uint32_t(4)) : 0;
+    if (distance < 0 || distance > 64 || lampEffectNeedsAudio(Mode)) { steps = 1; effectClockMs = target - 16; }
   }
   if(lampGroupScene())steps=1; // Group scenes use their own shared real-time clock.
   static uint8_t previousGroupScene=0;
@@ -262,6 +270,9 @@ void loop() {
   effectClockMs += 16;
   if(lampGroupScene()) { renderGroupScene(lampSyncRenderTime(now)); continue; }
   switch (Mode) {
+    case MODE_EDISON_FILAMENT: case MODE_EDISON_EUREKA: case MODE_EDISON_ORBIT:
+    case MODE_EDISON_INDUCTION: case MODE_EDISON_SOUND_FILAMENT:
+      renderEdisonEffect(Mode,effectClockMs); break;
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
     case MODE_VU_METER: case MODE_RAINBOW_EMBERS:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:

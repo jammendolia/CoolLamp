@@ -9,8 +9,11 @@ const html = pageHeader.split('R"HTML(')[1].split(')HTML";')[0];
 const js = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(js);
 const modes = [...main.matchAll(/^#define (MODE_\w+) (\d+)$/gm)];
-assert.equal(modes.length, 47);
-assert.deepEqual(modes.map(m=>Number(m[2])), Array.from({length:47},(_,i)=>i+1));
+assert.equal(modes.length, 52);
+const legacyNames=['PACIFICA','AURORA','RAIN','FIRE','FIRESPLIT','FIRESPLIT_REVERSE','FIRESPLIT_REVERSE_COLORS','FIRE_BLUE','FIRE_GREEN','FIRE_PURPLE','EMBERS','LAVA','PLASMA','RAINBOW','RAINBOW_GLITTER','CONFETTI','COMET_COLLISION','SINELON','BPM','JUGGLE','WHITE','RED','GREEN','BLUE','PURPLE','PINK','YELLOW','CYAN','CUSTOM','DROPLETS','LIGHTNING','TIDE','FIREFLIES','HEARTBEAT','STARS','BREATHING','BLOBS','DROPLETS_OUTWARD','SOUND_GLOW','SOUND_METER','SPECTRUM_RISE','BASS_LAUNCH','SPECTRAL_EMBERS','BEAT_BLOOM','BAND_FOUNTAIN','VU_METER','RAINBOW_EMBERS'];
+assert.deepEqual(modes.slice(0,47).map(m=>m[1]),legacyNames.map(name=>`MODE_${name}`));
+assert.deepEqual(modes.map(m=>Number(m[2])), Array.from({length:52},(_,i)=>i+1));
+assert(modes.slice(47).every(m=>m[1].startsWith('MODE_EDISON_')));
 for(const [,name] of modes) assert(main.includes(`case ${name}:`));
 assert(!main.slice(main.indexOf('void loop()')).match(/Serial\.(print|write)/));
 for(let count=1;count<=1024;count++){
@@ -34,7 +37,7 @@ const network=fs.readFileSync(path.join(root,'LampNetwork.ino'),'utf8');
 assert(network.includes('header.chip_id != CONFIG_IDF_FIRMWARE_CHIP_ID'));
 assert(network.includes('app.magic_word != ESP_APP_DESC_MAGIC_WORD'));
 assert(network.includes('if (Update.isRunning()) Update.abort()'));
-console.log('PASS: page JavaScript parses; 47 modes have unique selectable IDs; split/rain mappings cover lengths 1–1024; controls contain no blocking serial writes.');
+console.log('PASS: page JavaScript parses; legacy47 mode names/IDs remain unchanged and Edison48–52 append uniquely; split/rain mappings cover lengths1–1024; controls contain no blocking serial writes.');
 if(process.argv.includes('--serve')){
   const effects=[...network.match(/effectNames\[\] = \{([\s\S]*?)\};/)[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]);
   require('node:http').createServer((req,res)=>{

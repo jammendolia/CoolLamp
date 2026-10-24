@@ -81,7 +81,8 @@ uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned controls=0,uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
-bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
+bool lampHasMicrophone(){return true;}bool lampMicrophoneEnabled(){return true;}
+bool lampEdisonProfileMatches(){return false;}constexpr uint8_t MODE_MAX=52;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
 void appendLampStyleJson(LampJsonSink& out){out.concat(lampStyleJson());}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void syncLampKnob(){}
@@ -179,7 +180,7 @@ int main(int argc,char** argv){
  assert(lampServer.executeControl(46,true,"action=read&target=112233445566&bootSession="+commandHex(lightCommands.boot())).status==400);
  assert(lampServer.executeControl(46,true,"action=read&target="+lampIdentity()+"&bootSession=0000000000000001").status==409);
  assert(patch(6,policyLightRevision,"&window=1&brightness=42").status==400&&Brightness==52);
- LampCommands::Ledger ledger;ledger.begin(99);uint8_t state[512]{},digest[32]{};assert(ledger.observe(state,512));LampCommands::Receipt* receipt=nullptr;
+ LampCommands::Ledger ledger;ledger.begin(99);uint8_t state[LampCommands::SnapshotBytes]{},digest[32]{};assert(ledger.observe(state,sizeof(state)));LampCommands::Receipt* receipt=nullptr;
  for(uint64_t id=1;id<=8;++id){assert(ledger.admit(99,id,1,digest,0xfffffff0,receipt)==LampCommands::Admission::New);ledger.finish(*receipt,200,LampCommands::Outcome::Executed);}
  assert(ledger.admit(99,9,1,digest,0x10,receipt)==LampCommands::Admission::New);assert(!ledger.query(99,1,0x10));assert(ledger.admit(99,1,1,digest,0x10,receipt)==LampCommands::Admission::Uncertain);assert(ledger.admit(99,2,1,digest,120000,receipt)==LampCommands::Admission::Uncertain);
  LampModel::Record model;strcpy(model.id,"future-coil-2070");strcpy(model.name,"Future coil");strcpy(model.artwork,"future-art");strcpy(model.hardware,"rev-z");model.preconfigured=1;assert(LampModel::provision(model));LampModel::begin();assert(!strcmp(LampModel::current().id,"future-coil-2070"));Preferences::failWrites=true;strcpy(model.id,"other");assert(!LampModel::provision(model));Preferences::failWrites=false;assert(!strcmp(LampModel::current().id,"future-coil-2070"));

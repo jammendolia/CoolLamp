@@ -83,6 +83,7 @@ PLATFORM = r'''
 #include "LampHttpJson.h"
 #include "LampJsonSink.h"
 #include "LampGeometry.h"
+#include "LampEffectSchema.h"
 #include <atomic>
 #include <cassert>
 #include <iostream>
@@ -150,7 +151,7 @@ HANDLER_PLATFORM = r'''
 #include "LampFactory.h"
 #include "LampRuntimeMetrics.h"
 #define COOL_LAMP_AUDIO_EFFECTS 1
-constexpr unsigned LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,MODE_FIRE=4;
+constexpr unsigned LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47,LAMP_EFFECT_CAPACITY=52,MODE_FIRE=4;
 LampSettings lampSettings{};
 // Fixture globals are already resident in the observed free-heap baseline.
 // Avoid counting their persistent storage again; any SDK text conversion is
@@ -161,6 +162,9 @@ const char* lampName="A bounded public fixture lamp name";
 uint16_t NUM_LEDS=1024,lampMidpoint=512;uint8_t Mode=4,Brightness=255;bool PowerOn=true;
 uint8_t availableEffects=47;bool useCanonicalNames=true;
 uint8_t lampAvailableEffectCount(){return availableEffects;}
+bool lampEdisonProfileMatches(){return false;}
+bool lampEffectAvailable(uint8_t mode){return mode>=1&&mode<=availableEffects;}
+bool lampEffectNeedsAudio(uint8_t mode){return (mode>=39&&mode<=47)||mode==52;}
 constexpr uint8_t LAMP_CUSTOM_SOLID=29;bool productionDefaultAppearance=false;
 struct Color {uint8_t enabled=1,r=255,g=255,b=255;};using LampColor=Color;
 DEFAULT_COLOR_FN

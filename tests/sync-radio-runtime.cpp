@@ -8,7 +8,7 @@ bool lampHasMicrophone(){return true;}
 LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures value{};return value;}
 unsigned applied=0,restored=0;
 void applyLampSyncControl(const Visual* value){if(value)++applied;else ++restored;}
-void captureLampSyncVisual(Visual& value){value={};value.mode=46;value.power=1;value.brightness=100;value.speed=50;value.audioValid=1;value.level=140;}
+void captureLampSyncVisual(Visual& value){value={};value.mode=fixtureControlState.mode;value.power=1;value.brightness=100;value.speed=50;value.audioValid=1;value.level=140;}
 const char* leaderId="112233445566";
 uint8_t leaderMac[6]{},localMac[6]{};
 LampSyncRadioCrypto::SendNonce leaderNonce;

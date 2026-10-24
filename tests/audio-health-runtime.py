@@ -144,14 +144,16 @@ inline esp_err_t nvs_get_blob(uint32_t handle,const char* key,void* data,size_t*
 SCENARIOS = r'''
 #include <iostream>
 #include <limits>
+#include "LampControl.h"
 uint32_t millis(){return Fixture::now;}
 uint32_t lampRenderedFrames=100,lampMaxRenderUs=1500;
 bool following=false;uint8_t syncRole=0;bool syncPaused=false;
 bool lampSyncFollowing(){return following;}bool leaveLampSceneForEffect(){return true;}
+uint8_t lampSyncRole(){return syncRole;}bool lampEdisonProfileMatches(){return false;}
 void pauseLampSync(){if(syncRole==2){following=false;syncPaused=true;}}
 bool lampCalibrationActive(){return false;}unsigned short lampCalibrationPosition(){return 1;}
 void moveLampCalibration(unsigned short){}bool finishLampCalibration(bool){return true;}
-constexpr uint8_t MODE_MAX=47;uint8_t Mode=4,Brightness=100;bool PowerOn=true;
+constexpr uint8_t MODE_MAX=LAMP_EFFECT_CAPACITY;uint8_t Mode=4,Brightness=100;bool PowerOn=true;
 struct CRGB{static constexpr int Black=0;};int leds[1];constexpr int NUM_LEDS=1;
 void fill_solid(int*,int,int){}void syncLampKnob(){}void noteLampUpdateUse(){}
 struct{void setBrightness(int){}} FastLED;

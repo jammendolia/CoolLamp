@@ -35,7 +35,8 @@ void serviceLampRotation(){
   if(Mode!=rotationMode){rotationAt=now;rotationMode=Mode;return;}
   if(uint32_t(now-rotationAt)<lampRotation.seconds*1000U)return;
   rotationAt=now;
-  const uint8_t next=nextRotationEffect(Mode,lampAvailableEffectCount(),lampRotation,esp_random());
+  uint64_t selectable=0;for(uint8_t id=1;id<=lampAvailableEffectCount();++id)if(lampEffectAvailable(id))selectable|=uint64_t(1)<<(id-1);
+  const uint8_t next=nextRotationEffect(Mode,lampAvailableEffectCount(),lampRotation,esp_random(),selectable);
   if(next && setLampControl(next,Brightness,PowerOn))rotationMode=Mode;
 }
 bool beginLampCalibration(){

@@ -12,6 +12,7 @@ uint8_t lampMotionPath=0;
 using std::min;
 bool microphone=false;
 uint8_t lampAvailableEffectCount(){return microphone?LAMP_EFFECT_COUNT:LAMP_BASE_EFFECT_COUNT;}
+bool lampEffectAvailable(uint8_t mode){return mode>=1&&mode<=lampAvailableEffectCount();}
 LampControlState control{3,100,true};
 LampControlState getLampControlState(){return control;}
 #include "../LampSync.h"

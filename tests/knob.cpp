@@ -41,6 +41,7 @@ bool physicalPending(){return pending;}
 void approvePhysical(){if(pending){++approvals;pending=false;}}
 }
 uint8_t lampAvailableEffectCount(){return microphone?47:38;}
+uint8_t lampNextAvailableEffect(uint8_t current,int delta){const int count=lampAvailableEffectCount();return uint8_t((int(current)-1+delta%count+count)%count+1);}
 LampColor colors[48]{};
 struct Encoder {
   long value=4,low=1,high=38;bool wrap=true,changed=false;

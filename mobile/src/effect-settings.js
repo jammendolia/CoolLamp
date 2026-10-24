@@ -29,6 +29,11 @@ family(['Beat Bloom'], {description:'Each attack blooms at the center and ripple
 family(['Three-band Fountain'], {description:'Bass, mids and treble rise in three layers of color.',fountain:true,speedLabel:'Response speed',speedHint:'Higher values make the layers fall faster.'});
 family(['VU Meter'], {description:'Volume climbs from both ends: green, yellow, then red at the center.',vu:true,speedLabel:'Response speed',speedHint:'Higher values make the meter fall faster.'});
 family(['Rainbow Embers'], {description:'Audio-reactive flames with rainbow sparks dancing across the strip.',speedLabel:'Response speed',speedHint:'Adjusts how quickly the flame follows falling sound levels.',colorLabel:'Flame base',secondaryLabel:'Flame blend'});
+family(['Filament'], {description:'A warm glow gently heats and breathes inside Edison’s bulb.',speedLabel:'Breathing speed',colorLabel:'Filament color'});
+family(['Eureka'], {description:'Light climbs from the coils and stem, then softly fills Edison’s bulb.',speedLabel:'Bloom speed',colorLabel:'Bulb color'});
+family(['Orbit'], {description:'Two soft trails circle Edison’s bulb while its coils glow quietly.',speedLabel:'Orbit speed',colorLabel:'Trail color'});
+family(['Induction'], {description:'A pulse winds through Edison’s coils and sends a wave into the bulb.',speedLabel:'Pulse speed',colorLabel:'Pulse color'});
+family(['Sound Filament'], {description:'Edison’s coils follow the bass while its bulb follows the rest of your music.',colorLabel:'Sound color'});
 export function effectSettings(entry) {
   const known=profiles.get(entry?.name)||{};
   const audio=entry?.category==='audio';

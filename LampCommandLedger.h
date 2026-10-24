@@ -6,7 +6,7 @@
 // Loop-owned, route-independent execution receipts. Expired IDs are never
 // admitted again in this boot: monotonically increasing IDs fence eviction.
 namespace LampCommands {
-constexpr size_t Slots=8, SnapshotBytes=512;
+constexpr size_t Slots=8, SnapshotBytes=576;
 constexpr uint32_t LifetimeMs=120000;
 enum class Outcome:uint8_t {Rejected,Executed,Persisted,SaveFailed,Uncertain};
 struct Receipt {

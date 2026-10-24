@@ -1,15 +1,27 @@
 import { effects } from './protocol.js';
 export const CATALOG = '7b610007-6e2b-4f3d-9a71-28e45c001001';
-// Catalog v1 uses stable, contiguous wire IDs 1..N, independent of lamp style.
+// Catalog v1 retains dense wire slots 1..N. Optional availability describes
+// selection on this lamp without renumbering saved colors, options or commands.
+// startupSupported is independent: an effect can play and remember its tuning
+// while remaining unsuitable for the legacy startup settings record.
 export function validateCatalog(value, count) {
   if (!Array.isArray(value) || !Number.isInteger(count) || count<1 || count>255 || value.length!==count) throw new Error('Invalid lamp effect catalog.');
   return value.map((entry,i)=>{
     if (!entry || entry.id!==i+1 || typeof entry.name!=='string' || !entry.name.trim() || new TextEncoder().encode(entry.name).length>96 || /[\x00-\x1f]/.test(entry.name) || typeof entry.category!=='string' || typeof entry.speed!=='boolean') throw new Error('Invalid lamp effect catalog.');
     const result={id:entry.id,name:entry.name,category:['calm','fire','color','audio'].includes(entry.category)?entry.category:'other',speed:entry.speed};
-    if(Object.hasOwn(entry,'styles'))result.styles=Array.isArray(entry.styles)&&entry.styles.length<=4&&entry.styles.every(style=>['unspecified','helix','large-helix','corkscrew'].includes(style))?[...new Set(entry.styles)]:null;
+    for(const flag of ['available','startupSupported'])if(Object.hasOwn(entry,flag)){
+      if(typeof entry[flag]!=='boolean')throw new Error('Invalid lamp effect availability.');
+      result[flag]=entry[flag];
+    }
+    if(Object.hasOwn(entry,'styles'))result.styles=Array.isArray(entry.styles)&&entry.styles.length<=5&&entry.styles.every(style=>['unspecified','helix','large-helix','corkscrew','edison'].includes(style))?[...new Set(entry.styles)]:null;
     return result;
   });
 }
+// Keep the dense validated catalog in transports; filter only selectable views.
+// Missing metadata preserves the behavior of every existing catalog.
+export const selectableCatalog = catalog => Array.isArray(catalog)?catalog.filter(entry=>entry.available!==false):[];
+export const startupCatalog = catalog => selectableCatalog(catalog).filter(entry=>entry.startupSupported!==false);
+export const effectAvailable = (catalog,id) => Array.isArray(catalog)&&catalog.some(entry=>entry.id===id&&entry.available!==false);
 export function legacyCatalog(names) {
   if (!Array.isArray(names)) throw new Error('Invalid lamp effect catalog.');
   const calm=[1,2,3,13,30,32,33,36,37,38];

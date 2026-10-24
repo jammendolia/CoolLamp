@@ -11,7 +11,7 @@ bool lampHasMicrophone(){return true;}
 LampAudioFeatures getLampAudioFeatures(){LampAudioFeatures a{};a.valid=true;a.level=180;a.beat=3;return a;}
 unsigned applied=0;
 void applyLampSyncControl(const Visual* v){if(v)++applied;}
-void captureLampSyncVisual(Visual& v){v={};v.mode=46;v.power=1;v.brightness=100;v.speed=50;v.audioValid=1;v.level=180;v.bass=100;v.mid=40;v.treble=70;}
+void captureLampSyncVisual(Visual& v){v={};v.mode=fixtureControlState.mode;v.power=1;v.brightness=100;v.speed=50;v.audioValid=1;v.level=180;v.bass=100;v.mid=40;v.treble=70;}
 void injectUdp(Packet p){digest(p,p.mac);const auto* b=reinterpret_cast<const uint8_t*>(&p);WiFiUDP::incoming.emplace_back(b,b+sizeof(p));}
 void handle(Packet p){digest(p,p.mac);receivePacket(p,fakeNow,false,nullptr,0,IPAddress(192,168,1,3),"Fixture");}
 Packet subscription(const char* name,uint64_t boot,uint64_t target){
@@ -20,6 +20,20 @@ Packet subscription(const char* name,uint64_t boot,uint64_t target){
 int main(){
   const String key="0123456789abcdef0123456789abcdef";
   fakeEfuseMac=0xaabbccddee00ULL;fakeNow=1000;WiFi.state=WL_CONNECTED;beginLampSync();
+  {
+    const auto before=Preferences::storage;
+    for(uint8_t mode=48;mode<=52;++mode)for(uint8_t version:{LegacyVersion,ExpandedVersion}){
+      fixtureControlState.mode=mode;
+      assert(!configureLampSync(1,identity,key,version));
+      assert(!configureLampSync(2,"112233445566",key,version));
+      assert(config.role==0&&Preferences::storage==before);
+    }
+    // Removing membership remains permitted even when a standalone appended
+    // effect is selected. The admission guard must never trap removal.
+    assert(configureLampSync(0,"","",ExpandedVersion)&&config.role==0);
+    fixtureControlState.mode=46;
+    std::cout<<"PASS: selected Edison48..52 reject legacy/expanded coordinator and follower admission before NVS; removal remains allowed\n";
+  }
   assert(configureLampSync(1,identity,key,3));serviceLampSync("Leader",false);
   const uint64_t leaderBoot=nonce;char leader[13];strcpy(leader,identity);uint8_t leaderMac[6];assert(LampSyncRadioCrypto::macFromIdentity(leader,leaderMac));
   auto old=subscription("112233445566",100,leaderBoot);old.version=2;handle(old);

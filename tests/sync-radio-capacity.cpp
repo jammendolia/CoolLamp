@@ -7,7 +7,7 @@
 bool lampHasMicrophone(){return true;}
 LampAudioFeatures getLampAudioFeatures(){return {};}
 void applyLampSyncControl(const Visual*){}
-void captureLampSyncVisual(Visual& v){v={};v.mode=46;v.power=1;v.brightness=100;v.speed=50;}
+void captureLampSyncVisual(Visual& v){v={};v.mode=fixtureControlState.mode;v.power=1;v.brightness=100;v.speed=50;}
 int main(){
  fakeEfuseMac=0xaabbccddee00ULL;WiFi.state=0;fakeNow=1000;beginLampSync();
  assert(configureLampSync(1,identity,"0123456789abcdef0123456789abcdef"));serviceLampSync("Leader",false);

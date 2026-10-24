@@ -173,7 +173,10 @@ for (const mtu of [23, 185]) test(`full-size Bluetooth image with MTU ${mtu} con
     }
   });
   const result = await transfer.send(packageValue);
-  assert.deepEqual(result, {committed: true, version: '1.13.0'});
+  assert.equal(result.committed, true);
+  assert.equal(result.version, '1.13.0');
+  assert(Object.isFrozen(result.receipt));
+  assert.deepEqual(result.receipt, {session: receiver.state.session, size: imageSize, offset: imageSize, ack: receiver.sequence, phase: 4, error: 0, committed: true});
   assert.equal(receiver.state.offset, imageSize);
   assert.equal(receiver.dataFrames, Math.ceil(imageSize / receiver.chunk));
   assert.equal(receiver.ackWindows, Math.ceil(receiver.dataFrames / 4));

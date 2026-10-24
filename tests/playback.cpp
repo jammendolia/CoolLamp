@@ -9,7 +9,7 @@
 uint32_t now=0;uint32_t millis(){return now;}void delay(int){}
 uint32_t esp_random(){return 0;}
 uint8_t Mode=4,Brightness=100,role=0,scene=0;
-bool PowerOn=true,updating=false,mic=false,failCount=false;
+bool PowerOn=true,updating=false,mic=false,failCount=false,edison=false,edisonAudio=true;
 constexpr int NUM_LEDS=134,MAX_LED_COUNT=1024;
 uint16_t savedCount=134;
 struct CRGB{uint8_t r=0,g=0,b=0;CRGB()=default;CRGB(int r,int g,int b):r(r),g(g),b(b){}static const CRGB Black,Red,White;};
@@ -25,7 +25,8 @@ void lampShowFrame(LampRuntimeMetrics::FrameKind kind){assert(kind==LampRuntimeM
 uint8_t lampSyncRole(){return role;}uint8_t lampGroupScene(){return scene;}
 bool lampHasMicrophone(){return mic;}bool lampUpdateOwnsResources(){return updating;}
 bool lampPairingOpen(){return false;}bool lampSetupPulse(){return false;}bool lampIdentifyActive(){return false;}
-uint8_t lampAvailableEffectCount(){return mic?47:38;}
+uint8_t lampAvailableEffectCount(){return edison?(mic?52:51):mic?47:38;}
+bool lampEffectAvailable(uint8_t id){return id>=1&&id<=lampAvailableEffectCount()&&(id<=38||(id<=47?mic:edison&&(id!=52||edisonAudio)));}
 bool setLampControl(uint32_t m,uint32_t b,bool p){Mode=m;Brightness=b;PowerOn=p;return true;}
 void resetLampCalibrationKnob(){}
 void syncLampKnob(){}bool finishLampKnob(){return true;}
@@ -46,6 +47,26 @@ int main(){
  r.category=2;assert(nextRotationEffect(4,38,r,0)==0);
  r.random=0;assert(nextRotationEffect(47,47,r,0)==39);
  r.category=0;assert(nextRotationEffect(47,47,r,0)==1);
+ // The production pure selector treats48..51 as light and52 as audio, while
+ // preserving the legacy39..47 audio classification and skipping absent slots.
+ const uint64_t lightMask=((uint64_t(1)<<38)-1)|(uint64_t(15)<<47);
+ const uint64_t allMask=(uint64_t(1)<<52)-1;
+ r.category=1;assert(nextRotationEffect(38,51,r,0,lightMask)==48);
+ assert(nextRotationEffect(51,51,r,0,lightMask)==1);
+ r.category=2;assert(nextRotationEffect(47,52,r,0,allMask)==52);
+ assert(nextRotationEffect(52,52,r,0,allMask)==39);
+ assert(nextRotationEffect(38,51,r,0,lightMask)==0);
+ r.category=1;r.random=1;
+ for(unsigned draw=0;draw<100;++draw){const auto next=nextRotationEffect(48,52,r,draw,allMask);assert(next&&next!=48&&!lampEffectNeedsAudio(next));}
+ r.category=2;
+ for(unsigned draw=0;draw<100;++draw){const auto next=nextRotationEffect(52,52,r,draw,allMask);assert(next>=39&&next<=47);}
+ // A single available effect is valid in both sequential and random modes.
+ for(uint8_t random:{uint8_t(0),uint8_t(1)}){r.random=random;r.category=0;assert(nextRotationEffect(51,52,r,9,uint64_t(1)<<50)==51);assert(nextRotationEffect(51,52,r,9,0)==0);}
+ // Actual service constructs its eligibility mask each turn: lost microphone
+ // support leaves the gap39..47 while still rotating to appended light48.
+ edison=true;mic=false;r.category=1;r.random=0;now=100000;Mode=38;assert(saveLampRotation(r));now+=5000;serviceLampRotation();assert(Mode==48);
+ Mode=51;now=0xfffffff0;assert(saveLampRotation(r));now+=5000;serviceLampRotation();assert(Mode==1);
+ edison=false;mic=true;r.category=0;
  Preferences::failWrites=true;r.enabled=0;assert(!saveLampRotation(r)&&lampRotation.enabled);Preferences::failWrites=false;
  // Unsigned time arithmetic across millis rollover.
  r.enabled=1;r.category=1;r.random=0;now=0xfffffff0;assert(saveLampRotation(r));Mode=38;serviceLampRotation();now+=5000;serviceLampRotation();assert(Mode==1);

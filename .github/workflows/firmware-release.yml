@@ -52,6 +52,9 @@ jobs:
           python3 tests/http-server-runtime.py
           python3 tests/http-stall-probe.py
           python3 tests/espnow-runtime.py
+          python3 tests/edison-effects-runtime.py
+          python3 tests/edison-adapter-runtime.py
+          python3 tests/edison-appearance-runtime.py
           python3 tests/factory-reset-runtime.py
           python3 tests/lamp-style-runtime.py
           python3 tests/update-handoff-runtime.py

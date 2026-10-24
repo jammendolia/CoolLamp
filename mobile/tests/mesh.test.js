@@ -5,7 +5,7 @@ import {runLampPower} from '../src/lamp-power.js';
 
 const target='aabbccddeeff',bridgeId='112233445566',boot='1234567890abcdef';
 const model=()=>({deviceId:target,hostname:'coollamp-target.local',name:'Target',mode:1,brightness:100,power:true,leds:67,
- apiVersion:2,catalogVersion:1,effects:['Target rain'],colors:[[1,1,2,3]],effectOptions:[[50,75,0,4,5,6]],
+ apiVersion:2,catalogVersion:1,motionVersion:1,motionPath:0,audio:{installed:true,captureVersion:1,enabled:true},effects:['Target rain'],colors:[[1,1,2,3]],effectOptions:[[50,75,0,4,5,6]],
  firmware:{version:'1.12.0',latest:'1.12.0',phase:0,progress:0,error:0,wifi:false,available:false,automatic:false},
  sync:{version:2,role:0,active:false,paused:false,scene:0,key:'must-not-retain'},token:'must-not-retain'});
 function fixture(){
@@ -18,7 +18,7 @@ function fixture(){
    if(fields.endpoint===1)response=JSON.stringify(raw);
    if(fields.endpoint===26)response=JSON.stringify([{id:1,name:raw.effects[0],category:'calm',speed:true}]);
    if(fields.endpoint===18)response=JSON.stringify(raw.firmware);
-   if(fields.method===2){writes.push(fields);if(fields.endpoint===31){raw.power=form.get('on')==='1';if(raw.sync.role===2&&!raw.power){raw.sync.paused=true;raw.sync.active=false;}}}
+   if(fields.method===2){writes.push(fields);if(fields.endpoint===11)raw.motionPath=Number(form.get('path'));if(fields.endpoint===8)raw.audio.enabled=form.get('enabled')==='1';if(fields.endpoint===31){raw.power=form.get('on')==='1';if(raw.sync.role===2&&!raw.power){raw.sync.paused=true;raw.sync.active=false;}}}
    transactions.set(fields.requestId,{...fields,response});return {version:1,target,requestId:fields.requestId,status:'pending',executed:false};
   }
   const tx=transactions.get(fields.requestId),bytes=new TextEncoder().encode(tx.response),slice=bytes.slice(fields.offset,fields.offset+256);
@@ -30,6 +30,14 @@ function fixture(){
 }
 async function connected(t){const f=fixture();await f.lamp.connect(target,f.lease,{poll:false});t.after(()=>f.lamp.disconnect());return f;}
 
+test('mesh snapshots preserve a factory model and central style admission refuses changes without affecting strip setup',async t=>{
+ const f=await connected(t);
+ f.raw.lampStyle={version:1,code:0,id:'unspecified',family:'unspecified',locked:true,factoryStyle:'future-style',model:{version:1,id:'future-model',displayName:'Future lamp',artworkFamily:'future-art',hardwareRevision:'rev-z',preconfigured:true,secret:'private'}};
+ await f.lamp.refresh();assert.equal(f.lamp.raw.lampStyle.model.id,'future-model');assert.equal(f.lamp.raw.lampStyle.model.secret,undefined);
+ await assert.rejects(f.lamp.configureLampStyle('helix'),/set at the factory/);assert.equal(f.writes.length,0);
+ await f.lamp.configureMotionPath(1);assert.equal(f.writes.length,1);assert.equal(f.writes[0].endpoint,11);assert.equal(f.raw.motionPath,1);assert.equal(f.raw.leds,67);
+});
+
 test('target snapshot, settings, identity and authoritative catalog stay separate from bridge',async t=>{
  const f=await connected(t);assert.equal(f.lamp.identity,target);assert.equal(f.bridge.identity,bridgeId);assert.equal(f.lamp.base,'mesh:'+target+'@'+bridgeId);
  assert.equal(f.lamp.catalog[0].name,'Target rain');assert.equal(f.lamp.raw.leds,67);assert.equal(f.lamp.state.color.g,2);
@@ -39,6 +47,13 @@ test('target snapshot, settings, identity and authoritative catalog stay separat
 test('power uses exactly one target mutation and a fresh readback',async t=>{
  const f=await connected(t);await f.lamp.command('power',0);assert.equal(f.raw.power,false);assert.equal(f.lamp.state.power,false);
  assert.deepEqual(f.writes.map(row=>row.endpoint),[31]);assert.equal(new Set(f.requests.filter(row=>row.path==='/api/mesh/request').map(row=>row.fields.requestId)).size,4);
+});
+test('new local layout and microphone permission negotiate the target, with one field per mutation',async t=>{
+ const f=await connected(t);assert.equal(f.lamp.raw.motionVersion,1);assert.equal(f.lamp.raw.motionPath,0);
+ await f.lamp.enqueue(()=>f.lamp.configureMotionPath(1));await f.lamp.enqueue(()=>f.lamp.setAudioReactionEnabled(false));
+ assert.deepEqual(f.writes.map(x=>[x.target,x.endpoint,x.body]),[[target,11,'pathVersion=1&path=1'],[target,8,'action=use&useVersion=1&enabled=0']]);
+ assert.equal(f.lamp.raw.motionPath,1);assert.equal(f.lamp.raw.audio.enabled,false);assert.equal(f.raw.audio.installed,true);
+ assert.equal(f.raw.brightness,100);assert.equal(f.raw.power,true);assert.equal(f.raw.mode,1);
 });
 test('card power uses the mesh transport interface and pauses only the chosen follower',async t=>{
  const f=fixture();f.raw.sync={version:2,role:2,leader:bridgeId,active:true,paused:false,scene:0};await f.lamp.connect(target,f.lease,{poll:false});t.after(()=>f.lamp.disconnect());
@@ -156,4 +171,35 @@ test('selection revision changed after a target read never returns a stale lease
  const f=fixture(),original=f.bridge.request.bind(f.bridge);let current=true;
  f.bridge.request=async(...args)=>{const reply=await original(...args);if(args[0]==='/api/mesh/result')current=false;return reply;};
  await assert.rejects(acquireMeshLamp({target,candidates:[f],acquireBridge:async()=>f.lease,isCurrent:()=>current,options:{timeout:90,pollInterval:1}}),error=>error.cancelled===true);assert.equal(f.releases(),1);
+});
+
+test('settings bridge timeout stops searching and releases a late native connection',async()=>{
+ const first=fixture(),second=fixture();let finish;const attempts=[];
+ await assert.rejects(acquireMeshLamp({target,candidates:[first,second],
+  acquireBridge:candidate=>{attempts.push(candidate);return new Promise(resolve=>finish=()=>resolve(candidate.lease));},
+  options:{timeout:15,totalTimeout:80,stopOnTimeout:true}}),error=>error.routeTimeout===true);
+ assert.equal(attempts.length,1);finish();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(first.releases(),1);assert.equal(second.requests.length,0);
+});
+
+test('settings mesh has one total deadline across bridge acquisition and status',async()=>{
+ const f=fixture();let statusStarted,finishStatus;const started=new Promise(resolve=>statusStarted=resolve);
+ const original=f.bridge.request.bind(f.bridge);
+ f.bridge.request=(path,...args)=>path==='/api/mesh/status'?new Promise(resolve=>{statusStarted();finishStatus=()=>resolve(original(path,...args));}):original(path,...args);
+ const before=Date.now(),pending=acquireMeshLamp({target,candidates:[f],
+  acquireBridge:async()=>{await new Promise(resolve=>setTimeout(resolve,25));return f.lease;},
+  options:{timeout:200,totalTimeout:60,stopOnTimeout:true}});
+ await started;await assert.rejects(pending,error=>error.routeTimeout===true);assert(Date.now()-before<150);
+ assert.equal(f.releases(),1);finishStatus();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.requests.filter(row=>row.path==='/api/mesh/request').length,0);
+});
+
+test('settings mesh deadline includes reading the target snapshot and catalog',async()=>{
+ const f=fixture(),original=f.bridge.request.bind(f.bridge);let finish,reading;
+ const started=new Promise(resolve=>reading=resolve);
+ f.bridge.request=(path,...args)=>path==='/api/mesh/request'?new Promise(resolve=>{reading();finish=()=>resolve(original(path,...args));}):original(path,...args);
+ const pending=acquireMeshLamp({target,candidates:[f],acquireBridge:async()=>f.lease,
+  options:{timeout:200,totalTimeout:40,stopOnTimeout:true,pollInterval:1}});
+ await started;await assert.rejects(pending,error=>error.routeTimeout===true);
+ assert.equal(f.releases(),1);finish();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.writes.length,0);
 });

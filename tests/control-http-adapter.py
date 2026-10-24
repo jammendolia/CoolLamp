@@ -56,7 +56,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'String lampRuntimeTimingJson()', 'String lampDiagnosticsJson()',
             'bool captureLampNetworkText(', 'bool captureLampNetworkAddress(',
             'void sendLampState()', 'LampControlReply lampControlRequest(',
-            'String lampControlSnapshotJson()', 'void saveLampConfiguration()'])
+            'String lampControlSnapshotJson()', 'void saveLampConfiguration()', 'bool saveLampDefaults()'])
         definitions=function(source,'struct LampNetworkAddressWriter ')+';\n'+definitions
         definitions='template<class HttpMetrics>\n'+function(source,'void appendLampRuntimeTimingJson(')+'\n'+definitions
         audio_source = (ROOT/'LampAudio.cpp').read_text()
@@ -86,6 +86,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
         routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio'])
         routes += '\n' + registration(source, '/api/audio', 'GET')
         routes += '\n' + registration(source, '/api/effects', 'GET')
+        routes += '\n' + registration(source, '/api/defaults')
         setup = r'''
 #include <cassert>
 #include <cstring>
@@ -97,16 +98,23 @@ class ControlHttpAdapterTests(unittest.TestCase):
 #include "LampFactory.h"
 #include "LampGeometry.h"
 #include "LampStyle.h"
+#include "LampEffectSchema.h"
 #include "LampAudio.h"
 #include "LampNvsBlob.h"
 #include "LampUpdate.h"
+#include "LampUpdateControlPolicy.h"
 #include "LampSyncProtocol.h"
 #include "LampEspNow.h"
 #include "LampRuntimeMetrics.h"
 #include "LampJsonSink.h"
+#include "LampModel.h"
 #include "Preferences.h"
-bool factoryLocked=false;
-namespace LampModel {bool locked(){return factoryLocked;}bool factoryAvailable(){return false;}const char* factoryStyle(){return "";}void appendJson(LampJsonSink&){} }
+bool factoryLocked=false,edisonProfile=false;
+namespace LampModel {
+Record model{};
+bool locked(){return factoryLocked;}bool factoryAvailable(){return edisonProfile;}const char* factoryStyle(){return edisonProfile?"edison":"";}
+MODEL_JSON
+}
 LampControlHttpAdapter lampServer(80);
 LampRuntimeMetrics::Snapshot diagnosticMetrics;
 const LampRuntimeMetrics::Snapshot& getLampRuntimeMetrics(){return diagnosticMetrics;}
@@ -119,7 +127,8 @@ bool lampRemoteUpdateBusy(){return remoteBusy;}bool lampWifiSetupBusy(){return w
 bool lampRolloutPinsMembership(){return false;}
 String lampSyncIncarnation(){return "fefefefefefefefefefefefefefefefe";}
 bool resetPending=false;bool lampFactoryResetPending(){return resetPending;}
-bool lampIsUpdating(){return ownsUpdate;}bool saveLampColors(){return colorsSaved;}
+unsigned colorsSaveCalls=0;
+bool lampIsUpdating(){return ownsUpdate;}bool saveLampColors(){++colorsSaveCalls;return colorsSaved;}
 bool installed=true;uint8_t gain=17;uint16_t gate=23,scale=250;
 bool saveUncertain=false,recordReadFailed=false,enabled=true,enabledStored=false,preferenceHealthy=true,captureWanted=false,diagnosticActive=false;
 uint32_t diagnosticUntil=0;constexpr const char* UseKey="audioUseV1";
@@ -127,8 +136,19 @@ bool stopLampAudio(){return true;}
 LampAudioCaptureStatus lampAudioCaptureStatus(){return LampAudioCaptureStatus::Error;}
 uint16_t NUM_LEDS=205;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
 uint8_t heatStorage[1024]{};uint8_t* splitHeat=heatStorage;
-constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38;
-uint8_t lampAvailableEffectCount(){return 47;}
+constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47;
+uint8_t legacyEffectCount=47;
+uint8_t lampSyncRole();
+uint8_t lampAvailableEffectCount(){return edisonProfile?(installed?52:51):legacyEffectCount;}
+bool lampEdisonProfileMatches(){return edisonProfile;}
+bool lampEffectAvailable(uint8_t mode){
+ if(mode<1||mode>lampAvailableEffectCount())return false;
+ if(!edisonProfile)return true;
+ if(mode<=38)return true;
+ if(mode<=47)return installed||following;
+ return lampSyncRole()==0&&(mode!=52||(installed&&lampMicrophoneEnabled()));
+}
+bool lampEffectNeedsAudio(uint8_t mode){return (mode>=39&&mode<=47)||mode==52;}
 struct Color {uint8_t enabled=1,r=70,g=220,b=255;};
 Color getLampColor(uint8_t){return {1,255,255,255};}
 struct Options {uint8_t speed=60,intensity=85,dual=1,r=255,g=65,b=170;};
@@ -182,6 +202,7 @@ struct {int status(){return 0;}Address localIP(){return {};}Address gatewayIP(){
 struct {void addServiceTxt(const char*,const char*,const char*,const String&) {}} MDNS;
 using namespace LampSyncWire;
 struct {uint8_t role=1;char leader[13]="aabbccddeeff",key[33]="0123456789abcdef0123456789abcdef";} config;
+uint8_t lampSyncRole(){return config.role;}
 struct Peer {Packet info{};bool joined=false;uint32_t seen=1000,subscribed=1000;bool udpKnown=false,radioKnown=true;uint32_t udpSeen=1000,radioSeen=1000;Address ip;uint8_t radioChannel=6;} peers[31];
 struct {uint8_t count=9;char order[32][13]{};} sceneConfig;
 char identity[13]="aabbccddeeff";
@@ -317,7 +338,12 @@ int main(int argc,char** argv){
  assert(lampControlRequest(LampControlEndpoint::Style,true,"style=3").status==409&&lampStyleCode()==0&&Preferences::writes==factoryWrites);
  assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&Preferences::writes==factoryWrites);
  assert(!configureLampStyle(1));factoryLocked=false;assert(lampStyleCode()==3);
- for(const char* body:{"","style=-1","style=4","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
+ // Additive Edison metadata is supported without changing any measured hardware,
+ // local playback or startup values. Factory-locked lamps still reject changes.
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=4").status==200&&lampStyleCode()==4);
+ assert(!strcmp(lampStyleId(),"edison")&&!strcmp(lampStyleFamily(),"edison")&&Preferences::storage.at("settings")==hardwareBefore&&Mode==4&&Brightness==55&&PowerOn&&!restartAt);
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=3").status==200&&lampStyleCode()==3);
+ for(const char* body:{"","style=-1","style=5","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
  Preferences::failWrites=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==500&&lampStyleCode()==3);Preferences::failWrites=false;
  resetPending=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);resetPending=false;
  wifiSetupBusy=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);wifiSetupBusy=false;
@@ -596,10 +622,83 @@ int main(int argc,char** argv){
    assert(Preferences::writes==writesBeforeSnapshotFailure&&!lampServer.controlActive());
  }
  String::failedConcatLiteral=nullptr;lampServer.invokeHttp("/api/state",HTTP_GET);assert(lampServer.responseStatus==200);
+ // Exercise the appended dense catalog and actual counted state serializers
+ // with the measured factory identity, maximum existing counters/escaped text,
+ // and all32 retained order positions. No descriptor read may write NVS.
+ edisonProfile=factoryLocked=true;installed=enabled=preferenceHealthy=true;following=false;config.role=0;
+ strcpy(LampModel::model.id,"edison-v1");strcpy(LampModel::model.name,"CoolLamp Edison");
+ strcpy(LampModel::model.artwork,"edison");strcpy(LampModel::model.hardware,"unspecified");LampModel::model.preconfigured=true;
+ NUM_LEDS=lampSettings.ledCount=222;lampMidpoint=81;Mode=52;
+ memset(lampSettings.ssid,1,32);lampSettings.ssid[32]=0;lampToken=std::string(32,'f');lampName=std::string(48,'"');
+ const auto edisonWrites=Preferences::writes,edisonColorsCalls=colorsSaveCalls;
+ const auto edisonStorage=Preferences::storage;const auto edisonStartup=lampSettings.startupMode;
+ const auto edisonRestart=restartAt;
+ const auto edison52=lampControlRequest(LampControlEndpoint::Effects,false,"");
+ assert(edison52.status==200&&edison52.body.length()<=8192&&lampStyleCode()==4);
+ // A coordinator still advertises the dense Edison-capable slot table, with
+ // new standalone effects unavailable. Use legacy mode47 for this valid group
+ // state, retaining all32 durable positions and maximum status text/counters.
+ config.role=1;Mode=47;
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state",HTTP_GET);
+ const auto edisonFullStatus=lampServer.responseStatus;const String edisonFull=lampServer.responseBody;
+ if(edisonFullStatus==200)assert(!edisonFull.isEmpty()&&edisonFull.length()<=8192&&LampHttpJson::complete(edisonFull.c_str(),edisonFull.length()));
+ else assert(edisonFullStatus==503&&edisonFull=="State response memory unavailable. Nothing changed.");
+ const auto edisonProtectedFull=lampControlRequest(LampControlEndpoint::State,false,"");
+ if(edisonProtectedFull.status==200)assert(!edisonProtectedFull.body.isEmpty()&&edisonProtectedFull.body.length()<=8192&&LampHttpJson::complete(edisonProtectedFull.body.c_str(),edisonProtectedFull.body.length()));
+ else assert(edisonProtectedFull.status==503&&edisonProtectedFull.body=="State response memory unavailable. Nothing changed.");
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state/current",HTTP_GET);
+ assert(lampServer.responseStatus==200&&!lampServer.responseBody.isEmpty()&&lampServer.responseBody.length()<=8192);
+ const String edisonGroupedCurrent=lampServer.responseBody;
+ const auto edisonProtectedGroupedCurrent=lampServer.executeControl(LampControlEndpoint::State,false,"view=current",true);
+ assert(edisonProtectedGroupedCurrent.status==200&&!edisonProtectedGroupedCurrent.body.isEmpty()&&edisonProtectedGroupedCurrent.body.length()<=8192);
+ config.role=0;Mode=52;
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state/current",HTTP_GET);
+ assert(lampServer.responseStatus==200&&!lampServer.responseBody.isEmpty()&&lampServer.responseBody.length()<=8192);
+ const String edisonCurrent=lampServer.responseBody;
+ const auto edisonProtectedCurrent=lampServer.executeControl(LampControlEndpoint::State,false,"view=current",true);
+ assert(edisonProtectedCurrent.status==200&&!edisonProtectedCurrent.body.isEmpty()&&edisonProtectedCurrent.body.length()<=8192&&edisonProtectedCurrent.body.find("\"token\"")==String::npos);
+ assert(edisonCurrent.find("\"stateView\":1")!=String::npos&&edisonCurrent.find("edison-v1")!=String::npos);
+ assert(Preferences::writes==edisonWrites&&Preferences::storage==edisonStorage&&colorsSaveCalls==edisonColorsCalls);
+ // New effect IDs must never enter the legacy startup field: older firmware
+ // rejects the entire settings blob if startupMode exceeds47.
+ Mode=48;
+ const auto edisonConfig=lampControlRequest(LampControlEndpoint::Config,true,"leds=222&milliamps=500&brightness=100&mode=48&microphoneInstalled=0");
+ assert(edisonConfig.status==400&&installed&&Preferences::writes==edisonWrites&&Preferences::storage==edisonStorage);
+ assert(!saveLampDefaults()&&Preferences::writes==edisonWrites&&Preferences::storage==edisonStorage&&colorsSaveCalls==edisonColorsCalls);
+ assert(lampSettings.startupMode==edisonStartup&&restartAt==edisonRestart);
+ // A microphone-free Edison preserves dense IDs through51. Its old audio
+ // slots remain explicitly unavailable rather than being remapped or guessed.
+ installed=false;
+ const auto edison51=lampControlRequest(LampControlEndpoint::Effects,false,"");
+ assert(edison51.status==200&&edison51.body.length()<=8192);
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state/current",HTTP_GET);
+ assert(lampServer.responseStatus==200&&lampServer.responseBody.length()<=8192);const String edisonCurrent51=lampServer.responseBody;
+ config.role=1;
+ const auto edisonGrouped=lampControlRequest(LampControlEndpoint::Effects,false,"");assert(edisonGrouped.status==200);
+ // Maximum valid factory display/artwork/hardware text must also fit current
+ // state without shortening the model or any of the32 saved member IDs.
+ installed=true;Mode=47;
+ memset(LampModel::model.name,'"',64);LampModel::model.name[64]=0;
+ memset(LampModel::model.artwork,'a',32);LampModel::model.artwork[32]=0;
+ memset(LampModel::model.hardware,'h',32);LampModel::model.hardware[32]=0;
+ assert(LampFactoryDesign::valid(LampModel::model));
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state/current",HTTP_GET);
+ assert(lampServer.responseStatus==200&&!lampServer.responseBody.isEmpty()&&lampServer.responseBody.length()<=8192);
+ const String edisonMaxModelCurrent=lampServer.responseBody;
+ config.role=0;
+ assert(Preferences::writes==edisonWrites&&Preferences::storage==edisonStorage&&colorsSaveCalls==edisonColorsCalls);
+ if(argc>8){std::ofstream file(argv[8]);file<<"{\"catalog52\":"<<edison52.body<<",\"catalog51\":"<<edison51.body<<",\"catalogGrouped\":"<<edisonGrouped.body
+   <<",\"current52\":"<<edisonCurrent<<",\"protectedCurrent52\":"<<edisonProtectedCurrent.body<<",\"current51\":"<<edisonCurrent51
+   <<",\"currentGrouped52\":"<<edisonGroupedCurrent<<",\"protectedCurrentGrouped52\":"<<edisonProtectedGroupedCurrent.body
+   <<",\"currentMaxModel52\":"<<edisonMaxModelCurrent
+   <<",\"fullHttp\":{\"status\":"<<edisonFullStatus<<",\"body\":"<<jsonText(edisonFull)<<"},\"fullProtected\":{\"status\":"<<edisonProtectedFull.status<<",\"body\":"<<jsonText(edisonProtectedFull.body)<<"}"
+   <<",\"bytes\":{\"catalog52\":"<<edison52.body.length()<<",\"catalog51\":"<<edison51.body.length()<<",\"current52\":"<<edisonCurrent.length()<<",\"protectedCurrent52\":"<<edisonProtectedCurrent.body.length()<<",\"current51\":"<<edisonCurrent51.length()<<",\"currentGrouped52\":"<<edisonGroupedCurrent.length()<<",\"protectedCurrentGrouped52\":"<<edisonProtectedGroupedCurrent.body.length()<<",\"currentMaxModel52\":"<<edisonMaxModelCurrent.length()<<"}}";}
+ std::cout<<"MEASURE Edison catalog52="<<edison52.body.length()<<" catalog51="<<edison51.body.length()<<" current52="<<edisonCurrent.length()<<" protectedCurrent52="<<edisonProtectedCurrent.body.length()<<" current51="<<edisonCurrent51.length()<<" currentGrouped52="<<edisonGroupedCurrent.length()<<" protectedCurrentGrouped52="<<edisonProtectedGroupedCurrent.body.length()<<" currentMaxModel52="<<edisonMaxModelCurrent.length()<<" fullHttpStatus="<<edisonFullStatus<<" fullProtectedStatus="<<edisonProtectedFull.status<<"\n";
  std::cout<<"PASS: real HTTP/BLE handlers preserve auth, URI/update/follower guards, strict forms, NVS failures, hardware-only credentials, private snapshot and context cleanup; snapshot bytes="<<snapshot.length()<<" expanded worst-name bytes="<<expandedSnapshot.length()<<"\n";
 }
 '''
         setup = setup.replace('ATTEMPT_JSON', attempt_json)
+        setup = setup.replace('MODEL_JSON',function((ROOT/'LampModel.cpp').read_text(),'void appendJson('))
         setup=setup.replace('SYNC_JSON_SNAPSHOT',function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
         setup = setup.replace('namespace LampUpdateAttempt {', '#define portENTER_CRITICAL(value) ((void)(value))\n#define portEXIT_CRITICAL(value) ((void)(value))\nnamespace LampUpdateAttempt {')
         fixture = setup + current_status + audio_settings + effect_names + sync_json + definitions + '\nvoid registerRoutes(){\n' + routes + '\n}\n' + main
@@ -682,7 +781,8 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
                             '-DARDUINO=1',str(cpp),str(ROOT/'LampStyle.cpp'),str(ROOT/'LampGeometry.cpp'),str(ROOT/'LampUpdatePolicy.cpp'), '-o', str(binary)], check=True)
             diagnostic=ROOT/'.build/experience-complete-diagnostics.json'
             projection=directory/'projection.json'
-            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic),str(projection)], check=True)
+            edison=directory/'edison.json'
+            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic),str(projection),str(edison)], check=True)
             legacy,current,private=json.loads(projection.read_text())
             for value in (current,private):
                 expected=dict(legacy,stateView=1)
@@ -763,6 +863,62 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
             self.assertEqual([entry['id'] for entry in entries], list(range(1,48)))
             self.assertEqual(entries[-1]['name'], 'Rainbow Embers')
             self.assertEqual(entries[-1]['category'], 'audio')
+            edison_value=json.loads(edison.read_text())
+            edison52,edison51=edison_value['catalog52'],edison_value['catalog51']
+            self.assertEqual([entry['id'] for entry in edison52],list(range(1,53)))
+            self.assertEqual([entry['name'] for entry in edison52[:47]],[entry['name'] for entry in entries])
+            self.assertEqual([entry['name'] for entry in edison52[47:]],['Filament','Eureka','Orbit','Induction','Sound Filament'])
+            for entry in edison52[47:]:
+                self.assertTrue(entry['available'])
+                self.assertFalse(entry['startupSupported'])
+            self.assertFalse(edison52[-1]['speed'])
+            self.assertEqual(edison52[-1]['category'],'audio')
+            self.assertEqual([entry['id'] for entry in edison51],list(range(1,52)))
+            self.assertTrue(all(entry['available'] for entry in edison51[:38]))
+            self.assertTrue(all(not entry['available'] for entry in edison51[38:47]))
+            self.assertTrue(all(entry['available'] for entry in edison51[47:]))
+            self.assertTrue(all(not entry['available'] for entry in edison_value['catalogGrouped'][47:]))
+            for name,count,mode,positions in [('current52',52,52,0),('protectedCurrent52',52,52,0),('current51',51,48,0),('currentGrouped52',52,47,32),('protectedCurrentGrouped52',52,47,32)]:
+                state=edison_value[name]
+                self.assertEqual((state['stateView'],state['leds'],state['midpoint'],state['mode']),(1,222,81,mode))
+                self.assertEqual(state['lampStyle']['code'],4)
+                self.assertTrue(state['lampStyle']['locked'])
+                self.assertEqual(state['lampStyle']['model'],{'version':1,'id':'edison-v1','displayName':'CoolLamp Edison','artworkFamily':'edison','hardwareRevision':'unspecified','preconfigured':True})
+                self.assertEqual(len(state['effects']),count)
+                for field in ('colors','effectOptions'):
+                    self.assertEqual(len(state[field]),count)
+                    self.assertIsNotNone(state[field][mode-1])
+                    self.assertTrue(all(entry is None for index,entry in enumerate(state[field]) if index!=mode-1))
+                self.assertEqual(len(state['sync']['order']),positions)
+            self.assertNotIn('token',edison_value['protectedCurrent52'])
+            maximal=edison_value['currentMaxModel52']
+            self.assertEqual(maximal['lampStyle']['model']['id'],'edison-v1')
+            self.assertEqual(maximal['lampStyle']['model']['displayName'],'"'*64)
+            self.assertEqual(maximal['lampStyle']['model']['artworkFamily'],'a'*32)
+            self.assertEqual(maximal['lampStyle']['model']['hardwareRevision'],'h'*32)
+            self.assertEqual(len(maximal['sync']['order']),32)
+            self.assertEqual(len(maximal['colors']),52)
+            self.assertEqual(len(maximal['effectOptions']),52)
+            for kind in ('fullHttp','fullProtected'):
+                response=edison_value[kind]
+                if response['status']==200:
+                    full=json.loads(response['body'])
+                    self.assertEqual(len(full['effects']),52)
+                    self.assertEqual(len(full['colors']),52)
+                    self.assertEqual(len(full['effectOptions']),52)
+                    self.assertLessEqual(len(response['body'].encode('utf8')),8192)
+                else:
+                    self.assertEqual(response,{'status':503,'body':'State response memory unavailable. Nothing changed.'})
+            self.assertTrue(all(0<size<=8192 for size in edison_value['bytes'].values()))
+            edison_report=ROOT/'.build/edison-effects/control-http-budget.json'
+            edison_report.parent.mkdir(parents=True,exist_ok=True)
+            edison_report.write_text(json.dumps({'hostOnly':True,'hardwareTouched':False,
+                'productionSerializers':['lampEffectCatalogEntry','sendLampState','LampModel::appendJson','appendLampStyleJson'],
+                'bytes':edison_value['bytes'],'fullHttpStatus':edison_value['fullHttp']['status'],
+                'fullProtectedStatus':edison_value['fullProtected']['status'],'limitBytes':8192,
+                'denseIdsAndLegacyNamesPreserved':True,'newStartupRejectedBeforeWrites':True,
+                'catalogReadsDoNotWriteNvs':True,'currentViewHasAll52Positions':True,
+                'factoryModel':'edison-v1','ledCount':222,'midpoint':81},indent=2)+'\n')
 
 
 if __name__ == '__main__':

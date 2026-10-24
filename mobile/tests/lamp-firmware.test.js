@@ -32,6 +32,19 @@ test('bad style sources, mismatched descriptors, aliases and removed IDs cannot 
  model.store.remove(id);const before=model.saves;assert.equal(model.store.setLampStyle(id,'helix',{source:'phone'}),false);assert.equal(model.saves,before);
 });
 
+test('factory lock and future model identity update an unchanged style and survive storage independently of geometry',()=>{
+ const id='acb950b2f180',model=setup([{id,phoneLampStyle:'corkscrew',leds:181,midpoint:70}]);
+ const style={version:1,code:0,id:'unspecified',family:'unspecified'};
+ model.store.setLampStyle(id,style,{source:'lamp'});assert.equal(model.saves,1);
+ const factory={...style,locked:true,factoryStyle:'future-shape',model:{version:1,id:'future-model-2',displayName:'Future lamp',artworkFamily:'unknown-art',hardwareRevision:'rev-z',preconfigured:true,secret:'private'}};
+ model.store.setLampStyle(id,factory,{source:'lamp'});assert.equal(model.saves,2);
+ const reloaded=new LampStore(model.storage).items[0];assert.equal(reloaded.lampStyle.locked,true);assert.equal(reloaded.lampStyle.model.id,'future-model-2');assert.equal(reloaded.lampStyle.factoryStyle,'future-shape');
+ assert.equal(reloaded.leds,181);assert.equal(reloaded.midpoint,70);assert(!JSON.stringify(reloaded).includes('private'));
+ model.store.setLampStyle(id,factory,{source:'lamp'});assert.equal(model.saves,2);
+ assert.equal(model.store.setLampStyle(id,'helix',{source:'phone'}),false);assert.equal(model.saves,2);
+ model.store.setLampStyle(id,'unspecified',{source:'phone'});assert.equal(model.saves,3);assert.equal(model.store.items[0].phoneLampStyle,undefined);
+});
+
 test('installed firmware accepts bounded triplets and rejects unavailable or malformed values',()=>{
  for(const version of ['1.9.5','1.4.0','0.0.1','65535.65535.65535'])assert.equal(validFirmwareVersion(version),version);
  for(const version of [null,undefined,0,'','0.0.0','v1.9.5','1.9','1.9.5-beta','1.9.5\n','01.9.5','65536.1.0','<script>'])assert.equal(validFirmwareVersion(version),null);

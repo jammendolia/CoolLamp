@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#10141d">
+<meta name="theme-color" content="#f6f3ed">
 <title>CoolLamp</title>
 </head>
 <body>
@@ -11,15 +11,16 @@
 <div id="toast" class="toast" hidden aria-hidden="true"></div>
   <header class="app-header">
 <div class="brand">
-<span class="brand-mark" aria-hidden="true">c</span>
+<img class="brand-mark" src="/app-icon.png" alt="">
 <div>
 <h1>CoolLamp</h1>
-<p class="eyebrow">Light, composed.</p>
+<p class="eyebrow">A little light. A lovely feeling.</p>
 </div>
 </div>
 </header>
 <nav aria-label="Main navigation">
-<button data-page="lamps" aria-current="page">
+<button data-page="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-7H9v7H3z"></path></svg><span>Home</span></button>
+<button data-page="lamps">
 <svg viewBox="0 0 24 24" aria-hidden="true">
 <rect x="4" y="4" width="6" height="6" rx="2">
 </rect>
@@ -32,19 +33,25 @@
 </svg>
 <span>Lamps</span>
 </button>
-<button data-page="groups"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="3"></circle><circle cx="5" cy="18" r="3"></circle><circle cx="19" cy="18" r="3"></circle><path d="m10 9-3 6m7-6 3 6M8 18h8"></path></svg><span>Groups</span></button>
+<button data-page="effects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3z"></path></svg><span>Effects</span></button>
+<button data-page="app-settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"></path><circle cx="9" cy="7" r="3"></circle><circle cx="15" cy="17" r="3"></circle></svg><span>Settings</span></button>
+<button type="button" data-page="help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 1 1 4.5 1.5c-1 1-2 1-2 2.5"></path><path d="M12 16.5h.01"></path></svg><span>Help</span></button>
 </nav>
+<section id="page-home"><div class="v2-page-heading"><div><p id="v2HomeSubtitle" class="eyebrow">MAKE YOURSELF AT HOME</p><h2 tabindex="-1">Your home</h2></div><button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button></div><div id="v2HomeContent"></div></section>
+<section id="page-help" hidden aria-labelledby="v2HelpTitle"><p class="eyebrow">A LITTLE GUIDANCE</p><h2 id="v2HelpTitle" tabindex="-1">Help</h2><p class="page-intro">Choose what you’d like to do.</p><div id="v2HelpContent"></div></section>
+<section id="page-app-settings" hidden><p class="eyebrow">MAKE IT YOURS</p><h2 tabindex="-1">Settings</h2><p class="page-intro">A home that feels like you.</p><div class="v2-settings-list"><button data-v2="lamp-settings"><span><strong>Lamp details</strong><small>Name, room and ownership</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a lamp’s network</small></span><span>›</span></button><button data-v2="updates"><span><strong>Lamp care</strong><small>Updates and automatic update preferences</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Physical shape and strip setup</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>Help &amp; guides</strong><small>Setup, controls and troubleshooting</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced & custom builds</strong><small>LED count, power limit and guided strip setup</small></span><span>›</span></button></div><p class="v2-private" id="v2Version">CoolLamp 2.0.5</p><p class="v2-private">Local control · No account required</p></section>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
-  <section id="page-lamps">
+  <section id="page-lamps" hidden>
 <div class="section-title">
 <div>
 <p class="eyebrow">AT HOME</p>
 <h2 tabindex="-1">Your lamps</h2>
 </div>
-<button id="discover" class="compact">Find on Wi-Fi</button>
+<button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button>
 </div>
 <p class="page-intro">A little atmosphere, in every corner.</p>
-<div class="lamp-fleet-tools">
+<label class="v2-search-label" for="v2LampSearch">Find a lamp</label><input id="v2LampSearch" type="search" placeholder="Search your lamps" autocomplete="off"><button id="discover" class="secondary compact">Find lamps on home Wi-Fi</button>
+<div class="lamp-fleet-tools" id="v2CarePanel">
 <div class="lamp-fleet-actions">
 <button id="refreshLampFirmware" class="secondary compact">Refresh versions</button>
 <button id="updateAllLamps" class="compact">Update all lamps</button>
@@ -63,7 +70,7 @@
 <form id="meshSetupForm" hidden>
 <fieldset id="meshSetupFields">
 <label for="meshSetupName">Lamp name</label><input id="meshSetupName" maxlength="32" required autocomplete="off">
-<label for="meshSetupStyle">Lamp design</label><select id="meshSetupStyle"></select>
+<label for="meshSetupStyle">Lamp design</label><select id="meshSetupStyle"></select><p id="meshSetupDesign" class="hint" hidden></p>
 <div class="mesh-setup-grid"><div><label for="meshSetupLeds">Number of LEDs</label><input id="meshSetupLeds" type="number" min="1" max="1024" required></div><div><label for="meshSetupMilliamps">Power limit (mA)</label><input id="meshSetupMilliamps" type="number" min="100" max="20000" required></div></div>
 <label class="check"><input id="meshSetupMicrophone" type="checkbox">Microphone is installed</label>
 <label class="check"><input id="meshSetupPower" type="checkbox">Turn the lamp on</label>
@@ -424,6 +431,10 @@
       </div>
     </section>
     <button id="save" class="secondary">Use these settings at startup</button>
+    <button id="saveAppearance" class="secondary" hidden>Remember this effect’s tuning</button>
+    <p id="appearanceSaveStatus" class="hint" role="status" hidden></p>
+    <button id="reconcileApp2" type="button" class="secondary" hidden>Check the last unconfirmed change</button>
+    <button id="retireApp2" type="button" class="secondary" hidden>Continue from the lamp’s current state</button>
     <p class="hint save-hint">Remembers the current effect, lamp brightness and your effect customizations. Audio tuning saves separately.</p>
   </fieldset>
 <details id="rotationPane" class="panel playback-pane" hidden>
@@ -468,10 +479,18 @@
   </details>
 </section>
 <section id="page-settings" hidden>
+<button id="v2ScopeButton" data-v2="choose-light" class="v2-scope-button" hidden>Choose a lamp</button>
 <div class="section-title"><div id="settingsLampHeading"><p class="eyebrow">YOUR LAMP</p><h2 tabindex="-1">Lamp settings</h2></div><button type="button" data-goto="lamps" class="text-button compact">All lamps</button></div>
 <p class="page-intro">Lighting and settings for this lamp.</p>
 <span id="connectionBadge" class="badge">Not connected</span>
 <p id="settingsConnection" class="hint">Connect to a lamp to manage settings.</p>
+<section id="settingsRecovery" class="panel" hidden role="status" aria-live="polite"><h3 id="settingsRecoveryTitle">Reconnecting to your lamp</h3><p id="settingsRecoveryHint" class="hint">We’re finding the best available connection.</p></section>
+<section id="settingsUpdate" class="panel settings-update" hidden>
+<div class="settings-update-heading"><span id="settingsUpdateArt" class="settings-update-art" aria-hidden="true"></span><div><h3 id="settingsUpdateTitle">Updating your lamp</h3><p id="settingsUpdatePercent" class="settings-update-percent" aria-hidden="true"></p><p id="settingsUpdateSource" class="hint" hidden></p></div></div>
+<p id="settingsUpdateMessage" role="status" aria-live="polite" aria-atomic="true"></p>
+<progress id="settingsUpdateProgress" max="100" aria-label="Lamp update progress"></progress>
+<p id="settingsUpdateHint" class="hint">Keep your lamp powered.</p>
+</section>
 <aside id="defaultPasswordNotice" class="sync-banner" hidden>
 <div><p class="eyebrow">MAKE IT YOURS</p><p>This lamp still uses its factory setup password. Choose your own password for its hotspot and Wi-Fi controls.</p></div>
 <button id="changeDefaultPassword" class="secondary compact">Change password</button>
@@ -508,20 +527,23 @@
 <label for="room">Room</label>
 <input id="room" maxlength="48">
 <button id="saveIdentity" disabled>Save name & room</button>
+<p id="identitySaveFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button id="identify" disabled type="button" class="secondary">Identify lamp</button>
 <p class="hint">Rooms are saved on this phone. Identify flashes the lamp white.</p>
 </form>
 <form id="lampStyleForm" class="panel lamp-style-panel" data-settings-panel="design">
 <h3>Lamp design</h3>
-<p class="hint">Choose the physical shape for its card illustration and optional effect recommendations.</p>
+<p class="hint">The physical shape supplies its card illustration and optional effect recommendations.</p>
+<p id="lampStyleReadOnly" hidden></p>
 <fieldset id="lampStyleFields" disabled>
 <legend class="sr-only">Physical lamp design</legend>
 <div class="lamp-style-choice"><div id="lampStylePreview" aria-hidden="true"></div><div><label for="lampStyle">Physical style</label>
-<select id="lampStyle"><option value="unspecified">Not specified</option><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option></select></div></div>
+<select id="lampStyle"><option value="unspecified">Not specified</option><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option><option value="edison">Edison</option></select></div></div>
 <button id="saveLampStyle" type="submit">Save lamp design</button>
 </fieldset>
 <p id="lampStyleScope" class="hint">Connect to a lamp to choose its physical design.</p>
-<p id="lampStyleFeedback" class="hint" role="status"></p>
+<p id="lampStyleFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
+<button type="button" class="secondary" data-settings-section="hardware">LED count & strip setup</button>
 </form>
 <section class="panel sync-panel" aria-labelledby="syncTitle" data-settings-panel="groups">
   <div class="section-title">
@@ -605,7 +627,7 @@
 </div>
 </div>
 <p class="hint" id="wifiSettingsHint">Connect over Bluetooth to set up home Wi-Fi, or use a Wi-Fi connection to manage network and security settings.</p>
-<p id="wifiSetupFeedback" class="hint" role="status" aria-live="polite"></p>
+<p id="wifiSetupFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
 <label for="networks">Nearby networks</label>
 <select id="networks">
@@ -673,6 +695,13 @@
 </p>
 </section>
 <section id="geometrySettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="motionPathForm" hidden>
+<h3>Animation path</h3>
+<label for="motionPath">How centered effects travel</label>
+<select id="motionPath"><option value="0">Meet at the center</option><option value="1">Use the whole strip</option></select>
+<p class="hint">Centered effects use two sides. Whole strip sends movement along the LED strip from one end to the other. Your saved center is kept for switching back. Group scenes and update progress keep the lamp’s physical height.</p>
+<button>Save animation path</button>
+</form>
 <form id="geometryForm">
 <h3>Effect center</h3>
 <label for="midpoint">Center after LED (0 = automatic)</label>
@@ -693,13 +722,20 @@
 </div>
 </section>
 <section id="audioSettings" hidden data-settings-panel="hardware" class=" panel">
+<form id="audioUseForm" hidden>
+<h3>Microphone input</h3>
+<label class="switch-row"><span>Use this lamp’s microphone</span><input id="audioEnabled" type="checkbox" role="switch"></label>
+<p class="hint">Turning this off stops local sound capture and keeps your tuning. Group lamps still follow their main lamp’s sound response. No audio recordings are saved or sent to the Internet; nearby group lamps share sound levels and rhythm.</p>
+<button id="saveAudioUse">Save sound setting</button>
+<p id="audioUseStatus" class="hint" role="status"></p>
+</form>
 <form id="audioForm">
 <h3>Microphone hardware</h3>
 <label class="switch-row">
 <span>Microphone installed</span>
 <input id="microphoneInstalled" type="checkbox" role="switch">
 </label>
-<p class="hint">Enable audio effects on lamps fitted with a microphone. Sound tuning lives with each audio effect.</p>
+<p class="hint">This is a hardware setting for an installed microphone. Sound tuning is shared by this lamp’s audio effects; quiet sound does not prove a microphone is missing.</p>
 <button>Save hardware setting & restart</button>
 </form>
 </section>
@@ -738,7 +774,7 @@
 <p id="bluetoothFirmwareStatus" class="hint" role="status">Connect to this lamp over Bluetooth to use phone updates.</p>
 <progress id="bluetoothFirmwareProgress" max="100" hidden aria-label="Bluetooth firmware transfer progress"></progress>
 </fieldset>
-<button id="forgetLamp" disabled class="text-button" data-settings-panel="overview">Remove lamp from this phone</button>
+<button id="forgetLamp" disabled class="text-button" data-settings-panel="overview"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:21px;height:21px;vertical-align:middle;margin-right:7px"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></svg>Remove lamp from this phone</button>
 <p id="bluetoothIdentity" class="hint" data-settings-panel="overview" hidden></p>
 <section class="panel recovery-panel" data-settings-panel="overview">
 <p class="eyebrow">START FRESH</p>
@@ -769,6 +805,7 @@
 </details>
 </section>
 </main>
+<dialog id="v2Dialog" class="v2-dialog" aria-label="Lamp setup and configuration"></dialog>
 <dialog id="factoryResetDialog" aria-labelledby="factoryResetTitle" aria-describedby="factoryResetDescription">
 <form method="dialog">
 <p class="eyebrow">START FRESH</p>

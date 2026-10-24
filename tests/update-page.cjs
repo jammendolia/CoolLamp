@@ -6,7 +6,7 @@ let unavailable=false,reject=false;const requests=[];
 const context={document:{getElementById:el},Option:function(){},URLSearchParams,AbortSignal,
 fetch:async(path,options)=>{
   if(options?.method==='POST') {requests.push([path,options.headers,Object.fromEntries(options.body)]);if(path.endsWith('automatic')&&!reject)firmware.automatic=options.body.get('enabled')==='1';return{ok:!reject,text:async()=>reject?'Busy':'Accepted'};}
-  if(path==='/api/state')return{ok:true,json:async()=>({token:'test-token',effects:[],colors:[],mode:1})};
+  if(path==='/api/state/current')return{ok:true,json:async()=>({stateView:1,deviceId:'aabbccddeeff',token:'test-token',effects:[],colors:[],mode:1})};
   if(unavailable)throw Error('offline');return{ok:true,json:async()=>({...firmware})};
 }};
 vm.createContext(context);vm.runInContext(page.match(/<script>([\s\S]*?)<\/script>/)[1],context);

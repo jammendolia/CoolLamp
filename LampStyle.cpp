@@ -10,7 +10,7 @@ namespace {
 LampPhysicalStyle current=LampPhysicalStyle::Unspecified;
 bool saved=false;
 constexpr const char* key="lampStyle";
-bool valid(uint8_t code){return code<=static_cast<uint8_t>(LampPhysicalStyle::Corkscrew);}
+bool valid(uint8_t code){return code<=LAMP_PHYSICAL_STYLE_MAX;}
 }
 
 // Setup/loop own this scalar. No automatic inference or migration writes:
@@ -28,7 +28,7 @@ void beginLampStyle() {
 LampPhysicalStyle getLampStyle(){
   if(!LampModel::locked())return current;
   const char* const id=LampModel::factoryStyle();
-  return !strcmp(id,"helix")?LampPhysicalStyle::Helix:!strcmp(id,"large-helix")?LampPhysicalStyle::LargeHelix:!strcmp(id,"corkscrew")?LampPhysicalStyle::Corkscrew:LampPhysicalStyle::Unspecified;
+  return !strcmp(id,"helix")?LampPhysicalStyle::Helix:!strcmp(id,"large-helix")?LampPhysicalStyle::LargeHelix:!strcmp(id,"corkscrew")?LampPhysicalStyle::Corkscrew:!strcmp(id,"edison")?LampPhysicalStyle::Edison:LampPhysicalStyle::Unspecified;
 }
 uint8_t lampStyleCode(){return static_cast<uint8_t>(getLampStyle());}
 const char* lampStyleId(){
@@ -36,6 +36,7 @@ const char* lampStyleId(){
     case LampPhysicalStyle::Helix:return "helix";
     case LampPhysicalStyle::LargeHelix:return "large-helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
+    case LampPhysicalStyle::Edison:return "edison";
     default:return "unspecified";
   }
 }
@@ -44,6 +45,7 @@ const char* lampStyleFamily(){
     case LampPhysicalStyle::Helix:
     case LampPhysicalStyle::LargeHelix:return "helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
+    case LampPhysicalStyle::Edison:return "edison";
     default:return "unspecified";
   }
 }

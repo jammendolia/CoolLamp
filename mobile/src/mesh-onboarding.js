@@ -1,3 +1,4 @@
+import {parseCommissionComparison} from './commissioning.js';
 const canonical=value=>typeof value==='string'&&/^[a-f0-9]{12}$/.test(value);
 const transaction=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value)&&!/^0+$/.test(value);
 const phases=new Set(['exchange','confirm','approved','complete','failed']);
@@ -31,6 +32,7 @@ export class MeshOnboarding {
   if(this.active!==run||this.disposed)return;
   const value={target:run.row.id,bridgeId:run.row.bridgeId,broker:run.row.broker,name:run.row.name,phase,message:messages[phase]||'Lamp setup canceled.'};
   if(extra.pattern)value.pattern=frozen([...extra.pattern]);
+  if(extra.comparison){value.comparison=extra.comparison;if(extra.comparison.version===2)value.message='Compare all six pairs of pulse counts and the check pair with the lamp. After the full sequence, click its knob once to approve.';}
   if(extra.error)value.error=extra.error;
   if(extra.uncertain)value.uncertain=true;
   this.onStatus(frozen(value));
@@ -63,7 +65,9 @@ export class MeshOnboarding {
    if(!canonical(item?.id)||item.id===entry.id||!canonical(item.broker)||item.id===item.broker||typeof item.online!=='boolean'||item.claimed!==false)continue;
    const name=typeof item.name==='string'?item.name.replace(/[\x00-\x1f\x7f]/g,'').slice(0,64):'New CoolLamp';
    const firmwareVersion=typeof item.firmwareVersion==='string'&&/^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(item.firmwareVersion)?item.firmwareVersion:'';
-   rows.push(frozen({id:item.id,name:name||'New CoolLamp',firmwareVersion,broker:item.broker,bridgeId:entry.id,online:item.online,claimed:false,observedAt:this.now()}));
+   const row={id:item.id,name:name||'New CoolLamp',firmwareVersion,broker:item.broker,bridgeId:entry.id,online:item.online,claimed:false,observedAt:this.now()};
+   if(item.comparisonVersion===2&&transaction(item.targetBoot)){row.comparisonVersion=2;row.targetBoot=item.targetBoot;}
+   rows.push(frozen(row));
   }return rows;
  }
  discover(){
@@ -95,24 +99,33 @@ export class MeshOnboarding {
  reply(value,run){
   if(value?.version!==1||value.target!==run.row.id||value.requestId!==run.requestId||value.broker!==run.row.broker||!phases.has(value.phase))throw unknown();
   if(value.phase==='confirm'&&(!Array.isArray(value.pattern)||value.pattern.length!==4||value.pattern.some(slot=>!Number.isInteger(slot)||slot<0||slot>15)))throw unknown();
+  if(run.comparisonVersion===2){
+   if(value.targetBoot!==run.row.targetBoot||!transaction(value.brokerBoot)||!transaction(value.fleetId))throw unknown();
+   if(run.brokerBoot&&run.brokerBoot!==value.brokerBoot||run.fleetId&&run.fleetId!==value.fleetId)throw unknown();
+   run.brokerBoot=value.brokerBoot;run.fleetId=value.fleetId;
+   if(value.comparison?.version!==2)throw unknown();
+  }
+  if(value.phase==='confirm'){try{value={...value,parsedComparison:parseCommissionComparison(value,run.comparisonVersion||1)};}catch{throw unknown();}}
   if(value.phase==='complete'&&!transaction(value.fleetId))throw unknown();
   return value;
  }
  async request(run,path,{allowCancel=false}={}){
   const guard=()=>this.check(run,{allowCancel});guard();
-  return this.reply(parse(await this.bounded(()=>run.bridge.request(path,{target:run.row.id,requestId:run.requestId,broker:run.row.broker},run.epoch,guard),run.deadline,allowCancel?undefined:run.controller.signal)),run);
+  const fields={target:run.row.id,requestId:run.requestId,broker:run.row.broker};if(run.comparisonVersion===2)fields.comparisonVersion=2;
+  return this.reply(parse(await this.bounded(()=>run.bridge.request(path,fields,run.epoch,guard),run.deadline,allowCancel?undefined:run.controller.signal)),run);
  }
- start(candidate){
+ start(candidate,{comparisonVersion=1}={}){
   if(this.disposed)return Promise.reject(changed());
   if(this.active)return Promise.reject(problem('Finish or cancel the current lamp setup first.'));
   if(this.unconfirmed.has(candidate?.id))return Promise.reject(problem('Check this lamp’s previous setup before starting another session.',{requiresVerification:true,uncertain:true}));
   const row=this.candidates.get(candidate?.id);
   const entry=this.bridges().find(value=>value.id===row?.bridgeId);
   if(!row||!entry||this.routes.get(row.id)!==locator(entry)||!row.online||candidate.bridgeId!==row.bridgeId||candidate.broker!==row.broker||this.now()-row.observedAt>15000)return Promise.reject(problem('Refresh the new-lamp list before starting setup.'));
+  if(![1,2].includes(comparisonVersion)||comparisonVersion===2&&row.comparisonVersion!==2)return Promise.reject(problem('This lamp does not support the requested physical comparison.'));
   let requestId;for(let i=0;i<8;++i){const value=this.nextId();if(transaction(value)&&!this.usedIds.has(value)){requestId=value;break;}}
   if(!requestId)return Promise.reject(problem('Could not create a fresh lamp setup. Refresh before trying again.'));
   this.usedIds.add(requestId);
-  const run={row,entry,requestId,controller:new AbortController(),deadline:this.now()+this.timeout,cancelled:false,submitted:false};this.active=run;
+  const run={row,entry,requestId,comparisonVersion,controller:new AbortController(),deadline:this.now()+this.timeout,cancelled:false,submitted:false};this.active=run;
   run.promise=this.enroll(run).finally(()=>{if(this.active===run)this.active=null;});return run.promise;
  }
  async enroll(run){
@@ -134,7 +147,7 @@ export class MeshOnboarding {
    }else{
     const guard=()=>this.check(run);
     const fresh=this.inventory(parse(await this.bounded(()=>run.bridge.request('/api/mesh/new',undefined,run.epoch,guard),run.deadline,run.controller.signal)),run.entry);
-    this.check(run);if(!fresh.some(row=>row.id===run.row.id&&row.broker===run.row.broker&&row.online))throw problem('The new lamp is no longer available. Refresh the list.');
+    this.check(run);if(!fresh.some(row=>row.id===run.row.id&&row.broker===run.row.broker&&row.online&&(run.comparisonVersion!==2||row.comparisonVersion===2&&row.targetBoot===run.row.targetBoot)))throw problem('The new lamp is no longer available. Refresh the list.');
     run.submitted=true;
     try{value=await this.request(run,'/api/mesh/enroll/start');}
     catch(error){this.check(run);if(error.confirmed)throw error;/* Recover by same-session status only; never resend Start. */}
@@ -147,7 +160,7 @@ export class MeshOnboarding {
       throw problem('The lamp declined setup or its approval expired.',{confirmed,uncertain:!confirmed});
      }
      if(value.phase==='complete')run.completed=true;
-     this.publish(run,value.phase,value.phase==='confirm'?{pattern:value.pattern}:{});
+     this.publish(run,value.phase,value.phase==='confirm'?{pattern:value.pattern,comparison:value.parsedComparison}:{});
      if(value.phase==='complete'){
       const result=frozen({target:run.row.id,bridgeId:run.row.bridgeId,broker:run.row.broker,requestId:run.requestId,fleetId:value.fleetId});
       this.unconfirmed.delete(run.row.id);this.candidates.delete(run.row.id);this.routes.delete(run.row.id);this.onCandidates(frozen([...this.candidates.values()]));return result;
@@ -159,7 +172,7 @@ export class MeshOnboarding {
    }
   }catch(error){
    const uncertain=run.submitted&&!error.confirmed&&!run.cancelAcknowledged;
-   if(uncertain)this.unconfirmed.set(run.row.id,{row:run.row,entry:run.entry,requestId:run.requestId});
+   if(uncertain)this.unconfirmed.set(run.row.id,{row:run.row,entry:run.entry,requestId:run.requestId,comparisonVersion:run.comparisonVersion,brokerBoot:run.brokerBoot,fleetId:run.fleetId});
    this.publish(run,run.cancelled?'cancelled':'failed',{error:run.cancelled?'Setup canceled. Approval is no longer requested.':uncertain?'Lamp setup was not confirmed. Refresh before starting another setup.':'Lamp setup could not continue. Refresh the new-lamp list.',uncertain});
    throw Object.assign(problem(run.cancelled?'Lamp setup canceled.':uncertain?unknown().message:'Lamp setup could not continue.'),{cancelled:run.cancelled,uncertain,confirmed:!uncertain});
   }finally{if(run.cancelTask)await run.cancelTask;await this.release(lease);run.lease=null;}

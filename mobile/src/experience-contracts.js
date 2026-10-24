@@ -1,5 +1,6 @@
 // Firmware metadata is data only. All commands use this explicit allowlist;
 // unknown model/effect keys never select executable adapters or markup.
+import {normalizeLampModel} from './lamp-style.js';
 const canonical=value=>typeof value==='string'&&/^[a-f0-9]{12}$/.test(value);
 const nonce=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value)&&!/^0+$/.test(value);
 const integer=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
@@ -7,13 +8,23 @@ const text=(value,max)=>typeof value==='string'&&value.length>0&&new TextEncoder
 const key=value=>text(value,64)&&/^[a-z0-9._-]+$/.test(value);
 function parse(value,max=8192){if(typeof value==='string'){if(new TextEncoder().encode(value).length>max)throw Error('Oversized lamp contract.');return JSON.parse(value);}return value;}
 function strings(value,max=16){if(!Array.isArray(value)||value.length>max||!value.every(item=>key(item)))throw Error('Invalid capability list.');return Object.freeze([...new Set(value)]);}
-export function revisionSnapshot(raw,target){const value=parse(raw);if(value?.version!==1||value.target!==target||!canonical(target)||!nonce(value.bootSession)||!nonce(value.nextCommandId)||!integer(value.revision,1,0xffffffff)||!integer(value.mode,1,255)||!integer(value.brightness,1,255)||typeof value.power!=='boolean')throw Error('Invalid target revision.');return Object.freeze({...value});}
+export function revisionSnapshot(raw,target){
+ const value=parse(raw);if(value?.version!==1||value.target!==target||!canonical(target)||!nonce(value.bootSession)||!nonce(value.nextCommandId)||!integer(value.revision,1,0xffffffff)||!integer(value.mode,1,255)||!integer(value.brightness,1,255)||typeof value.power!=='boolean')throw Error('Invalid target revision.');
+ const appearance={};
+ if(Object.hasOwn(value,'currentColor')||Object.hasOwn(value,'currentOptions')){
+  const color=value.currentColor,options=value.currentOptions;
+  const tuple=(values,ranges)=>Array.isArray(values)&&values.length===ranges.length&&Array.from(values).every((item,index)=>integer(item,...ranges[index]));
+  if(!tuple(color,[[0,1],[0,255],[0,255],[0,255]])||!tuple(options,[[1,100],[0,100],[0,1],[0,255],[0,255],[0,255]]))throw Error('Invalid current appearance revision.');
+  appearance.currentColor=Object.freeze(color.slice());appearance.currentOptions=Object.freeze(options.slice());
+ }
+ return Object.freeze({...value,...appearance});
+}
 export function lampDescriptor(raw,target){
- const value=parse(raw),model=value?.model,limits=value?.limits,capabilities=value?.capabilities;
+ const value=parse(raw),model=normalizeLampModel(value?.model),limits=value?.limits,capabilities=value?.capabilities;
  if(value?.descriptorVersion!==2||!canonical(target)||value.deviceId!==target||model?.version!==1||!key(model.id)||!text(model.displayName,64)||!key(model.artworkFamily)||!key(model.hardwareRevision)||typeof model.preconfigured!=='boolean'||!limits||!capabilities||!/^\d+\.\d+\.\d+$/.test(value.firmwareVersion))throw Error('Invalid lamp descriptor.');
  for(const [name,max] of Object.entries({groupMembers:32,legacyGroupMembers:9,localPresence:16,forwardingHops:4,bleConnections:1,bleBonds:3,requestBytes:1024,responseBytes:8192,schemaPageEntries:4,schemaPageBytes:4096,receipts:8,receiptLifetimeMs:120000,appearanceWriteIntervalMs:2000}))if(!integer(limits[name],1,max))throw Error('Invalid negotiated lamp limit.');
  const versions=name=>{if(!Array.isArray(capabilities[name])||capabilities[name].length>4||!capabilities[name].every(n=>integer(n,1,255)))throw Error('Invalid contract versions.');return Object.freeze(capabilities[name].slice());};
- const artwork=['helix','corkscrew','generic'].includes(model.artworkFamily)?model.artworkFamily:'generic';
+ const artwork=['helix','large-helix','corkscrew','edison','generic'].includes(model.artworkFamily)?model.artworkFamily:'generic';
  return Object.freeze({deviceId:target,firmwareVersion:value.firmwareVersion,model:Object.freeze({...model,artwork}),limits:Object.freeze({...limits}),state:revisionSnapshot(value.state,target),capabilities:Object.freeze({...capabilities,catalogVersions:versions('catalogVersions'),sceneVersions:versions('sceneVersions'),control:strings(capabilities.control),persistence:strings(capabilities.persistence),updates:strings(capabilities.updates),commissioning:strings(capabilities.commissioning)})});
 }
 export function effectSchemaPage(raw,target){
@@ -32,6 +43,15 @@ export function commandReceipt(raw,target,bootSession,commandId){const value=par
 const patchRanges={mode:[1,255],power:[0,1],brightness:[1,255],speed:[1,100],intensity:[0,100],dual:[0,1],r:[0,255],g:[0,255],b:[0,255],r2:[0,255],g2:[0,255],b2:[0,255],resetPalette:[1,1]};
 export function partialLight(patch){if(!patch||Array.isArray(patch)||!Object.keys(patch).length||Object.keys(patch).some(name=>!patchRanges[name]))throw Error('Invalid partial light change.');for(const [name,value] of Object.entries(patch))if(!integer(value,...patchRanges[name]))throw Error('Partial light value is out of range.');return Object.freeze({...patch});}
 function updatePolicyFields(policy){if(!policy||typeof policy.window!=='boolean'||typeof policy.deferDuringUse!=='boolean'||!integer(policy.startMinute,0,1439)||!integer(policy.endMinute,0,1439)||(policy.window&&policy.startMinute===policy.endMinute)||!integer(policy.idleSeconds,1,86400)||!text(policy.timezone,63))throw Error('Invalid update policy.');const {window,startMinute,endMinute,timezone,deferDuringUse,idleSeconds}=policy;return {window,startMinute,endMinute,timezone,deferDuringUse,idleSeconds};}
+// These exact adapter refusals precede handler execution. A generic 503,
+// read-snapshot failure or adapter-confirmed error is not equivalent evidence.
+const preexecutionRefusals=new Set([
+ 'Control resources unavailable. No command executed.',
+ 'Control resources unavailable. This request was not executed.',
+ 'Another response is pending. This request was not executed.',
+ 'HTTP resources unavailable. No command was executed.',
+ 'Request memory unavailable. No command was executed.'
+]);
 // One submission owns its target, boot, ID and revision. Route changes are only
 // allowed for fresh reads or receipt reconciliation; no automatic replay.
 export class LampExperienceSession {
@@ -44,6 +64,22 @@ export class LampExperienceSession {
   if(this.pending)throw Object.assign(Error('Reconcile the previous lamp command first.'),{uncertain:true});
   if(!this.descriptor?.capabilities.control.includes('command-receipts-v1'))throw Error('Update this lamp for confirmed partial changes.');
   const fresh=await this.fresh();if(snapshot&&(snapshot.bootSession!==fresh.bootSession||snapshot.expectedRevision!==fresh.revision))throw Object.assign(Error('Lamp changed while this draft was open.'),{confirmed:true,conflict:true});
+  return this.#execute(path,fields,fresh);
+ }
+ // Immediate absolute controls need one fresh admission snapshot. The lamp's
+ // compare-and-set still rejects a knob/phone change between this read and
+ // execution. Explicit long-lived drafts retain submit's separate fresh check.
+ async change(patch,{expectedMode=null}={}){
+  const fields=partialLight(patch);
+  if(expectedMode!==null&&!integer(expectedMode,1,255))throw Error('Invalid expected effect.');
+  if(this.pending){const receipt=await this.reconcile(this.transport,{reuseDescriptor:true});if(receipt.outcome==='uncertain')throw Object.assign(Error('The earlier change is still being checked. Its outcome is not confirmed.'),{uncertain:true,requiresReconciliation:true});}
+  if(!this.descriptor?.capabilities.control.includes('command-receipts-v1'))throw Error('Update this lamp for confirmed partial changes.');
+  const fresh=await this.fresh();
+  if(expectedMode!==null&&fresh.mode!==expectedMode)throw Object.assign(Error('The effect changed while you were editing. Review its current controls.'),{confirmed:true,conflict:true});
+  return this.#execute('/api/state/patch',fields,fresh);
+ }
+ async #execute(path,fields,fresh){
+  if(this.pending)throw Object.assign(Error('Reconcile the previous lamp command first.'),{uncertain:true});
   const command=Object.freeze({target:this.target,bootSession:fresh.bootSession,commandId:fresh.nextCommandId,expectedRevision:fresh.revision,scope:'lamp',...fields});this.pending=command;
   try{const result=commandReceipt(await this.transport.request(path,command),this.target,command.bootSession,command.commandId);if(result.outcome!=='uncertain')this.pending=null;return result;}
   catch(error){let result;try{result=commandReceipt(error.message,this.target,command.bootSession,command.commandId);}catch{ /* keep exact submission for reconciliation */ }
@@ -52,6 +88,7 @@ export class LampExperienceSession {
    // retain the operation; even adapter-confirmed errors may follow execution.
    let rejected;try{rejected=JSON.parse(error.message);}catch{}
    if(error.confirmed&&rejected?.outcome==='rejected'&&['receipt-capacity','revision-conflict','command-id-conflict','invalid-command'].includes(rejected.error)){this.pending=null;throw Object.assign(error,{confirmed:true});}
+   if(error.confirmed===true&&error.uncertain!==true&&error.status===503&&preexecutionRefusals.has(error.message)){this.pending=null;throw Object.assign(error,{confirmed:true,uncertain:false,preexecution:true});}
    throw Object.assign(error,{uncertain:true,command});
   }
  }
@@ -59,7 +96,12 @@ export class LampExperienceSession {
  save(mode){if(!integer(mode,1,255))throw Error('Invalid effect.');return this.submit('/api/appearance/save',{mode});}
  async readUpdatePolicy(){if(!this.descriptor?.capabilities.updates.includes('quiet-policy-v1'))throw Error('This lamp does not support quiet policies.');const fresh=await this.fresh();const value=parse(await this.transport.request('/api/firmware/policy',{action:'read',target:this.target,bootSession:fresh.bootSession}));if(value?.version!==1||value.target!==this.target||value.bootSession!==fresh.bootSession||value.policy?.version!==1||!integer(value.policy.revision,1,0xffffffff)||typeof value.policy.valid!=='boolean')throw Error('Invalid target update policy.');updatePolicyFields(value.policy);this.policySnapshot=Object.freeze({...value.policy,bootSession:fresh.bootSession,expectedRevision:fresh.revision});return this.policySnapshot;}
  saveUpdatePolicy(policy,expectedPolicyRevision){if(!this.descriptor?.capabilities.updates.includes('quiet-policy-v1'))throw Error('This lamp does not support quiet policies.');if(!integer(expectedPolicyRevision,1,0xfffffffe)||!policy||Object.keys(policy).some(name=>!['window','startMinute','endMinute','timezone','deferDuringUse','idleSeconds'].includes(name)))throw Error('Invalid update policy.');if(!this.policySnapshot||this.policySnapshot.revision!==expectedPolicyRevision)throw Error('Read this lamp’s policy before changing it.');const fields=updatePolicyFields(policy);return this.submit('/api/firmware/policy',{expectedPolicyRevision,...fields,window:Number(fields.window),deferDuringUse:Number(fields.deferDuringUse)},this.policySnapshot).then(result=>{if(result.outcome!=='uncertain')this.policySnapshot=null;return result;});}
- async reconcile(transport=this.transport){if(!this.pending)throw Error('No outstanding command.');const command=this.pending;const verified=lampDescriptor(await transport.request('/api/descriptor'),this.target);const receipt=commandReceipt(await transport.request('/api/receipt',{target:this.target,bootSession:command.bootSession,commandId:command.commandId}),this.target,command.bootSession,command.commandId);if(receipt.outcome!=='uncertain'){this.pending=null;this.transport=transport;this.descriptor=verified;}return receipt;}
+ async reconcile(transport=this.transport,{reuseDescriptor=false}={}){if(!this.pending)throw Error('No outstanding command.');const command=this.pending;
+  // The selected route wrapper still fences the current connection and target.
+  // Its exact receipt independently verifies identity, boot and command ID.
+  // A different route must negotiate its own descriptor before reconciliation.
+  const verified=reuseDescriptor&&transport===this.transport&&this.descriptor?.deviceId===this.target?this.descriptor:lampDescriptor(await transport.request('/api/descriptor'),this.target);
+  const receipt=commandReceipt(await transport.request('/api/receipt',{target:this.target,bootSession:command.bootSession,commandId:command.commandId}),this.target,command.bootSession,command.commandId);if(receipt.outcome!=='uncertain'){this.pending=null;this.transport=transport;this.descriptor=verified;}return receipt;}
  // Explicit UI recovery after the user reviews a fresh target state. This
  // releases the lane while preserving an honest unknown historical outcome.
  async retireUncertainAfterSnapshot(transport=this.transport){if(!this.pending)throw Error('No outstanding command.');const command=this.pending;const descriptor=lampDescriptor(await transport.request('/api/descriptor'),this.target);const snapshot=revisionSnapshot(await transport.request('/api/revision'),this.target);this.pending=null;this.policySnapshot=null;this.transport=transport;this.descriptor=descriptor;return Object.freeze({outcome:'uncertain',command,snapshot});}

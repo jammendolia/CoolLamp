@@ -64,6 +64,15 @@ export class LampPairing {
     }
     return {...await this.native.select(),accessoryManaged:true,newAuthorization:true};
   }
+  async reconnect(saved) {
+    if(!saved?.deviceId)throw Error('This lamp needs to be paired before reconnecting.');
+    if(this.platform!=='ios')return saved;
+    const current=await this.native.list();
+    if(!current.supported)return saved;
+    const enrolled=current.devices.find(device=>device.deviceId.toLowerCase()===saved.deviceId.toLowerCase());
+    if(!enrolled)throw Error('This lamp needs to be authorized again on this iPhone.');
+    return {...saved,...enrolled,accessoryManaged:true,newAuthorization:false};
+  }
   async remove(entry,{appOnly=false}={}) {
     if(!entry?.deviceId)return {removed:false,manual:false};
     if(appOnly)return {removed:false,manual:true};

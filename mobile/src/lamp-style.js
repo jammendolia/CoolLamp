@@ -4,10 +4,23 @@ export const LAMP_STYLES = Object.freeze([
   {id:'unspecified',code:0,family:'unspecified',label:'Not specified'},
   {id:'helix',code:1,family:'helix',label:'Helix'},
   {id:'large-helix',code:2,family:'helix',label:'Large helix'},
-  {id:'corkscrew',code:3,family:'corkscrew',label:'Corkscrew'}
+  {id:'corkscrew',code:3,family:'corkscrew',label:'Corkscrew'},
+  {id:'edison',code:4,family:'edison',label:'Edison'}
 ].map(value=>Object.freeze(value)));
 
 const definitions = new Map(LAMP_STYLES.map(value=>[value.id,value]));
+
+// Factory model identity is bounded data, not an artwork name or executable
+// adapter. Keep future IDs while using only explicitly supported artwork.
+export function normalizeLampModel(value) {
+  const key=(text,max)=>typeof text==='string'&&text.length>0&&text.length<=max&&/^[a-z0-9._-]+$/.test(text);
+  if(!value||Array.isArray(value)||value.version!==1||!key(value.id,48)||!key(value.artworkFamily,32)||!key(value.hardwareRevision,32)||
+    typeof value.displayName!=='string'||!value.displayName||new TextEncoder().encode(value.displayName).length>64||/[\u0000-\u001f\u007f]/.test(value.displayName)||typeof value.preconfigured!=='boolean')return null;
+  const {id,displayName,artworkFamily,hardwareRevision,preconfigured}=value;
+  return {version:1,id,displayName,artworkFamily,hardwareRevision,preconfigured};
+}
+export const lampStyleLocked=value=>Boolean(value&&typeof value==='object'&&!Array.isArray(value)&&value.locked===true);
+export const lampDesignLabel=value=>value?.factoryStatus==='unavailable'?'Factory design unavailable':normalizeLampModel(value?.model)?.displayName||styleLabel(value);
 
 export function styleDefinition(value) {
   if(typeof value==='string')return definitions.get(value) || null;
@@ -20,7 +33,12 @@ export function normalizeLampStyle(value) {
   const definition=styleDefinition(value);
   if(!definition)return null;
   const {code,id,family}=definition;
-  return {version:1,code,id,family};
+  const result={version:1,code,id,family};
+  if(typeof value?.locked==='boolean')result.locked=value.locked;
+  if(typeof value?.factoryStyle==='string'&&/^[a-z0-9._-]{1,32}$/.test(value.factoryStyle))result.factoryStyle=value.factoryStyle;
+  if(value?.factoryStatus==='unavailable')result.factoryStatus=value.factoryStatus;
+  const model=normalizeLampModel(value?.model);if(model)result.model=model;
+  return result;
 }
 
 export const styleFamily = value => styleDefinition(value)?.family || 'unspecified';
@@ -29,6 +47,9 @@ export const styleLabel = value => styleDefinition(value)?.label || 'Not specifi
 export function resolveLampStyle(firmwareStyle,phoneStyle) {
   const lamp=styleDefinition(firmwareStyle);
   if(lamp && lamp.id!=='unspecified')return {id:lamp.id,source:'lamp'};
+  if(lampStyleLocked(firmwareStyle)) {
+    return {id:'unspecified',source:'lamp'};
+  }
   const phone=typeof phoneStyle==='string'?styleDefinition(phoneStyle):null;
   return phone && phone.id!=='unspecified' ? {id:phone.id,source:'phone'} : {id:'unspecified',source:'unspecified'};
 }
@@ -57,11 +78,16 @@ const generalPatterns = [
   'Custom solid','Lightning storm','Fireflies','Breathing glow','Sound glow'
 ];
 
+// These patterns use the measured bulb, upright and coil sections supplied by
+// Edison firmware. Availability still comes from the selected lamp's catalog.
+const edisonPatterns = ['Filament','Eureka','Orbit','Induction','Sound Filament'];
+
 const normalizeName = value => typeof value==='string'?value.trim().toLowerCase():null;
 const recommendations = new Map([
   ...heightPatterns.map(name=>[normalizeName(name),['helix','corkscrew']]),
   ...pathPatterns.map(name=>[normalizeName(name),['corkscrew']]),
-  ...generalPatterns.map(name=>[normalizeName(name),[]])
+  ...generalPatterns.map(name=>[normalizeName(name),[]]),
+  ...edisonPatterns.map(name=>[normalizeName(name),['edison']])
 ]);
 for(const [oldName,currentName] of [
   ['Split fire','Split fire - rising'],['Split fire - outward','Split fire - falling'],

@@ -63,6 +63,21 @@ test('Mirror selection uses the coordinator catalog’s actual IDs and leaves po
   await assert.rejects(runGroupLighting(f.api,{action:'effect',value:1}),/unavailable/);assert.equal(f.writes.length,1);
 });
 
+test('coordinator selectors omit unavailable dense slots and reject them without a write',async()=>{
+ const f=fixture();f.lamp.catalog[1].available=false;
+ const context=coordinatorLightingContext(f.editor());assert.deepEqual(context.catalog.map(entry=>entry.id),[9,33]);
+ await assert.rejects(runGroupLighting(f.api,{action:'effect',value:41}),/unavailable/);
+ assert.equal(f.writes.length,0);assert.equal(f.commandCalls.length,0);
+ await runGroupLighting(f.api,{action:'effect',value:33});assert.deepEqual(f.writes,[{action:'effect',value:33}]);
+});
+
+test('coordinator cannot save a non-startup effect into the legacy startup record',async()=>{
+ const f=fixture();f.lamp.catalog[0].startupSupported=false;
+ assert.equal(coordinatorLightingContext(f.editor()).entry.startupSupported,false);
+ await assert.rejects(runGroupLighting(f.api,{action:'saveDefaults'}),/startup light/);
+ assert.equal(f.writes.length,0);assert.equal(f.commandCalls.length,0);
+});
+
 test('custom palette, reset and options target the frozen mirrored mode with actual readback',async()=>{
   const f=fixture();await runGroupLighting(f.api,{action:'color',value:[200,2,50]});
   const options={speed:37,intensity:62,dual:1,r:11,g:22,b:33};

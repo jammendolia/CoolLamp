@@ -24,7 +24,7 @@ test('app rejects absent trust, revoked/unknown keys, duplicate key ids, old sec
 });
 test('signed download rechecks the exact approved version and never replaces its manifest with Latest',async()=>{
  const f=signedFixture(),requests=[];
- const http={request:async row=>{requests.push(row.url);return {status:200,url:row.url,data:row.url.endsWith('.bin')?f.bytes:new TextEncoder().encode(f.text)};}};
+ const http={request:async row=>{requests.push(row.url);return {status:200,url:row.url,data:new URL(row.url).pathname.endsWith('.bin')?f.bytes:new TextEncoder().encode(f.text)};}};
  const prepared=await downloadSignedPhoneFirmware(http,{publisherTrust:f.trust,expectedManifest:{text:f.text}});
  assert(isVerifiedPublisherPackage(prepared));assert.equal(requests.length,2);assert(requests.every(url=>url.includes('/download/firmware-v1.14.0/')));
  await assert.rejects(downloadSignedPhoneFirmware({request:async row=>({status:200,url:row.url,data:new TextEncoder().encode(f.text.replace('\n7\n','\n8\n'))})},{publisherTrust:f.trust,expectedManifest:{text:f.text}}),/changed/);

@@ -34,12 +34,65 @@ class Radio {
  }
  transfer(onProgress=()=>{}){return new BluetoothFirmwareTransfer({ble:this,deviceId:'target',isCurrent:()=>this.current,onProgress,delay:async ms=>{this.clock+=ms;},now:()=>this.clock});}
 }
+
+test('success retains actual negotiated transfer metrics and monotonic data-ACK timing without IDs',async()=>{
+ const radio=new Radio(),write=radio.write.bind(radio),read=radio.read.bind(radio);let monotonic=100;
+ radio.write=async(...args)=>{const op=args[3].getUint8(1);monotonic+=op===3?7:1000;radio.clock+=50;return write(...args);};
+ radio.read=async(...args)=>{monotonic+=2;return read(...args);};
+ const transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',now:()=>radio.clock,monotonicNow:()=>monotonic,delay:async ms=>{radio.clock+=ms;}});
+ const result=await transfer.send(radio.pkg),metric=result.transferDiagnostic;
+ assert.equal(result.committed,true);assert.equal(metric.commitAcknowledged,true);assert.equal(metric.dataComplete,true);
+ assert.equal(metric.mtu,247);assert.equal(metric.chunkSize,232);assert.equal(metric.dataWriteMode,'with-response');assert.equal(metric.bulkWriteFallback,'platform-disabled');
+ assert.equal(metric.acknowledgedBytes,2048);assert.equal(metric.total,2048);assert.equal(metric.dataStartOffset,0);assert.equal(metric.dataEndOffset,2048);
+ assert.equal(metric.dataFrames,9);assert.equal(metric.dataElapsedMs,9*7+3*2);assert.equal(metric.monotonicDataTiming,true);
+ assert(metric.elapsedMs>metric.dataElapsedMs);assert.equal(metric.dataBytesAttempted,2048);assert(Object.isFrozen(metric));
+ for(const key of ['session','ack','deviceId','identity','body','version','sha256','stopReason','message'])assert.equal(metric[key],undefined);
+});
+
+test('resumed sender times only the newly acknowledged offset range without replaying its prefix',async()=>{
+ const radio=new Radio(),read=radio.read.bind(radio),write=radio.write.bind(radio);let monotonic=0;
+ radio.s={...radio.s,phase:2,session:123,size:2048,offset:464};
+ radio.read=async(...args)=>{monotonic+=2;const value=await read(...args);value.setUint8(3,value.getUint8(3)|12);return value;};
+ radio.write=async(...args)=>{monotonic+=args[3].getUint8(1)===3?7:1000;return write(...args);};
+ const transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',now:()=>radio.clock,monotonicNow:()=>monotonic,delay:async ms=>{radio.clock+=ms;}});
+ const result=await transfer.send(radio.pkg,{resumeLease:{session:123,size:2048,version:radio.pkg.manifest.version,sha256:radio.pkg.manifest.sha256}}),metric=result.transferDiagnostic;
+ assert.equal(metric.dataStartOffset,464);assert.equal(metric.dataEndOffset,2048);assert.equal(metric.dataBytesAttempted,1584);assert.equal(metric.dataElapsedMs,7*7+2*2);
+ assert.equal(metric.commitAcknowledged,true);assert.equal(metric.dataComplete,true);
+ const chunks=radio.writes.filter(row=>row[1]===3);assert.equal(new DataView(chunks[0].buffer).getUint32(8,true),464);
+ assert.equal(radio.writes.filter(row=>row[1]===7).length,1);assert(!radio.writes.some(row=>row[1]===1||row[1]===2));
+});
+
+for(const clock of [()=>undefined,()=>NaN,()=>{throw Error('Optional clock unavailable');}])test('unavailable monotonic telemetry never changes successful receipt',async()=>{
+ const radio=new Radio(),transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',monotonicNow:clock});
+ const result=await transfer.send(radio.pkg);assert(result.committed);assert.equal(result.transferDiagnostic.commitAcknowledged,true);
+ assert.equal(result.transferDiagnostic.monotonicDataTiming,false);assert.equal(result.transferDiagnostic.dataElapsedMs,undefined);
+});
+
+test('a backward monotonic sample invalidates timing while preserving the final receipt',async()=>{
+ const radio=new Radio();let samples=0;const transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',monotonicNow:()=>++samples===2?1:100+samples});
+ const result=await transfer.send(radio.pkg);assert(result.committed);assert.equal(result.transferDiagnostic.monotonicDataTiming,false);assert.equal(result.transferDiagnostic.dataElapsedMs,undefined);
+});
+
+test('lost Finish ACK retains final written data timing with honest unconfirmed commit and no replay',async()=>{
+ const radio=new Radio();radio.loseFinish=true;const transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',monotonicNow:()=>radio.writes.length});
+ const result=await transfer.send(radio.pkg);assert.equal(result.committed,false);assert.equal(result.verificationRequired,true);
+ assert.equal(result.transferDiagnostic.acknowledgedBytes,2048);assert.equal(result.transferDiagnostic.dataComplete,true);assert.equal(result.transferDiagnostic.commitAcknowledged,false);
+ assert.equal(radio.writes.filter(row=>row[1]===4).length,1);assert(!radio.writes.some(row=>row[1]===5));
+});
+
+test('cancelled production sender retains only proved bytes and never claims a commit',async()=>{
+ const radio=new Radio(),transfer=new BluetoothFirmwareTransfer({ble:radio,deviceId:'target',monotonicNow:()=>radio.writes.length});
+ radio.duringData=async()=>{if(radio.writes.filter(row=>row[1]===3).length===5)await transfer.cancel('user');};
+ let failure;try{await transfer.send(radio.pkg);}catch(error){failure=error;}
+ assert(failure);assert.equal(failure.transferDiagnostic.commitAcknowledged,false);assert.equal(failure.transferDiagnostic.dataComplete,false);
+ assert(failure.transferDiagnostic.acknowledgedBytes<2048);assert.equal(radio.writes.filter(row=>row[1]===5).length,1);assert(!radio.writes.some(row=>row[1]===4));
+});
 test('phone pins the image to the validated manifest version and verifies native base64 download',async()=>{
  const pkg=packageValue(),requests=[],progress=[];
  const result=await downloadPhoneFirmware({request:async row=>{requests.push(row);return {status:200,url:row.url,data:firmwareBase64(requests.length===1?new TextEncoder().encode(pkg.manifest.text):pkg.image)};}},{onProgress:row=>progress.push(row)});
  assert.deepEqual(result.image,pkg.image);assert.equal(result.manifest.version,'1.11.0');
- assert(requests[0].url.endsWith('/latest/download/coollamp-manifest.txt'));assert(requests[1].url.endsWith('/download/firmware-v1.11.0/CoolLamp.ino.bin'));
- assert(requests.every(row=>row.responseType==='arraybuffer'&&!row.headers));assert.deepEqual(progress.map(row=>row.stage),['downloading','downloaded']);
+ assert(new URL(requests[0].url).pathname.endsWith('/latest/download/coollamp-manifest.txt'));assert(new URL(requests[1].url).pathname.endsWith('/download/firmware-v1.11.0/CoolLamp.ino.bin'));
+ assert(requests.every(row=>row.responseType==='arraybuffer'&&row.headers['Cache-Control']==='no-cache, no-store, max-age=0'&&new URL(row.url).searchParams.has('check')));assert.deepEqual(progress.map(row=>row.stage),['downloading','downloaded']);
 });
 test('native digest can verify an image without browser subtle crypto',async()=>{
  const pkg=packageValue();let calls=0,native=0;

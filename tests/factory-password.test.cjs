@@ -13,7 +13,7 @@ test('actual settings loader uses factory default only when no valid saved setti
 #include <Preferences.h>
 #include <cassert>
 LampSettings lampSettings;
-constexpr int MAX_POWER_MILLIAMPS=500,MODE_FIRE=4,MODE_MAX=47;
+constexpr int MAX_POWER_MILLIAMPS=500,MODE_FIRE=4,MODE_MAX=47,LAMP_EFFECT_COUNT=47;
 ${loader}
 int main(){
 loadLampSettings();assert(lampUsesFactoryPassword(lampSettings.adminPassword));
