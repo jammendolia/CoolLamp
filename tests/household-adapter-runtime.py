@@ -67,7 +67,8 @@ uint8_t lampMotionPath=0;bool lampMotionPathSaveUncertain(){return false;}
 bool following=false,updating=false,calibrating=false,resetting=false;uint8_t scene=0;unsigned uses=0;
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}uint8_t lampSyncRole(){return following?2:0;}uint8_t lampSyncProtocol(){return LampSyncWire::ExpandedVersion;}bool lampSyncPaused(){return false;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
-bool lampHasMicrophone(){return true;}constexpr uint8_t MODE_MAX=47;
+bool lampHasMicrophone(){return true;}bool lampMicrophoneEnabled(){return true;}
+bool lampEdisonProfileMatches(){return false;}constexpr uint8_t MODE_MAX=LAMP_EFFECT_CAPACITY;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
 void appendLampStyleJson(LampJsonSink& out){out.concat("{\"id\":\"corkscrew\"}");}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}

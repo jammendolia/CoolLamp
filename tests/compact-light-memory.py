@@ -30,7 +30,7 @@ experience=(ROOT/'LampExperience.ino').read_text();colors=(ROOT/'LampColors.ino'
 network=(ROOT/'LampNetwork.ino').read_text()
 functions='\n'.join(extract(experience,name) for name in ['bool commandHexParse(', 'bool commandRevisionParse(', 'void observeLampAppearance(', 'String receiptJson(', 'void commandDigest(', 'bool admitLampCommand(', 'void finishLampCommand(', 'String lampRevisionJson()', 'void handleLampStatePatch()'])
 fields='\n'.join(line for line in experience.splitlines() if line.startswith('const char* const lightCommandFields') or line.startswith('const char* const commandFields'))
-defaults='\n'.join(extract(colors,name) for name in ['LampColor defaultLampColor(uint8_t mode)\n','LampEffectOptions defaultEffectOptions(uint8_t mode) {','bool setLampColor(', 'bool resetLampColor(', 'bool setLampEffectOptions('])
+defaults='\n'.join(extract(colors,name) for name in ['static uint8_t appendedAppearanceBit(', 'LampColor defaultLampColor(uint8_t mode)\n','LampEffectOptions defaultEffectOptions(uint8_t mode) {','bool setLampColor(', 'bool resetLampColor(', 'bool setLampEffectOptions('])
 platform=r'''
 #include "Arduino.h"
 #include "LampControlHttpAdapter.h"
@@ -42,9 +42,10 @@ LampControlHttpAdapter lampServer(80);String lampToken="private-token";
 uint32_t esp_random(){return 123;}
 LampCommands::Ledger lightCommands;
 uint16_t NUM_LEDS=205;uint8_t Mode=4,Brightness=100;bool PowerOn=true;
-constexpr uint8_t MODE_MAX=47;
+constexpr uint8_t MODE_MAX=LAMP_EFFECT_CAPACITY;
 bool following=false,calibrating=false,updating=false,resetting=false;uint8_t scene=0;
-bool lampHasMicrophone(){return true;}bool lampSyncFollowing(){return following;}
+bool lampHasMicrophone(){return true;}bool lampMicrophoneEnabled(){return true;}
+bool lampEdisonProfileMatches(){return false;}bool lampSyncFollowing(){return following;}
 bool lampCalibrationActive(){return calibrating;}bool lampUpdateOwnsResources(){return updating;}
 bool lampFactoryResetPending(){return resetting;}uint8_t lampGroupScene(){return scene;}
 uint8_t lampSyncRole(){return 0;}bool lampSyncPaused(){return false;}
@@ -52,7 +53,8 @@ uint8_t lampSyncProtocol(){return LampSyncWire::ExpandedVersion;}
 bool leaveLampSceneForEffect(){return true;}void pauseLampSync(){}void syncLampKnob(){}void noteLampUpdateUse(){}
 struct CRGB {inline static int Black=0;};int* leds=nullptr;void fill_solid(int*,uint16_t,int){}
 struct {void setBrightness(uint8_t){}} FastLED;
-LampColor effectColors[47]{};LampEffectOptions effectOptions[47]{};bool colorsDirty=false,optionsDirty=false;
+LampColor effectColors[LAMP_EFFECT_CAPACITY]{};LampEffectOptions effectOptions[LAMP_EFFECT_CAPACITY]{};bool colorsDirty=false,optionsDirty=false;
+uint8_t appendedAppearanceDirty=0;
 LampColor getLampColor(uint8_t mode){return effectColors[mode-1];}
 LampEffectOptions getLampEffectOptions(uint8_t mode){return effectOptions[mode-1];}
 struct RGB {uint8_t r,g,b;};RGB lampVuColors[3]{},lampFountainColors[3]{};bool lampFountainCustom=false;
@@ -65,7 +67,7 @@ String envelope(uint64_t id,uint32_t revision){
 }
 int main(){
  lampServer.on("/api/state/patch",HTTP_POST,handleLampStatePatch);
- for(unsigned i=0;i<47;++i){effectColors[i]=defaultLampColor(i+1);effectOptions[i]=defaultEffectOptions(i+1);}
+ for(unsigned i=0;i<LAMP_EFFECT_CAPACITY;++i){effectColors[i]=defaultLampColor(i+1);effectOptions[i]=defaultEffectOptions(i+1);}
  lightCommands.begin(99);observeLampAppearance();heapBudget=16316;largestBudget=2048;accountLiveHeap=true;forceMove=true;
  stats={};{String read=lampRevisionJson();assert(read.length()&&read.length()<=512);assert(stats.peak<=528);std::cout<<"{\"name\":\"revision\",\"bytes\":"<<read.length()<<",\"peakStringPayloadBytes\":"<<stats.peak<<"}\n";}assert(!stats.live);
  size_t maximumPeak=0;
