@@ -572,3 +572,167 @@ test('forget after dispatch never repeats or rolls back an already attempted gro
   f.groups.forget(ids[3]);waiting.resolve();await assert.rejects(join,error=>error.stale===true);
   assert.equal(writes(f).length,1);assert.equal(f.models.get(ids[3]).sync.role,2);assert.equal(f.active(),0);
 });
+
+test('member removal keeps an offline position and saves a durable scoped intent without a lamp write',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.models.get(ids[0]).sync.order[1].online=false;const original=structuredClone(f.models.get(ids[0]).sync.order);
+  f.hooks.set(ids[1],{acquireError:Error('offline')});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'removal-pending');assert.equal(result.saved,false);assert.equal(result.target,ids[1]);
+  assert.deepEqual(f.models.get(ids[0]).sync.order,original);assert.equal(f.models.get(ids[1]).sync.role,2);
+  assert.equal(writes(f).length,0);assert.deepEqual(storage.read(),{version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:false,incarnation:groupIncarnation(ids[0])}]});
+  assert.equal(f.groups.snapshot().groups.find(row=>row.id===ids[0]).removalPending,true);
+  assert.equal(f.active(),0);assert(f.leases.every(lease=>lease.released));
+});
+
+test('explicit member retry after restart confirms departure before pruning only that source position',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.hooks.set(ids[1],{acquireError:Error('offline')});
+  await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  const restarted=f.restart();await restarted.refresh();assert.equal(writes(f).length,0);
+  f.hooks.set(ids[1],{beforeSync:(_,__,role)=>{assert.equal(role,0);assert.deepEqual(storage.read().sources[0].targets,[ids[1]]);}});
+  f.hooks.set(ids[0],{beforePrune:()=>{assert.equal(f.models.get(ids[1]).sync.role,0);}});
+  const unrelated=structuredClone(f.models.get(ids[3])),result=await restarted.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'member-removed');assert.equal(result.saved,true);
+  assert.deepEqual(f.models.get(ids[0]).sync.order.map(row=>row.id),[ids[0],ids[3]]);assert.deepEqual(f.models.get(ids[3]),unrelated);
+  assert.deepEqual(writes(f).map(row=>[row.id,row.op,row.path]),[[ids[1],'sync',undefined],[ids[0],'request','/api/group/remove']]);
+  assert.deepEqual(storage.read(),{version:2,sources:[]});assert.equal(f.models.get(ids[0]).sync.role,1);
+});
+
+test('a returned member still needs a fresh confirmed departure rather than order-only pruning',async()=>{
+  const f=fixture();expanded(f,[ids[0],ids[1],ids[3]]);f.models.get(ids[0]).sync.order[1].online=false;
+  f.hooks.set(ids[0],{beforePrune:()=>assert.equal(f.models.get(ids[1]).sync.role,0)});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'member-removed');assert.equal(writes(f).filter(row=>row.op==='sync'&&row.id===ids[1]).length,1);
+  assert.equal(writes(f).filter(row=>row.op==='order').length,0);
+});
+
+test('uncertain member departure stays pending and read-only reconciliation does not replay it',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.hooks.set(ids[1],{beforeSync:()=>{throw Object.assign(Error('lost before execution'),{uncertain:true});}});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'removal-pending');assert.equal(result.saved,false);assert.equal(f.models.get(ids[0]).sync.order.length,3);
+  assert.equal(writes(f).filter(row=>row.op==='sync').length,1);assert.equal(writes(f).filter(row=>row.path==='/api/group/remove').length,0);
+  const restarted=f.restart(),before=writes(f).length;const reconciled=await restarted.reconcileRemovals(ids[0]);
+  assert.equal(reconciled.phase,'removal-pending');assert.equal(writes(f).length,before);assert.equal(storage.read().sources.length,1);
+});
+
+test('member removal rejects a stale reviewed coordinator before intent or departure',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.models.get(ids[0]).sync.incarnation='1'.repeat(32);
+  await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])}),error=>error.stale===true||error.needsReconfirmation===true);
+  assert.equal(writes(f).length,0);assert.equal(storage.writes(),0);assert.equal(f.models.get(ids[1]).sync.role,2);
+});
+
+test('member recreation before departure cannot detach the member from its new incarnation',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+  f.hooks.set(ids[1],{beforeRead:(_,model)=>{model.sync.incarnation='1'.repeat(32);}});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'removal-pending');assert.equal(writes(f).length,0);
+  assert.equal(f.models.get(ids[1]).sync.role,2);assert.equal(f.models.get(ids[0]).sync.order.length,3);
+});
+
+test('coordinator recreation after confirmed departure never prunes its new group',async()=>{
+  const f=fixture();expanded(f,[ids[0],ids[1],ids[3]]);
+  f.hooks.set(ids[1],{afterSync:()=>{f.models.get(ids[0]).sync.incarnation='1'.repeat(32);}});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'removal-pending');assert.equal(f.models.get(ids[1]).sync.role,0);
+  assert.equal(writes(f).filter(row=>row.path==='/api/group/remove').length,0);assert.equal(f.models.get(ids[0]).sync.order.length,3);
+});
+
+test('last-member removal demotes the coordinator only after persisted departure and pruning',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.saved,true);assert.equal(result.coordinatorStopped,true);
+  assert.deepEqual(writes(f).map(row=>[row.id,row.op,row.path]),[[ids[1],'sync',undefined],[ids[0],'request','/api/group/remove'],[ids[0],'sync',undefined]]);
+  assert.equal(f.models.get(ids[1]).sync.role,0);assert.equal(f.models.get(ids[0]).sync.role,0);assert.deepEqual(storage.read(),{version:2,sources:[]});
+});
+
+test('member intent persistence failure prevents departure and source pruning',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);storage.setFailure(true);
+  await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])}),error=>error.storageFailed===true);
+  assert.equal(writes(f).length,0);assert.equal(f.models.get(ids[1]).sync.role,2);assert.equal(f.models.get(ids[0]).sync.order.length,2);
+});
+
+test('member removal requires a supported confirmed-removal contract and a current position',async()=>{
+  for(const mutate of [model=>{model.sync.dissolutionV1=false;},model=>{model.sync.session='';},model=>{model.sync.order=model.sync.order.filter(row=>row.id!==ids[1]);},model=>{model.sync.membershipLocked=true;}]){
+    const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);mutate(f.models.get(ids[0]));
+    await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])}));
+    assert.equal(writes(f).length,0);assert.equal(storage.writes(),0);assert.equal(f.models.get(ids[1]).sync.role,2);
+  }
+  const f=fixture();await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])}));
+  assert.equal(writes(f).length,0);
+});
+
+test('a member already in another group is only pruned from its old source, never detached from the new one',async()=>{
+  const f=fixture();expanded(f,[ids[0],ids[1],ids[3]]);Object.assign(f.models.get(ids[1]).sync,{leader:ids[2],incarnation:groupIncarnation(ids[2])});
+  const destination=structuredClone(f.models.get(ids[1]));
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'member-removed');assert.deepEqual(f.models.get(ids[1]),destination);
+  assert.deepEqual(writes(f).map(row=>[row.id,row.op,row.path]),[[ids[0],'request','/api/group/remove']]);
+});
+
+test('per-member removal rejects malformed review identities and self-removal before acquiring lamps',async()=>{
+  for(const expectedIncarnation of [undefined,'','a'.repeat(31),'A'.repeat(32)]){
+    const f=fixture();expanded(f);
+    await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation}));
+    assert.equal(f.leases.length,0);assert.equal(writes(f).length,0);
+  }
+  const f=fixture();expanded(f);
+  await assert.rejects(f.groups.removeMember(ids[0],ids[0],{expectedIncarnation:groupIncarnation(ids[0])}));
+  assert.equal(f.leases.length,0);assert.equal(writes(f).length,0);
+});
+
+test('setup, update, staged membership and target busy guards retain a pending position without departure',async()=>{
+  for(const mutate of [(f,id)=>{f.models.get(id).calibration={active:true};},(f,id)=>{f.models.get(id).firmware.phase=3;},
+    (f,id)=>{f.models.get(id).sync.membershipLocked=true;},(f,id)=>{f.groups.busy.add(id);}]){
+    const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);mutate(f,ids[1]);
+    const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+    assert.equal(result.phase,'removal-pending');assert.equal(writes(f).length,0);assert.equal(f.models.get(ids[0]).sync.order.length,3);
+    assert.equal(f.models.get(ids[1]).sync.role,2);assert.deepEqual(storage.read().sources[0].targets,[ids[1]]);
+  }
+});
+
+test('per-member removal cannot overwrite an unknown old intent or an in-progress whole-group removal',async()=>{
+  for(const initial of [{version:2,sources:[{source:ids[0],targets:[ids[3]],dissolve:false,incarnation:''}]},
+    {version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:true,incarnation:groupIncarnation(ids[0])}]}]){
+    const storage=removalStorage(initial),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+    await assert.rejects(f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])}),error=>error.needsReconfirmation===true||error.stale===true);
+    assert.equal(writes(f).length,0);assert.equal(storage.writes(),0);assert.deepEqual(storage.read(),initial);
+  }
+});
+
+test('other unresolved departures survive removal of the last current follower and keep the coordinator',async()=>{
+  const initial={version:2,sources:[{source:ids[0],targets:[ids[3]],dissolve:false,incarnation:groupIncarnation(ids[0])}]};
+  const storage=removalStorage(initial),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'member-removed');assert.equal(result.coordinatorStopped,false);assert.equal(f.models.get(ids[0]).sync.role,1);
+  assert.deepEqual(f.models.get(ids[0]).sync.order.map(row=>row.id),[ids[0]]);assert.deepEqual(storage.read(),initial);
+  assert.equal(writes(f).filter(row=>row.id===ids[0]&&row.op==='sync').length,0);
+});
+
+test('loss of the coordinator removal contract after departure cannot report a successful member removal',async()=>{
+  for(const mutate of [sync=>{sync.dissolutionV1=false;},sync=>{sync.session='';},sync=>{sync.session='0000000000000000';}]){
+    const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f,[ids[0],ids[1],ids[3]]);
+    f.hooks.set(ids[1],{afterSync:()=>mutate(f.models.get(ids[0]).sync)});
+    const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+    assert.equal(result.phase,'removal-pending');assert.equal(result.saved,false);assert.equal(f.models.get(ids[1]).sync.role,0);
+    assert.equal(f.models.get(ids[0]).sync.order.length,3);assert.equal(writes(f).filter(row=>row.path==='/api/group/remove').length,0);
+    assert.deepEqual(storage.read(),{version:2,sources:[{source:ids[0],targets:[ids[1]],dissolve:false,incarnation:groupIncarnation(ids[0])}]});
+  }
+});
+
+test('modern v2 member removal keeps its coordinator instead of issuing an unfenced automatic stop',async()=>{
+  const storage=removalStorage(),f=fixture({removalPersistence:storage.callbacks});expanded(f);
+  for(const id of [ids[0],ids[1]])Object.assign(f.models.get(id).sync,{version:2,maxMembers:9});
+  let unfencedStops=0;
+  f.hooks.set(ids[0],{beforeSync:(_,model,role)=>{
+    if(role===0){++unfencedStops;model.sync.order.push({id:ids[3],online:true});Object.assign(f.models.get(ids[3]).sync,{role:2,leader:ids[0]});}
+  }});
+  const result=await f.groups.removeMember(ids[0],ids[1],{expectedIncarnation:groupIncarnation(ids[0])});
+  assert.equal(result.phase,'member-removed');assert.equal(result.saved,true);assert.equal(result.coordinatorStopped,false);
+  assert.equal(unfencedStops,0);assert.equal(f.models.get(ids[0]).sync.role,1);assert.equal(f.models.get(ids[1]).sync.role,0);
+  assert.deepEqual(f.models.get(ids[0]).sync.order.map(row=>row.id),[ids[0]]);
+  assert.deepEqual(writes(f).map(row=>[row.id,row.op,row.path]),[[ids[1],'sync',undefined],[ids[0],'request','/api/group/remove']]);
+  assert.deepEqual(storage.read(),{version:2,sources:[]});
+});

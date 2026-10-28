@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LampTransport } from '../src/transport.js';
 import { decodeState, encodeCommand, decodeEffectOptions, decodeFirmware, firmwareMessage, FIRMWARE, EFFECT_OPTIONS, STATE, effects } from '../src/protocol.js';
-import { readFileSync } from 'node:fs';
+import { firmwareEffectCatalog } from './fixtures/firmware-catalog.js';
 
 function packet(id = 0, result = 0, brightness = 100) {
   return new DataView(Uint8Array.of(1, id, result, 4, brightness, 1, 28, 1, 9, 0, 0, 0).buffer);
@@ -74,8 +74,7 @@ test('wire frames preserve boundaries and reject invalid values', () => {
   const bad = packet(); bad.setUint8(0, 2); assert.throws(() => decodeState(bad), /version/);
 });
 test('effect names stay aligned with actual firmware', () => {
-  const firmware = readFileSync(new URL('../../LampNetwork.ino', import.meta.url), 'utf8');
-  const names = [...firmware.match(/effectNames\[\] = \{([\s\S]*?)\};/)[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  const names = firmwareEffectCatalog.map(entry => entry.name);
   // The fallback list is intentionally the microphone-free legacy catalog.
   assert.deepEqual(effects, names.slice(0,38));
   assert.deepEqual(names.slice(38,47), ['Sound glow','Sound meter','Spectrum Rise','Bass Launch','Spectral Embers','Beat Bloom','Three-band Fountain','VU Meter','Rainbow Embers']);

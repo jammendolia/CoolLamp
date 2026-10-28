@@ -8,7 +8,7 @@ const topic=id=>{const value=HELP_TOPICS.find(row=>row.id===id);assert.ok(value,
 const has=(value,phrases)=>{for(const phrase of phrases)assert.ok(value.toLowerCase().includes(phrase.toLowerCase()),`Missing guidance: ${phrase}`);};
 
 test('help provides complete task explanations within explicit reading and byte bounds',()=>{
- assert.ok(Object.isFrozen(HELP_TOPICS));assert.equal(HELP_TOPICS.length,14);
+ assert.ok(Object.isFrozen(HELP_TOPICS));assert.equal(HELP_TOPICS.length,16);
  assert.ok(HELP_INTRO.length<=160);assert.ok(Buffer.byteLength(JSON.stringify(HELP_TOPICS),'utf8')<=24*1024);
  let words=HELP_INTRO.split(/\s+/).length;
  const ids=new Set();
@@ -47,7 +47,7 @@ test('titled task sections have known plain fields and are deeply immutable',()=
 });
 
 test('help actions remain known navigation destinations with no executable or target authority',()=>{
- assert.deepEqual(HELP_ACTION_IDS,['setup','lamps','effects','settings','groups','audio-guide','center-settings','updates']);
+ assert.deepEqual(HELP_ACTION_IDS,['setup','lamps','effects','settings','groups','audio-guide','center-settings','updates','bridges']);
  assert.ok(Object.isFrozen(HELP_ACTION_IDS));
  for(const value of HELP_TOPICS){
   assert.ok(Object.keys(value).every(key=>['id','title','summary','paragraphs','steps','paragraphsAfter','sections','action'].includes(key)));
@@ -91,6 +91,13 @@ test('effects and saving distinguish real controls, previews, phone favorites an
  has(topic('saved-light'),['preview','without making it permanent','Remember this effect’s tuning','startup effect and brightness stay','Use these settings at startup','Older software may combine','Group appearance','Sound tuning','unconfirmed']);
 });
 
+test('saved looks have their own instructions and distinguish phone copies from lamp saves',()=>{
+ has(topic('saved-looks'),['Open Effects for your lamp','Under Saved looks','Cozy Plasma','Save look','without changing it','For the same lamp','Use look requires a lamp outside a group','Wait for confirmation','on/off state','startup and hardware settings stay','Remove deletes only the phone’s copy','leaves the lamp alone','heart marks a favorite effect','does not remember a complete look','Automatic palettes stay automatic','Group scenes','VU Meter','Fountain color zones','not supported','software that confirms each change','update older lamps first','do not sync to other phones','removing the app can remove them']);
+ assert.doesNotMatch(topic('saved-looks'),/Use separately|separately from a group/i);
+ assert.doesNotMatch(topic('saved-light'),/Saved looks|Cozy Plasma|Use look/);
+ assert.doesNotMatch(topic('saved-looks'),/Use these settings at startup|Remember this effect’s tuning/);
+});
+
 test('groups explain confirmation, paused members, offline positions and dissolution boundaries',()=>{
  has(topic('groups'),['at least two ready lamps','confirm joining','offline lamp','saved position','Use separately','pause','without removing','Return to group','followers first','main lamp last','individual settings','visibly pending','removal is confirmed','last follower','once confirmed','unreachable main lamp','creation, never removal','Older software','group stays saved']);
 });
@@ -116,4 +123,9 @@ test('computer upload is separate and explains exact file requirements plus unce
  has(topic('computer'),['advanced','ordinary Update','three seconds','setup Wi-Fi','http://192.168.4.1','username lamp','access password','coollamp only if','Update from your computer','application .bin','signed release information if required','Do not use a bootloader','partition file','merged image','keep the lamp powered','result checking','does not erase saved home Wi-Fi','result is unconfirmed','check installed software','before sending again']);
  assert.doesNotMatch(topic('recovery'),/192\.168|\.bin|computer/i);
  assert.doesNotMatch(topic('updates'),/192\.168|username|\.bin/i);
+});
+
+test('bridge help names the actual destination and distinguishes household setup from local access',()=>{
+ has(topic('bridges'),['Lamps in the bottom bar, then Bridges','Find a bridge','Add a bridge','physical comparison','same household','Add restores access','Finish lamp setup','Remove stops that bridge','settings and group stay saved','Check change','Automatic updates turned on','does not guarantee']);
+ assert(HELP_ACTION_IDS.includes('bridges'));
 });

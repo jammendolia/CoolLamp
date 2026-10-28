@@ -6,6 +6,7 @@ import {LampTransport} from '../src/transport.js';
 import {STATE,CONTROL,SERVICE,COMMAND,effects} from '../src/protocol.js';
 import {lampAddress} from '../src/lamps.js';
 import {selectMeshRecoveryCandidates} from '../src/settings-recovery.js';
+import {meshRouteCandidates} from '../src/mesh-route-candidates.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
@@ -175,6 +176,7 @@ test('a passive replacement waiting on native teardown stays stale even after th
 test('the current foreground mesh read remains admitted while unrelated passive mesh work is held',async()=>{
  const f=fixture(),intent={id:entryId};f.context.wifiSettingsTarget=intent;
  f.context.selectMeshRecoveryCandidates=selectMeshRecoveryCandidates;f.context.meshBridgeSupported=()=>false;
+ f.context.meshRouteCandidates=meshRouteCandidates;f.context.bridgeAccessories={items:[]};
  f.context.compareFirmwareVersions=()=>0;f.context.acquireMeshLamp=async options=>options;
  runInNewContext(handler('createMeshLampLease'),f.context);
  const release=f.context.beginForegroundConnection(intent);

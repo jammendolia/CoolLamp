@@ -357,12 +357,16 @@ export class Groups {
   clearPending(source,target){return this.updateRemovalIntents(pending=>pending.get(source)?.delete(target));}
   beginDissolve(source,targets,current,reconfirm=false){return this.updateRemovalIntents((pending,dissolving,incarnations)=>{if((pending.has(source)||dissolving.has(source))&&!reconfirm&&incarnations.get(source)!==current)throw problem('Review and approve the current group before removing it.',{needsReconfirmation:true,stale:true});if(!current)throw problem('This lamp needs a stable group identity before confirmed removal.',{needsReconfirmation:true,incompatible:true});const ids=pending.get(source)||new Set();for(const target of targets)ids.add(target);pending.set(source,ids);dissolving.add(source);incarnations.set(source,current);});}
   clearSource(source){return this.updateRemovalIntents((pending,dissolving,incarnations)=>{pending.delete(source);dissolving.delete(source);incarnations.delete(source);});}
-  async departMember(source,target){
+  async departMember(source,target,{requireReady=false}={}){
     if(this.busy.has(target))throw problem('Wait for this lamp’s current group action.');
     this.busy.add(target);this.emit();
     try{await this.leased(target,false,async context=>{
       const current=await this.fresh(context);
-      if(current.sync.role===2&&current.sync.leader===source){this.intentFence(source,incarnation(current.sync.incarnation));await this.mutation(context,membership(current),lamp=>lamp.configureSync(0,'',incarnation(current.sync.incarnation)),next=>next.sync.role===0,'dissolve-follower-unconfirmed');}
+      if(requireReady){this.expect(current,current.sync.role);if(current.sync.membershipLocked)throw problem('Finish this lamp’s staged update before removing it.');}
+      if(current.sync.role===2&&current.sync.leader===source){this.intentFence(source,incarnation(current.sync.incarnation));await this.mutation(context,membership(current),lamp=>{
+        if(requireReady){this.expect(lamp.raw,2,source);if(lamp.raw.sync.membershipLocked)throw problem('Finish this lamp’s staged update before removing it.');}
+        return lamp.configureSync(0,'',incarnation(current.sync.incarnation));
+      },next=>next.sync.role===0,'dissolve-follower-unconfirmed');}
     });}finally{this.busy.delete(target);this.emit();}
   }
   async prune(context,target){
@@ -379,19 +383,63 @@ export class Groups {
     if(!identity.test(source))return {phase:'unsupported',pending:false};
     if(this.busy.has(source)){await this.pending(source,target);return {phase:'pending',pending:true,uncertain:false};}
     this.busy.add(source);this.emit();
-    try{return await this.leased(source,false,async context=>{
+    try{return await this.leased(source,false,context=>this.finishMemberRemoval(context,target,departedIncarnation));}
+    catch(error){try{await this.pending(source,target);}catch{/* The previously saved departure intent remains pending. */}return {phase:'pending',pending:true,uncertain:uncertain(error),storageFailed:error?.storageFailed===true,needsReconfirmation:error?.needsReconfirmation===true};}
+    finally{this.busy.delete(source);this.emit();}
+  }
+  async finishMemberRemoval(context,target,departedIncarnation,{requireReady=false}={}){
+      const source=context.id;
       const raw=await this.fresh(context);
       if(raw.sync.role===0){await this.clearPending(source,target);if(!this.pendingRemovals.get(source)?.size)await this.clearSource(source);return {phase:'dissolved',pending:false};}
       this.expect(raw,1,source);
+      if(requireReady&&raw.sync.membershipLocked)throw problem('Finish this group’s staged update before removing a member.');
+      if(requireReady&&(!departedIncarnation||incarnation(raw.sync.incarnation)!==departedIncarnation))throw problem('The source lamp now coordinates another group. Review its current membership before cleanup.',{needsReconfirmation:true,stale:true});
+      if(requireReady&&(!raw.sync.dissolutionV1||!/^[0-9a-f]{16}$/.test(raw.sync.session)||raw.sync.session==='0000000000000000'))throw problem('The coordinator no longer supports confirmed member removal. Refresh its group before continuing.',{incompatible:true,stale:true});
       if(!raw.sync.dissolutionV1){await this.clearPending(source,target);return {phase:'legacy',pending:false};}
       if(!departedIncarnation||incarnation(raw.sync.incarnation)!==departedIncarnation)throw problem('The source lamp now coordinates another group. Review its current membership before cleanup.',{needsReconfirmation:true,stale:true});
       const prune=await this.prune(context,target);if(!prune.supported)throw problem('Coordinator removal contract is unavailable.');
       const remaining=await this.fresh(context);
-      if(remaining.sync.order.length===1){this.intentFence(source,incarnation(remaining.sync.incarnation));await this.beginDissolve(source,[],incarnation(remaining.sync.incarnation));await this.mutation(context,membership(remaining),lamp=>lamp.configureSync(0,'',incarnation(remaining.sync.incarnation)),next=>next.sync.role===0,'source-stop-unconfirmed');await this.clearSource(source);return {phase:'dissolved',pending:false};}
+      if(requireReady){
+        this.expect(remaining,1,source);this.intentFence(source,incarnation(remaining.sync.incarnation));
+        if(remaining.sync.membershipLocked)throw problem('Finish this group’s staged update before completing removal.');
+        if(!remaining.sync.dissolutionV1||!/^[0-9a-f]{16}$/.test(remaining.sync.session)||remaining.sync.session==='0000000000000000')throw problem('The coordinator no longer supports confirmed member removal. Refresh its group before continuing.',{incompatible:true,stale:true});
+      }
+      const otherPending=requireReady&&[...(this.pendingRemovals.get(source)||[])].some(id=>id!==target);
+      // Only v3 fences coordinator demotion against a newly admitted member
+      // at command execution. Older confirmed-prune coordinators stay active.
+      if(remaining.sync.order.length===1&&!otherPending&&(!requireReady||remaining.sync.version===3)){this.intentFence(source,incarnation(remaining.sync.incarnation));await this.beginDissolve(source,[],incarnation(remaining.sync.incarnation));await this.mutation(context,membership(remaining),lamp=>{
+        if(requireReady){
+          this.expect(lamp.raw,1,source);this.intentFence(source,incarnation(lamp.raw.sync.incarnation));
+          if(lamp.raw.sync.membershipLocked)throw problem('Finish this group’s staged update before completing removal.');
+          if(lamp.raw.sync.version!==3||!lamp.raw.sync.dissolutionV1||!/^[0-9a-f]{16}$/.test(lamp.raw.sync.session)||lamp.raw.sync.session==='0000000000000000'||lamp.raw.sync.order?.length!==1||lamp.raw.sync.order[0]?.id!==source)throw problem('The group changed before its removal could be confirmed. Refresh its members.',{stale:true});
+        }
+        return lamp.configureSync(0,'',incarnation(remaining.sync.incarnation));
+      },next=>next.sync.role===0,'source-stop-unconfirmed');await this.clearSource(source);return {phase:'dissolved',pending:false};}
       await this.clearPending(source,target);
       return {phase:'member-removed',pending:false};
-    });}catch(error){try{await this.pending(source,target);}catch{/* The previously saved departure intent remains pending. */}return {phase:'pending',pending:true,uncertain:uncertain(error),storageFailed:error?.storageFailed===true,needsReconfirmation:error?.needsReconfirmation===true};}
-    finally{this.busy.delete(source);this.emit();}
+  }
+  removeMember(source,target,{expectedIncarnation}={}){
+    if(!identity.test(source)||!identity.test(target)||source===target)return Promise.reject(problem('Choose another lamp in this group.'));
+    if(!incarnation(expectedIncarnation))return Promise.reject(problem('Refresh this group’s members before removing a lamp.',{needsReconfirmation:true,stale:true}));
+    return this.action([source],()=>this.leased(source,false,async coordinator=>{
+      const raw=await this.fresh(coordinator);this.expect(raw,1,source);
+      const current=incarnation(raw.sync.incarnation);
+      if(current!==expectedIncarnation)throw problem('The reviewed group changed. Refresh its members before removing a lamp.',{needsReconfirmation:true,stale:true});
+      if(raw.sync.membershipLocked)throw problem('Finish this group’s staged update before removing a member.');
+      if(!raw.sync.dissolutionV1||!/^[0-9a-f]{16}$/.test(raw.sync.session)||raw.sync.session==='0000000000000000')throw problem('Update this coordinator to support confirmed member removal.',{incompatible:true});
+      if(this.dissolving.has(source))throw problem('Confirm this group’s saved removal before removing another member.',{needsReconfirmation:true});
+      if(!Array.isArray(raw.sync.order)||!raw.sync.order.some(row=>row.id===target)&&!this.pendingRemovals.get(source)?.has(target))throw problem('This lamp is no longer in the reviewed group. Refresh its members.',{stale:true});
+      // Persist the reviewed intent before contacting the target. Offline or
+      // unconfirmed departures never authorize deleting their durable position.
+      await this.pending(source,target,current);
+      try{
+        await this.departMember(source,target,{requireReady:true});
+        const result=await this.finishMemberRemoval(coordinator,target,current,{requireReady:true});
+        return {id:source,target,saved:true,phase:'member-removed',confirmed:[target],pending:[],coordinatorStopped:result.phase==='dissolved'};
+      }catch(error){
+        return {id:source,target,saved:false,phase:'removal-pending',confirmed:[],pending:[{id:target,uncertain:uncertain(error),storageFailed:error?.storageFailed===true,needsReconfirmation:error?.needsReconfirmation===true,needsAuthorization:error?.needsAuthorization===true}],coordinatorStopped:false};
+      }
+    }));
   }
   dissolve(id,{allowLegacy=false,reconfirm=false,expectedIncarnation}={}){
     return this.action([id],()=>this.leased(id,false,async coordinator=>{

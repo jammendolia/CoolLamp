@@ -41,6 +41,7 @@ function harness(producer=async()=>true){
    effectOptions={mode:4,speed:50,intensity:100,dual:0};renderPower();
   },input(id,value){$(id).value=value;$(id).oninput();},release(id){return $(id).onchange();},
   receive(next){receiveUI({...state,...next},{freshLight:true});},busy(value){busy=value;renderPower();},
+  rotateToken(){lamp.raw.token+='-new';},rotateEpoch(){lamp.epoch++;},
   snapshot(){return {editingBrightness,editingOptions,busy,liveLightSending,brightness:state?.brightness,pending:liveLight.pending};},queue:()=>liveLight
  };ui.select();`,context);
  return {...context.ui,elements,calls,messages,timers,async tick(ms=120){now+=ms;for(const [id,timer]of[...timers])if(timer.at<=now){timers.delete(id);timer.run();}await flush();}};
@@ -90,4 +91,35 @@ test('an old in-flight error cannot discard the newly selected lamp’s producti
  const gate=deferred(),f=harness(async()=>{if(f.calls.length===1)await gate.promise;return true;});f.input('brightness',200);await f.tick();
  f.select('112233445566');f.input('brightness',70);gate.reject(Error('Old target stopped'));await flush();await f.tick();
  assert.equal(f.calls.length,2);assert.equal(f.calls[1][1],70);assert.equal(f.messages.length,0);
+});
+
+test('refused brightness input immediately restores the confirmed value instead of displaying an unsent percentage',()=>{
+ const f=harness();f.receive({sync:{role:2,active:true}});f.input('brightness',3);
+ assert.equal(f.calls.length,0);assert.equal(f.snapshot().pending,false);assert.equal(f.snapshot().editingBrightness,false);
+ assert.equal(f.elements.get('brightness').value,100);assert.equal(f.elements.get('brightnessValue').value,'39%');assert.match(f.messages.at(-1),/not sent/);
+});
+
+test('joining a group before dispatch drops the draft and releases verified brightness readback',async()=>{
+ const f=harness();f.input('brightness',3);f.receive({brightness:100,sync:{role:2,active:true}});await f.tick();
+ assert.equal(f.calls.length,0);assert.equal(f.snapshot().pending,false);assert.equal(f.snapshot().editingBrightness,false);
+ assert.equal(f.elements.get('brightness').value,100);assert.match(f.messages.at(-1),/not sent/);
+ f.receive({brightness:80});assert.equal(f.elements.get('brightness').value,80);assert.equal(f.elements.get('brightnessValue').value,'31%');
+});
+
+test('a rotated boot token drops pending brightness and restores the latest verified state without writing',async()=>{
+ const f=harness();f.input('brightness',3);f.rotateToken();f.receive({brightness:80});await f.tick();
+ assert.equal(f.calls.length,0);assert.equal(f.snapshot().pending,false);assert.equal(f.snapshot().editingBrightness,false);
+ assert.equal(f.elements.get('brightness').value,80);assert.equal(f.elements.get('brightnessValue').value,'31%');
+});
+
+test('a new connection epoch accepts readback while an old-session draft is being discarded',async()=>{
+ const f=harness();f.input('brightness',3);f.rotateEpoch();f.receive({brightness:90});await f.tick();
+ assert.equal(f.calls.length,0);assert.equal(f.snapshot().pending,false);assert.equal(f.snapshot().editingBrightness,false);
+ assert.equal(f.elements.get('brightness').value,90);assert.equal(f.elements.get('brightnessValue').value,'35%');
+});
+
+test('an expired busy slider draft restores confirmed brightness and reports that nothing was sent',async()=>{
+ const f=harness();f.busy(true);f.input('brightness',3);await f.tick(10001);
+ assert.equal(f.calls.length,0);assert.equal(f.snapshot().pending,false);assert.equal(f.snapshot().editingBrightness,false);
+ assert.equal(f.elements.get('brightness').value,100);assert.equal(f.elements.get('brightnessValue').value,'39%');assert.match(f.messages.at(-1),/not sent/);
 });

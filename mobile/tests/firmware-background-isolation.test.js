@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {MeshOnboarding} from '../src/mesh-onboarding.js';
+import {acquireOnboardingBroker,onboardingDiscoveryMessage} from '../src/mesh-onboarding-broker.js';
 import {FirmwareFleet} from '../src/firmware-fleet.js';
 import {LampTransport} from '../src/transport.js';
 
@@ -33,7 +34,9 @@ function fixture(names=[],overrides={}){
   meshOnboarding:{cancelDiscover:()=>calls.push('cancel-mesh'),discover:()=>{calls.push('discover');return Promise.resolve();}},
   roomGroups:{cancel:()=>calls.push('cancel-groups'),refresh:()=>{calls.push('groups');return Promise.resolve();}},
   groupDiscovery:{cancelScan:()=>calls.push('cancel-coordinators')},bluetoothGroups:{cancel:()=>calls.push('cancel-bluetooth-scan')},groupScanRun:null,groupJoinPending:null,
-  document:{hidden:false},meshWizard:null,store:{items:[entry]},groupRemovedIds:new Set(),meshNetworkMessages:new Map(),
+  document:{hidden:false},meshWizard:null,meshDiscoveryRun:null,meshDiscoveryFailures:new Map(),navigationSerial:0,groupConnections:new Map(),
+  acquireOnboardingBroker,onboardingDiscoveryMessage,connectivity:null,lamp:null,verifiedSelectedLamp:()=>false,advancedAvailable:()=>false,
+  store:{items:[entry]},groupRemovedIds:new Set(),meshNetworkMessages:new Map(),
   renderLamps(){},renderFleetControls(){},renderRoomGroups(){},renderOptions:()=>calls.push('render-options'),
   roomGroupsRun:null,roomGroupsGeneration:0,roomGroupsCompleted:0,roomGroupsRefreshQueued:false,
   $:()=>({textContent:''}),isNative:true,phonePlatform:'ios',BleClient:{},CapacitorHttp:{},pairing:{},accessoryNative:{},savedDevice:null,removedAccessoryIds:new Set(),

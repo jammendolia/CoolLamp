@@ -27,7 +27,7 @@ const elements=()=>{const rows=new Map();return {rows,$:key=>{if(!rows.has(key))
 
 function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wifi,bluetooth,mesh}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',...(saved?{deviceId,accessoryManaged:authorized}:{})};
-  const context={AbortController,console,...view,calls,posts,phonePlatform:platform,entry,
+  const context={bridgeAccessories:{has:()=>false},AbortController,console,...view,calls,posts,phonePlatform:platform,entry,
     beginForegroundConnection:()=>()=>{},
     status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
     cancelMeshSelection:()=>{},bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionSelectionAllowed:()=>false,firmwareConnectionNotice:()=>{},
@@ -218,7 +218,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
     status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
     queueMicrotask:action=>{calls.push('queued-disconnect-check');queueMicrotask(action);},disconnectGate};
   runInNewContext(`let busy=false,connecting=false,meshSelection=null,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3,liveLight={cancel(){calls.push('cancel-live-light');}};
-    let selected={...entry},state=null,settingsView='network',settingsRecovery=null,styleSaving=false,settingsRestartWaitUntil=0;
+    let selected={...entry},state=null,settingsView='network',settingsRecovery=null,styleSaving=false,settingsRestartWaitUntil=0,savedLookTask=null;
     let wifiScanning=false,wifiScanSerial=0,centerTimer=null,centerStatus=null,centerWasActive=false,centerSerial=0,resetTarget=null;
     let wifiSetupAbort=null,wifiHandoff=null,bleWifiStatus=null,wifiSetupSerial=0,firmware=null,firmwareReceivedAt=0,effectOptions=null,vuDirty=false,fountainDirty=false,audioDirty=false,paneMode=null,editingBrightness=false,savedDevice=entry;
     const settingsUnconfirmedIds=new Set(),app2Pending=new Map(),fleetStatuses=new Map(),bleLamp={};
@@ -237,9 +237,18 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
     ${openSource}
     ${recoverySource}
     globalThis.ui={recover:()=>settingsRecovery.check(),dispose:()=>settingsRecovery.dispose(),navigate(){navigationSerial++;selected={id:'${other}',name:'Window lamp'};settingsRecovery.check();},
-      state(){return {selected,lamp,section:settingsView,navigation:navigationSerial,active:settingsRecovery.active,context:settingsRecovery.context()};},unconfirmed:()=>settingsUnconfirmedIds.has(entry.id)};`,context);
+      state(){return {selected,lamp,section:settingsView,navigation:navigationSerial,active:settingsRecovery.active,context:settingsRecovery.context()};},unconfirmed:()=>settingsUnconfirmedIds.has(entry.id),
+      disconnectBusy(kind){busy=true;savedLookTask=kind?{id:entry.id,kind}:null;$('page-settings').hidden=false;callbacks.onDisconnect();},
+      remember(command){app2Pending.set(entry.id,command);},pending:()=>app2Pending.get(entry.id)};`,context);
   return {...context.ui,calls,posts,view,mesh,wifi};
 }
+
+test('real disconnect callback leaves Saved look uncertainty to its exact receipt instead of inventing a settings mutation',()=>{
+ for(const kind of ['save','apply',null]){
+  const f=recoveryHandoffHarness(),command={commandId:'0000000000000001'};f.remember(command);f.disconnectBusy(kind);
+  assert.equal(f.unconfirmed(),kind===null);assert.equal(f.pending(),command);assert.equal(f.posts.length,0);f.dispose();
+ }
+});
 
 test('real recovery hooks keep Wi-Fi and mesh handoffs current through the deliberate disconnect callback',async()=>{
   for(const route of ['wifi','mesh']){

@@ -14,10 +14,10 @@ const unknown=()=>problem('Lamp setup was not confirmed. Refresh its status befo
 // Public announcements are untrusted, session-only candidates. They never
 // grant a credential, select a control session, or write to the lamp store.
 export class MeshOnboarding {
- constructor({getBridges=()=>[],acquireBridge,verifyEnrollment,onStatus=()=>{},onCandidates=()=>{},now=Date.now,id=randomId,
+ constructor({getBridges=()=>[],acquireBridge,verifyEnrollment,onStatus=()=>{},onCandidates=()=>{},onDiscoveryError=()=>{},now=Date.now,id=randomId,
   timeout=120000,requestTimeout=8000,pollInterval=500,scanTimeout=20000,concurrency=2}={}){
   if(typeof acquireBridge!=='function')throw Error('Lamp setup needs a bridge connection factory.');
-  Object.assign(this,{getBridges,acquireBridge,verifyEnrollment,onStatus,onCandidates,now,nextId:id});
+  Object.assign(this,{getBridges,acquireBridge,verifyEnrollment,onStatus,onCandidates,onDiscoveryError,now,nextId:id});
   this.timeout=Math.min(120000,Math.max(1000,timeout));this.requestTimeout=Math.max(1,requestTimeout);
   this.pollInterval=Math.max(1,pollInterval);this.scanTimeout=Math.max(1,scanTimeout);
   this.concurrency=Math.min(2,Math.max(1,concurrency));this.candidates=new Map();this.usedIds=new Set();
@@ -86,7 +86,7 @@ export class MeshOnboarding {
      const value=parse(await this.bounded(()=>bridge.request('/api/mesh/new',undefined,epoch,guard),run.deadline,run.controller.signal));guard();
      for(const row of this.inventory(value,entry))if(!rows.has(row.id)){rows.set(row.id,row);routes.set(row.id,locator(entry));}
      this.candidates=new Map(rows);this.routes=new Map(routes);this.onCandidates(frozen([...rows.values()]));
-    }catch{ /* One unreachable or older bridge cannot block other candidates. */ }
+    }catch(error){if(!run.controller.signal.aborted&&this.scanRun===run&&!this.disposed&&this.currentBridge(entry))try{this.onDiscoveryError({...entry},error);}catch{} /* Other brokers can still be read. */ }
     finally{await this.release(lease);}
    }};
    await Promise.all(Array.from({length:this.concurrency},worker));

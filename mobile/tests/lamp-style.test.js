@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {firmwareEffectCatalog} from './fixtures/firmware-catalog.js';
 import {
   LAMP_STYLES,styleDefinition,normalizeLampStyle,normalizeLampModel,lampStyleLocked,lampDesignLabel,styleFamily,styleLabel,resolveLampStyle,
   effectRecommendation,effectRecommended,recommendedEffects
@@ -11,10 +11,7 @@ const descriptor = id => {
   return {version:1,id,code,family};
 };
 const effect = (name,id=1,extra={}) => ({id,name,category:'other',speed:true,...extra});
-const source=readFileSync(new URL('../../LampNetwork.ino',import.meta.url),'utf8');
-const catalogBlock=source.match(/const char\* const effectNames\[\] = \{([\s\S]*?)\};/);
-assert(catalogBlock,'Read the actual lamp catalog rather than constructing an app replacement.');
-const actualCatalog=[...catalogBlock[1].matchAll(/"([^"]*)"/g)].map((match,index)=>effect(match[1],index+1));
+const actualCatalog=firmwareEffectCatalog.map(({id,name})=>effect(name,id));
 
 test('stable physical choices expose only trusted labels and immutable definitions',()=>{
   assert.deepEqual(LAMP_STYLES.map(({id,code,family,label})=>[id,code,family,label]),[

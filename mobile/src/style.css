@@ -155,8 +155,9 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-fleet-tools .hint { margin: 12px 0 0; }
 .mesh-new-list { display:grid; gap:10px; }
 .mesh-new-list button { text-align:left; width:100%; }
-.mesh-confirm-colors { display:flex; gap:12px; margin:18px 0; }
-.mesh-confirm-colors span { width:48px; height:48px; border:2px solid #d8dce4; border-radius:50%; }
+.mesh-confirm-colors { display:flex; flex-wrap:wrap; gap:12px; margin:18px 0; }
+.mesh-comparison-color { display:grid; justify-items:center; gap:8px; min-width:80px; max-width:110px; text-align:center; font-size:1rem; }
+.mesh-comparison-swatch { width:48px; height:48px; border:2px solid #d8dce4; border-radius:50%; }
 .mesh-setup-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
 .mesh-onboarding .check { display:flex; align-items:center; gap:12px; margin:18px 0; }
 .mesh-onboarding .check input { width:22px; height:22px; flex:0 0 22px; }
@@ -196,6 +197,12 @@ summary .summary-detail + * { margin-left: 0; }
 .lamp-wifi .wifi-question text { fill: #d7e0ee; stroke: none; font-size: 10px; font-weight: 700; }
 .lamp-wifi .wifi-slash { color: #c2cad6; }
 .lamp-wifi[data-state=disconnected] .wifi-arc,.lamp-wifi[data-state=disconnected] .wifi-dot { opacity: .15; }
+.saved-wifi-summary { display: grid; gap: 16px; }
+.saved-wifi-row { display: flex; align-items: center; gap: 14px; }
+.saved-wifi-row > div { min-width: 0; }
+.saved-wifi-row strong { display: block; overflow-wrap: anywhere; }
+.saved-wifi-row .hint { margin: 4px 0; }
+.saved-wifi-row .lamp-connection { flex: 0 0 44px; }
 .lamp-bluetooth.is-active { color: #82bcff; border-color: #4c8bd4; background: #17304d; }
 .lamp-group[data-state=leader] { color: var(--accent); border-color: #68ab95; background: #1b3939; }
 .lamp-group[data-state=follower] { color: var(--sound); border-color: #9480b7; background: #302941; }

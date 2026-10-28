@@ -50,7 +50,7 @@ function fixture({automatic=false,error=Object.assign(Error('Control resources u
    Object.defineProperty(error,'verifiedSettingsRead',{value:freezeProof?Object.freeze(proof):proof});}
   if(error)throw error;return {...saved,lampId:id};
  };
- const context={AbortController,Error,pairingError,entry,calls,bleLamp:transport,cardConnectionMessages:messages,
+ const context={bridgeAccessories:{has:()=>false},AbortController,Error,pairingError,entry,calls,bleLamp:transport,cardConnectionMessages:messages,
   store:{items:[entry],upsert:value=>value,rememberFirmware(){}},phonePlatform:'ios',
   bluetoothFirmwareOwner:()=>null,firmwareConnectionSelectionAllowed:()=>true,firmwareConnectionNotice:()=>assert.fail('Unexpected updater'),fleetLampInstalling:()=>false,
   mergedLampEntries:()=>context.store.items,verifiedSelectedLamp:()=>false,cancelMeshSelection(){},stopGroupInspection:async()=>{},

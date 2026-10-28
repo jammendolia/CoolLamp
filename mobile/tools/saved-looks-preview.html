@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Saved looks layout preview</title>
+<link rel="stylesheet" href="/src/style.css">
+<link rel="stylesheet" href="/src/app-v2.css">
+<link rel="stylesheet" href="/src/saved-looks.css">
+<style>body{margin:0}main{width:min(100%,390px);margin:24px auto;padding:20px;box-sizing:border-box}.preview-note{font-size:.85rem}body[data-large]{font-size:125%}</style>
+<main>
+ <h2>Saved looks</h2><p class="preview-note">Layout preview with sample data. This page does not connect to a lamp.</p>
+ <label><input id="large" type="checkbox"> Larger preview text</label>
+ <section class="panel saved-looks" id="looks" aria-label="Saved looks"></section>
+</main>
+<script type="module">
+ import {mountSavedLooks} from '/src/saved-looks-ui.js';
+ import {SavedLooksStore,captureSavedLook} from '/src/saved-looks.js';
+ const lampId='aabbccddeeff',catalog=[{id:13,name:'Plasma',speed:true}],values=new Map();
+ const store=new SavedLooksStore({getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)});
+ const state={deviceId:lampId,mode:13,brightness:120,sync:{role:0,scene:0},colors:Array.from({length:13},()=>[0,255,60,110]),effectOptions:Array.from({length:13},()=>[50,100,0,35,160,255])};
+ const capture=name=>captureSavedLook({lampId,state,catalog,name});store.save(capture('Cozy evening Plasma'));
+ const wait=()=>new Promise(done=>setTimeout(done,1200));
+ const ui=mountSavedLooks(document.querySelector('#looks'),{
+  async onSave(name){await wait();store.save(capture(name));render();return {message:'Look saved in this preview.'};},
+  async onApply(){await wait();return {outcome:'executed',message:'Preview finished. No lamp was changed.'};},
+  onRemove(id){store.remove(id,lampId);render();return {message:'Sample look removed.'};}
+ });
+ function render(){ui.render({lampId,lampName:'CoolLamp 1',looks:store.list(lampId),busy:false,saveAllowed:true,applyAllowed:true,reason:'Saved on this phone for this lamp. Using a look keeps its current power state and startup settings.'});}render();
+ document.querySelector('#large').onchange=event=>document.body.toggleAttribute('data-large',event.target.checked);
+</script>
+</html>

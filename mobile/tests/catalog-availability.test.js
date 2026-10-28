@@ -91,12 +91,12 @@ test('production effect library lists only selectable entries while retaining th
 });
 
 test('production startup selector omits unavailable slots without changing stored appearance indexes',()=>{
- const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8'),start=source.indexOf('function fillNetwork()'),end=source.indexOf('\nasync function networkAction(',start);
+ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8'),start=source.indexOf('function fillNetwork()'),end=source.indexOf('\nfunction renderWifiSettings(',start);
  assert(start>=0&&end>start);
  const nodes=new Map(),node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',children:[],replaceChildren(...values){this.children=values;}});return nodes.get(id);};
  function Option(text,value){Object.assign(this,{text,value:String(value)});}
  const catalog=edisonCatalog(51),raw={leds:222,midpoint:81,mode:48,startupMode:4,startupBrightness:100};
- const context={$:node,Option,startupCatalog,lamp:{raw,catalog},renderSettings(){}};
+ const context={$:node,Option,startupCatalog,lamp:{raw,catalog},wifiSettingsSummary:{editing:false},renderSettings(){}};
  runInNewContext(source.slice(start,end)+';fillNetwork();',context);
  assert.deepEqual(node('startupMode').children.map(option=>Number(option.value)),Array.from({length:38},(_,i)=>i+1));
  assert.equal(node('startupMode').value,4);assert.equal(catalog[47].name,'Filament');assert.equal(raw.midpoint,81);

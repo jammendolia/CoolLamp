@@ -39,7 +39,8 @@
 </nav>
 <section id="page-home"><div class="v2-page-heading"><div><p id="v2HomeSubtitle" class="eyebrow">MAKE YOURSELF AT HOME</p><h2 tabindex="-1">Your home</h2></div><button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button></div><div id="v2HomeContent"></div></section>
 <section id="page-help" hidden aria-labelledby="v2HelpTitle"><p class="eyebrow">A LITTLE GUIDANCE</p><h2 id="v2HelpTitle" tabindex="-1">Help</h2><p class="page-intro">Choose what you’d like to do.</p><div id="v2HelpContent"></div></section>
-<section id="page-app-settings" hidden><p class="eyebrow">MAKE IT YOURS</p><h2 tabindex="-1">Settings</h2><p class="page-intro">A home that feels like you.</p><div class="v2-settings-list"><button data-v2="lamp-settings"><span><strong>Lamp details</strong><small>Name, room and ownership</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a lamp’s network</small></span><span>›</span></button><button data-v2="updates"><span><strong>Lamp care</strong><small>Updates and automatic update preferences</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Physical shape and strip setup</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>Help &amp; guides</strong><small>Setup, controls and troubleshooting</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced & custom builds</strong><small>LED count, power limit and guided strip setup</small></span><span>›</span></button></div><p class="v2-private" id="v2Version">CoolLamp 2.0.5</p><p class="v2-private">Local control · No account required</p></section>
+<section id="page-bridges" hidden aria-labelledby="bridgesHeading"><h2 id="bridgesHeading" tabindex="-1" class="sr-only">Bridges</h2><div id="bridgeManagement"></div></section>
+<section id="page-app-settings" hidden><p class="eyebrow">MAKE IT YOURS</p><h2 tabindex="-1">Settings</h2><p class="page-intro">A home that feels like you.</p><div class="v2-settings-list"><button data-v2="lamp-settings"><span><strong>Lamp details</strong><small>Name, room and ownership</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a lamp’s network</small></span><span>›</span></button><button data-v2="bridges"><span><strong>Bridges</strong><small>Connection helpers and their lamps</small></span><span>›</span></button><button data-v2="updates"><span><strong>Lamp care</strong><small>Updates and automatic update preferences</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Physical shape and strip setup</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>Help &amp; guides</strong><small>Setup, controls and troubleshooting</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced & custom builds</strong><small>LED count, power limit and guided strip setup</small></span><span>›</span></button></div><p class="v2-private" id="v2Version">CoolLamp 2.0.5</p><p class="v2-private">Local control · No account required</p></section>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
   <section id="page-lamps" hidden>
 <div class="section-title">
@@ -50,6 +51,7 @@
 <button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button>
 </div>
 <p class="page-intro">A little atmosphere, in every corner.</p>
+<button type="button" class="secondary" data-v2="bridges">Bridges · connection helpers</button>
 <label class="v2-search-label" for="v2LampSearch">Find a lamp</label><input id="v2LampSearch" type="search" placeholder="Search your lamps" autocomplete="off"><button id="discover" class="secondary compact">Find lamps on home Wi-Fi</button>
 <div class="lamp-fleet-tools" id="v2CarePanel">
 <div class="lamp-fleet-actions">
@@ -64,9 +66,9 @@
 <div id="newMeshLampList" class="mesh-new-list"></div>
 </section>
 <section id="meshSetup" class="panel mesh-onboarding" hidden aria-labelledby="meshSetupTitle">
-<h3 id="meshSetupTitle" tabindex="-1">Set up your new lamp</h3>
+<h3 id="meshSetupTitle" tabindex="-1">Set up your new device</h3>
 <p id="meshSetupStatus" class="hint" role="status" aria-live="polite"></p>
-<div id="meshSetupPattern" class="mesh-confirm-colors" hidden aria-label="Compare these four colors with the lamp"></div>
+<div id="meshSetupPattern" class="mesh-confirm-colors" hidden aria-label="Compare these four colors with the new device"></div>
 <form id="meshSetupForm" hidden>
 <fieldset id="meshSetupFields">
 <label for="meshSetupName">Lamp name</label><input id="meshSetupName" maxlength="32" required autocomplete="off">
@@ -437,6 +439,7 @@
     <button id="retireApp2" type="button" class="secondary" hidden>Continue from the lamp’s current state</button>
     <p class="hint save-hint">Remembers the current effect, lamp brightness and your effect customizations. Audio tuning saves separately.</p>
   </fieldset>
+<section id="savedLooks" class="panel saved-looks" hidden aria-label="Saved looks"></section>
 <details id="rotationPane" class="panel playback-pane" hidden>
 <summary>Effect rotation <span id="rotationBadge" class="small-badge">Off</span>
 </summary>
@@ -628,6 +631,11 @@
 </div>
 <p class="hint" id="wifiSettingsHint">Connect over Bluetooth to set up home Wi-Fi, or use a Wi-Fi connection to manage network and security settings.</p>
 <p id="wifiSetupFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
+<div id="savedWifiSummary" class="saved-wifi-summary" hidden>
+<div class="saved-wifi-row"><span id="savedWifiSignal" class="lamp-connection lamp-wifi" role="img" aria-label="Wi-Fi status unknown"></span><div><p class="hint">Network name</p><strong id="savedWifiName"></strong><p id="savedWifiConnection" class="hint"></p></div></div>
+<button id="reconfigureWifi" type="button" class="secondary">Reconfigure Wi-Fi</button>
+</div>
+<div id="wifiNetworkEditor">
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
 <label for="networks">Nearby networks</label>
 <select id="networks">
@@ -644,14 +652,19 @@
 </div>
 <label class="toggle">
 <input id="openNetwork" type="checkbox"> Password-free network</label>
-<div id="wifiSecurityControls">
 <label class="toggle">
 <input id="forgetWifi" type="checkbox"> Forget saved Wi-Fi</label>
+<button id="saveWifi">Save & restart lamp</button>
+<button id="cancelWifiEdit" type="button" class="secondary" hidden>Keep current Wi-Fi</button>
+</div>
+</form>
+<form id="wifiSecurityControls" class="panel" data-settings-panel="network">
+<h3>Lamp access password</h3>
+<p class="hint">This protects the lamp’s hotspot and Wi-Fi controls. It is separate from your home Wi-Fi password.</p>
 <label for="adminPassword">New lamp access password</label>
 <input id="adminPassword" type="password" minlength="8" maxlength="63" autocomplete="new-password">
-<p class="hint">Leave passwords blank to keep them. Saving these settings restarts the lamp.</p>
-</div>
-<button id="saveWifi">Save & restart lamp</button>
+<button id="saveAccessPassword">Save access password</button>
+<p class="hint">Saving restarts this lamp. Your saved home Wi-Fi stays the same.</p>
 </form>
 <form id="hardwareForm" class="panel" data-settings-panel="hardware">
 <p class="eyebrow">BUILT FOR YOUR LAMP</p>

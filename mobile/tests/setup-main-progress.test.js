@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {wifiSetupMessage} from '../src/wifi-setup.js';
+import {WifiSettingsSummary,renderSavedWifi} from '../src/wifi-settings-summary.js';
 import {lampStyleLocked,lampDesignLabel} from '../src/lamp-style.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
@@ -11,13 +12,14 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{r
 const turns=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 function extract(start,end){const first=source.indexOf(start),last=source.indexOf(end,first+start.length);assert(first>=0&&last>first);return source.slice(first,last);}
 const helpers=extract('async function networkAction(','\n$(\'identityForm\').onsubmit=');
+const wifiSummary=extract('function renderWifiSettings(','\nasync function networkAction(');
 const forms=extract("$('identityForm').onsubmit=","\n$('identify').onclick=");
 const network=extract("for(const [id,section] of [['networkForm','network'],['hardwareForm','hardware']])","\n$('geometryForm').onsubmit=");
 const adapters=extract(' setupDetails:','\n});');
 const identityButtons=extract("  $('saveIdentity').disabled=","\n  $('forgetLamp').disabled=");
 const styleButtons=extract("  $('lampStyleFields').disabled=","\n  if(brokenBluetooth)");
 
-function fixture({locked=false,nameGate,styleGate,wifiGate,credentialGate,probeGate,autoGate,refreshGates=[],createGate,joinGate}={}){
+function fixture({nameGate,styleGate,wifiGate,credentialGate,probeGate,autoGate,refreshGates=[],createGate,joinGate,locked=false}={}){
  const elements=new Map(),calls=[],writes=[],stored=[],progress=[],probes=[];
  const node=key=>{if(!elements.has(key))elements.set(key,{value:'',textContent:'',hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},focus(){calls.push({kind:'focus',key});}});return elements.get(key);};
  for(const [key,value] of Object.entries({lampName:'Reading lamp',room:'Bedroom',lampStyle:'corkscrew',ssid:'Home network',wifiPassword:'test-only-password'}))node(key).value=value;
@@ -32,7 +34,7 @@ function fixture({locked=false,nameGate,styleGate,wifiGate,credentialGate,probeG
  const replacement={...original,id:'native-two',identity:other,deviceIdentity:other,epoch:8,raw:{apiVersion:1,lampStyle:{id:'helix'}}};
  const store={items:[{id,deviceId:original.id,name:'Original',room:'Den'}],upsert(entry){stored.push({...entry});this.items=this.items.filter(value=>value.id!==entry.id).concat({...entry});return {...entry};},setLampStyle(target,style){calls.push({kind:'local-style',target,style});return true;}};
  let refreshCalls=0;
- const context={console,Promise,AbortController,TextEncoder,store,original,replacement,calls,writes,stored,progress,probes,$:node,wifiSetupMessage,lampStyleLocked,lampDesignLabel,
+ const context={console,Promise,AbortController,TextEncoder,store,original,replacement,calls,writes,stored,progress,probes,$:node,wifiSetupMessage,WifiSettingsSummary,renderSavedWifi,lampStyleLocked,lampDesignLabel,connectivity:null,observeLampWifi(){},
   updatingLamp:()=>false,renderPower(){},renderOptions(){},renderLamps(){calls.push({kind:'render-lamps'});},renderFirmware(){calls.push({kind:'render-firmware'});},filterEffects(){},
   status:message=>calls.push({kind:'message',message}),rememberLampStyle(){},reportedLampStyle:value=>value,
   styleDefinition:value=>['helix','corkscrew'].includes(value)?{id:value}:null,
@@ -47,13 +49,15 @@ function fixture({locked=false,nameGate,styleGate,wifiGate,credentialGate,probeG
  runInNewContext(`
   let lamp=original,selected={...store.items[0]},state={power:true},busy=false,connecting=false,firmware={version:'1.15.3'};
   const bleLamp=original,wifiLamp={};let styleSaving=null,identitySaving=null,styleDraftDirty=true;
-  let bleWifiStatus=null,wifiSetupAbort=null,wifiSetupSerial=0,wifiHandoff=null;
+  let bleWifiStatus=null,wifiSetupAbort=null,wifiSetupSerial=0,wifiHandoff=null,navigationSerial=0;
+  const wifiSettingsSummary=new WifiSettingsSummary();
   const groupsSnapshot={lamps:[{id:'${id}',name:'Main lamp'},{id:'${other}',name:'Follower'}]};
   const verifiedSelectedLamp=()=>Boolean(state&&selected&&lamp.identity===selected.id);
   const advancedAvailable=()=>Boolean(state&&lamp.raw);
   const bluetoothWifiAvailable=()=>lamp===bleLamp&&Boolean(state)&&bleLamp.supportsWifiSetup;
-  function renderSettings(){calls.push({kind:'render-settings',busy});${identityButtons}}
+  function renderSettings(){calls.push({kind:'render-settings',busy});renderWifiSettings();${identityButtons}}
   function renderLampStyleSettings(){const factoryStyle=lamp.raw?.lampStyle,factoryLocked=lampStyleLocked(factoryStyle);calls.push({kind:'render-style',saving:Boolean(styleSaving)});${styleButtons}}
+  ${wifiSummary}
   ${helpers}
   ${forms}
   ${network}
@@ -86,7 +90,6 @@ test('factory-locked real settings and setup handlers never send or store a desi
  await f.details({});assert.deepEqual(f.writes.map(value=>value.kind),['name']);
  assert.equal(f.calls.filter(value=>value.kind==='local-style').length,0);assert.equal(f.stored[0].room,'Bedroom');
 });
-
 
 for(const callback of [()=>{throw Error('Indicator failed.');},()=>Promise.reject(Error('Indicator rejected.'))])test('presentation callback failure cannot interrupt or replay setup mutations',async()=>{
  const f=fixture();await f.details({onProgress:callback});await turns();assert.deepEqual(f.writes.map(value=>value.kind),['name','style']);assert.equal(f.stored.length,1);

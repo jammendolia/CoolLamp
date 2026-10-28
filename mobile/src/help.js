@@ -6,30 +6,30 @@
 export const HELP_INTRO='Open a topic and follow its steps at your own pace. Reading Help does not change the lamp’s settings.';
 
 export const HELP_ACTION_IDS=Object.freeze([
- 'setup','lamps','effects','settings','groups','audio-guide','center-settings','updates'
+ 'setup','lamps','effects','settings','groups','audio-guide','center-settings','updates','bridges'
 ]);
 
 const topics=[
  {
   id:'setup',title:'Set up a lamp',summary:'Connect a new lamp and make it yours.',
-  paragraphs:['The setup guide connects your phone, then helps you name the lamp. No account is needed. Home Wi-Fi is optional; Bluetooth lets you control it nearby.'],
+  paragraphs:['The setup guide connects your phone and names your lamp. No account is needed. Home Wi-Fi is optional; Bluetooth works nearby.'],
   steps:[
-   'Plug in the lamp. Keep your phone nearby, open Lamps, and choose Add a lamp.',
-   'Hold the lamp’s knob for about six seconds. As soon as the whole lamp flashes blue, let go. Do not keep holding after blue, because a longer hold can reset the lamp.',
-   'Choose your lamp from the phone’s picker. Allow Bluetooth and Local Network access if asked.',
-   'Save its name and room. Finished lamps have their design set. Add home Wi-Fi for control from farther away; use a 2.4 GHz network.'
+   'Plug in the lamp. Open Lamps and choose Add a lamp with your phone nearby.',
+   'Hold the knob about six seconds. When the whole lamp flashes blue, let go. Do not keep holding: a longer hold can reset it.',
+   'Choose your lamp. Allow Bluetooth and Local Network access if asked.',
+   'Save its name and room. Finished lamps’ designs are already set. For farther control, add 2.4 GHz home Wi-Fi.'
   ],
   sections:[
    {title:'Optional: Add through another lamp',paragraphs:[
-    'Choose this before Bluetooth pairing, while the new lamp is still unpaired. An existing lamp you own helps with setup. Normal Bluetooth setup does not use color matching.'
+    'Use this before Bluetooth pairing, while the new lamp is still unpaired. An existing lamp you own helps. Normal Bluetooth setup does not use color matching.'
    ],steps:[
     'Keep the new lamp powered and near your existing lamp.',
-    'Choose Add through another lamp in the setup guide, then select the new lamp the app finds.',
-    'The app shows four colors. Watch the new lamp flash and check that the colors appear in the same order.',
+    'Choose Add through another lamp, then select the new lamp.',
+    'The app shows four colors. Check the new lamp flashes them in the same order.',
     'If they match, click the new lamp’s knob once. If they differ, choose Cancel. Wait until the app confirms the lamp was added.'
    ]}
   ],
-  paragraphsAfter:['A spinner means the app is working; wait for confirmation. You can finish later and return to the guide.'],
+  paragraphsAfter:['A spinner means working. Wait for confirmation, or finish the guide later.'],
   action:{id:'setup',label:'Open the setup guide'}
  },
  {
@@ -45,25 +45,36 @@ const topics=[
  },
  {
   id:'effects',title:'Effects and colors',summary:'Choose a pattern, then make its colors feel right.',
-  paragraphs:['An effect is the lamp’s pattern, such as a steady color, moving fire or a response to music. Each lamp supplies its available effects, so choices may differ between lamps.'],
+  paragraphs:['An effect is a pattern: steady color, moving fire or light responding to music. Each lamp supplies its available effects, so choices can differ.'],
   steps:[
-   'Choose a lamp or group, then open Effects. Tap the effect you want to try.',
-   'Use the controls shown. Motion speed changes movement; intensity, glow or density changes the pattern’s strength or activity.',
-   'Choose Your colors for a custom palette. Restore effect defaults or Restore original colors brings back original colors, depending on the lamp’s software.'
+   'Open Effects for a lamp or group. Tap an effect to try it.',
+   'Motion speed changes movement. Intensity, glow or density changes the pattern’s strength or activity.',
+   'Choose Your colors for a custom palette. Restore effect defaults or Restore original colors brings original colors back.'
   ],
-  paragraphsAfter:['Solid effects do not need motion speed, and fixed-rainbow effects keep their rainbow. Automatic spectrum colors continue until you select custom colors. Style recommendations are suggestions. The heart remembers a favorite on this phone; it does not save tuning to the lamp. Rotate effects automatically changes standalone effects without your phone; choose its interval and collection.'],
+  paragraphsAfter:['Solid effects do not need motion speed; fixed-rainbow effects keep their rainbow. Automatic spectrum colors continue until you select custom colors. Style recommendations are suggestions. The heart remembers a favorite on this phone; it does not save tuning. Rotate effects automatically changes standalone effects without your phone.'],
   action:{id:'effects',label:'Open Effects'}
  },
  {
-  id:'saved-light',title:'Save your favorite light',summary:'Understand what is saved and what returns after power-up.',
-  paragraphs:['A slider can preview a change without making it permanent. Supported lamps separate saving tuning from choosing the startup effect and brightness: the pattern and light level your lamp uses when you plug it in.'],
+  id:'saved-light',title:'Save tuning and startup choices',summary:'Choose what the lamp remembers after power-up.',
+  paragraphs:['A slider can preview a change without making it permanent. Saving tuning keeps an effect’s appearance on the lamp. Startup means the effect and brightness shown when you plug it in.'],
   steps:[
    'Choose an effect and adjust it to your liking.',
    'Where offered, choose Remember this effect’s tuning to save that effect’s appearance. Your chosen startup effect and brightness stay as they were.',
-   'Choose Use these settings at startup for the current effect and brightness after power-up. Wait for saved confirmation.'
+   'Choose Use these settings at startup to use the current effect and brightness after power-up. Wait for saved confirmation.'
   ],
-  paragraphsAfter:['Older software may combine these saves; read the save button. Group appearance is shared across its scenes. Sound tuning saves separately across sound effects. If saving is unconfirmed, check what the lamp kept before another change.'],
+  paragraphsAfter:['Older software may combine these saves; read the button. Group appearance is shared across scenes. Sound tuning saves separately across sound effects. If saving is unconfirmed, check what the lamp kept before another change.'],
   action:{id:'settings',label:'Open Settings'}
+ },
+ {
+  id:'saved-looks',title:'Saved looks',summary:'Name a favorite look and return to it later.',
+  paragraphs:['Saved looks keep an effect, its colors, brightness and tuning on this phone. The heart marks a favorite effect; it does not remember a complete look.'],
+  steps:[
+   'Open Effects for your lamp. Under Saved looks, enter a name, such as Cozy Plasma, then tap Save look. Saving reads the lamp without changing it.',
+   'For the same lamp, open Saved looks and tap Use look. Use look requires a lamp outside a group. Wait for confirmation; its on/off state, startup and hardware settings stay as chosen.',
+   'Remove deletes only the phone’s copy. It leaves the lamp alone.'
+  ],
+  paragraphsAfter:['Automatic palettes stay automatic. Group scenes, VU Meter and Fountain color zones are not supported as complete saved looks yet. Using a look needs lamp software that confirms each change; update older lamps first. Copies do not sync to other phones, and removing the app can remove them.'],
+  action:{id:'effects',label:'Open Effects'}
  },
  {
   id:'organization',title:'Names, rooms and designs',summary:'Make every lamp easy to find and recognize.',
@@ -186,15 +197,28 @@ const topics=[
   action:{id:'settings',label:'Open Settings'}
  },
  {
-  id:'computer',title:'Update from a computer',summary:'Use a firmware file when ordinary app updating cannot help.',
-  paragraphs:['This advanced option needs the correct CoolLamp application firmware file. Use ordinary Update on the lamp’s card when it works; unrelated ESP32 files are unsuitable.'],
+  id:'bridges',title:'Help nearby lamps with a bridge',summary:'See which lamps your bridge can help, and manage its connection.',
+  paragraphs:['A CoolLamp Bridge helps nearby lamps communicate and receive automatic updates. It belongs to your household. It does not create a lighting group.'],
   steps:[
-   'Hold the knob about three seconds to enable setup Wi-Fi. Connect your computer to it using the lamp’s access password.',
-   'Open a browser and enter http://192.168.4.1. Sign in with username lamp and the lamp’s access password. The password is coollamp only if it has not been changed.',
-   'Choose Update from your computer. Select the matching application .bin file and matching signed release information if required. Do not use a bootloader, partition file or merged image.',
-   'Choose Install this file and keep the lamp powered. Wait through file checking, installation, restart and result checking.'
+   'Tap Lamps in the bottom bar, then Bridges. Bridges is also in Settings. Open a bridge’s card to see its connection and lamps.',
+   'Choose Find a bridge for a missing bridge. For a new one, choose Add a bridge and follow the physical comparison and approval steps.',
+   'Lamps in the same household can use it. Add restores access after removal. New devices need Finish lamp setup first.',
+   'Remove stops that bridge from helping the lamp; its settings and group stay saved. Choose Check change for an unconfirmed change.',
+   'The network name and Wi-Fi symbol show its checked connection. Open its setup page to reconfigure Wi-Fi. Lamps need Automatic updates turned on.'
   ],
-  paragraphsAfter:['Joining setup Wi-Fi does not erase saved home Wi-Fi. If it closes or the result is unconfirmed, check installed software in CoolLamp before sending again. Reconnect your computer to its usual network afterward.'],
+  paragraphsAfter:['Keep both powered. Nearby means detected; it does not guarantee a working update route.'],
+  action:{id:'bridges',label:'Open your bridges'}
+ },
+ {
+  id:'computer',title:'Update from a computer',summary:'Use a firmware file when ordinary app updating cannot help.',
+  paragraphs:['This advanced option needs the correct CoolLamp application firmware. Prefer ordinary Update on the lamp’s card; unrelated ESP32 files are unsuitable.'],
+  steps:[
+   'Hold the knob three seconds for setup Wi-Fi. Connect your computer using the lamp’s access password.',
+   'Browse to http://192.168.4.1. Sign in with username lamp and the access password: coollamp only if unchanged.',
+   'Choose Update from your computer. Select the matching application .bin and signed release information if required. Do not use a bootloader, partition file or merged image.',
+   'Choose Install this file; keep the lamp powered through file checking, installation, restart and result checking.'
+  ],
+  paragraphsAfter:['Setup Wi-Fi does not erase saved home Wi-Fi. If the result is unconfirmed, check installed software in CoolLamp before sending again. Then reconnect the computer to its usual network.'],
   action:{id:'updates',label:'Open Lamp care'}
  }
 ];

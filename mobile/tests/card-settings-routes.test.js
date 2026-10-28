@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampAddress} from '../src/lamps.js';
 import {selectMeshRecoveryCandidates} from '../src/settings-recovery.js';
+import {meshRouteCandidates} from '../src/mesh-route-candidates.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 function extract(start,end){
@@ -20,8 +21,8 @@ const id='aabbccddeeff',other='112233445566';
 
 for(const mode of ['offline-fleet','healthy-wifi','active-bridge'])test('bounded mesh recovery prioritizes '+mode+' without starving a saved Bluetooth bridge',async()=>{
  const entries=Array.from({length:20},(_,index)=>({id:(index+1).toString(16).padStart(12,'0'),address:'http://bridge-'+index+'.local',deviceId:'peripheral-'+index,accessoryManaged:true,firmwareVersion:'1.15.0'}));
- const active=mode==='active-bridge'?{identity:other,epoch:3}:null;
- const context={entries,active,selectMeshRecoveryCandidates,phonePlatform:'ios',lamp:active,groupRemovedIds:new Set(),firmwareBackgroundWorkAllowed:()=>true,firmwareBackgroundGeneration:0,
+ const active=mode==='active-bridge'?{identity:other,epoch:3,request(){},raw:{mesh:{version:1,available:true}}}:null;
+ const context={entries,active,selectMeshRecoveryCandidates,meshRouteCandidates,bridgeAccessories:{items:[]},phonePlatform:'ios',lamp:active,groupRemovedIds:new Set(),firmwareBackgroundWorkAllowed:()=>true,firmwareBackgroundGeneration:0,
   fleetLampInstalling:()=>false,compareFirmwareVersions:()=>0,mergedLampEntries:()=>entries,meshBridgeSupported:()=>true,
   connectivity:{get:()=>({wifi:{fresh:mode==='healthy-wifi',state:mode==='healthy-wifi'?'connected':'disconnected'}})},
   acquireMeshLamp:async options=>options};
@@ -153,7 +154,7 @@ for(const interruptedBy of ['abort','navigation','inventory']){
 
 function bluetoothFixture({automaticReconnect=false,readOnlyReconnect=false}={}){
  const calls=[],entry={id,name:'Pink Corkscrew',deviceId:'saved-peripheral',accessoryManaged:true},controller=new AbortController();
- const context={entry,calls,AbortController,controller,automaticReconnect,
+ const context={bridgeAccessories:{has:()=>false},entry,calls,AbortController,controller,automaticReconnect,
   bluetoothFirmwareOwner:()=>null,firmwareConnectionSelectionAllowed:()=>true,firmwareConnectionNotice(){},fleetLampInstalling:()=>false,
   status:message=>calls.push({kind:'message',message}),pairCardBluetooth:async()=>{calls.push({kind:'pair'});return true;},
   connect:async(target,options)=>{calls.push({kind:'connect',id:target.id,options});return {connected:true,id:target.id};}
@@ -179,9 +180,9 @@ test('actual paired settings reconnect passes read-only mode, exact identity and
  assert.equal(options.signal,f.controller.signal);assert.equal(options.isCurrent(),true);
 });
 
-function meshFixture(automaticReconnect){
+function meshFixture(automaticReconnect,bridgeScope=false){
  const calls=[],entry={id,name:'Pink Corkscrew',meshBridgeId:other};
- const target={identity:id,epoch:1,bridge:{},lease:{borrowed:false},state:{mode:4,power:true},raw:{mode:4,firmware:{}},
+ const target={isMesh:true,identity:id,epoch:1,bridge:bridgeScope?{isBridge:true,adoptScope:options=>{options.guard();calls.push({kind:'broker-scope',options});}}:{},lease:{borrowed:false},state:{mode:4,power:true},raw:{mode:4,firmware:{}},
   guard:()=>calls.push({kind:'guard'}),schedule:()=>calls.push({kind:'schedule'})};
  const context={entry,target,calls,AbortController,automaticReconnect,
   cancelMeshSelection(){},renderLamps(){},renderPower(){},renderFirmware(){},renderSettings(){},
@@ -202,6 +203,13 @@ function meshFixture(automaticReconnect){
  `,context);
  return {open:context.open,calls,target};
 }
+
+test('main promotes the bridge broker to the adopted leaf owner after checking the live target lease',async()=>{
+ const f=meshFixture(false,true);assert.equal((await f.open())?.connected,true);
+ const acquisition=f.calls.find(call=>call.kind==='lease'),adoption=f.calls.find(call=>call.kind==='broker-scope');
+ assert.equal(acquisition.options.isCurrent(),false);assert.equal(adoption.options.isCurrent(),true);
+ assert(f.calls.findIndex(call=>call.kind==='broker-scope')<f.calls.findIndex(call=>call.kind==='schedule'));
+});
 
 for(const automaticReconnect of [false,true]){
  test('actual '+(automaticReconnect?'automatic':'manual')+' mesh settings uses existing routes without provisioning',async()=>{

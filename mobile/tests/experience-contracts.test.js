@@ -157,3 +157,11 @@ for(const failure of [
  await session.negotiate();await assert.rejects(session.change({brightness:70}),error=>error.uncertain);
  assert.equal(writes,1);assert.equal(session.pending.commandId,state.nextCommandId);
 });
+
+
+test('optional group role revision is additive for old clients and validates its bounds',()=>{
+ const current=revisionSnapshot({...state,syncRole:0},target);assert.equal(current.syncRole,0);
+ assert.equal(revisionSnapshot(state,target).syncRole,undefined);
+ for(const fields of [{syncRole:3},{syncRole:-1},{syncRole:null},{syncRole:'0'},{syncRole:true}])
+  assert.throws(()=>revisionSnapshot({...state,...fields},target),/group scope revision/);
+});

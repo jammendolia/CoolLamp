@@ -11,6 +11,7 @@ function strings(value,max=16){if(!Array.isArray(value)||value.length>max||!valu
 export function revisionSnapshot(raw,target){
  const value=parse(raw);if(value?.version!==1||value.target!==target||!canonical(target)||!nonce(value.bootSession)||!nonce(value.nextCommandId)||!integer(value.revision,1,0xffffffff)||!integer(value.mode,1,255)||!integer(value.brightness,1,255)||typeof value.power!=='boolean')throw Error('Invalid target revision.');
  const appearance={};
+ if(Object.hasOwn(value,'syncRole')&&!integer(value.syncRole,0,2))throw Error('Invalid group scope revision.');
  if(Object.hasOwn(value,'currentColor')||Object.hasOwn(value,'currentOptions')){
   const color=value.currentColor,options=value.currentOptions;
   const tuple=(values,ranges)=>Array.isArray(values)&&values.length===ranges.length&&Array.from(values).every((item,index)=>integer(item,...ranges[index]));

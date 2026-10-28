@@ -67,6 +67,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   updatingLamp:()=>tasks.has(context.selected?.id),publicFirmwareFresh:false,publicFirmwareRun:null,publicFirmwareError:'',publicFirmware:null,
   state:null,busy:false,availableCardRelease:()=>null,validFirmwareVersion:()=>false,firmwareMessage:()=>'',
   renderFirmwareFeedback(){},renderBluetoothFirmwareControls(){},renderPower(){},renderLampStyleSettings(){},renderCenterTool(){},
+  renderWifiSettings:()=>({name:null,editing:true}),
   connectivity:{get:()=>({group:null})},settingsView:'overview',wifiFailures:new Map(),advancedAvailable:()=>false,
   bluetoothWifiAvailable:()=>false,legacyWithoutGroups:()=>false,verifiedOlderBluetoothSettings:()=>false,
   wifiScanning:false,connecting:false,wifiSetupAbort:null,wifiHandoff:null,identitySaving:null,bleWifiStatus:null,hideWifiPassword(){},
