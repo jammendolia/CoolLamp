@@ -541,7 +541,7 @@
 <fieldset id="lampStyleFields" disabled>
 <legend class="sr-only">Physical lamp design</legend>
 <div class="lamp-style-choice"><div id="lampStylePreview" aria-hidden="true"></div><div><label for="lampStyle">Physical style</label>
-<select id="lampStyle"><option value="unspecified">Not specified</option><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option><option value="edison">Edison</option></select></div></div>
+<select id="lampStyle"><option value="unspecified">Not specified</option><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option><option value="edison">Edison</option><option value="sonata">Sonata</option></select></div></div>
 <button id="saveLampStyle" type="submit">Save lamp design</button>
 </fieldset>
 <p id="lampStyleScope" class="hint">Connect to a lamp to choose its physical design.</p>
@@ -670,6 +670,7 @@
 <p class="eyebrow">BUILT FOR YOUR LAMP</p>
 <h3>Strip & startup</h3>
 <p class="hint">Set the strip length, power budget and the light your lamp wakes up to.</p>
+<p id="wholeStripGeometryHint" class="hint" hidden>Sonata’s effects follow the whole strip. There is no center point to set. Use Find the last LED to measure its strip length.</p>
 <label for="leds">LED count</label>
 <input id="leds" type="number" min="1" max="1024" required form="hardwareForm" inputmode="numeric">
 <label for="milliamps">Power limit (mA)</label>

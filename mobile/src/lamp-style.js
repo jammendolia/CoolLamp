@@ -5,7 +5,8 @@ export const LAMP_STYLES = Object.freeze([
   {id:'helix',code:1,family:'helix',label:'Helix'},
   {id:'large-helix',code:2,family:'helix',label:'Large helix'},
   {id:'corkscrew',code:3,family:'corkscrew',label:'Corkscrew'},
-  {id:'edison',code:4,family:'edison',label:'Edison'}
+  {id:'edison',code:4,family:'edison',label:'Edison'},
+  {id:'sonata',code:5,family:'sonata',label:'Sonata'}
 ].map(value=>Object.freeze(value)));
 
 const definitions = new Map(LAMP_STYLES.map(value=>[value.id,value]));
@@ -44,6 +45,10 @@ export function normalizeLampStyle(value) {
 export const styleFamily = value => styleDefinition(value)?.family || 'unspecified';
 export const styleLabel = value => styleDefinition(value)?.label || 'Not specified';
 
+// This is only trusted physical-design presentation. A phone-only artwork
+// choice or a name never establishes the connected lamp's animation path.
+export const lampStyleUsesWholeStrip = value => Boolean(value&&typeof value==='object'&&!Array.isArray(value)&&styleDefinition(value)?.id==='sonata');
+
 export function resolveLampStyle(firmwareStyle,phoneStyle) {
   const lamp=styleDefinition(firmwareStyle);
   if(lamp && lamp.id!=='unspecified')return {id:lamp.id,source:'lamp'};
@@ -81,13 +86,15 @@ const generalPatterns = [
 // These patterns use the measured bulb, upright and coil sections supplied by
 // Edison firmware. Availability still comes from the selected lamp's catalog.
 const edisonPatterns = ['Filament','Eureka','Orbit','Induction','Sound Filament'];
+const sonataPatterns = ['Aria','Duet','Cadenza'];
 
 const normalizeName = value => typeof value==='string'?value.trim().toLowerCase():null;
 const recommendations = new Map([
   ...heightPatterns.map(name=>[normalizeName(name),['helix','corkscrew']]),
-  ...pathPatterns.map(name=>[normalizeName(name),['corkscrew']]),
+  ...pathPatterns.map(name=>[normalizeName(name),['corkscrew','sonata']]),
   ...generalPatterns.map(name=>[normalizeName(name),[]]),
-  ...edisonPatterns.map(name=>[normalizeName(name),['edison']])
+  ...edisonPatterns.map(name=>[normalizeName(name),['edison']]),
+  ...sonataPatterns.map(name=>[normalizeName(name),['sonata']])
 ]);
 for(const [oldName,currentName] of [
   ['Split fire','Split fire - rising'],['Split fire - outward','Split fire - falling'],

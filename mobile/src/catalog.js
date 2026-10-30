@@ -13,7 +13,7 @@ export function validateCatalog(value, count) {
       if(typeof entry[flag]!=='boolean')throw new Error('Invalid lamp effect availability.');
       result[flag]=entry[flag];
     }
-    if(Object.hasOwn(entry,'styles'))result.styles=Array.isArray(entry.styles)&&entry.styles.length<=5&&entry.styles.every(style=>['unspecified','helix','large-helix','corkscrew','edison'].includes(style))?[...new Set(entry.styles)]:null;
+    if(Object.hasOwn(entry,'styles'))result.styles=Array.isArray(entry.styles)&&entry.styles.length<=6&&entry.styles.every(style=>['unspecified','helix','large-helix','corkscrew','edison','sonata'].includes(style))?[...new Set(entry.styles)]:null;
     return result;
   });
 }

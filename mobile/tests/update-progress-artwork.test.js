@@ -24,7 +24,7 @@ test('ordinary model artwork remains byte identical to its existing public outpu
 });
 
 test('actual model drawings fill from bottom to top at zero, half and full written progress',()=>{
- for(const style of [...Object.keys(normalDigests),'edison'])for(const progress of [0,50,100]){
+ for(const style of [...Object.keys(normalDigests),'edison','sonata'])for(const progress of [0,50,100]){
   const value=lampArtworkSvg(style,{idPrefix:'test-update',updateProgress:progress});
   assert.match(value,new RegExp(`data-update-progress="${progress}"`));
   const clip=value.match(/<clipPath[^>]+><rect x="0" y="(-?[\d.]+)" width="120" height="([\d.]+)"\/><\/clipPath>/);
@@ -51,6 +51,16 @@ test('Edison has its own larger bulb-and-coil silhouette, accessible name, theme
  const css=readFileSync(new URL('../src/app-v2.css',import.meta.url),'utf8');
  assert.match(css,/\.v2-lamp-entry \.lamp-design\.v2-card-art\[data-style=edison\]\{height:124px\}/);
  assert.match(css,/\.v2-individual-list \.v2-lamp-drawing\[data-lamp-artwork=edison\]\{height:76px\}/);
+});
+
+test('Sonata has an open S curve, two inward tips and its own rectangular base and knob',()=>{
+ const value=lampArtworkSvg('sonata',{idPrefix:'test-sonata'});
+ assert.match(value,/data-lamp-artwork="sonata"/);assert.match(value,/aria-label="Sonata lamp"/);
+ assert.match(value,/lamp-artwork-sonata-curve/);assert.match(value,/lamp-artwork-sonata-tip/);assert.match(value,/lamp-artwork-sonata-knob/);
+ assert.notEqual(value,lampArtworkSvg('helix',{idPrefix:'test-sonata'}));
+ assert(!/<image\b|href=|https?:\/\//.test(value.replace('http://www.w3.org/2000/svg','')));
+ assert.match(lampArtworkSvg('sonata',{theme:'dark',lit:false}),/#93a196/);
+ assert.match(value,/viewBox="0 0 120 200"/);
 });
 
 test('unknown or malformed percentages never create an inferred fill',()=>{

@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampUpdatePresentation} from '../src/lamp-update-progress.js';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
+import {lampStyleUsesWholeStrip} from '../src/lamp-style.js';
 import {FirmwareFeedback} from '../src/firmware-feedback.js';
 import {FirmwareAttemptJournal,classifyFirmwareSnapshot} from '../src/firmware-attempt.js';
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
@@ -63,7 +64,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   cardFirmwareTasks:tasks,bluetoothFirmwareTask:null,firmwareFeedback:feedback,firmwareAttempts:journal,cardFirmwareUnconfirmed:pending,fleetStatuses:statuses,
   firmware:null,firmwareReceivedAt:0,settingsRestartWaitUntil:0,verifiedSelectedLamp:()=>connected,
   firmwareConnectionBusy:()=>Boolean(tasks.size||context.bluetoothFirmwareTask||[...statuses.values()].some(value=>['updating','restarting'].includes(value.state))),
-  lampUpdatePresentation,lampArtworkSvg,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
+  lampUpdatePresentation,lampArtworkSvg,lampStyleUsesWholeStrip,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
   updatingLamp:()=>tasks.has(context.selected?.id),publicFirmwareFresh:false,publicFirmwareRun:null,publicFirmwareError:'',publicFirmware:null,
   state:null,busy:false,availableCardRelease:()=>null,validFirmwareVersion:()=>false,firmwareMessage:()=>'',
   renderFirmwareFeedback(){},renderBluetoothFirmwareControls(){},renderPower(){},renderLampStyleSettings(){},renderCenterTool(){},

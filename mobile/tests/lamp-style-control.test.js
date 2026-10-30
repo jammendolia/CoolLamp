@@ -5,7 +5,7 @@ import {validateCatalog} from '../src/catalog.js';
 import {recommendedEffects} from '../src/lamp-style.js';
 
 const identity='aabbccddeeff';
-const descriptor=code=>({version:1,code,id:['unspecified','helix','large-helix','corkscrew','edison'][code],family:['unspecified','helix','helix','corkscrew','edison'][code]});
+const descriptor=code=>({version:1,code,id:['unspecified','helix','large-helix','corkscrew','edison','sonata'][code],family:['unspecified','helix','helix','corkscrew','edison','sonata'][code]});
 async function fixture(t,{supported=true,accept=true,lost=false}={}) {
   const raw={token:'fresh-token',deviceId:identity,hostname:'coollamp-test.local',name:'Test',mode:1,brightness:100,power:true,effects:['Rain'],...(supported?{lampStyle:descriptor(1)}:{})};
   const calls=[];let read;
@@ -79,4 +79,15 @@ test('catalog accepts an explicit Edison recommendation without reordering or gu
   {id:3,name:'Unknown',category:'other',speed:false,styles:['edison','future-model']}],3);
  assert.deepEqual(catalog[0].styles,['edison']);assert.equal(catalog[2].styles,null);
  assert.deepEqual(recommendedEffects(catalog,'edison').map(value=>value.id),[1,2]);
+});
+
+test('Sonata saves stable style code five and accepts only explicitly advertised Sonata recommendations',async t=>{
+ const {lamp,calls}=await fixture(t);await lamp.enqueue(()=>lamp.configureLampStyle('sonata'));
+ const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);
+ assert.equal(new URLSearchParams(writes[0].data).get('style'),'5');assert.equal(lamp.raw.lampStyle.id,'sonata');
+ const catalog=validateCatalog([{id:1,name:'Aria',category:'calm',speed:true,styles:['sonata']},
+  {id:2,name:'Unknown',category:'other',speed:true,styles:['sonata','future-style']},
+  {id:3,name:'All',category:'calm',speed:false,styles:['unspecified','helix','large-helix','corkscrew','edison','sonata']}],3);
+ assert.deepEqual(catalog[0].styles,['sonata']);assert.equal(catalog[1].styles,null);
+ assert.equal(catalog[2].styles.length,6);assert.deepEqual(recommendedEffects(catalog,'sonata').map(entry=>entry.id),[1]);
 });

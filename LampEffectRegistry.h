@@ -55,12 +55,15 @@
   X(49, "Eureka", "edison-eureka", Edison, Edison) \
   X(50, "Orbit", "edison-orbit", Edison, Edison) \
   X(51, "Induction", "edison-induction", Edison, Edison) \
-  X(52, "Sound Filament", "edison-sound-filament", Edison, EdisonAudio)
+  X(52, "Sound Filament", "edison-sound-filament", Edison, EdisonAudio) \
+  X(53, "Aria", "sonata-aria", Sonata, Sonata) \
+  X(54, "Duet", "sonata-duet", Sonata, Sonata) \
+  X(55, "Cadenza", "sonata-cadenza", Sonata, Sonata)
 
 namespace LampEffects {
-constexpr uint8_t BaseCount=38,LegacyCount=47,Count=52;
-enum class Family:uint8_t {Unknown,Legacy,Atmosphere,SplitFire,Solid,Spatial,Audio,Edison};
-enum class Requirement:uint8_t {General,Audio,Edison,EdisonAudio};
+constexpr uint8_t BaseCount=38,LegacyCount=47,Count=55;
+enum class Family:uint8_t {Unknown,Legacy,Atmosphere,SplitFire,Solid,Spatial,Audio,Edison,Sonata};
+enum class Requirement:uint8_t {General,Audio,Edison,EdisonAudio,Sonata};
 struct Entry {const char* name;const char* key;};
 // Separate packed traits avoid per-entry pointer alignment padding. The name
 // and key pointers replace the former independent catalog/schema tables.
@@ -70,7 +73,7 @@ inline constexpr Entry entries[]={
 #undef LAMP_EFFECT_ENTRY
 };
 inline constexpr uint8_t traits[]={
-#define LAMP_EFFECT_TRAIT(id,name,key,family,requirement) uint8_t(uint8_t(Family::family)|(uint8_t(Requirement::requirement)<<3)),
+#define LAMP_EFFECT_TRAIT(id,name,key,family,requirement) uint8_t(uint8_t(Family::family)|(uint8_t(Requirement::requirement)<<4)),
   LAMP_EFFECT_REGISTRY(LAMP_EFFECT_TRAIT)
 #undef LAMP_EFFECT_TRAIT
 };
@@ -87,13 +90,14 @@ static_assert(sizeof(entries)/sizeof(entries[0])==Count&&sizeof(traits)==Count&&
 inline constexpr const Entry* find(uint8_t id){return id>=1&&id<=Count?&entries[id-1]:nullptr;}
 inline constexpr const char* name(uint8_t id){const auto* entry=find(id);return entry?entry->name:"unknown";}
 inline constexpr const char* key(uint8_t id){const auto* entry=find(id);return entry?entry->key:"unknown";}
-inline constexpr Family family(uint8_t id){return find(id)?Family(traits[id-1]&7):Family::Unknown;}
-inline constexpr Requirement requirement(uint8_t id){return find(id)?Requirement(traits[id-1]>>3):Requirement::General;}
+inline constexpr Family family(uint8_t id){return find(id)?Family(traits[id-1]&15):Family::Unknown;}
+inline constexpr Requirement requirement(uint8_t id){return find(id)?Requirement(traits[id-1]>>4):Requirement::General;}
 inline constexpr bool needsAudio(uint8_t id){return find(id)&&(requirement(id)==Requirement::Audio||requirement(id)==Requirement::EdisonAudio);}
 inline constexpr bool needsEdison(uint8_t id){return find(id)&&(requirement(id)==Requirement::Edison||requirement(id)==Requirement::EdisonAudio);}
-struct Availability {bool microphone,following,edison;uint8_t role;bool captureEnabled;};
+inline constexpr bool needsSonata(uint8_t id){return find(id)&&requirement(id)==Requirement::Sonata;}
+struct Availability {bool microphone,following,edison;uint8_t role;bool captureEnabled;bool sonata=false;};
 inline constexpr uint8_t catalogCount(const Availability& context){
-  return context.edison&&context.role==0?(context.microphone?Count:Count-1):
+  return context.sonata&&context.role==0?Count:context.edison&&context.role==0?(context.microphone?52:51):
     context.microphone||context.following?LegacyCount:BaseCount;
 }
 inline constexpr bool available(uint8_t id,const Availability& context){
@@ -103,8 +107,9 @@ inline constexpr bool available(uint8_t id,const Availability& context){
     // Followers render remote audio even without a local microphone.
     case Requirement::Audio:return context.microphone||context.following;
     // Region effects remain standalone; legacy Mirror cannot negotiate them.
-    case Requirement::Edison:return id<=catalogCount(context);
-    case Requirement::EdisonAudio:return id<=catalogCount(context)&&context.captureEnabled;
+    case Requirement::Edison:return context.edison&&context.role==0;
+    case Requirement::EdisonAudio:return context.edison&&context.role==0&&context.microphone&&context.captureEnabled;
+    case Requirement::Sonata:return context.sonata&&context.role==0;
   }
   return false;
 }

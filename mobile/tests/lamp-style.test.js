@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {firmwareEffectCatalog} from './fixtures/firmware-catalog.js';
 import {
-  LAMP_STYLES,styleDefinition,normalizeLampStyle,normalizeLampModel,lampStyleLocked,lampDesignLabel,styleFamily,styleLabel,resolveLampStyle,
+  LAMP_STYLES,styleDefinition,normalizeLampStyle,normalizeLampModel,lampStyleLocked,lampDesignLabel,lampStyleUsesWholeStrip,styleFamily,styleLabel,resolveLampStyle,
   effectRecommendation,effectRecommended,recommendedEffects
 } from '../src/lamp-style.js';
 
@@ -17,7 +17,7 @@ test('stable physical choices expose only trusted labels and immutable definitio
   assert.deepEqual(LAMP_STYLES.map(({id,code,family,label})=>[id,code,family,label]),[
     ['unspecified',0,'unspecified','Not specified'],['helix',1,'helix','Helix'],
     ['large-helix',2,'helix','Large helix'],['corkscrew',3,'corkscrew','Corkscrew'],
-    ['edison',4,'edison','Edison']
+    ['edison',4,'edison','Edison'],['sonata',5,'sonata','Sonata']
   ]);
   assert(Object.isFrozen(LAMP_STYLES));
   for(const value of LAMP_STYLES)assert(Object.isFrozen(value));
@@ -37,6 +37,19 @@ test('Edison is independent display metadata, with no invented geometry or effec
   const supported=effect('Future Edison effect',99,{styles:['edison']});
   assert.equal(effectRecommendation(supported,'edison'),'recommended');
   assert.equal(supported.id,99);
+});
+
+test('Sonata appends its own style without inferring LED count, stored center or a firmware capability from a phone choice',()=>{
+  const value=descriptor('sonata');assert.deepEqual(normalizeLampStyle(value),value);
+  assert.equal(styleLabel(value),'Sonata');assert.equal(styleFamily(value),'sonata');
+  assert(lampStyleUsesWholeStrip(value));
+  for(const untrusted of ['sonata',{id:'sonata'},{...value,code:4},{...value,family:'helix'},descriptor('helix'),null])assert.equal(lampStyleUsesWholeStrip(untrusted),false);
+  assert(!Object.hasOwn(styleDefinition('sonata'),'ledCount'));assert(!Object.hasOwn(styleDefinition('sonata'),'midpoint'));
+  assert.deepEqual(resolveLampStyle(value,'edison'),{id:'sonata',source:'lamp'});
+  const catalog=[effect('Aria',53),effect('Duet',54),effect('Cadenza',55),effect('Color tide',32),effect('Rain',3),effect('Future',99)];
+  assert.deepEqual(recommendedEffects(catalog,'sonata').map(entry=>entry.id),[53,54,55,32]);
+  assert.deepEqual(recommendedEffects(catalog.slice(4),'sonata'),[],'Style does not add unadvertised effects.');
+  assert.deepEqual(recommendedEffects(catalog,'edison'),[]);
 });
 
 test('firmware descriptors require consistent version, numeric code, string ID and family',()=>{
@@ -146,7 +159,7 @@ test('recommendations meaningfully narrow the real 47-effect catalog and share h
 });
 
 test('the five real Edison effects are recommended only for Edison without changing wire IDs or order',()=>{
-  const edison=actualCatalog.slice(47);
+  const edison=actualCatalog.slice(47,52);
   assert.deepEqual(edison.map(({name})=>name),['Filament','Eureka','Orbit','Induction','Sound Filament']);
   assert.deepEqual(edison.map(({id})=>id),[48,49,50,51,52]);
   assert.deepEqual(recommendedEffects(actualCatalog,'edison'),edison);

@@ -35,7 +35,7 @@ import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpd
 import {FirmwareUpdateDiagnostics} from './firmware-update-diagnostics.js';
 import {lampUpdatePresentation} from './lamp-update-progress.js';
 import { LampConnectivity, lightingObservation, groupObservation, groupCardPresentation } from './lamp-connectivity.js';
-import { LAMP_STYLES, styleDefinition, styleLabel, normalizeLampStyle, lampStyleLocked, lampDesignLabel, resolveLampStyle, recommendedEffects } from './lamp-style.js';
+import { LAMP_STYLES, styleDefinition, styleLabel, normalizeLampStyle, lampStyleLocked, lampDesignLabel, lampStyleUsesWholeStrip, resolveLampStyle, recommendedEffects } from './lamp-style.js';
 import { wifiSetupMessage, wifiCredentials } from './wifi-setup.js';
 import { WifiSettingsSummary, renderSavedWifi } from './wifi-settings-summary.js';
 import { LampPairing, rememberAccessories, pairingLabel, pairingInstructions, pairingError } from './pairing.js';
@@ -491,6 +491,7 @@ function renderFirmware() {
   renderBluetoothFirmwareControls();
   renderPlaybackTools();
 }
+function selectedLampUsesWholeStrip(){return Boolean(verifiedSelectedLamp()&&lampStyleUsesWholeStrip(lamp.raw?.lampStyle));}
 function verifiedOlderBluetoothSettings(){
   // A missing snapshot or cleared capabilities does not establish old firmware.
   // Require this live target's protected version, rather than its saved card.
@@ -501,10 +502,12 @@ function verifiedOlderBluetoothSettings(){
 function renderSettings() {
   renderFirmwareFeedback();
   renderBluetoothFirmwareControls();
+  const wholeStrip=selectedLampUsesWholeStrip();
+  $('wholeStripGeometryHint').hidden=!wholeStrip;
   for(const panel of document.querySelectorAll('[data-settings-panel]')) {
     const unsupported=panel.id==='hardwareForm'||panel.id==='bluetoothManagement'||panel.id==='wifiSecurityControls'?!advancedAvailable():
       panel.id==='wifiSetupActions'?!bluetoothWifiAvailable():
-      panel.id==='geometrySettings'?!state||(advancedAvailable()?lamp.raw?.midpoint===undefined:!(state.capabilities&128)):
+      panel.id==='geometrySettings'?wholeStrip||!state||(advancedAvailable()?lamp.raw?.midpoint===undefined:!(state.capabilities&128)):
       panel.id==='audioSettings'?!advancedAvailable()||!lamp.raw?.audio:
       panel.id==='calibrationPane'?!advancedAvailable()||!state?.calibration:false;
     panel.hidden=panel.dataset.settingsPanel!==settingsView||unsupported;
@@ -1974,8 +1977,9 @@ for(const button of document.querySelectorAll('[data-category]'))button.onclick=
 $('favoriteEffect').onclick=()=>{if(!selected||!state)return;const favorites=new Set(selected.favorites||[]);if(favorites.has(state.mode))favorites.delete(state.mode);else favorites.add(state.mode);selected=store.upsert({...selected,favorites:[...favorites]});$('favoriteEffect').setAttribute('aria-pressed',String(favorites.has(state.mode)));$('favoriteEffect').textContent=favorites.has(state.mode)?'♥':'♡';filterEffects();};
 function fillNetwork() {
   const raw=lamp.raw;
-  $('geometrySettings').hidden=raw.midpoint===undefined;
-  $('motionPathForm').hidden=raw.motionVersion!==1||![0,1].includes(raw.motionPath);
+  const wholeStrip=selectedLampUsesWholeStrip();
+  $('geometrySettings').hidden=wholeStrip||raw.midpoint===undefined;
+  $('motionPathForm').hidden=wholeStrip||raw.motionVersion!==1||![0,1].includes(raw.motionPath);
   if(!$('motionPathForm').hidden)$('motionPath').value=String(raw.motionPath);
   $('midpoint').max=Math.max(0,raw.leds-1);$('midpoint').value=raw.midpoint?Math.min(raw.midpoint,raw.leds-1):0;
   $('audioSettings').hidden=!raw.audio;
@@ -2243,12 +2247,13 @@ $('wifiSecurityControls').onsubmit=e=>{
   });
 };
 $('geometryForm').onsubmit=e=>{
-  e.preventDefault();networkAction(async()=>{
+  e.preventDefault();if(selectedLampUsesWholeStrip())return;networkAction(async()=>{
+    if(selectedLampUsesWholeStrip())return;
     status(await lamp.configureGeometry(Number($('midpoint').value)));
   });
 };
 $('motionPathForm').onsubmit=e=>{
-  e.preventDefault();networkAction(async()=>{status(await lamp.configureMotionPath(Number($('motionPath').value)));});
+  e.preventDefault();if(selectedLampUsesWholeStrip())return;networkAction(async()=>{if(selectedLampUsesWholeStrip())return;status(await lamp.configureMotionPath(Number($('motionPath').value)));});
 };
 $('audioUseForm').onsubmit=e=>{
   e.preventDefault();networkAction(async()=>{
@@ -2257,6 +2262,9 @@ $('audioUseForm').onsubmit=e=>{
   });
 };
 function renderCenterTool(){
+  const wholeStrip=selectedLampUsesWholeStrip();
+  $('centerHelper').hidden=wholeStrip;
+  if(wholeStrip){$('geometryForm').hidden=true;$('centerControls').disabled=true;return;}
   const wifi=advancedAvailable(),raw=wifi?lamp.raw:null,c=raw?.calibration;
   const value=wifi?{active:Boolean(c?.active&&c.kind==='center'),position:c?.kind==='center'?c.position:raw?.effectiveMidpoint,leds:raw?.leds}:centerStatus;
   const supported=state&&(wifi?c?.centerSupported:Boolean(state.capabilities&128));
@@ -2290,7 +2298,7 @@ function pollCenter(){
   centerTimer=setTimeout(poll,700);
 }
 async function centerAction(action){
-  if(!state||busy||connecting||updatingLamp())return;
+  if(!state||busy||connecting||updatingLamp()||selectedLampUsesWholeStrip())return;
   clearTimeout(centerTimer);++centerSerial;const target=lamp,epoch=lamp.epoch;
   busy=true;renderSettings();
   try {

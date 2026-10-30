@@ -11,6 +11,11 @@ test('Edison descriptor preserves its model identity and selects its explicitly 
  const future=lampDescriptor({...value,model:{...value.model,id:'future-edison-9',artworkFamily:'future-art'}},target);
  assert.equal(future.model.id,'future-edison-9');assert.equal(future.model.artwork,'generic');
 });
+
+test('Sonata factory descriptor retains identity and trusted Sonata artwork without accepting unknown execution metadata',()=>{
+ const value=descriptor();value.model={version:1,id:'sonata-v1',displayName:'CoolLamp Sonata',artworkFamily:'sonata',hardwareRevision:'unspecified',preconfigured:true,renderer:'untrusted'};
+ const parsed=lampDescriptor(value,target);assert.equal(parsed.model.id,'sonata-v1');assert.equal(parsed.model.artwork,'sonata');assert.equal(parsed.model.renderer,undefined);
+});
 const receipt=(outcome='executed')=>({version:1,target,bootSession:boot,requestBoot:boot,commandId:state.nextCommandId,revision:2,executionRevision:2,outcome,executed:outcome==='uncertain'?null:outcome!=='rejected',persisted:outcome==='uncertain'?null:outcome==='persisted',httpStatus:200});
 test('future model identity survives generic artwork and limits never inflate firmware',()=>{const value=lampDescriptor(JSON.stringify(descriptor()),target);assert.equal(value.model.id,'future-coil-2070');assert.equal(value.model.artwork,'generic');for(const field of ['deviceId','model','limits']){const bad=descriptor();if(field==='deviceId')bad.deviceId='112233445566';if(field==='model')bad.model.id='<script>';if(field==='limits')bad.limits.forwardingHops=6;assert.throws(()=>lampDescriptor(bad,target));}assert.throws(()=>lampDescriptor(' '.repeat(8193),target));});
 test('descriptor and saved model use the exact firmware record limits and omit unrelated metadata',()=>{

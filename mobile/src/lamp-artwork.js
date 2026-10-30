@@ -1,7 +1,7 @@
 // Editable vector silhouettes traced from the lamp references, without photo assets.
 // Artwork names are presentation variants, not firmware style codes or capabilities.
-const variants=new Set(['helix','large-helix','corkscrew','edison','knot']);
-const labels={helix:'Helix lamp','large-helix':'Large helix lamp',corkscrew:'Corkscrew lamp',edison:'Edison lamp',knot:'Knot lamp prototype',unspecified:'Lamp'};
+const variants=new Set(['helix','large-helix','corkscrew','edison','sonata','knot']);
+const labels={helix:'Helix lamp','large-helix':'Large helix lamp',corkscrew:'Corkscrew lamp',edison:'Edison lamp',sonata:'Sonata lamp',knot:'Knot lamp prototype',unspecified:'Lamp'};
 let sequence=0;
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
 export const LAMP_ARTWORK_DARK_PALETTE=Object.freeze({frame:'#93a196',baseStart:'#849187',baseMiddle:'#9daa9f',baseEnd:'#7f8d81',baseTop:'#abb6a9',baseBottom:'#859287'});
@@ -78,6 +78,20 @@ function edison(id,tones){
  ${ribbon('M39 127 C22 124 28 119 45 120 C63 120 85 127 85 133',id,7.5)}
  </g></g>${blackBase(id,tones)}`;
 }
+function sonata(id,tones){
+ // One open S-shaped ribbon, with inward-curling free tips and no crossing.
+ // The rectangular base and knob follow the reference; this is not LED order.
+ const curve='M58 39 C57 56 74 65 88 53 C108 35 94 11 75 10 C45 6 25 31 24 58 C23 84 46 94 64 108 C83 124 101 141 88 164 C78 183 49 184 33 169 C19 154 28 130 45 127 C63 123 79 140 70 153 L63 163';
+ return `<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+ <path class="lamp-artwork-frame lamp-artwork-sonata-curve" d="${curve}" stroke="${tones?.frame||'#282d31'}" stroke-width="10"/>
+ ${ribbon(curve,id,4.7)}
+ <path class="lamp-artwork-sonata-tip" d="M58 37L58 41M62 164L65 161" stroke="#c9d3d6" stroke-width="6"/>
+ </g><g class="lamp-artwork-base" data-base="dark"><ellipse cx="60" cy="196" rx="43" ry="3" fill="#252b291a"/>
+ <rect class="lamp-artwork-base-side" x="19" y="181" width="82" height="14" rx="2.5" fill="url(#${id}-base)"/>
+ <path class="lamp-artwork-base-top" d="M22 181H98" stroke="${tones?.baseTop||'#454b50'}" stroke-width="2"/>
+ <rect x="89" y="175" width="3" height="6" fill="${tones?.frame||'#878c8f'}"/>
+ <rect class="lamp-artwork-sonata-knob" x="87" y="169" width="7" height="8" rx="1.6" fill="${tones?.baseEnd||'#22272a'}"/></g>`;
+}
 function generic(id,tones){
  return `<g fill="none" stroke-linecap="round"><path class="lamp-artwork-frame lamp-artwork-generic-frame" d="M60 177V45" stroke="${tones?.frame||'#6f7975'}" stroke-width="5"/><path d="M37 44C37 12 83 12 83 44" stroke="#c3ccc4" stroke-width="6"/><path d="M37 44h46" stroke="url(#${id}-light)" stroke-width="6"/></g>${blackBase(id,tones)}`;
 }
@@ -88,7 +102,7 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  const id=typeof idPrefix==='string'&&/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(idPrefix)?idPrefix:'coollamp-art-'+(++sequence);
  const colors=lit?['#c7dff4','#edd6f7','#bce9df']:['#ced5d8','#e9ece9','#c6d2cb'];
  const tones=theme==='dark'?LAMP_ARTWORK_DARK_PALETTE:null;
- const body=({helix,'large-helix':largeHelix,corkscrew,edison,knot,unspecified:generic})[variant](id,tones);
+ const body=({helix,'large-helix':largeHelix,corkscrew,edison,sonata,knot,unspecified:generic})[variant](id,tones);
  // This is receiver-written progress supplied by the update presentation, not
  // phone download progress. Unknown values retain the ordinary neutral drawing.
  const updating=Number.isInteger(updateProgress)&&updateProgress>=0&&updateProgress<=100;
