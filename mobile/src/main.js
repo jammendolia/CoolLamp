@@ -410,6 +410,9 @@ function independentLightingAllowed(){
   return legacyWithoutGroups(firmware?.version);
 }
 function renderPower() {
+  const art=$('lampArt'),style=resolvedStyle().id;
+  if(art.dataset.style!==style){art.innerHTML=lampArtworkSvg(style,{decorative:true});art.dataset.style=style;}
+  art.style.opacity=state?.power?'1':'.2';
   const sync=groupsAvailable()?state?.sync:null;
   const scope=sync?.role===1?'group':sync?.role===2?'this lamp':'lamp';
   $('power').textContent='Turn '+scope+(state?.power?' off':' on');
@@ -701,7 +704,6 @@ const callbacks = {
     }
     $('power').textContent = next.power ? 'Turn off' : 'Turn on';
     $('power').setAttribute('aria-pressed', String(next.power));
-    $('lampArt').style.opacity=next.power?'1':'.2';
     if (!editingBrightness) { $('brightness').value = next.brightness; brightnessLabel(); }
     $('effect').value = next.mode;
     document.documentElement.style.setProperty('--lamp-color', next.color?.enabled ? $('color').value : '#70e1c9');

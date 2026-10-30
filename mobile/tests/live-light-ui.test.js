@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {LiveLightQueue} from '../src/live-light.js';
 import {effectAvailable} from '../src/catalog.js';
+import {lampArtworkSvg} from '../src/lamp-artwork.js';
+import {resolveLampStyle} from '../src/lamp-style.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 function block(start){const at=source.indexOf(start);assert(at>=0,start);const open=source.indexOf('{',at);let depth=1,end=open+1;for(;depth&&end<source.length;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}assert.equal(depth,0);return source.slice(at,end);}
@@ -15,9 +17,9 @@ const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return {promise,resolve,reject};};
 function harness(producer=async()=>true){
  let now=0,nextTimer=0;const timers=new Map(),elements=new Map(),calls=[],messages=[];
- const element=id=>{if(!elements.has(id))elements.set(id,{value:id==='secondaryColor'?'#102030':id==='brightness'?100:id==='speed'?50:id==='intensity'?100:'',checked:false,disabled:false,style:{},classList:{toggle(){}},setAttribute(){}});return elements.get(id);};
+ const element=id=>{if(!elements.has(id))elements.set(id,{value:id==='secondaryColor'?'#102030':id==='brightness'?100:id==='speed'?50:id==='intensity'?100:'',checked:false,disabled:false,dataset:{},style:{},classList:{toggle(){}},setAttribute(){}});return elements.get(id);};
  class ClockQueue extends LiveLightQueue{constructor(options){super({...options,set:(run,delay)=>{const id=++nextTimer;timers.set(id,{run,at:now+delay,delay});return id;},clear:id=>timers.delete(id),now:()=>now});}}
- const context={$:element,effectAvailable,LiveLightQueue:ClockQueue,document:{querySelector:()=>element('hero'),documentElement:{style:{setProperty(){}}}},
+ const context={$:element,effectAvailable,lampArtworkSvg,resolveLampStyle,LiveLightQueue:ClockQueue,document:{querySelector:()=>element('hero'),documentElement:{style:{setProperty(){}}}},
   status:message=>messages.push(message),paintRanges:()=>{},renderFirmware:()=>{},filterEffects:()=>{},observeLampLighting:()=>{},rememberLampStyle:()=>{},observeLampWifi:()=>{},
   groupsAvailable:()=>true,updatingLamp:()=>false,fleetLampInstalling:()=>false,legacyWithoutGroups:()=>false,
   app2LightChange:async(...args)=>{calls.push(args);return producer(...args);}};
@@ -27,6 +29,7 @@ function harness(producer=async()=>true){
  const groupScenes=[];
  const verifiedSelectedLamp=()=>Boolean(state&&lamp&&selected&&lamp.identity===selected.id&&!connecting);
  const independentLightingAllowed=()=>Boolean(verifiedSelectedLamp()&&state.sync.role===0);
+ const resolvedStyle=()=>resolveLampStyle(lamp?.raw?.lampStyle,selected?.phoneLampStyle);
  ${block('function app2TargetMatches(')}
  ${block('function renderPower()')}
  const renderOptions=()=>renderPower();
