@@ -30,15 +30,57 @@ export function meshBridgeSupported(bridge) {
 // Discovery is session-only. An inventory advertisement never grants pairing,
 // supplies credentials, or changes which lamp is selected.
 export class MeshInventorySession {
- constructor(){this.lamps=new Map();this.forgotten=new Set();}
- get items(){return [...this.lamps.values()];}
- forget(id){this.forgotten.add(id);this.lamps.delete(id);}
- remember(value,bridgeId){
-  if(value?.version!==1||value.deviceId!==bridgeId||!canonical(bridgeId)||!transaction(value.fleetId)||value.available!==true||!Array.isArray(value.peers))return this.items;
+ constructor({now=Date.now,ttlMs=15000}={}){
+  if(typeof now!=='function'||!Number.isFinite(ttlMs)||ttlMs<=0)throw TypeError('Mesh observations need a clock and a positive expiry.');
+  Object.assign(this,{now,ttlMs});this.lamps=new Map();this.gateways=new Map();this.forgotten=new Set();
+ }
+ time(){const value=this.now();return Number.isFinite(value)&&value>=0?value:Date.now();}
+ routes(target,{fleetId,bridgeEpoch}={}){
+  if(target!==undefined&&!canonical(target)||fleetId!==undefined&&!transaction(fleetId)||bridgeEpoch!==undefined&&(!Number.isInteger(bridgeEpoch)||bridgeEpoch<0))return [];
+  const now=this.time(),routes=[];
+  for(const gateway of this.gateways.values())for(const [id,route] of gateway.routes){
+   if(route.observedAt>now||route.expiresAt<=now){gateway.routes.delete(id);continue;}
+   if((target===undefined||route.targetId===target)&&!this.forgotten.has(route.targetId)&&
+    (fleetId===undefined||route.fleetId===fleetId)&&(bridgeEpoch===undefined||route.gatewayEpoch===bridgeEpoch))routes.push({...route});
+  }
+  return routes.sort((a,b)=>a.hops-b.hops||b.observedAt-a.observedAt||a.gatewayId.localeCompare(b.gatewayId));
+ }
+ get items(){
+  const current=new Map();for(const route of this.routes()){if(!current.has(route.targetId))current.set(route.targetId,[]);current.get(route.targetId).push(route);}
+  return [...this.lamps.values()].map(lamp=>{const routes=current.get(lamp.id)||[],best=routes[0];return {...lamp,
+   ...(best?{meshBridgeId:best.gatewayId,meshHops:best.hops,meshObservedAt:best.observedAt,meshExpiresAt:best.expiresAt}:{}),
+   meshOnline:Boolean(best),meshRoutes:routes};});
+ }
+ forget(id){this.forgotten.add(id);this.lamps.delete(id);for(const gateway of this.gateways.values())gateway.routes.delete(id);}
+ allow(id){if(canonical(id))this.forgotten.delete(id);}
+ forgetBridge(id){this.gateways.delete(id);}
+ remember(value,bridgeId,{bridgeEpoch,complete=true}={}){
+  if(value?.version!==1||value.deviceId!==bridgeId||!canonical(bridgeId)||!transaction(value.fleetId)||typeof value.available!=='boolean'||!Array.isArray(value.peers))return this.items;
+  const now=this.time(),gatewayBoot=transaction(value.boot)?value.boot:undefined,gatewayEpoch=Number.isInteger(bridgeEpoch)&&bridgeEpoch>=0?bridgeEpoch:undefined;
+  const uptime=Number.isInteger(value.snapshotUptimeMs)&&value.snapshotUptimeMs>=0&&value.snapshotUptimeMs<=0xffffffff?value.snapshotUptimeMs:undefined;
+  const previous=this.gateways.get(bridgeId),sameBoot=previous&&gatewayBoot&&previous.boot===gatewayBoot;
+  const sameSession=previous&&previous.fleetId===value.fleetId&&previous.boot===gatewayBoot&&previous.epoch===gatewayEpoch;
+  // Transport epochs belong to individual objects. Independent live readers
+  // can have different epochs while observing the same gateway boot, so only
+  // the gateway's wrap-safe uptime orders their owner-task snapshots.
+  if(previous?.boot&&!gatewayBoot||gatewayBoot&&previous?.retiredBoots?.includes(gatewayBoot))return this.items;
+  if(sameBoot&&uptime!==undefined&&previous.uptime!==undefined&&((uptime-previous.uptime)>>>0)>=0x80000000)return this.items;
+  if(sameBoot&&uptime!==undefined&&uptime===previous.uptime&&value.available)return this.items;
+  // Keep only a few routing hints for old boots, never keys or authority. A
+  // late old connection must not replace a view already obtained after reboot.
+  const retiredBoots=previous?.retiredBoots?.slice()||[];
+  if(previous?.boot&&gatewayBoot!==previous.boot&&!retiredBoots.includes(previous.boot))retiredBoots.push(previous.boot);
+  if(retiredBoots.length>8)retiredBoots.splice(0,retiredBoots.length-8);
+  if(!value.available){this.gateways.set(bridgeId,{fleetId:value.fleetId,boot:gatewayBoot,epoch:gatewayEpoch,uptime,retiredBoots,routes:new Map()});return this.items;}
+  const routes=sameSession&&complete===false?new Map(previous.routes):new Map();
   for(const peer of value.peers.slice(0,16)){
    if(!canonical(peer?.id)||peer.id===bridgeId||this.forgotten.has(peer.id)||typeof peer.online!=='boolean'||!Number.isInteger(peer.hops)||peer.hops<1||peer.hops>4)continue;
-   this.lamps.set(peer.id,{id:peer.id,name:typeof peer.name==='string'?peer.name.slice(0,64):'CoolLamp',meshBridgeId:bridgeId,meshOnline:peer.online,meshHops:peer.hops});
-  }return this.items;
+   const route={targetId:peer.id,gatewayId:bridgeId,fleetId:value.fleetId,hops:peer.hops,observedAt:now,expiresAt:now+this.ttlMs,
+    ...(gatewayBoot?{gatewayBoot}:{}),...(gatewayEpoch!==undefined?{gatewayEpoch}:{}),...(transaction(peer.boot)?{targetBoot:peer.boot}:{})};
+   this.lamps.set(peer.id,{id:peer.id,name:typeof peer.name==='string'?peer.name.slice(0,64):'CoolLamp',meshBridgeId:bridgeId,meshOnline:peer.online,meshHops:peer.hops,meshObservedAt:now,meshExpiresAt:route.expiresAt});
+   if(peer.online)routes.set(peer.id,route);else routes.delete(peer.id);
+  }
+  this.gateways.set(bridgeId,{fleetId:value.fleetId,boot:gatewayBoot,epoch:gatewayEpoch,uptime,retiredBoots,routes});return this.items;
  }
 }
 
@@ -160,7 +202,7 @@ export async function acquireMeshLamp({target,candidates,acquireBridge,signal,is
    const bridge=lease.lamp;
    const inventory=parse(await bounded(()=>bridge.request('/api/mesh/status',undefined,bridge.epoch,current,current)));current();
    if(!validInventory(inventory,bridge)||inventory.available!==true)throw noRoute();
-   verifiedBridges.set(bridge,{identity:bridge.identity,epoch:bridge.epoch});onInventory(inventory,bridge.identity);
+   verifiedBridges.set(bridge,{identity:bridge.identity,epoch:bridge.epoch});onInventory(inventory,bridge.identity,{bridgeEpoch:bridge.epoch});
    transport=new MeshTransport(options);const owned=lease;lease=null;
    if(Number.isFinite(options.totalTimeout))await bounded(()=>transport.connect(target,owned,{signal,isCurrent,poll:false}));
    else await transport.connect(target,owned,{signal,isCurrent,poll:false});

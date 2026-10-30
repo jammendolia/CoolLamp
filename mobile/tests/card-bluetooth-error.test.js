@@ -5,8 +5,9 @@ import {runInNewContext} from 'node:vm';
 import {pairingError} from '../src/pairing.js';
 import {LampTransport} from '../src/transport.js';
 import {CONTROL,STATE,SERVICE,COMMAND} from '../src/protocol.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const extract=(start,end)=>{const first=source.indexOf(start),last=source.indexOf(end,first);assert(first>=0&&last>first);return source.slice(first,last);};
 const handlers=[extract('async function connect(saved ','\nfunction connected('),extract('async function connectCardBluetooth(','\nfunction completeCardSettings('),extract('async function openCardSettings(','\nconst openCardWifiSettings=')].join('\n');
 const id='f0b950b2f180',deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
@@ -50,7 +51,7 @@ function fixture({automatic=false,error=Object.assign(Error('Control resources u
    Object.defineProperty(error,'verifiedSettingsRead',{value:freezeProof?Object.freeze(proof):proof});}
   if(error)throw error;return {...saved,lampId:id};
  };
- const context={bridgeAccessories:{has:()=>false},AbortController,Error,pairingError,entry,calls,bleLamp:transport,cardConnectionMessages:messages,
+ const context={bridgeAccessories:{has:()=>false},AbortController,Error,pairingError,ConnectionBroker,readOnlyConnectionFailure,connectionBroker:new ConnectionBroker(),entry,calls,bleLamp:transport,cardConnectionMessages:messages,
   store:{items:[entry],upsert:value=>value,rememberFirmware(){}},phonePlatform:'ios',
   bluetoothFirmwareOwner:()=>null,firmwareConnectionSelectionAllowed:()=>true,firmwareConnectionNotice:()=>assert.fail('Unexpected updater'),fleetLampInstalling:()=>false,
   mergedLampEntries:()=>context.store.items,verifiedSelectedLamp:()=>false,cancelMeshSelection(){},stopGroupInspection:async()=>{},
@@ -59,7 +60,7 @@ function fixture({automatic=false,error=Object.assign(Error('Control resources u
   provisionFirmwareFleet:()=>assert.fail('Read-only connection provisioned fleet'),removedAccessoryIds:new Set(),groupRemovedIds:new Set(),roomGroups:{allow(){}},
   status:message=>calls.push(['status',message]),showPairingRecovery:()=>calls.push('pairing-recovery'),
   connectCardWifiAsync:async()=>{calls.push('wifi');return {connected:false,error:Error('Lamp did not respond over Wi-Fi.')};},
-  connectMeshCard:async()=>{calls.push('mesh');calls.push(['status','No mesh route to this lamp.']);return {connected:false,error:Error('No mesh route to this lamp.')};},
+  connectMeshCard:async()=>{calls.push('mesh');return {connected:false,error:Error('No mesh route to this lamp.')};},
   completeCardSettings:()=>assert.fail('Failed connection opened settings'),promptWifiPassword:()=>assert.fail('Unexpected password prompt'),
   connected:()=>assert.fail('Failed connection adopted state'),observeLampWifi(){},renderLamps(){},renderPower(){},renderFirmware(){},renderSettings(){},renderOptions(){},
   connectivity:{get:()=>({wifi:{fresh:false,state:'unknown'}})},
@@ -84,15 +85,18 @@ for(const action of ['icon','gear'])test('an explicit saved '+action+' surfaces 
  assert.equal(connects[0][1].readOnlyReconnect,true);assert.equal(connects[0][1].automaticReconnect,false);
  const message=f.messages.get(id);assert.match(message,/answered over Bluetooth/);assert.match(message,/free memory/);
  assert(!/reconnect before trying again|automatically retry/i.test(message));assert(f.calls.some(row=>Array.isArray(row)&&row[0]==='status'&&row[1]===message));
- assert(!f.calls.includes('wifi')&&!f.calls.includes('mesh'));assert.equal(f.transport.raw,null);assert.equal(f.transport.catalog,null);
+ assert.equal(f.calls.filter(row=>Array.isArray(row)&&row[0]==='status').at(-1)[1],message);
+ assert.deepEqual(f.calls.filter(row=>row==='wifi'||row==='mesh'),action==='icon'?[]:['mesh','wifi']);
+ assert.equal(f.transport.raw,null);assert.equal(f.transport.catalog,null);
  assert.equal(f.transport.settingsConnectionProofToken,null);
 });
 
 test('a genuine automatic saved reconnect retains quiet failure behavior',async()=>{
  const f=fixture({automatic:true}),result=await f.open();assert.equal(result.connected,false);assert.equal(result.settingsUnavailable,true);assert.equal(f.messages.size,0);
- const connect=f.calls.find(row=>Array.isArray(row)&&row[0]==='connect');assert.equal(connect[1].automaticReconnect,true);assert.equal(connect[1].readOnlyReconnect,true);
+ const connects=f.calls.filter(row=>Array.isArray(row)&&row[0]==='connect');assert.equal(connects.length,1);
+ assert.equal(connects[0][1].automaticReconnect,true);assert.equal(connects[0][1].readOnlyReconnect,true);
  assert(!f.calls.some(row=>Array.isArray(row)&&row[0]==='status'));
- assert(!f.calls.includes('wifi')&&!f.calls.includes('mesh'));
+ assert.deepEqual(f.calls.filter(row=>row==='wifi'||row==='mesh'),['mesh','wifi']);
 });
 
 for(const error of [Object.assign(Error('Other unavailable service'),{status:503,confirmed:true}),Object.assign(Error('State response incomplete. Nothing changed.'),{status:503,confirmed:true}),

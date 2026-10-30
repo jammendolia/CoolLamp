@@ -5,6 +5,8 @@ import {runInNewContext} from 'node:vm';
 import {SettingsConnectionRecovery} from '../src/settings-recovery.js';
 import {validFirmwareVersion} from '../src/lamps.js';
 import {compareFirmwareVersions} from '../src/bluetooth-firmware.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
+import {MeshInventorySession} from '../src/mesh.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const extract=(start,end)=>{const offset=source.indexOf(start);assert(offset>=0,start+' exists');const limit=source.indexOf(end,offset+start.length);assert(limit>offset,end+' exists');return source.slice(offset,limit);};
@@ -20,14 +22,18 @@ const disconnectSource=extract('  onDisconnect() {', '\n};\nconst phonePlatform=
 const setupActivitySource=extract('function setupActivity(', '\nfunction notifySetupProgress(');
 const recoverySource=extract('settingsRecovery=new SettingsConnectionRecovery({', '\nsetInterval(()=>settingsRecovery.check(),1000);');
 const settingsConnectionSource=extract('function renderSettingsConnection(){', '\nfunction resolvedStyle(');
+const observeSource=extract('function observeBrokerConnection(', '\nfunction fleetLampInstalling(');
 const id='aabbccddeeff',other='112233445566',deviceId='AAAAAAAA-0000-0000-0000-000000000001';
+const catalog=Array.from({length:4},(_,index)=>({id:index+1,name:'Fixture effect '+(index+1),category:'calm',speed:true}));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 const elements=()=>{const rows=new Map();return {rows,$:key=>{if(!rows.has(key))rows.set(key,{hidden:false,disabled:false,open:false,value:'',textContent:'',style:{},dataset:{},setAttribute(){},focus(){},replaceChildren(){},close(){this.open=false;}});return rows.get(key);}};};
 
 function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wifi,bluetooth,mesh}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',...(saved?{deviceId,accessoryManaged:authorized}:{})};
-  const context={bridgeAccessories:{has:()=>false},AbortController,console,...view,calls,posts,phonePlatform:platform,entry,
+  const context={bridgeAccessories:{has:()=>false},AbortController,console,...view,calls,posts,phonePlatform:platform,entry,catalog,
+    ConnectionBroker,connectionBroker:new ConnectionBroker(),meshInventory:new MeshInventorySession(),groupRemovedIds:new Set(),roomGroups:null,
+    observeLampLighting(){},observeLampWifi(){},
     beginForegroundConnection:()=>()=>{},
     status:message=>calls.push({kind:'status',message}),page:name=>calls.push({kind:'page',name}),
     cancelMeshSelection:()=>{},bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionSelectionAllowed:()=>false,firmwareConnectionNotice:()=>{},
@@ -41,33 +47,45 @@ function cardHarness({platform='ios',saved=true,authorized=true,offline=true,wif
     const bleLamp={},wifiLamp={},offlineLamp={};let lamp=offlineLamp;const fleetStatuses=new Map();
     const connectivity={get:()=>({wifi:{state:${offline?'"disconnected"':'"connected"'}}})};
     const mergedLampEntries=()=>[entry];const verifiedSelectedLamp=()=>verified;
+    ${observeSource}
     ${bluetoothCardSource}
     ${openSource}
     globalThis.ui={open:openCardSettings,scope(){return {selected,section:settingsView,navigation:navigationSerial};},
-      adopt(target,route){selected={id:target,name:entry.name};verified=true;lamp=route==='bluetooth'?bleLamp:route==='wifi'?wifiLamp:offlineLamp;},
+      adopt(target,route){selected={...entry,id:target};verified=true;lamp=route==='bluetooth'?bleLamp:route==='wifi'?wifiLamp:offlineLamp;
+        Object.assign(lamp,{identity:target,deviceIdentity:target,catalog,raw:{deviceId:target,mode:4,power:true,brightness:100,firmware:{version:'1.15.7'}}});},
       navigate(){navigationSerial++;verified=false;},remove(){entry.id='removed';},intent(){return wifiSettingsTarget;}};`,context);
   return {...context.ui,calls,posts,entry,context,view};
 }
 
-test('actual automatic card recovery prefers saved Bluetooth over stale-offline Wi-Fi without navigation',async()=>{
-  const f=cardHarness({wifi:async()=>({connected:false,error:Object.assign(Error('Read reply lost'),{uncertain:true})}),bluetooth:async()=>({connected:true})});
+test('actual automatic recovery tries mesh and read-only Wi-Fi before saved Bluetooth without navigation',async()=>{
+  const f=cardHarness({wifi:async()=>({connected:false,error:readOnlyConnectionFailure(Object.assign(Error('Read reply lost'),{uncertain:true}))}),bluetooth:async()=>({connected:true})});
   const controller=new AbortController(),result=await f.open(f.entry,{section:'network',automaticReconnect:true,signal:controller.signal,isCurrent:()=>true});
-  assert.equal(result.connected,true);assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth']);
-  const call=f.calls.find(value=>value.kind==='bluetooth');assert.equal(call.options.expectedId,id);assert.equal(call.options.automaticReconnect,true);assert.equal(call.options.signal,controller.signal);assert.equal(call.options.navigate,false);assert.equal(call.options.isCurrent(),false); // Completed intent cannot authorize late work.
+  assert.equal(result.connected,true);assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['mesh','wifi','bluetooth']);
+  const call=f.calls.find(value=>value.kind==='bluetooth');assert.equal(call.options.expectedId,id);assert.equal(call.options.automaticReconnect,true);
+  assert.notEqual(call.options.signal,controller.signal);assert.equal(call.options.signal.aborted,true);assert.equal(controller.signal.aborted,false);
+  assert.equal(call.options.navigate,false);assert.equal(call.options.isCurrent(),false); // Completed intent cannot authorize late work.
+  assert.equal(f.context.connectionBroker.active.size,0);
   assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.scope().section,'network');assert.equal(f.scope().navigation,7);assert.equal(f.intent(),null);assert.equal(f.posts.length,0);
 });
 
-test('actual automatic card recovery continues through trusted mesh after read-only route errors',async()=>{
+test('actual automatic card recovery uses trusted mesh without probing direct routes',async()=>{
   const f=cardHarness({bluetooth:async()=>({connected:false,error:Object.assign(Error('Protected read lost'),{uncertain:true})}),mesh:async()=>({connected:true})});
   const result=await f.open(f.entry,{section:'hardware',automaticReconnect:true});assert.equal(result.connected,true);
-  assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth','wifi','mesh']);
+  assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['mesh']);
   assert.equal(f.calls.find(value=>value.kind==='mesh').intent.automaticReconnect,true);assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
+});
+
+test('an unclassified uncertain mesh result never starts another recovery route',async()=>{
+  const error=Object.assign(Error('Unknown mesh outcome'),{uncertain:true}),f=cardHarness({mesh:async()=>({connected:false,error}),bluetooth:async()=>({connected:true})});
+  const result=await f.open(f.entry,{automaticReconnect:true});assert.equal(result.connected,false);assert.equal(result.error,error);
+  assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['mesh']);
+  assert(!f.calls.some(value=>['complete','page','picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
 });
 
 test('automatic recovery cannot authorize an unknown or legacy iPhone accessory',async()=>{
   for(const options of [{saved:false},{saved:true,authorized:false}]){
     const f=cardHarness({...options,mesh:async()=>({connected:true})});assert.equal((await f.open(f.entry,{automaticReconnect:true})).connected,true);
-    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['wifi','mesh']);
+    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['mesh']);
     assert(!f.calls.some(value=>['picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
   }
 });
@@ -86,11 +104,11 @@ test('automatic missing-password failure never opens a password form or pairing 
 
 test('automatic card recovery checks cancellation/navigation before trying another route',async()=>{
   for(const reason of ['signal','navigation','scope']){
-    const pending=deferred(),f=cardHarness({bluetooth:()=>pending.promise}),controller=new AbortController();let current=true;
+    const pending=deferred(),f=cardHarness({mesh:()=>pending.promise}),controller=new AbortController();let current=true;
     const running=f.open(f.entry,{automaticReconnect:true,signal:controller.signal,isCurrent:()=>current});await tick();
     if(reason==='signal')controller.abort();else if(reason==='navigation')f.navigate();else current=false;
-    pending.resolve({connected:false,error:Error('Old Bluetooth failure')});await running;
-    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['bluetooth']);
+    pending.resolve({connected:false,error:Error('Old mesh failure')});await running;
+    assert.deepEqual(f.calls.filter(value=>['wifi','bluetooth','mesh'].includes(value.kind)).map(value=>value.kind),['mesh']);
     assert(!f.calls.some(value=>['page','complete','picker','password'].includes(value.kind)));assert.equal(f.posts.length,0);
   }
 });
@@ -163,7 +181,7 @@ test('actual connected callback hides reconnect and keeps the requested settings
 function wifiHarness({gate=null,disconnectGate=null}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture',deviceId};
   const target={identity:null,epoch:1,async disconnect(){calls.push('disconnect-destination');},schedule(){calls.push('schedule');}};
-  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},validFirmwareVersion,compareFirmwareVersions,...view,calls,posts,entry,wifiLamp:target,
+  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},validFirmwareVersion,compareFirmwareVersions,readOnlyConnectionFailure,...view,calls,posts,entry,wifiLamp:target,
     beginForegroundConnection:()=>()=>{},
     WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',address,expected});if(gate)await gate.promise;this.base=address;this.identity=expected;this.authorization='fixture';this.raw={deviceId:expected,hostname:'fixture.local',name:'Reading lamp',mode:4,firmware:{},effectOptions:[[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3],[50,100,0,1,2,3]]};this.state={mode:4};this.catalog=[];return this.raw;}async disconnect(){calls.push('disconnect-probe');}},
     credential:async()=>({value:'fixture-only'}),bluetoothFirmwareOwner:()=>null,cancelMeshSelection:()=>{},renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},renderSettings:()=>{},status:()=>{},stopGroupInspection:async()=>{},
@@ -199,17 +217,18 @@ test('actual automatic Wi-Fi adoption uses the pinned identity and never changes
 
 function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null}={}){
   const calls=[],posts=[],view=elements(),entry={id,name:'Reading lamp',address:'http://lamp.fixture'};
-  const raw={deviceId:id,hostname:'fixture.local',name:entry.name,mode:4,firmware:{},effectOptions:Array.from({length:4},()=>[50,100,0,1,2,3])};
+  const raw={deviceId:id,hostname:'fixture.local',name:entry.name,mode:4,power:true,brightness:100,firmware:{version:'1.15.7'},effectOptions:Array.from({length:4},()=>[50,100,0,1,2,3])};
   const wifi={identity:null,epoch:1,async disconnect(){calls.push('disconnect-wifi');},schedule(){calls.push('schedule-wifi');}};
-  const mesh={identity:id,epoch:1,isMesh:true,bridge:{identity:other},lease:{borrowed:false},raw,state:{mode:4},signal:null,isCurrent:null,
+  const mesh={identity:id,target:id,epoch:1,isMesh:true,bridge:{identity:other},lease:{borrowed:false},raw,catalog,state:{mode:4},signal:null,isCurrent:null,
     guard(){calls.push('guard-mesh');},schedule(){calls.push('schedule-mesh');}};
-  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},Option:class{},...view,calls,posts,entry,wifiLamp:wifi,meshLamp:mesh,raw,appTourActive:false,
+  const context={AbortController,console,setTimeout,clearTimeout,CapacitorHttp:{},Option:class{},...view,calls,posts,entry,wifiLamp:wifi,meshLamp:mesh,raw,catalog,appTourActive:false,
+    ConnectionBroker,connectionBroker:new ConnectionBroker(),readOnlyConnectionFailure,validFirmwareVersion,compareFirmwareVersions,meshInventory:new MeshInventorySession(),observeLampLighting(){},observeLampWifi(){},
     beginForegroundConnection:()=>()=>{},
     phonePlatform:'ios',document:{hidden:false},SettingsConnectionRecovery:class extends SettingsConnectionRecovery{constructor(options){super({...options,timeoutMs:1000,retryDelayMs:0,maxAttempts:1});}},
-    WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',expected});Object.assign(this,{base:address,authorization:password,identity:expected,raw,state:{mode:4},catalog:[]});}async disconnect(){calls.push('disconnect-probe');}},
+    WifiTransport:class{async connect(address,password,expected){calls.push({kind:'probe',expected});Object.assign(this,{base:address,authorization:password,identity:expected,raw,state:{mode:4},catalog});}async disconnect(){calls.push('disconnect-probe');}},
     credential:async()=>({value:route==='wifi'?'fixture-only':null}),bluetoothFirmwareOwner:()=>null,fleetLampInstalling:()=>false,firmwareConnectionBusy:()=>false,
     firmwareConnectionSelectionAllowed:()=>false,firmwareConnectionNotice:()=>{},stopGroupInspection:async()=>{},
-    createMeshLampLease:async(target,options)=>{calls.push({kind:'mesh-acquire',target,options});mesh.signal=options.signal;mesh.isCurrent=options.isCurrent;if(leaseGate)await leaseGate.promise;return {lamp:mesh,release:async()=>calls.push('release-mesh')};},
+    createMeshLampLease:async(target,options)=>{calls.push({kind:'mesh-acquire',target,options});if(route==='wifi')throw Object.assign(Error('No existing mesh route'),{noRoute:true,confirmed:true});mesh.signal=options.signal;mesh.isCurrent=options.isCurrent;if(leaseGate)await leaseGate.promise;return {lamp:mesh,release:async()=>calls.push('release-mesh')};},
     store:{items:[entry],upsert(value){calls.push({kind:'adopt',route:'mesh',id:value.id});return value;},upsertWifi(value){calls.push({kind:'adopt',route:'wifi',id:value.id});return value;}},
     groupRemovedIds:new Set(),roomGroups:{allow(){}},wifiFailures:new Map(),
     completeCardSettings:()=>calls.push({kind:'complete'}),promptWifiPassword:()=>calls.push({kind:'password'}),pairCardBluetooth:async()=>calls.push({kind:'picker'}),
@@ -226,6 +245,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
     let lamp=oldLamp;const mergedLampEntries=()=>[entry];
     const verifiedSelectedLamp=()=>Boolean(!connecting&&state&&lamp.identity===selected?.id);
     const connectivity={get:()=>({wifi:{state:'disconnected'}})};
+    ${observeSource}
     ${setupActivitySource}
     const callbacks={onState(next){state=next;settingsRecovery?.check();},onFirmware(next){firmware=next;},onOptions(){},${disconnectSource}};
     const transportCallbacks=()=>callbacks;

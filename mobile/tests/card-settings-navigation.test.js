@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampAddress} from '../src/lamps.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 function extract(start,end){
  const first=source.indexOf(start),last=source.indexOf(end,first+start.length);
  assert(first>=0&&last>first,'The actual card settings functions are available.');

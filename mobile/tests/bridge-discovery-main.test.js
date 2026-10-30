@@ -5,8 +5,9 @@ import {runInNewContext} from 'node:vm';
 import {acquireOnboardingBroker} from '../src/mesh-onboarding-broker.js';
 import {discoverBridgePage} from '../src/bridge-discovery.js';
 import {BRIDGE_MODEL,BridgeAccessoryStore} from '../src/bridge-accessory.js';
+import {MeshInventorySession} from '../src/mesh.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 // Execute production handlers; only native acquisition, descriptor I/O, clock
 // and presentation APIs are adapters. Pagination/admission logic is imported.
 function handler(name){
@@ -45,7 +46,7 @@ function fixture({peers=6,acquire,descriptor,status,fresh=false}={}){
   appTourActive:false,bluetoothFirmwareTask:null,cardFirmwareTasks:new Map(),fleetUpdating:false,connecting:false,firmware:null,fleetStatuses:new Map(),
   wifiSettingsTarget:null,groupRemovedIds:new Set(),groupConnections:new Map(),groupScanRun:null,groupJoinPending:null,
   store:{items:entries,upsert:denied('lamp settings/card write'),rememberFirmware:denied('firmware settings write')},
-  bridgeAccessories:accessories,phonePlatform:'ios',lamp:null,verifiedSelectedLamp:()=>false,advancedAvailable:()=>false,
+  bridgeAccessories:accessories,meshInventory:new MeshInventorySession({now:()=>now.value}),phonePlatform:'ios',lamp:null,verifiedSelectedLamp:()=>false,advancedAvailable:()=>false,
   connectivity:{get:()=>({wifi:{fresh,state:'connected'}})},meshNetworkMessages:new Map(),renderLamps(){},
   fleet:{cancelRefresh:()=>calls.push('cancel-fleet')},meshOnboarding:{cancelDiscover:()=>calls.push('cancel-new-devices')},
   roomGroups:{cancel:()=>calls.push('cancel-groups')},groupDiscovery:{cancelScan:()=>calls.push('cancel-coordinators')},bluetoothGroups:{cancel:()=>calls.push('cancel-radio-scan')},

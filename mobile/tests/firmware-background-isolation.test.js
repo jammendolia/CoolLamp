@@ -6,8 +6,10 @@ import {MeshOnboarding} from '../src/mesh-onboarding.js';
 import {acquireOnboardingBroker,onboardingDiscoveryMessage} from '../src/mesh-onboarding-broker.js';
 import {FirmwareFleet} from '../src/firmware-fleet.js';
 import {LampTransport} from '../src/transport.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
+import {MeshInventorySession} from '../src/mesh.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const id='f0b950b2f180',other='aabbccddeeff';
 const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
@@ -26,7 +28,7 @@ function handler(name){
 }
 function fixture(names=[],overrides={}){
  const calls=[],entry={id:other,address:'192.0.2.2',deviceId:'paired-fixture',accessoryManaged:true};
- const context={Error,Map,Set,Promise,AbortController,clearTimeout,setTimeout,JSON,
+ const context={Error,Map,Set,Promise,AbortController,clearTimeout,setTimeout,JSON,connectionBroker:new ConnectionBroker(),readOnlyConnectionFailure,observeBrokerConnection(){},meshInventory:new MeshInventorySession(),
   firmwareBackgroundGeneration:0,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   foregroundConnectionHold:null,connecting:false,appTourActive:false,app2Pending:new Map(),
   firmwareAttempts:{pending:()=>[]},legacyFirmwareReceipts:new Map(),fleetRefreshRun:null,fleetRefreshQueued:false,fleetSummary:'',
@@ -120,8 +122,8 @@ test('actual MeshOnboarding discovery is canceled without late native acquisitio
 });
 function groupFixture({connect,mesh,radio}={}){
  let f;const instances=[];
- class Wifi {constructor(){this.timer=null;instances.push(this);}async connect(address,password,target,options){f.calls.push('wifi-connect');assert.equal(typeof options.guard,'function');options.guard();await connect?.(options);options.guard();}async disconnect(){f.calls.push('wifi-close');}}
- class Bluetooth {constructor(){this.epoch=1;this.supportsOfflineGroups=true;this.raw={firmware:{wifi:true}};instances.push(this);}async connect(entry,retry,options){f.calls.push(['ble-connect',entry.readOnlyReconnect]);assert.equal(typeof options.isCurrent,'function');assert(options.isCurrent());}async disconnect(){f.calls.push('ble-close');}}
+ class Wifi {constructor(){this.timer=null;instances.push(this);}async connect(address,password,target,options){f.calls.push('wifi-connect');assert.equal(typeof options.guard,'function');options.guard();await connect?.(options);options.guard();this.identity=target;this.raw={deviceId:target};}async disconnect(){f.calls.push('wifi-close');}}
+ class Bluetooth {constructor(){this.epoch=1;this.supportsOfflineGroups=true;this.raw={firmware:{wifi:true}};instances.push(this);}async connect(entry,retry,options){f.calls.push(['ble-connect',entry.readOnlyReconnect]);assert.equal(typeof options.isCurrent,'function');assert(options.isCurrent());this.identity=entry.lampId;this.raw.deviceId=entry.lampId;}async disconnect(){f.calls.push('ble-close');}}
  f=fixture(['createGroupLampLease'],{WifiTransport:Wifi,LampTransport:Bluetooth,lamp:{},bleLamp:{id:null},state:{},
   groupInventoryEntries:()=>[f.entry],credential:async()=>({value:'fixture-access'}),
   createMeshLampLease:async(target,options)=>{f.calls.push(['mesh',options.recoveryOnly]);assert.equal(typeof options.isCurrent,'function');return mesh?mesh(options):Promise.reject(Object.assign(Error('No route'),{noRoute:true}));},
@@ -129,18 +131,18 @@ function groupFixture({connect,mesh,radio}={}){
  return {...f,instances};
 }
 test('read-only group acquisition passes guarded Wi-Fi connection without provisioning any lamp',async()=>{
- const f=groupFixture(),lease=await f.context.createGroupLampLease(other,{readOnly:true});assert.deepEqual(f.calls,['wifi-connect']);await lease.release();assert.deepEqual(f.calls,['wifi-connect','wifi-close']);
+ const f=groupFixture(),lease=await f.context.createGroupLampLease(other,{readOnly:true});assert.deepEqual(f.calls,[['mesh',true],'wifi-connect']);await lease.release();assert.deepEqual(f.calls,[['mesh',true],'wifi-connect','wifi-close']);
 });
 test('read-only discovery skips missing Wi-Fi credentials while retaining authorized, admitted fallback only',async()=>{
  const f=groupFixture();f.context.credential=async()=>({value:''});
  const lease=await f.context.createGroupLampLease(other,{readOnly:true});
- assert.deepEqual(f.calls,['wifi-close',['mesh',true],'initialize-radio',['ble-connect',true]]);
+ assert.deepEqual(f.calls,[['mesh',true],'wifi-close','initialize-radio',['ble-connect',true]]);
  assert(!f.calls.includes('wifi-connect'));assert(!f.calls.includes('authorize'));assert(!f.calls.includes('provision'));
  await lease.release();assert.equal(f.calls.at(-1),'ble-close');
 
  const unpaired=groupFixture();unpaired.entry.accessoryManaged=false;unpaired.context.credential=async()=>({value:''});
  await assert.rejects(unpaired.context.createGroupLampLease(other,{readOnly:true}),error=>error.needsPassword);
- assert.deepEqual(unpaired.calls,['wifi-close',['mesh',true]]);
+ assert.deepEqual(unpaired.calls,[['mesh',true],'wifi-close']);
 
  const blocked=groupFixture();blocked.context.credential=async()=>({value:''});hold(blocked.context,'bluetooth');
  await assert.rejects(blocked.context.createGroupLampLease(other,{readOnly:true}),error=>error.cancelled&&error.confirmed);
@@ -148,12 +150,12 @@ test('read-only discovery skips missing Wi-Fi credentials while retaining author
 });
 test('read-only group Wi-Fi failure cannot fall back after a background generation change',async()=>{
  let f;f=groupFixture({connect:()=>{f.context.pauseFirmwareBackgroundWork();throw Error('Offline');}});
- await assert.rejects(f.context.createGroupLampLease(other,{readOnly:true}),error=>error.cancelled);assert(!f.calls.some(value=>Array.isArray(value)&&value[0]==='mesh'));assert(!f.calls.includes('provision'));
+ await assert.rejects(f.context.createGroupLampLease(other,{readOnly:true}),error=>error.cancelled);assert.equal(f.calls.filter(value=>Array.isArray(value)&&value[0]==='mesh').length,1);assert(!f.calls.includes('initialize-radio'));assert(!f.calls.includes('provision'));
 });
 test('read-only Bluetooth group fallback stays read-only while an inactive explicit manual group intent can provision',async()=>{
  for(const readOnly of [true,false]){
   const f=groupFixture({connect:()=>{throw Error('Offline');}}),lease=await f.context.createGroupLampLease(other,{readOnly});
-  assert(f.calls.some(value=>Array.isArray(value)&&value[0]==='mesh'&&value[1]===readOnly));assert(f.calls.some(value=>Array.isArray(value)&&value[0]==='ble-connect'&&Boolean(value[1])===readOnly));
+  assert(f.calls.some(value=>Array.isArray(value)&&value[0]==='mesh'&&value[1]===true));assert(f.calls.some(value=>Array.isArray(value)&&value[0]==='ble-connect'&&Boolean(value[1])===readOnly));
   assert.equal(f.calls.includes('provision'),!readOnly);await lease.release();
  }
 });

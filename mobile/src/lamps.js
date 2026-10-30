@@ -1,5 +1,11 @@
 import {normalizeLampStyle,lampStyleLocked} from './lamp-style.js';
 
+const sessionMeshFields=['meshOnline','meshHops','meshBridgeId','meshRoutes','meshObservedAt','meshExpiresAt'];
+function persistentLamp(entry){
+  if(!sessionMeshFields.some(field=>Object.hasOwn(entry,field)))return entry;
+  const clean={...entry};for(const field of sessionMeshFields)delete clean[field];return clean;
+}
+
 // Only display metadata lives here. Passwords belong in the native credential vault.
 // Discovery lasts for this app session only, including lamps not yet connected.
 export class LampDiscoverySession {
@@ -26,7 +32,7 @@ export class LampStore {
     this.storage = storage;
     try { this.items = JSON.parse(storage.getItem('coollamp-lamps') || '[]'); } catch { this.items = []; }
     if (!Array.isArray(this.items)) this.items = [];
-    this.items = this.items.filter(x => x && typeof x.id === 'string');
+    this.items = this.items.filter(x => x && typeof x.id === 'string').map(persistentLamp);
     try {
       const old = JSON.parse(storage.getItem('coollamp-device'));
       if (old?.deviceId && !this.items.some(x => x.deviceId === old.deviceId)) this.upsert({id:'ble:'+old.deviceId,deviceId:old.deviceId,name:old.name || 'CoolLamp'});
@@ -35,7 +41,7 @@ export class LampStore {
   }
   upsert(value, previousId) {
     const matches = this.items.filter(x => x.id === value.id || x.id === previousId || (value.deviceId && x.deviceId === value.deviceId));
-    const entry = Object.assign({}, ...matches, value);
+    const entry = persistentLamp(Object.assign({}, ...matches, value));
     this.items = this.items.filter(x => !matches.includes(x));
     this.items.push(entry); this.save(); return entry;
   }
@@ -85,7 +91,7 @@ export class LampStore {
   // Groups validates its bounded record; read/write errors must reach that model.
   loadGroupRemovalIntents() { const value=this.storage.getItem('coollamp-group-removals-v1');return value==null?null:JSON.parse(value); }
   saveGroupRemovalIntents(value) { this.storage.setItem('coollamp-group-removals-v1',JSON.stringify(value));return true; }
-  save() { this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }
+  save() { this.items=this.items.map(persistentLamp);this.storage.setItem('coollamp-lamps', JSON.stringify(this.items)); }
 }
 
 export function validFirmwareVersion(value) {

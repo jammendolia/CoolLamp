@@ -6,8 +6,9 @@ import {BridgeWifiBroker} from '../src/bridge-wifi.js';
 import {meshRouteCandidates} from '../src/mesh-route-candidates.js';
 import {selectMeshRecoveryCandidates} from '../src/settings-recovery.js';
 import {BRIDGE_MODEL} from '../src/bridge-accessory.js';
+import {readOnlyConnectionFailure} from '../src/connection-broker.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const handler=source.slice(source.indexOf('async function createMeshLampLease('),source.indexOf('\nasync function connectMeshCard('));
 const target='5894af4aec24',id='8c4856dab734',fleetId='1111111111111111',token='0123456789abcdef0123456789abcdef';
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
@@ -18,11 +19,11 @@ function fixture({password='fixture-password',patch={},gate=null}={}){
   '/api/descriptor':{role:'bridge',deviceId:id,firmwareVersion:'0.2.2',model:{id:BRIDGE_MODEL},capabilities:['mesh-control','trusted-cached-donation']},
   '/api/mesh/status':{version:1,deviceId:id,fleetId,boot:'2222222222222222',available:true,peers:[]}
  };
- const context={BridgeWifiBroker,meshRouteCandidates,selectMeshRecoveryCandidates,clearTimeout,lamp:null,phonePlatform:'ios',CapacitorHttp:{request:async request=>{
+ const context={BridgeWifiBroker,meshRouteCandidates,selectMeshRecoveryCandidates,readOnlyConnectionFailure,clearTimeout,lamp:null,phonePlatform:'ios',CapacitorHttp:{request:async request=>{
   calls.push(request);if(gate)await gate.promise;const path=new URL(request.url).pathname;assert(Object.hasOwn(replies,path));return {status:200,data:JSON.stringify(replies[path]),url:request.url};
  }},bridgeAccessories:{items:[entry]},mergedLampEntries:()=>[],groupRemovedIds:new Set(),fleetLampInstalling:()=>false,connectivity:{get:()=>({wifi:{fresh:false,state:'unknown'}})},
  firmwareBackgroundWorkAllowed:()=>true,firmwareBackgroundGeneration:0,foregroundConnectionHold:null,credential:async credentialId=>{assert.equal(credentialId,id);return {value:password};},
- compareFirmwareVersions:()=>0,meshInventory:{remember(){assert.fail('Broker-only acquisition cannot create lamp inventory.');}},renderLamps(){},
+ compareFirmwareVersions:()=>0,meshInventory:{routes:()=>[],remember(){assert.fail('Broker-only acquisition cannot create lamp inventory.');}},renderLamps(){},
  acquireMeshLamp:async options=>{events.push(options);assert.equal(options.target,target);assert.equal(options.candidates.length,1);return options.acquireBridge(options.candidates[0]);},
  initializeGroupRadio:()=>assert.fail('No Bluetooth provisioning during bridge acquisition'),WifiTransport:class{constructor(){assert.fail('A bridge cannot use a lamp snapshot transport.');}}
  };

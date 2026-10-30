@@ -12,8 +12,8 @@ import {startGuidedTour} from '../src/guided-tour.js';
 // fixture supplies only browser presentation APIs; connection results and time
 // are controlled explicitly, without a lamp or a browser process.
 const source=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8')
- .replace(/^import .*;\r?$/gm,'').replace(/\bexport /g,'');
-const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+ .replace(/\r\n/g,'\n').replace(/^import .*;$/gm,'').replace(/\bexport /g,'');
+const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const startup=mainSource.slice(mainSource.indexOf("\npage('home');"),mainSource.indexOf('\nsetInterval',mainSource.indexOf("\npage('home');")));
 const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return {promise,resolve,reject};};
 const settle=async()=>{for(let turn=0;turn<12;turn++)await Promise.resolve();};

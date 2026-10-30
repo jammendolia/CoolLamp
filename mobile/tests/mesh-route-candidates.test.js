@@ -34,3 +34,51 @@ test('unmanaged iOS Bluetooth accessories remain excluded while Android keeps it
  assert.equal(meshRouteCandidates({target,entries:[{...lamp,accessoryManaged:false}],platform:'ios'}).filter(row=>row.kind==='bluetooth').length,0);
  assert.equal(meshRouteCandidates({target,entries:[{...lamp,accessoryManaged:false}],platform:'android'}).filter(row=>row.kind==='bluetooth').length,1);
 });
+
+const observation=(gatewayId,changes={})=>({targetId:target,gatewayId,fleetId:bridge.fleetId,hops:2,observedAt:100,expiresAt:15100,...changes});
+test('a fresh observed target gateway precedes unrelated hints without inventing a new gateway',()=>{
+ const observed={...lamp,id:'444444444444'},unknown='555555555555';
+ const routes=meshRouteCandidates({target,entries:[lamp,observed],bridges:[bridge],observations:[observation(observed.id),observation(unknown)],now:1000,platform:'ios'});
+ assert.equal(routes[0].entry.id,observed.id);assert.equal(routes[0].observation.targetId,target);
+ assert(!routes.some(row=>(row.id||row.entry.id)===unknown));
+ assert.equal(routes.filter(row=>row.observation).length,2,'both authorized ingress alternatives retain the same target proof');
+});
+
+test('a freshly observed Bluetooth-only gateway ranks before an unrelated Wi-Fi hint',()=>{
+ const nearby={...lamp,id:'444444444444'};delete nearby.address;
+ const routes=meshRouteCandidates({target,entries:[lamp,nearby],observations:[observation(nearby.id)],now:1000,platform:'ios'});
+ assert.equal(routes[0].kind,'bluetooth');assert.equal(routes[0].entry.id,nearby.id);
+});
+
+test('supported active gateway remains first while target observations use exact gateway epochs',()=>{
+ const activeBridge={identity:bridge.id,epoch:7,request(){},raw:{mesh:{version:1,available:true}}};
+ const routes=meshRouteCandidates({target,activeBridge,entries:[lamp],bridges:[bridge],observations:[observation(bridge.id,{gatewayEpoch:6}),observation(lamp.id,{hops:1})],now:1000});
+ assert.equal(routes[0].transport,activeBridge);assert.equal(routes[0].observation,undefined);assert.equal(routes[1].entry.id,lamp.id);assert(routes[1].observation);
+});
+
+test('expired, future, wrong-target and malformed observations do not alter legacy route order',()=>{
+ const options={target,entries:[lamp],bridges:[bridge],platform:'ios',now:1000},expected=meshRouteCandidates(options);
+ for(const changes of [{expiresAt:1000},{observedAt:1001},{targetId:'999999999999'},{fleetId:''},{hops:0},{hops:5},{gatewayEpoch:-1},{expiresAt:99}]){
+  assert.deepEqual(meshRouteCandidates({...options,observations:[observation(lamp.id,changes)]}),expected,JSON.stringify(changes));
+ }
+});
+
+test('gateway ranking uses hop/freshness hints and honors a selected eligible fresh gateway',()=>{
+ const first={...lamp,id:'444444444444'},second={...lamp,id:'555555555555'},proofs=[observation(first.id,{hops:1}),observation(second.id,{hops:2})];
+ const options={target,entries:[lamp,first,second],observations:proofs,now:1000,platform:'ios'};
+ assert.equal(meshRouteCandidates(options)[0].entry.id,first.id);
+ assert.equal(meshRouteCandidates({...options,bridgeId:second.id})[0].entry.id,second.id);
+ assert.equal(meshRouteCandidates({...options,bridgeId:target})[0].entry.id,first.id,'an excluded identity cannot become eligible through override');
+ assert.equal(meshRouteCandidates({...options,observations:[observation(first.id,{observedAt:100}),observation(second.id,{observedAt:200})]})[0].entry.id,second.id);
+});
+
+test('inventory hints cannot authorize an unmanaged Bluetooth accessory or cross a saved bridge fleet',()=>{
+ const denied={...lamp,address:null,accessoryManaged:false},routes=meshRouteCandidates({target,entries:[denied],bridges:[bridge],platform:'ios',observations:[observation(lamp.id),observation(bridge.id,{fleetId:'fedcba0987654321'})],now:1000});
+ assert.equal(routes.length,1);assert.equal(routes[0].entry.id,bridge.id);assert.equal(routes[0].observation,undefined);
+});
+
+test('public route candidates copy only bounded observation metadata and cannot change the caller snapshot',()=>{
+ const value=observation(lamp.id,{password:'private',key:'private',gatewayBoot:'1234567890abcdef',targetBoot:'fedcba0987654321'});
+ const routes=meshRouteCandidates({target,entries:[lamp],observations:[value],now:1000});
+ assert(!JSON.stringify(routes[0].observation).includes('private'));routes[0].observation.hops=4;assert.equal(value.hops,2);
+});

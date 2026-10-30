@@ -5,11 +5,13 @@ import {runInNewContext} from 'node:vm';
 import {acquireOnboardingBroker,onboardingDiscoveryMessage} from '../src/mesh-onboarding-broker.js';
 import {MeshOnboarding} from '../src/mesh-onboarding.js';
 import {WifiTransport} from '../src/wifi.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
+import {MeshInventorySession} from '../src/mesh.js';
 
 const id='112233445566',target='8c4856dab734',fleetId='0123456789abcdef';
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve;const promise=new Promise(yes=>{resolve=yes;});return {promise,resolve};};
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 // Execute the actual main handlers, with only their native transports injected.
 function handler(name){
  const match=new RegExp('(?:^|\\n)(?:async )?function '+name+'\\(').exec(source);assert(match);
@@ -26,13 +28,13 @@ function handler(name){
 function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=false,httpGate=null,httpHealthy=false,bluetoothGate=null,budget={}}={}){
  const entry={id,name:'Corkscrew',deviceId:'saved-ble',accessoryManaged:authorized,address:'http://192.168.1.42',firmwareVersion:'1.15.2'};
  const calls=[],messages=[],failures=new Map();let releases=0,provisions=0;
- const peer={identity:id,epoch:1,base:'ble:saved-ble',supportsOfflineGroups:true,raw:{},async request(path){
+ const peer={identity:id,epoch:1,base:'ble:saved-ble',supportsOfflineGroups:true,raw:{deviceId:id,name:entry.name},async request(path){
   calls.push(path);if(path==='/api/mesh/status')return {version:1,deviceId:id,available:true,fleetId};
   if(path==='/api/mesh/new')return {version:1,candidates:[{id:target,name:'CoolLamp Bridge',firmwareVersion:'0.2.1',broker:id,online:true,claimed:false}]};
   throw Error('Unexpected enrollment mutation');
  }};
  class BluetoothTransport{
-  constructor(_ble,options){this.options=options;this.epoch=1;this.raw={};this.supportsOfflineGroups=true;}
+  constructor(_ble,options){this.options=options;this.epoch=1;this.raw={deviceId:id,name:entry.name};this.supportsOfflineGroups=true;}
   async connect(saved,_retry,options){calls.push('bluetooth');assert.equal(saved.readOnlyReconnect,true);assert.equal(this.options.expectedDeviceIdentity,id);
    assert(options.isCurrent());if(bluetoothGate)await bluetoothGate.promise;if(!options.isCurrent())throw Object.assign(Error('Canceled'),{cancelled:true});
    if(bluetoothFailure)throw Error('Unavailable');this.identity=id;this.base=peer.base;return {};
@@ -41,9 +43,10 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
   async disconnect(){releases++;}
  }
  const context={acquireOnboardingBroker:options=>acquireOnboardingBroker({...options,...budget}),onboardingDiscoveryMessage,WifiTransport,LampTransport:BluetoothTransport,
+  ConnectionBroker,readOnlyConnectionFailure,connectionBroker:new ConnectionBroker(),meshInventory:new MeshInventorySession(),roomGroups:null,
   store:{items:[entry]},connectivity:{get:()=>({wifi:{fresh,state:'connected'}})},phonePlatform:'ios',groupRemovedIds:new Set(),
   cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,cardPowerTasks:new Map(),groupConnections:new Map(),groupEditor:null,
-  firmwareBackgroundGeneration:0,firmwareBackgroundWorkAllowed:()=>true,groupInventoryEntries:()=>[entry],
+  firmwareBackgroundGeneration:0,firmwareBackgroundWorkAllowed:()=>true,groupInventoryEntries:()=>[entry],mergedLampEntries:()=>[entry],
   lamp:active?peer:null,bleLamp:{initialization:{},supportsOfflineGroups:true},state:active?{}:null,
   verifiedSelectedLamp:()=>active,advancedAvailable:()=>active,credential:async()=>({value:'already-saved-password'}),
   CapacitorHttp:{async request(request){assert.equal(request.method,'GET');if(!request.url.endsWith('/api/state'))return {status:200,data:await peer.request(new URL(request.url).pathname)};
@@ -52,11 +55,11 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
   initializeGroupRadio:async options=>{assert.equal(options.knownDevices().map(value=>value.id).join(','),id);},
   pairing:{},accessoryNative:{},BleClient:{},rememberAccessories:()=>{},removedAccessoryIds:new Set(),savedDevice:null,
   createMeshLampLease:async(_id,options)=>{calls.push('mesh');assert.equal(_id,id);assert.equal(options.recoveryOnly,true);throw Object.assign(Error('No route'),{noRoute:true});},
-  liveGroupBluetooth:new Map(),renderLamps:()=>{},observeLampWifi:()=>{},isNative:true,firmwareFleetTrust:{provision:async()=>{provisions++;}},
+  liveGroupBluetooth:new Map(),renderLamps:()=>{},observeLampWifi:()=>{},observeLampLighting:()=>{},isNative:true,firmwareFleetTrust:{provision:async()=>{provisions++;}},
   validFirmwareVersion:value=>value,compareFirmwareVersions:()=>-1,clearTimeout,AbortController,
   meshNetworkMessages:new Map(),document:{hidden:false},meshWizard:null,navigationSerial:1,meshDiscoveryRun:null,meshDiscoveryFailures:failures,
   $:()=>({hidden:false}),status:value=>messages.push(value),meshOnboarding:null};
- runInNewContext(['createGroupLampLease','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
+ runInNewContext(['observeBrokerConnection','createGroupLampLease','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
  context.meshOnboarding=new MeshOnboarding({getBridges:()=>[entry],acquireBridge:context.acquireOnboardingBridge,
   onDiscoveryError:(entry,error)=>failures.set(entry.id,{name:entry.name,error}),requestTimeout:7900});
  return {entry,calls,context,messages,failures,peer,releases:()=>releases,provisions:()=>provisions};
@@ -66,6 +69,8 @@ test('production onboarding prefers saved Bluetooth to a stale 1.15.2 HTTP state
  const f=fixture(),result=await f.context.refreshNewMeshLamps({explicit:true});
  assert.equal(result.candidates[0].id,target);assert.deepEqual(f.calls,['bluetooth','/api/mesh/status','/api/mesh/new']);
  assert.equal(f.provisions(),0);assert.equal(f.releases(),1);assert.match(f.messages[0],/Choose the new device/);
+ assert.equal(f.context.connectionBroker.get(id).route,'bluetooth');assert.equal(f.context.connectionBroker.get(id).raw.deviceId,id);
+ assert.equal(f.context.connectionBroker.active.size,0);
 });
 test('fresh Wi-Fi with truncated actual settings falls back to saved Bluetooth without mesh or provisioning',async()=>{
  const f=fixture({fresh:true}),result=await f.context.refreshNewMeshLamps();
@@ -76,6 +81,8 @@ test('healthy fresh production Wi-Fi stays ahead of saved Bluetooth',async()=>{
  const f=fixture({fresh:true,httpHealthy:true}),result=await f.context.refreshNewMeshLamps();
  assert.equal(result.candidates[0].id,target);assert.deepEqual(f.calls,['wifi-state','/api/mesh/status','/api/mesh/new']);
  assert.equal(f.provisions(),0);assert.equal(f.context.groupConnections.size,0);assert.equal(f.messages.length,0);
+ assert.equal(f.context.connectionBroker.get(id).route,'wifi');assert.equal(f.context.connectionBroker.get(id).verified,true);
+ assert.equal(f.context.connectionBroker.get(id).raw.token,undefined);assert.equal(f.context.connectionBroker.active.size,0);
 });
 test('verified active broker is borrowed before every acquisition route',async()=>{
  const f=fixture({active:true}),result=await f.context.refreshNewMeshLamps();
@@ -93,7 +100,7 @@ test('an open group editor is borrowed without opening or closing its Bluetooth 
 });
 test('timed-out production pooled HTTP acquisition retires before fresh Bluetooth fallback',async()=>{
  const gate=deferred(),f=fixture({fresh:true,httpGate:gate,budget:{timeoutMs:500,routeTimeoutMs:30}});
- const result=await f.context.refreshNewMeshLamps();assert.equal(result.candidates[0].id,target);
+ const result=await f.context.refreshNewMeshLamps();assert.equal(result.candidates[0]?.id,target,JSON.stringify({calls:f.calls,failures:[...f.failures.values()].map(value=>value.error.message)}));
  assert.deepEqual(f.calls,['wifi-state','bluetooth','/api/mesh/status','/api/mesh/new']);assert.equal(f.context.groupConnections.size,0);
  gate.resolve({status:200,data:'{"token":"SECRET",'});await tick();assert.equal(f.releases(),1);assert.equal(f.provisions(),0);
 });
@@ -110,9 +117,9 @@ test('unauthorized iOS saved devices do not open Bluetooth and explicit guide ge
  await f.context.refreshNewMeshLamps({explicit:true});assert.match(f.messages[0],/Corkscrew: Wi-Fi returned incomplete or invalid settings/);
  assert(!f.messages[0].includes('SECRET'));assert.equal(f.provisions(),0);
 });
-test('main route restriction leaves ordinary group acquisition Wi-Fi first',async()=>{
+test('main route restriction preserves mesh-first ordinary group acquisition',async()=>{
  const f=fixture();await f.context.createGroupLampLease(id,{readOnly:true});
- assert.deepEqual(f.calls,['wifi-state','mesh','bluetooth']);assert.equal(f.provisions(),0);
+ assert.deepEqual(f.calls,['mesh','wifi-state','bluetooth']);assert.equal(f.provisions(),0);
 });
 test('canceling discovery ignores a late actual HTTP state reply and never opens another route',async()=>{
  const gate=deferred(),f=fixture({fresh:true,httpGate:gate}),run=f.context.refreshNewMeshLamps({explicit:true});
@@ -141,6 +148,26 @@ test('route timeout permits another guarded read inside the same overall deadlin
   timeoutMs:1000,routeTimeoutMs:20,acquireRoute:async(route,options)=>{calls.push(route);assert.equal(options.readOnly,true);return route==='wifi'?gate.promise:{lamp:{identity:id,request(){}},release(){}};}});
  assert.equal(result.lamp.identity,id);assert.deepEqual(calls,['wifi','bluetooth']);
  gate.resolve({lamp:{identity:id,request(){}},release(){released++;}});await tick();assert.equal(released,1);
+});
+test('a provider noticing its local cutoff before the timer permits another read route',async()=>{
+ let time=0,retiredSignal,outerCurrent;const calls=[];
+ const result=await acquireOnboardingBroker({entry:{id,deviceId:'saved',address:'http://saved'},wifiFresh:true,bluetoothAuthorized:true,
+  now:()=>time,timeoutMs:1000,routeTimeoutMs:20,acquireRoute:async(route,options)=>{
+   calls.push(route);assert.equal(options.readOnly,true);
+   if(route==='wifi'){retiredSignal=options.signal;time=20;outerCurrent=options.isCurrent();throw Object.assign(Error('Provider guard expired.'),{cancelled:true});}
+   assert.equal(options.isCurrent(),true);return {lamp:{identity:id,request(){}},release(){}};
+  }});
+ assert.equal(result.lamp.identity,id);assert.deepEqual(calls,['wifi','bluetooth']);assert.equal(retiredSignal.aborted,true);assert.equal(outerCurrent,true);
+});
+for(const cause of ['early provider cancellation','parent cancellation','changed admission','identity refusal'])test('local cutoff recovery preserves '+cause,async()=>{
+ let time=0,allowed=true;const controller=new AbortController(),calls=[];
+ await assert.rejects(acquireOnboardingBroker({entry:{id,deviceId:'saved',address:'http://saved'},wifiFresh:true,bluetoothAuthorized:true,
+  now:()=>time,timeoutMs:1000,routeTimeoutMs:20,signal:controller.signal,isCurrent:()=>allowed,acquireRoute:async route=>{
+   calls.push(route);time=cause==='early provider cancellation'?19:20;
+   if(cause==='parent cancellation')controller.abort();if(cause==='changed admission')allowed=false;
+   throw Object.assign(Error('Read acquisition stopped.'),cause==='identity refusal'?{identity:true}:{cancelled:true});
+  }}),error=>cause==='identity refusal'?error.identity===true:error.cancelled===true);
+ assert.deepEqual(calls,['wifi']);
 });
 test('changed admission cancels late acquisition without route fallback',async()=>{
  const gate=deferred(),controller=new AbortController();let released=0;const calls=[];

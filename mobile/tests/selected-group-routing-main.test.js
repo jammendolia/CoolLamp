@@ -5,7 +5,7 @@ import {runInNewContext} from 'node:vm';
 import {Groups} from '../src/groups.js';
 import {MeshTransport} from '../src/mesh.js';
 
-const main=readFileSync(new URL('../src/main.js',import.meta.url),'utf8'),app=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8');
+const main=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n'),app=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 function extract(source,start,end){const first=source.indexOf(start),last=source.indexOf(end,first+start.length);assert(first>=0&&last>first,start);return source.slice(first,last);}
 const selectedRoute=extract(main,'async function openSelectedLampGroup(','\nfunction openCardGroups(');
 const editor=extract(main,'async function closeGroupEditor(','\nasync function groupSceneAction(');

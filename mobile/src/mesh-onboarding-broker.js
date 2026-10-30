@@ -24,7 +24,7 @@ export async function acquireOnboardingBroker({entry,active=null,wifiFresh=false
  const release=async lease=>{if(!lease||typeof lease!=='object'||released.has(lease))return;released.add(lease);try{await lease.release?.();}catch{}};
  for(const route of routes){
   guard();
-  const controller=new AbortController(),remaining=Math.min(Math.max(1,routeTimeoutMs),deadline-now());
+  const controller=new AbortController(),remaining=Math.min(Math.max(1,routeTimeoutMs),deadline-now()),routeDeadline=now()+remaining;
   let timer,abort,retired=false,lease;
   const current=()=>!controller.signal.aborted&&!signal?.aborted&&isCurrent()&&now()<deadline;
   const pending=Promise.resolve().then(()=>{guard();return acquireRoute(route,{readOnly:true,onboardingRoute:route,
@@ -39,11 +39,14 @@ export async function acquireOnboardingBroker({entry,active=null,wifiFresh=false
    if(lease?.lamp?.identity!==entry.id||typeof lease.lamp.request!=='function')throw Object.assign(Error('A different lamp answered discovery.'),{identity:true,confirmed:true});
    return lease;
   }catch(error){
+   // A read adapter can notice its own budget before this wrapper's timer.
+   // Its local cancellation must not cancel the still-current discovery run.
+   const routeExpired=error.routeTimeout===true||now()>=routeDeadline;
    retired=true;controller.abort();try{onRouteRetired(route,controller.signal);}catch{}await release(lease);
-   if(signal?.aborted||!isCurrent()||error.cancelled&&!error.routeTimeout)throw cancelled();
+   if(signal?.aborted||!isCurrent()||error.cancelled&&!routeExpired)throw cancelled();
    if(error.identity)throw error;
    // Never put a raw HTTP response or parser excerpt into the setup screen.
-   const reason=error.routeTimeout?' did not respond in time.':error.needsPassword?' needs its saved access password.':
+   const reason=routeExpired?' did not respond in time.':error.needsPassword?' needs its saved access password.':
     route==='wifi'&&error instanceof SyntaxError?' returned incomplete or invalid settings.':' could not be read.';
    failures.push(routeNames[route]+reason);
   }finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}

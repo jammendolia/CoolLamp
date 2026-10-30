@@ -7,8 +7,9 @@ import {STATE,CONTROL,SERVICE,COMMAND,effects} from '../src/protocol.js';
 import {lampAddress} from '../src/lamps.js';
 import {selectMeshRecoveryCandidates} from '../src/settings-recovery.js';
 import {meshRouteCandidates} from '../src/mesh-route-candidates.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
 function handler(name){
@@ -66,7 +67,7 @@ function fixture(){
  const entries=Array.from({length:20},(_,index)=>({id:index===0?entryId:(index+1).toString(16).padStart(12,'0'),name:'Lamp '+(index+1),
   deviceId:'00000000-0000-0000-0000-'+(index+1).toString(16).padStart(12,'0'),accessoryManaged:true}));
  const radio=new NativeRegistry(entries),events=[],elements=new Map();
- const context={Map,Set,Promise,Object,Error,AbortController,clearTimeout,console,LampTransport,lampAddress,entries,events,
+ const context={Map,Set,Promise,Object,Error,AbortController,clearTimeout,console,LampTransport,lampAddress,entries,events,connectionBroker:new ConnectionBroker(),readOnlyConnectionFailure,observeBrokerConnection(){},meshInventory:{routes:()=>[]},
   foregroundConnectionHold:null,firmwareBackgroundGeneration:0,connecting:false,busy:false,appTourActive:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   wifiSettingsTarget:null,navigationSerial:1,bluetoothFirmwareConnectionSerial:0,cardSettingsSerial:0,selected:null,state:null,firmware:null,
   groupConnections:new Map(),groupRemovedIds:new Set(),cardPowerTasks:new Map(),groupEditor:null,liveGroupBluetooth:new Map(),

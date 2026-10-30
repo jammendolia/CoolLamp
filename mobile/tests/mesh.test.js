@@ -140,8 +140,16 @@ test('destructive, trust, firmware-install and network settings explicitly need 
  assert.equal(f.writes.length,0);await f.lamp.request('/api/config',{leds:67,milliamps:500,startupMode:1,startupBrightness:100});assert.equal(f.writes.length,1);
 });
 test('inventory supplements session cards without credentials, pairing or default selection',()=>{
- const inventory=new MeshInventorySession();inventory.remember({version:1,deviceId:bridgeId,fleetId:boot,available:true,peers:[{id:target,name:'Target',online:true,hops:2,deviceId:'not-authorized',key:'secret'},{id:'broken',online:true,hops:1}]},bridgeId);
- assert.deepEqual(inventory.items,[{id:target,name:'Target',meshBridgeId:bridgeId,meshOnline:true,meshHops:2}]);inventory.forget(target);inventory.remember({version:1,deviceId:bridgeId,fleetId:boot,available:true,peers:[{id:target,online:true,hops:1}]},bridgeId);assert.equal(inventory.items.length,0);
+ const inventory=new MeshInventorySession({now:()=>1000});inventory.remember({version:1,deviceId:bridgeId,fleetId:boot,available:true,peers:[{id:target,name:'Target',online:true,hops:2,deviceId:'not-authorized',key:'secret'},{id:'broken',online:true,hops:1}]},bridgeId);
+ assert.deepEqual(inventory.items,[{id:target,name:'Target',meshBridgeId:bridgeId,meshOnline:true,meshHops:2,meshObservedAt:1000,meshExpiresAt:16000,
+  meshRoutes:[{targetId:target,gatewayId:bridgeId,fleetId:boot,hops:2,observedAt:1000,expiresAt:16000}]}]);inventory.forget(target);inventory.remember({version:1,deviceId:bridgeId,fleetId:boot,available:true,peers:[{id:target,online:true,hops:1}]},bridgeId);assert.equal(inventory.items.length,0);
+});
+
+test('mesh acquisition supplies the verified gateway epoch with its read-only inventory callback',async()=>{
+ const f=fixture();let seen;
+ const lease=await acquireMeshLamp({target,candidates:[f],acquireBridge:async candidate=>candidate.lease,onInventory:(...args)=>{seen=args;},options:{timeout:90,pollInterval:1}});
+ try{assert.equal(seen[0].deviceId,bridgeId);assert.equal(seen[1],bridgeId);assert.deepEqual(seen[2],{bridgeEpoch:f.bridge.epoch});assert.equal(f.writes.length,0);}
+ finally{await lease.release();}
 });
 test('read-only bridge search tries the next bridge after proven no route and releases once',async t=>{
  const first=fixture(),second=fixture();first.bridge.request=async(path,fields)=>path==='/api/mesh/status'?{}:{version:1,target,requestId:fields.requestId,status:'no-route',executed:false};

@@ -17,7 +17,7 @@ export function selectMeshRecoveryCandidates(candidates){
     (candidate.transport||['wifi','bluetooth'].includes(candidate.kind)));
   const selected=[];
   const add=candidate=>{if(candidate&&!selected.includes(candidate)&&selected.length<2)selected.push(candidate);};
-  add(routes.find(candidate=>candidate.transport)||routes.find(candidate=>candidate.kind==='wifi'));
+  add(routes.find(candidate=>candidate.transport)||routes.find(candidate=>candidate.observation)||routes.find(candidate=>candidate.kind==='wifi'));
   add(routes.find(candidate=>candidate.kind==='bluetooth'));
   for(const candidate of routes)add(candidate);
   return selected;

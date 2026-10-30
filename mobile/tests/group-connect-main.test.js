@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampAddress} from '../src/lamps.js';
+import {ConnectionBroker,readOnlyConnectionFailure} from '../src/connection-broker.js';
 
-const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 function extract(start,end){
  const first=source.indexOf(start),last=source.indexOf(end,first+start.length);
  assert(first>=0&&last>first,'Production source exists: '+start);return source.slice(first,last);
@@ -47,7 +48,7 @@ function fixture({state='needs-password',owned=true,known=true,canonical=true,re
  const entry={id,name:'Sonata Left <img src=x>',address:'http://sonata-left.local',deviceId:'peripheral-left',accessoryManaged:true};
  const original={id,name:entry.name,state,available:false,verified:false,role:null,checkedAt:null,message:state==='needs-password'?'Enter this lamp’s access password.':'Lamp could not be verified.'};
  const settings={ledCount:128,powerLimitMa:500,middleSplit:false,startup:{mode:4,brightness:100}};
- const context={AbortController,lampAddress,Date:{now:()=>1000},document:{createElement:tag=>new Element(tag),
+ const context={AbortController,lampAddress,Date:{now:()=>1000},connectionBroker:new ConnectionBroker(),readOnlyConnectionFailure,observeBrokerConnection(){},document:{createElement:tag=>new Element(tag),
    addEventListener(event,handler,options){if(!listeners.has(event))listeners.set(event,[]);listeners.get(event).push(handler);options?.signal?.addEventListener('abort',()=>listeners.set(event,listeners.get(event).filter(value=>value!==handler)),{once:true});}},
   $:element,entry,calls,mutations,settings,Option:class extends Element{constructor(text,value){super('option');this.textContent=text;this.value=value;}},
   inventory:!owned&&known?[entry]:[],
@@ -60,7 +61,7 @@ function fixture({state='needs-password',owned=true,known=true,canonical=true,re
   renderLamps(){},renderSettings(){},renderOptions(){},renderPower(){},renderFirmware(){},hideWifiPassword(){},
   lampStyleIllustration:()=>new Element('art'),resolvedStyle:()=>({id:'sonata'}),
   wifiSettingsTarget:null,cardSettingsSerial:0,meshSelection:null,phonePlatform:'ios',connectivity:{get:()=>({wifi:{state:'unknown',fresh:false}})},
-  selected:null,state:null,firmware:null,lamp:{epoch:1,async disconnect(){}},bleLamp:{epoch:2,supportsOfflineControl:true},
+  selected:null,state:null,firmware:null,lamp:{epoch:1,async disconnect(){}},bleLamp:{epoch:2,supportsOfflineControl:true},meshLamp:{epoch:4,isMesh:true},
   wifiLamp:{epoch:3,schedule(){},async disconnect(){},async connect(address,password,expected){calls.push({kind:'password-connect',address,password,expected});this.identity=expected;this.base=address;context.state={mode:4};return {deviceId:expected,name:entry.name,hostname:'sonata-left.local',firmware:{version:'1.15.7'}};}},
   wifiFailures:new Map(),discovered:[],validFirmwareVersion:()=>true,compareFirmwareVersions:()=>0,
   stopGroupInspection:async()=>{},credential:async()=>({value:''}),observeLampWifi(){},
@@ -83,8 +84,8 @@ function fixture({state='needs-password',owned=true,known=true,canonical=true,re
   context.groupsSnapshot.lamps=[{...original,state:'online',available:true,verified:true,role:0,checkedAt:1000,message:''}];
  }};
  const invoke=async(kind,target,options)=>{
-  calls.push({kind,id:target.id,options});const result=attempt?await attempt(context,kind,target,options):{connected:true,id:target.id};
-  if(result?.connected){context.lamp=kind==='bluetooth'?context.bleLamp:context.wifiLamp;context.lamp.identity=target.id;context.selected={...target};context.state={mode:4,...settings};context.roomGroups.allow(target.id);}
+  calls.push({kind,id:target.id,options});const result=attempt?await attempt(context,kind,target,options):kind==='mesh'?{connected:false,error:Object.assign(Error('No mesh route'),{noRoute:true,confirmed:true})}:kind==='wifi'?{connected:false,error:Object.assign(Error('Enter the lamp access password.'),{needsPassword:true,confirmed:true})}:{connected:true,id:target.id};
+  if(result?.connected){context.lamp=kind==='bluetooth'?context.bleLamp:kind==='mesh'?context.meshLamp:context.wifiLamp;context.lamp.identity=target.id;context.lamp.raw={deviceId:target.id};context.selected={...target};context.state={mode:4,...settings};context.roomGroups.allow(target.id);}
   return result;
  };
  context.connectCardBluetooth=(target,options)=>invoke('bluetooth',target,options);
