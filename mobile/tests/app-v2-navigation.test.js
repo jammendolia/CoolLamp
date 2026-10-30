@@ -458,3 +458,76 @@ test('actual tour presentation routes only render cached controls and preserve t
  assert.equal(element('page-help').hidden,false);assert(calls.filter(Array.isArray).every(([,options])=>options.tour===true));
  assert(!calls.some(value=>typeof value==='string'&&/read|connect|command|reset|save/.test(value)));
 });
+function groupAddFixture({unavailable=false,refresh,join,name='Sonata Left',protocol=2,incarnation='a'.repeat(32)}={}){
+ const main={id:'112233445566',name:'Sonata Right'},target={...lamp,name},leader={...main,verified:true,available:true,role:1,sync:{version:protocol,role:1,incarnation,order:[{id:main.id}]}},row={...target,verified:!unavailable,available:!unavailable,role:unavailable?null:0,state:unavailable?'needs-password':'ready',message:unavailable?'Open this lamp to check its saved access.':'',checkedAt:100,sync:{version:2,protocolVersions:[2,3],role:0}};
+ const group={id:main.id,name:'Downstairs',leader,followers:[],available:true,capacity:8,remaining:8},model={lamps:[main,target],ownedLampIds:[main.id,target.id],groups:[group],available:[leader,row],statuses:{},selected:main,connected:true};
+ const joins=[],checks=[];
+ const api={refreshGroups:async()=>{checks.push(true);if(refresh)await refresh(model);},addGroupLamp:async(id,leaderId,options)=>{joins.push({id,leaderId,options});if(join)return join(id,leaderId,options,model);Object.assign(row,{role:2,leader:leaderId,sync:{...row.sync,role:2,leader:leaderId}});group.followers.push(row);return {phase:'joined',active:false};}};
+ const ui=fixture(undefined,{model,api,preferences:JSON.stringify({onboarding:{version:1,welcomeSeen:true,firstComplete:true,secondGroupSeen:true,laterGuides:false}})});
+ return {...ui,model,group,main,target,row,joins,checks,open:()=>ui.ui.addGroupLamps(main.id),add:()=>ui.click('group-add-one',{id:target.id,groupId:main.id})};
+}
+
+test('an existing one-lamp Sonata group exposes Add lamps on Home and adds one independent lamp without creating a group',async()=>{
+ const ui=groupAddFixture();assert.match(ui.element('v2HomeContent').innerHTML,/data-v2="add-group-lamps"/);
+ ui.open();await settle();assert.equal(ui.checks.length,1);assert.equal(ui.joins.length,0);assert.match(ui.dialog.innerHTML,/Add lamps to Downstairs/);assert.match(ui.dialog.innerHTML,/Sonata Left/);assert.match(ui.dialog.innerHTML,/Ready to add/);
+ ui.add();await settle();assert.equal(ui.joins.length,1);assert.equal(ui.joins[0].id,ui.target.id);assert.equal(ui.joins[0].leaderId,ui.main.id);assert.equal(ui.joins[0].options.expectedIncarnation,'a'.repeat(32));assert.match(ui.dialog.innerHTML,/Sonata Left added/);assert.match(ui.dialog.innerHTML,/All your saved lamps are already in this group/);ui.dispose();
+});
+
+test('unavailable saved lamps stay visible with their reason and actionable connection check',async()=>{
+ const ui=groupAddFixture({unavailable:true,name:'Sonata <Left>'});ui.open();await settle();
+ assert.match(ui.dialog.innerHTML,/Sonata &lt;Left&gt;/);assert.doesNotMatch(ui.dialog.innerHTML,/<Left>/);assert.match(ui.dialog.innerHTML,/check its saved access/);assert.match(ui.dialog.innerHTML,/Check connections/);
+ ui.add();await settle();assert.equal(ui.joins.length,0);
+ Object.assign(ui.row,{available:true,verified:true,role:0,checkedAt:101});ui.click('group-add-check',{id:ui.main.id});await settle();ui.add();await settle();assert.equal(ui.joins.length,1);ui.dispose();
+});
+
+for(const condition of ['full','locked','removing'])test('existing group Add remains explanatory and cannot join when '+condition,async()=>{
+ const ui=groupAddFixture();if(condition==='full')ui.group.remaining=0;if(condition==='locked')ui.group.leader.sync.membershipLocked=true;if(condition==='removing')ui.group.removalPending=true;
+ ui.open();await settle();assert.match(ui.dialog.innerHTML,condition==='full'?/group is full/:condition==='locked'?/group’s update/:/pending removal/);ui.add();await settle();assert.equal(ui.joins.length,0);ui.dispose();
+});
+
+test('an uncertain addition is not replayed by duplicate taps or a stale connection refresh',async()=>{
+ const ui=groupAddFixture({join:async()=>{throw Object.assign(Error('Reply was lost.'),{uncertain:true});}});ui.open();await settle();ui.add();await settle();assert.equal(ui.joins.length,1);assert.match(ui.dialog.innerHTML,/last addition was not confirmed/);
+ ui.add();ui.click('group-add-check',{id:ui.main.id});await settle();ui.add();await settle();assert.equal(ui.joins.length,1);assert.equal(ui.checks.length,2);ui.dispose();
+});
+
+test('closing or changing pages during an Add picker refresh fences its late presentation without a join',async()=>{
+ const gate=deferred(),ui=groupAddFixture({refresh:()=>gate.promise});ui.open();await settle();ui.ui.navigate('lamps');gate.resolve();await settle();assert.equal(ui.dialog.open,false);assert.equal(ui.joins.length,0);ui.dispose();
+});
+
+test('a recreated group invalidates the reviewed Add window before any join',async()=>{
+ const ui=groupAddFixture();ui.open();await settle();ui.group.leader.sync.incarnation='b'.repeat(32);ui.add();await settle();assert.equal(ui.joins.length,0);assert.match(ui.dialog.innerHTML,/This group changed/);ui.dispose();
+});
+
+test('a late join result cannot reopen an Add picker or target another selected group',async()=>{
+ const gate=deferred(),ui=groupAddFixture({join:()=>gate.promise});ui.open();await settle();ui.add();await settle();assert.equal(ui.joins[0].options.isCurrent(),true);ui.ui.navigate('lamps');assert.equal(ui.joins[0].options.isCurrent(),false);gate.resolve({phase:'joined',active:true});await settle();assert.equal(ui.dialog.open,false);assert.equal(ui.joins.length,1);ui.dispose();
+});
+
+test('legacy version-two groups without an incarnation retain the existing Add path',async()=>{
+ const ui=groupAddFixture({incarnation:undefined});delete ui.group.leader.sync.incarnation;ui.open();await settle();ui.add();await settle();assert.equal(ui.joins.length,1);assert.equal(ui.joins[0].options.expectedIncarnation,null);ui.dispose();
+});
+
+test('an unavailable lamp has an explicit foreground connection action that returns to the existing group without joining',async()=>{
+ const ui=groupAddFixture({unavailable:true});let connected=0;
+ // Keep the real adapter path through the fixture's select API.
+ ui.open();await settle();assert.match(ui.dialog.innerHTML,/data-v2="group-add-connect"/);
+ ui.click('group-add-connect',{id:ui.target.id,groupId:ui.main.id});await settle();
+ assert.equal(ui.selections.length,1);assert.equal(ui.selections[0].id,ui.target.id);assert.equal(ui.selections[0].section,'overview');assert.equal(ui.joins.length,0);assert.equal(ui.dialog.open,true);assert.match(ui.dialog.innerHTML,/Add lamps to Downstairs/);assert.equal(ui.checks.length,2);ui.dispose();
+});
+
+test('the group card and group editor both expose the same existing-group Add action',()=>{
+ const html=readFileSync(new URL('../index.html',import.meta.url),'utf8');assert.match(html,/id="addGroupEditorLamps"[^>]*>Add lamps/);
+ const main=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');assert.match(main,/add\.dataset\.groupAction='add'.*add\.onclick=\(\)=>appV2\?\.addGroupLamps\(group\.id\)/);
+ const assigned=main.match(/\$\('addGroupEditorLamps'\)\.onclick=[^\n]+/)[0],button={},calls=[];
+ runInNewContext(assigned,{$:()=>button,groupEditor:{id:'aabbccddeeff'},appV2:{addGroupLamps:id=>calls.push(id)}});button.onclick();assert.deepEqual(calls,['aabbccddeeff']);
+});
+
+test('Close remains available during a read-only group check and releases its UI ownership immediately',async()=>{
+ const gate=deferred(),ui=groupAddFixture({refresh:()=>gate.promise});ui.open();await settle();
+ const close=ui.dialog.children.find(button=>button.dataset.v2==='close');assert.equal(close.disabled,false);ui.click('close');assert.equal(ui.dialog.open,false);
+ ui.click('help');assert.deepEqual(ui.navigations,[['help']]);gate.resolve();await settle();assert.equal(ui.joins.length,0);assert.doesNotMatch(ui.dialog.innerHTML,/Add lamps to/);ui.dispose();
+});
+
+test('a shared-effect preflight failure offers this lamp’s lighting controls without choosing an effect or replaying the join',async()=>{
+ const ui=groupAddFixture({join:async(id)=>{throw Object.assign(Error('Choose a shared effect, such as Fire. Your startup settings stay the same.'),{needsSharedEffect:true,targetId:id});}});ui.open();await settle();ui.add();await settle();
+ assert.match(ui.dialog.innerHTML,/Choose a shared effect/);ui.click('open-lamp',{id:ui.target.id,section:'lighting'});await settle();assert.equal(ui.joins.length,1);assert.equal(ui.selections.length,1);assert.equal(ui.selections[0].id,ui.target.id);assert.deepEqual(ui.navigations,[['effects','lighting']]);ui.dispose();
+});

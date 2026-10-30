@@ -138,3 +138,6 @@ html[data-app-theme=dark] .v2-welcome>.v2-lamp-drawing,html[data-app-theme=dark]
 .v2-member-row .lamp-design[data-style=edison]{height:64px}
 .v2-lamp-entry .lamp-design.v2-card-update-art[data-style=edison]{height:150px}
 .v2-lamp-entry .v2-card-update-art>svg[data-lamp-artwork=edison]{height:110px}
+
+/* Membership is available beside each existing group, including one-lamp groups. */
+.v2-home-group-card{display:grid;gap:8px;min-width:0}.v2-home-group-card>.v2-home-group-add{width:100%;margin:0}.v2-group-add{width:100%;margin:0 0 14px}.v2-group-add-list{display:grid;gap:12px}.v2-group-add-lamp{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px;padding:15px;border:1px solid var(--line);border-radius:17px;background:var(--surface-low)}.v2-group-add-lamp>.v2-lamp-drawing{width:42px;height:70px}.v2-group-add-lamp>span{min-width:0}.v2-group-add-lamp strong,.v2-group-add-lamp small{display:block;overflow-wrap:anywhere}.v2-group-add-lamp small{font-weight:400;color:var(--muted);margin-top:5px}.v2-group-add-lamp>button{grid-column:1/-1;width:100%;margin:0}#globalGroupEditor>.section-title{flex-wrap:wrap}

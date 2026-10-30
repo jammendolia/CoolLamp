@@ -131,9 +131,20 @@ function groupFixture({connect,mesh,radio}={}){
 test('read-only group acquisition passes guarded Wi-Fi connection without provisioning any lamp',async()=>{
  const f=groupFixture(),lease=await f.context.createGroupLampLease(other,{readOnly:true});assert.deepEqual(f.calls,['wifi-connect']);await lease.release();assert.deepEqual(f.calls,['wifi-connect','wifi-close']);
 });
-test('read-only group discovery never guesses a missing Wi-Fi access password or opens a fallback factory',async()=>{
+test('read-only discovery skips missing Wi-Fi credentials while retaining authorized, admitted fallback only',async()=>{
  const f=groupFixture();f.context.credential=async()=>({value:''});
- await assert.rejects(f.context.createGroupLampLease(other,{readOnly:true}),error=>error.needsPassword);assert.deepEqual(f.calls,['wifi-close']);
+ const lease=await f.context.createGroupLampLease(other,{readOnly:true});
+ assert.deepEqual(f.calls,['wifi-close',['mesh',true],'initialize-radio',['ble-connect',true]]);
+ assert(!f.calls.includes('wifi-connect'));assert(!f.calls.includes('authorize'));assert(!f.calls.includes('provision'));
+ await lease.release();assert.equal(f.calls.at(-1),'ble-close');
+
+ const unpaired=groupFixture();unpaired.entry.accessoryManaged=false;unpaired.context.credential=async()=>({value:''});
+ await assert.rejects(unpaired.context.createGroupLampLease(other,{readOnly:true}),error=>error.needsPassword);
+ assert.deepEqual(unpaired.calls,['wifi-close',['mesh',true]]);
+
+ const blocked=groupFixture();blocked.context.credential=async()=>({value:''});hold(blocked.context,'bluetooth');
+ await assert.rejects(blocked.context.createGroupLampLease(other,{readOnly:true}),error=>error.cancelled&&error.confirmed);
+ assert.deepEqual(blocked.calls,[]);assert.equal(blocked.instances.length,0);
 });
 test('read-only group Wi-Fi failure cannot fall back after a background generation change',async()=>{
  let f;f=groupFixture({connect:()=>{f.context.pauseFirmwareBackgroundWork();throw Error('Offline');}});

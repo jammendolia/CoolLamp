@@ -13,6 +13,18 @@ export function lampDrawing(style='unspecified'){
  return lampArtworkSvg(style,{className:'v2-lamp-drawing'});
 }
 export const lampDrawingStyle=lamp=>resolveLampStyle(lamp?.lampStyle,lamp?.phoneLampStyle).id;
+export function groupAddState(model,id){
+ const group=model.groups?.find(value=>value.id===id),leader=group?.leader;
+ const message=!group?'This group is no longer available. Open Groups and check its lamps.':group.removalPending?'Finish this group’s pending removal before adding lamps.':leader?.sync?.membershipLocked?'Finish this group’s update before adding lamps.':!group.available||!leader?.verified?'Check connections to reach the main lamp before adding.':group.remaining===0?'This group is full. Remove or move a lamp before adding another.':'';
+ const members=new Set([id,...(group?.followers||[]).map(value=>value.id),...(leader?.sync?.order||[]).map(value=>value.id)]);
+ const owned=Array.isArray(model.ownedLampIds)?new Set(model.ownedLampIds):null;
+ const candidates=(model.lamps||[]).filter(value=>!members.has(value.id)&&(!owned||owned.has(value.id))).map(lamp=>{
+  const row=model.available?.find(value=>value.id===lamp.id);
+  const reason=!/^[0-9a-f]{12}$/.test(lamp.id)?'Open this lamp once to verify its identity.':row?.sync?.membershipLocked?'Finish this lamp’s update before adding it.':row?.verified&&row.role===1?'This lamp already leads another group.':row?.verified&&row.role===2?'This lamp belongs to another group. Remove it there first.':!row?.available||!row?.verified||row.role!==0?row?.message||'Connection not checked. Choose Check connections.':message;
+  return {lamp,row,ready:!reason,reason:reason||'Ready to add'};
+ });
+ return {group,message,candidates};
+}
 export function readAppPreferences(storage){
  try{const raw=storage.getItem('coollamp-app2')||'{}';if(raw.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');const parsed=JSON.parse(raw);if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw Error('Unsupported preferences');const value=parsed,result={...value,rooms:value.rooms&&typeof value.rooms==='object'&&!Array.isArray(value.rooms)?value.rooms:{},groups:value.groups&&typeof value.groups==='object'&&!Array.isArray(value.groups)?value.groups:{},theme:['light','dark','system'].includes(value.theme)?value.theme:'system'};preferenceWrites.add(result);return result;}catch{return {rooms:{},groups:{},theme:'system'};}
 }
@@ -39,7 +51,7 @@ export function appTourSteps(model){
 }
 export function mountAppV2(api){
  const preferences=readAppPreferences(localStorage),home=document.getElementById('v2HomeContent'),dialog=document.getElementById('v2Dialog');
- let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false;
+ let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false,groupAddReview=null;
  const persist=()=>{try{if(!preferenceWrites.has(preferences))throw Error('Read unavailable');const text=JSON.stringify(preferences);if(text.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');localStorage.setItem('coollamp-app2',text);return true;}catch{api.message('This phone could not remember the guide preferences. Your lamp’s confirmed changes are kept.');return false;}};
  let storedPreferences=true;try{storedPreferences=localStorage.getItem('coollamp-app2')!==null;}catch{}
  const guide=new OnboardingGuide(preferences,persist,{ownedIds:ownedGuideIds(api.model()),stored:storedPreferences});
@@ -55,7 +67,7 @@ export function mountAppV2(api){
   if(owner.presenting){delete dialog.dataset.operationLoading;delete dialog.dataset.operation;owner.presenting=false;}
   if(owner.status){delete owner.status.dataset.operation;if(owner.status.dataset.state==='working'){delete owner.status.dataset.state;owner.status.textContent='';}}
  }
- const close=()=>{cancelSelection();clearWorkingPresentation(workingTask);if(dialog.open)dialog.close();dialog.replaceChildren();};
+ const close=()=>{groupAddReview=null;cancelSelection();const owner=workingTask;clearWorkingPresentation(owner);if(owner?.cancellable){owner.cancel?.();workingTask=null;working=false;}if(dialog.open)dialog.close();dialog.replaceChildren();};
  function sheet(title,body){cancelSelection();clearWorkingPresentation(workingTask);dialog.innerHTML=`<div class="v2-sheet-title"><h2>${esc(title)}</h2><button type="button" data-v2="close" aria-label="Close">×</button></div><p id="v2DialogStatus" role="status" aria-live="polite" aria-atomic="true"></p><div class="v2-sheet-body">${body}</div>`;if(!dialog.open)dialog.showModal();dialog.querySelector('input,button')?.focus();}
  // Semantic keys are localizable display metadata; only explicit client work
  // selects a stage. They never authorize or replay a lamp operation.
@@ -65,16 +77,16 @@ export function mountAppV2(api){
   'finding-lamps':'Looking for your lamps…','checking-groups':'Checking which lamps can play together…',
   'creating-group':'Connecting your group…','joining-group':'Adding lamps to your group…','checking-group':'Checking your group’s connections…',
   'opening-group':'Opening your group…','changing-power':'Changing your light…'};
- async function run(task,{stage='pairing',targetId=null}={}){
+ async function run(task,{stage='pairing',targetId=null,cancellable=false,onCancel=null}={}){
   if(working||disposed)return;
-  working=true;const owner={generation:guideGeneration,controls:new Map(),presenting:false,status:null,body:null};workingTask=owner;
+  working=true;const owner={generation:guideGeneration,controls:new Map(),presenting:false,status:null,body:null,cancellable,cancel:onCancel};workingTask=owner;
   const current=()=>!disposed&&workingTask===owner&&owner.generation===guideGeneration&&(!targetId||api.model().selected?.id===targetId);
   const setStage=key=>{if(!current()||!Object.hasOwn(workMessages,key))return;
    const status=document.getElementById('v2DialogStatus');if(!status||!dialog.open)return;
    owner.status=status;owner.body=dialog.querySelector('.v2-sheet-body');owner.presenting=true;
    dialog.dataset.operationLoading='true';dialog.dataset.operation=key;
    owner.body?.setAttribute('aria-busy','true');
-   for(const control of dialog.querySelectorAll('button,input,select')){if(!owner.controls.has(control))owner.controls.set(control,control.disabled);control.disabled=true;}
+   for(const control of dialog.querySelectorAll('button,input,select')){if(owner.cancellable&&control.dataset.v2==='close')continue;if(!owner.controls.has(control))owner.controls.set(control,control.disabled);control.disabled=true;}
    status.dataset.state='working';status.dataset.operation=key;status.textContent=workMessages[key];status.scrollIntoView({block:'nearest'});
   };
   setStage(stage);
@@ -118,7 +130,7 @@ export function mountAppV2(api){
   if(!force&&key===lastHome)return;lastHome=key;
   const focused=home.contains(document.activeElement)?{action:document.activeElement.dataset.v2,id:document.activeElement.dataset.id}:null;
   document.getElementById('v2HomeSubtitle').textContent=lamps.length?`${lamps.length} ${lamps.length===1?'lamp':'lamps'} · Your home`:'Make room for a little light';
-  home.innerHTML=lamps.length?`<section class="v2-hero"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2>A softer<br>kind of evening.</h2><p>Your light. Your way.</p><button data-v2="choose-light">Find your feeling ${icon('arrow')}</button></div>${lampDrawing(heroStyle)}</section><div class="v2-section-title"><h2>Your groups</h2><button class="text-button" data-v2="create-group">+ New group</button></div><div class="v2-home-groups">${groups.length?groups.map(g=>`<button class="v2-home-group" data-v2="open-group" data-id="${esc(g.id)}"><span class="v2-group-art" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>${esc(groupName(g.id,g.name))}</strong><small>${1+(g.followers?.length||0)} lamps · ${g.available?'Ready to control':'Waiting for a connection'}${g.pendingRemovalIds?.length?' · Removal needs attention':''}</small></span>${icon('arrow')}</button>`).join(''):'<div class="v2-empty-small"><p>Your lamps work individually. Bring two or more together whenever you like.</p></div>'}</div><div class="v2-section-title"><h2>Individual lamps</h2><button class="text-button" data-v2="lamps">View all</button></div><div class="v2-individual-list">${independent.length?independent.map(l=>`<button data-v2="open-lamp" data-id="${esc(l.id)}">${lampDrawing(lampDrawingStyle(l))}<span><strong>${esc(l.name||'CoolLamp')}</strong><small>${esc(room(l.id))} · Tap to control</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">Your lamps are playing in groups. Open a group to control them.</p>'}</div><button class="v2-care-card" data-v2="updates">${icon('check')}<span><strong>A little care, handled for you.</strong><small>Updates and automatic update preferences</small></span>${icon('arrow')}</button>`:`<section class="v2-welcome">${lampDrawing('unspecified')}<p class="eyebrow">WELCOME TO COOLLAMP</p><h2>A little light.<br>A lovely beginning.</h2><p>Add your first lamp. We’ll take you through it, one simple step at a time.</p><button data-v2="add">Add your first lamp</button><button class="secondary" data-v2="discover">Find lamps already at home</button></section><p class="v2-private">Your lamps work locally. No account required.</p>`;
+  home.innerHTML=lamps.length?`<section class="v2-hero"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2>A softer<br>kind of evening.</h2><p>Your light. Your way.</p><button data-v2="choose-light">Find your feeling ${icon('arrow')}</button></div>${lampDrawing(heroStyle)}</section><div class="v2-section-title"><h2>Your groups</h2><button class="text-button" data-v2="create-group">+ New group</button></div><div class="v2-home-groups">${groups.length?groups.map(g=>`<div class="v2-home-group-card"><button class="v2-home-group" data-v2="open-group" data-id="${esc(g.id)}"><span class="v2-group-art" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>${esc(groupName(g.id,g.name))}</strong><small>${1+(g.followers?.length||0)} ${(g.followers?.length||0)===0?'lamp':'lamps'} · ${g.available?'Ready to control':'Waiting for a connection'}${g.pendingRemovalIds?.length?' · Removal needs attention':''}</small></span>${icon('arrow')}</button><button type="button" class="secondary v2-home-group-add" data-v2="add-group-lamps" data-id="${esc(g.id)}" aria-label="Add lamps to ${esc(groupName(g.id,g.name))}">Add lamps</button></div>`).join(''):'<div class="v2-empty-small"><p>Your lamps work individually. Bring two or more together whenever you like.</p></div>'}</div><div class="v2-section-title"><h2>Individual lamps</h2><button class="text-button" data-v2="lamps">View all</button></div><div class="v2-individual-list">${independent.length?independent.map(l=>`<button data-v2="open-lamp" data-id="${esc(l.id)}">${lampDrawing(lampDrawingStyle(l))}<span><strong>${esc(l.name||'CoolLamp')}</strong><small>${esc(room(l.id))} · Tap to control</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">Your lamps are playing in groups. Open a group to control them.</p>'}</div><button class="v2-care-card" data-v2="updates">${icon('check')}<span><strong>A little care, handled for you.</strong><small>Updates and automatic update preferences</small></span>${icon('arrow')}</button>`:`<section class="v2-welcome">${lampDrawing('unspecified')}<p class="eyebrow">WELCOME TO COOLLAMP</p><h2>A little light.<br>A lovely beginning.</h2><p>Add your first lamp. We’ll take you through it, one simple step at a time.</p><button data-v2="add">Add your first lamp</button><button class="secondary" data-v2="discover">Find lamps already at home</button></section><p class="v2-private">Your lamps work locally. No account required.</p>`;
   for(const button of home.querySelectorAll('[data-v2="open-group"],[data-v2="open-lamp"]')){
     const id=button.dataset.id,observed=model.statuses?.[id],group=groups.find(g=>g.id===id),entry=lamps.find(l=>l.id===id);
     if(!observed?.lighting?.fresh||!observed?.group?.fresh||!entry)continue;
@@ -185,11 +197,33 @@ export function mountAppV2(api){
   close();api.navigate('effects');offerSecondGuide();
  }
  function createGroup(){const model=api.model();sheet('Let your lamps play together',`<label for="v2GroupName">Group name</label><input id="v2GroupName" maxlength="48" placeholder="e.g. Bedroom"><p>Choose at least two lamps. We’ll choose the main lamp and confirm each connection.</p>${(model.available||[]).filter(l=>l.verified&&l.available&&l.role===0&&!l.sync?.membershipLocked).map(l=>`<label class="v2-select-row"><input type="checkbox" name="v2GroupMember" value="${esc(l.id)}"><span><strong>${esc(l.name)}</strong><small>Ready to join</small></span></label>`).join('')||'<p class="hint">Find two independent lamps first. Existing group members can be moved from group management.</p>'}<button data-v2="create-group-save">Create group</button><button class="text-button" data-v2="discover-groups">Find available lamps</button>`);}
+ function groupAddCurrent(review){return !disposed&&groupAddReview===review&&dialog.open&&review.generation===guideGeneration;}
+ function renderGroupAdd(review){
+  if(groupAddReview!==review||disposed)return;
+  const model=api.model(),view=groupAddState(model,review.id),currentIncarnation=view.group?.leader?.sync?.incarnation||null;
+  if(review.incarnation&&currentIncarnation&&review.incarnation!==currentIncarnation)review.changed=true;
+  if(!review.incarnation&&view.group?.available&&view.group.leader?.verified)review.incarnation=currentIncarnation;
+  const reason=review.changed?'This group changed. Close this window and open Add lamps again.':view.message;
+  const name=groupName(review.id,view.group?.name);
+  sheet('Add lamps to '+name,`<p>Choose a lamp to join ${esc(name)}. Keep both lamps powered on. We’ll confirm each addition.</p>${reason?`<p class="inline-notice">${esc(reason)}</p>`:''}${view.group&&(!view.group.available||!view.group.leader?.verified)?`<button type="button" class="secondary" data-v2="group-add-connect" data-group-id="${esc(review.id)}" data-id="${esc(review.id)}">Connect main lamp</button>`:''}${review.notice?`<p role="status">${esc(review.notice)}</p>`:''}${review.effectTarget?`<button type="button" class="secondary" data-v2="open-lamp" data-id="${esc(review.effectTarget)}" data-section="lighting">Choose a shared effect</button>`:''}<div class="v2-group-add-list">${view.candidates.map(({lamp,row,ready,reason:lampReason})=>{const pending=review.unconfirmed.has(lamp.id),disabled=!ready||Boolean(reason)||pending;return `<div class="v2-group-add-lamp">${lampDrawing(lampDrawingStyle(lamp))}<span><strong>${esc(lamp.name||'Lamp')}</strong><small>${esc(pending?'The last addition was not confirmed. Check connections before trying again.':lampReason)}</small></span><button type="button" data-v2="group-add-one" data-group-id="${esc(review.id)}" data-id="${esc(lamp.id)}" ${disabled?'disabled':''} aria-label="Add ${esc(lamp.name||'lamp')} to ${esc(name)}">Add to group</button>${!row?.available||!row?.verified?`<button type="button" class="secondary" data-v2="group-add-connect" data-group-id="${esc(review.id)}" data-id="${esc(lamp.id)}" aria-label="Connect ${esc(lamp.name||'lamp')}">Connect lamp</button>`:''}</div>`;}).join('')||'<p>All your saved lamps are already in this group.</p>'}</div><button type="button" class="secondary" data-v2="group-add-check" data-id="${esc(review.id)}">Check connections</button><button type="button" class="text-button" data-v2="close">Done</button>`);
+ }
+ function addGroupLamps(id){
+  if(working||selectionTask||disposed)return;
+  const view=groupAddState(api.model(),id);if(!view.group){api.message(view.message);return;}
+  const review={id,generation:guideGeneration,incarnation:view.group.leader?.sync?.incarnation||null,unconfirmed:new Map(),notice:'',changed:false};groupAddReview=review;renderGroupAdd(review);
+  checkGroupAdd(review);
+ }
+ function checkGroupAdd(review){
+  void run(async({isCurrent})=>{await api.refreshGroups();if(!isCurrent()||!groupAddCurrent(review))return;
+   for(const [id,seenAt]of review.unconfirmed){const row=api.model().available?.find(value=>value.id===id);if(row?.verified&&row.available&&row.checkedAt>seenAt)review.unconfirmed.delete(id);}
+   renderGroupAdd(review);
+  },{stage:'checking-groups',cancellable:true});
+ }
  function findLamps(groups=false){sheet(groups?'Finding your groups':'Finding your lamps',`<p>Keep your lamps powered on. We’re checking which ones are available.</p><button class="secondary" data-v2="${groups?'discover-groups':'discover'}">Try again</button>`);
   void run(async({isCurrent})=>{await (groups?api.refreshGroups():api.discover());if(!isCurrent())return;close();api.navigate(groups?'groups':'lamps');},{stage:groups?'checking-groups':'finding-lamps'});
  }
  document.addEventListener('click',event=>{if(disposed)return;const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
-  if(action==='close'){if(!working)close();return;}if(working||selectionTask)return;
+  if(action==='close'){if(!working||workingTask?.cancellable)close();return;}if(working||selectionTask)return;
   if(action==='tour'||action==='welcome-tour'){beginTour({first:action==='welcome-tour'});}
   else if(action==='welcome-skip'){beginSetup();}
   else if(action==='add'){add();}
@@ -208,6 +242,33 @@ export function mountAppV2(api){
   else if(action==='choose-light'){chooseLight();}
   else if(action==='open-lamp'||action==='select-settings'){if(!dialog.open)chooseLight(button.dataset.section||'lighting');const choice=[...dialog.querySelectorAll('[data-v2="select-settings"]')].find(value=>value.dataset.id===button.dataset.id)||button;void selectLight(choice);}
   else if(action==='open-group'){close();api.navigate('groups');void api.openGroup(button.dataset.id);}
+  else if(action==='add-group-lamps'){addGroupLamps(button.dataset.id);}
+  else if(action==='group-add-check'){const review=groupAddReview;if(review?.id===button.dataset.id)checkGroupAdd(review);}
+  else if(action==='group-add-connect'){
+   const review=groupAddReview,id=button.dataset.id;if(!review||review.id!==button.dataset.groupId||!groupAddCurrent(review))return;
+   const view=groupAddState(api.model(),review.id);if(id!==review.id&&!view.candidates.some(value=>value.lamp.id===id))return;
+   const controller=new AbortController();
+   void run(async({isCurrent})=>{const current=()=>isCurrent()&&groupAddCurrent(review);
+    try{const result=await api.select(id,'overview',{signal:controller.signal,isCurrent:current});if(!current())return;
+     if(!result?.connected||result.id&&result.id!==id)throw result?.error||Error('This lamp did not confirm its connection. Open Lamps and reconnect it, then return to Add lamps.');
+     await api.refreshGroups();if(current())renderGroupAdd(review);
+    }catch(error){if(current()){review.notice=error.message||'Open Lamps and reconnect this lamp, then return to Add lamps.';renderGroupAdd(review);}throw error;}
+    finally{controller.abort();}
+   },{stage:'pairing',cancellable:true,onCancel:()=>controller.abort()});
+  }
+  else if(action==='group-add-one'){
+   const review=groupAddReview,id=button.dataset.id;if(!review||review.id!==button.dataset.groupId||!groupAddCurrent(review))return;
+   const view=groupAddState(api.model(),review.id),candidate=view.candidates.find(value=>value.lamp.id===id);
+   if(review.incarnation&&view.group?.leader?.sync?.incarnation&&review.incarnation!==view.group.leader.sync.incarnation)review.changed=true;
+   if(review.changed||view.message||!candidate?.ready||review.unconfirmed.has(id)){renderGroupAdd(review);return;}
+   void run(async({isCurrent})=>{const current=()=>isCurrent()&&groupAddCurrent(review);
+    try{const result=await api.addGroupLamp(id,review.id,{isCurrent:current,expectedIncarnation:review.incarnation});if(!current())return;
+     if(!['joined','already-member'].includes(result?.phase))throw Object.assign(Error('This lamp has not confirmed joining. Check connections before trying again.'),{uncertain:true});
+     review.notice=(candidate.lamp.name||'Lamp')+' added.'+(result.active?'':' It will follow when the main lamp is reachable.');
+    }catch(error){if(current()){review.notice=error.message||'This lamp could not join yet.';if(error.needsSharedEffect)review.effectTarget=error.targetId||id;if(error.uncertain)review.unconfirmed.set(id,candidate.row?.checkedAt||0);}throw error;}
+    finally{if(current())renderGroupAdd(review);}
+   },{stage:'joining-group'});
+  }
   else if(action==='power')void run(()=>api.power(button.dataset.id),{stage:'changing-power'});
   else if(action==='create-group'){sheet('Finding your lamps','<p>We’re checking which lamps are ready to play together. This can take a little time when a lamp is out of reach.</p>');void run(async({isCurrent})=>{await api.refreshGroups();if(isCurrent())createGroup();},{stage:'checking-groups'});}
   else if(action==='create-group-save')void run(async({setStage,isCurrent})=>{const name=document.getElementById('v2GroupName').value.trim(),ids=[...dialog.querySelectorAll('[name="v2GroupMember"]:checked')].map(input=>input.value);if(!name)throw Error('Give your group a name.');if(ids.length<2)throw Error('Choose at least two lamps.');const generation=guideGeneration;let result;try{result=await api.createGroup(ids,{onProgress:setStage});}catch(error){if(generation!==guideGeneration||!isCurrent())return;sheet('Let’s check your group',`<p>Some lamps may already be playing together. Open Groups to see which lamps confirmed joining and finish the remaining steps.</p><p>${esc(error.message||'A lamp has not confirmed joining.')}</p><button data-v2="group-guide-review">Check my groups</button><button class="secondary" data-v2="close">Finish later</button>`);throw Object.assign(Error('Choose “Check my groups” to finish the existing group. We will not create it again.'),{guideReview:true,uncertain:error.uncertain});}preferences.groups[result.id]=name;persist();if(generation!==guideGeneration||!isCurrent())return;close();api.navigate('groups');await api.openGroup(result.id);},{stage:'creating-group'});
@@ -235,12 +296,12 @@ export function mountAppV2(api){
   else if(action==='guide-audio-next'){audioGuideStep=Math.min(3,audioGuideStep+1);audioGuide();}
   else if(action==='help-knob')sheet('A familiar little knob',`<div class="v2-help-row"><strong>Turn</strong><p>Choose another effect.</p></div><div class="v2-help-row"><strong>Click, then turn</strong><p>Adjust brightness.</p></div><div class="v2-help-row"><strong>Double-click, then turn</strong><p>Choose a color.</p></div><div class="v2-help-row"><strong>Triple-click</strong><p>Turn off. Click once to turn back on.</p></div><div class="v2-help-row"><strong>Hold until blue, then release</strong><p>About six seconds · Pair a phone.</p></div><p class="hint">A ten-second hold until red arms reset. Release at blue when pairing.</p><button class="secondary" data-v2="help">Back to Help</button>`);
  });
- dialog.addEventListener('cancel',event=>{if(working)event.preventDefault();else cancelSelection();});
- dialog.addEventListener('close',()=>cancelSelection());
+ dialog.addEventListener('cancel',event=>{if(working&&!workingTask?.cancellable)event.preventDefault();else if(workingTask?.cancellable)close();else cancelSelection();});
+ dialog.addEventListener('close',()=>{groupAddReview=null;cancelSelection();});
  document.getElementById('v2Theme').addEventListener('change',event=>{preferences.theme=event.target.value;persist();applyTheme();});
  document.getElementById('v2LampSearch').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();document.querySelectorAll('#lampList .lamp-entry').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(query);});});
  const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
  refresh(true);
  function startWelcome(){if(guide.welcome())sheet('Welcome to CoolLamp',`<p>Would you like a quick look around? We’ll point out the buttons and explain what they do. Then we’ll help you add your first lamp.</p><button type="button" data-v2="welcome-tour">Show me around</button><button type="button" class="secondary" data-v2="welcome-skip">Skip tour and set up my lamp</button><p class="hint">You can take the tour later from Help.</p>`);}
- return {groupName,room,refresh,chooseLight,openSettings,startWelcome,beginTour,endTour,navigate(name,{tour:tourNavigation=false}={}){if(!tourNavigation)endTour('navigation');const offerGroup=!tourNavigation&&name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings','bridges'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(!tourNavigation&&name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;endTour('disposed');api.tourNavigate?.(route,{active:false});++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
+ return {groupName,room,refresh,chooseLight,openSettings,addGroupLamps,startWelcome,beginTour,endTour,navigate(name,{tour:tourNavigation=false}={}){if(!tourNavigation)endTour('navigation');const offerGroup=!tourNavigation&&name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings','bridges'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(!tourNavigation&&name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;endTour('disposed');api.tourNavigate?.(route,{active:false});++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
 }

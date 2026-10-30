@@ -4,7 +4,7 @@ import { GroupDiscovery } from '../src/group-discovery.js';
 
 const ids = ['aabbccddeeff','112233445566','0123456789ab','fedcba987654'];
 const groupKey = '0123456789abcdef0123456789abcdef';
-const code = id => 'CL1-' + id + '-' + groupKey;
+const code = (id,protocol=2) => (protocol===3?'CL3-':'CL1-') + id + '-' + groupKey;
 const response = (data, status = 200) => ({status, data: typeof data === 'string' ? data : JSON.stringify(data)});
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(count = 3) {
@@ -27,7 +27,7 @@ function setup(count = 3) {
     assert.equal(url.pathname, '/api/sync/invite'); assert.equal(options.method, 'POST'); assert.equal(options.data, '');
     assert.equal(options.headers['X-Lamp-Token'], device.token);
     assert.equal(options.headers['Content-Type'], 'application/x-www-form-urlencoded');
-    return response(code(device.id));
+    return response(code(device.id,device.sync.version));
   }};
   const discovery = new GroupDiscovery({http, credential: async id => {credentials.push(id); return {value: savedPasswords.get(id) || ''};},
     getLamps: () => entries, getTarget: () => target, onStatus: (id, status) => changes.push({id, ...status}), requestTimeout: 1000, now: () => 1234});
@@ -227,6 +227,104 @@ test('an existing ordered group member can retrieve an invitation even when the 
   const {discovery, devices} = setup(2);
   devices[1].sync.members = 8; devices[1].sync.order = Array.from({length: 9}, (_, i) => ({id: i === 0 ? ids[0] : i.toString(16).padStart(12,'0')}));
   assert.equal((await discovery.invite(ids[1])).targetId, ids[0]);
+});
+
+test('Wi-Fi discovery and invitations negotiate the target’s advertised v2/v3 support without changing the invitation protocol', async () => {
+  const targets=[
+    {version:2,supported:[2]},
+    {version:3,supported:[3]},
+    {version:2,advertised:[2,3],supported:[2,3]},
+    {version:3,advertised:[2,3],supported:[2,3]},
+    {version:2,advertised:[2],supported:[2]},
+    {version:3,advertised:[3],supported:[3]},
+    {version:2,advertised:[2,3,2,3],supported:[2]},
+    {version:3,advertised:'2,3',supported:[3]}
+  ];
+  for(const config of targets)for(const coordinatorVersion of [2,3]){
+    const {discovery,devices,target,calls}=setup(2);
+    Object.assign(target().sync,{version:config.version,maxMembers:32});
+    if(config.advertised!==undefined)target().sync.protocolVersions=structuredClone(config.advertised);
+    Object.assign(devices[1].sync,{version:coordinatorVersion,maxMembers:32});
+    const compatible=config.supported.includes(coordinatorVersion),scan=await discovery.scan();
+    assert.equal(scan.coordinators[0].joinable,compatible,JSON.stringify({config,coordinatorVersion}));
+    assert.equal(writes(calls).length,0,'Discovery does not fetch private invitations.');
+    if(compatible){
+      const invitation=await discovery.invite(ids[1]);
+      assert.deepEqual(invitation,{id:ids[1],targetId:ids[0],code:code(ids[1],coordinatorVersion)});
+      assert.equal(writes(calls).length,1);
+    }else{
+      await assert.rejects(discovery.invite(ids[1]),/group firmware version/);
+      assert.equal(writes(calls).length,0);
+    }
+  }
+});
+
+test('target capability changes fence scans and invitations before or after the one private request', async () => {
+  for(const stage of ['scan','before-invite','after-invite']){
+    const {discovery,devices,target,calls,changes}=setup(2);
+    target().sync.protocolVersions=[2,3];Object.assign(devices[1].sync,{version:3,maxMembers:32});
+    const path=stage==='scan'?'/api/diagnostics':stage==='before-invite'?'/api/state':'/api/sync/invite';
+    let complete,blocked=false;
+    devices[1].request=(_,requested)=>requested===path&&!blocked?(blocked=true,new Promise(resolve=>{complete=resolve;})):undefined;
+    const pending=stage==='scan'?discovery.scan():discovery.invite(ids[1]);await tick();
+    assert.equal(typeof complete,'function');
+    // Mutate the original array in place: a retained alias would miss this.
+    target().sync.protocolVersions.splice(0,2,2);
+    complete(path.endsWith('/invite')?response(code(ids[1],3)):response({deviceId:ids[1],token:devices[1].token,sync:devices[1].sync}));
+    if(stage==='scan'){
+      const result=await pending;assert.equal(result.cancelled,true);assert.equal(result.coordinators.length,0);
+    }else await assert.rejects(pending,error=>error.stale||error.cancelled);
+    assert.equal(writes(calls).length,stage==='after-invite'?1:0);
+    assert.equal(discovery.invites.size,0);assert(!JSON.stringify(changes).includes(groupKey));
+  }
+});
+
+test('equivalent target capability ordering does not cancel a valid invitation', async () => {
+  const {discovery,devices,target,calls}=setup(2);
+  target().sync.protocolVersions=[3,2];Object.assign(devices[1].sync,{version:3,maxMembers:32});
+  let complete,blocked=false;
+  devices[1].request=(_,path)=>path==='/api/state'&&!blocked?(blocked=true,new Promise(resolve=>{complete=resolve;})):undefined;
+  const pending=discovery.invite(ids[1]);await tick();target().sync.protocolVersions.reverse();
+  complete(response({deviceId:ids[1],token:devices[1].token,sync:devices[1].sync}));
+  assert.equal((await pending).code,code(ids[1],3));assert.equal(writes(calls).length,1);
+});
+
+test('an invitation whose protocol disagrees with the verified coordinator is discarded', async () => {
+  for(const coordinatorVersion of [2,3]){
+    const {discovery,devices,target,calls,changes}=setup(2);
+    target().sync.protocolVersions=[2,3];Object.assign(devices[1].sync,{version:coordinatorVersion,maxMembers:32});
+    devices[1].request=(_,path)=>path.endsWith('/invite')?response(code(ids[1],coordinatorVersion===3?2:3)):undefined;
+    await assert.rejects(discovery.invite(ids[1]),/invalid group invitation/);
+    assert.equal(writes(calls).length,1);assert(!JSON.stringify(changes).includes(groupKey));
+  }
+});
+
+test('a coordinator protocol change after its invitation is fenced even when the target supports both', async () => {
+  for(const before of [2,3]){
+    const {discovery,devices,target,calls}=setup(2);
+    target().sync.protocolVersions=[2,3];Object.assign(devices[1].sync,{version:before,maxMembers:32});let reads=0;
+    devices[1].request=(_,path)=>{if(path==='/api/state'&&++reads===2)devices[1].sync.version=before===3?2:3;};
+    await assert.rejects(discovery.invite(ids[1]),/Coordinator changed/);
+    assert.equal(writes(calls).length,1);assert.equal(discovery.invites.size,0);
+  }
+});
+
+test('a same-boot coordinator group recreation discards its invitation without replay or exposing the code', async () => {
+  const {discovery,devices,target,calls,changes}=setup(2);
+  target().sync.protocolVersions=[2,3];
+  Object.assign(devices[1].sync,{version:3,maxMembers:32,incarnation:'a'.repeat(32)});
+  const bootToken=devices[1].token;
+  devices[1].request=(_,path)=>{if(path.endsWith('/invite'))devices[1].sync.incarnation='b'.repeat(32);};
+  await assert.rejects(discovery.invite(ids[1]),error=>/Coordinator changed/.test(error.message)&&!error.message.includes(groupKey));
+  assert.equal(devices[1].token,bootToken);assert.equal(devices[1].sync.role,1);assert.equal(devices[1].sync.version,3);
+  assert.equal(writes(calls).length,1);assert.equal(discovery.invites.size,0);
+  assert(!JSON.stringify(changes).includes(groupKey));assert(!JSON.stringify(changes).includes('CL3-'));
+});
+
+test('a legacy coordinator without incarnation metadata still returns its verified invitation', async () => {
+  const {discovery,devices,calls}=setup(2);assert.equal(Object.hasOwn(devices[1].sync,'incarnation'),false);
+  assert.equal((await discovery.invite(ids[1])).code,code(ids[1]));
+  assert.equal(writes(calls).length,1);assert.equal(discovery.invites.size,0);
 });
 
 test('missing, malformed or header-injecting boot tokens never reach the invitation endpoint', async () => {

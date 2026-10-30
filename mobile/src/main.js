@@ -2542,7 +2542,9 @@ async function createGroupLampLease(id,{entry,readOnly=false,signal,isCurrent=()
       const password=savedPassword||'coollamp';
       await transport.connect(entry.address,password,id,{guard,...(onboarding?{timeoutMs}:{}),currentStateRead:entry.firmwareVersion&&validFirmwareVersion(entry.firmwareVersion)&&compareFirmwareVersions(entry.firmwareVersion,'1.15.3')>=0});guard();clearTimeout(transport.timer);
       return {lamp:transport,release:()=>transport.disconnect()};
-    }catch(error){wifiError=error;await transport.disconnect();guard();if(error.cancelled||readOnly&&error.needsPassword)throw error;}
+    // Acquisition has only read settings. Missing/rejected Wi-Fi credentials
+    // do not invalidate an already authorized Bluetooth or mesh connection.
+    }catch(error){wifiError=error;await transport.disconnect();guard();if(error.cancelled)throw error;}
   }
   if(onboarding&&onboardingRoute==='wifi')throw wifiError||Error('This saved lamp has no usable Wi-Fi connection.');
   if(!onboarding||onboardingRoute==='mesh'){
@@ -2592,6 +2594,16 @@ async function roomGroupAction(id,action) {
     if(groupEditor)renderGroupScenes();
   }catch(error){$('groupsFeedback').textContent=error.leftPrevious?error.message:error.uncertain?'Change was not confirmed. Refresh this lamp before trying again.':error.message;}
   finally{groupActions.delete(id);renderRoomGroups();renderLamps();}
+}
+async function addLampToExistingGroup(id,leaderId,{isCurrent=()=>true,expectedIncarnation}={}) {
+  const ids=[id,leaderId],guard=()=>{if(!isCurrent())throw Object.assign(Error('This group selection closed or changed.'),{cancelled:true,confirmed:true});};
+  guard();
+  if(ids.some(value=>groupActions.has(value)||cardPowerTasks.has(value)||fleetLampInstalling(value)||bluetoothFirmwareOwner()?.id===value))throw Error('Wait for the current lamp change before adding to this group.');
+  ids.forEach(value=>groupActions.add(value));renderRoomGroups();renderLamps();
+  try{
+    if(groupEditor?.id===leaderId)await closeGroupEditor();guard();
+    return await roomGroups.join(id,leaderId,{isCurrent,expectedIncarnation});
+  }finally{ids.forEach(value=>groupActions.delete(value));renderRoomGroups();renderLamps();}
 }
 function groupLampRow(row,{follower=false}={}) {
   const item=document.createElement('div');item.className='room-group-lamp v2-member-row';item.dataset.groupLampId=row.id;item.dataset.state=row.available&&row.verified?'ready':row.state||'unknown';
@@ -2654,11 +2666,12 @@ function renderRoomGroups() {
     mode.textContent=scene===0?'Together':scene>0?'Across the room':'Shared light';effect.textContent=effectName||'Open controls to see the current effect';
     brightness.textContent=raw&&Number.isInteger(raw.brightness)&&raw.brightness>=1&&raw.brightness<=255?'Group brightness · '+Math.round(raw.brightness*100/255)+'%':'Group power, brightness & effects';summary.append(mode,effect,brightness);card.append(summary);
     const controls=document.createElement('button');controls.type='button';controls.className='primary v2-group-controls';controls.dataset.groupAction='controls';controls.textContent=ready?'Control '+name:'Waiting for the main lamp';controls.disabled=!ready||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;controls.onclick=()=>openGroupEditor(group.id);card.append(controls);
+    const add=document.createElement('button');add.type='button';add.className='secondary v2-group-add';add.dataset.groupAction='add';add.textContent='Add lamps';add.setAttribute('aria-label','Add lamps to '+name);add.disabled=groupActions.has(group.id)||fleetLampInstalling(group.id);add.onclick=()=>appV2?.addGroupLamps(group.id);card.append(add);
     const sound=document.createElement('small');sound.className='v2-sound-label';sound.textContent=ready?group.leader.audio?.installed?'Sound listens at '+(group.leader.name||'the main lamp'):'Choose light effects · The main lamp has no microphone':'Sound source will be checked on reconnect';card.append(sound);
     const members=document.createElement('details');members.className='v2-group-members';members.open=expanded.has(group.id);const memberSummary=document.createElement('summary');memberSummary.textContent='Lamps in this group · '+total;members.append(memberSummary);
     const main=document.createElement('div');main.className='v2-group-main-lamp';const mainName=document.createElement('strong'),mainHint=document.createElement('small');mainName.textContent=group.placeholder?savedLeader?.name||'Main lamp':group.leader.name||'Main lamp';mainHint.textContent='Keeps this group in time';main.append(mainName,mainHint);members.append(main);
     const list=document.createElement('div');list.className='group-lamp-list v2-group-member-list';for(const row of group.followers)list.append(groupLampRow(row,{follower:true}));
-    if(!group.followers.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Add another lamp below to bring this group to life.';list.append(empty);}members.append(list);
+    if(!group.followers.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='Choose Add lamps to bring this group to life.';list.append(empty);}members.append(list);
     const capacity=document.createElement('p');capacity.className='hint v2-group-capacity';capacity.textContent=ready?group.remaining+' '+(group.remaining===1?'place':'places')+' available · '+(group.capacity+1)+' lamps supported by this group':'Capacity will be checked when the main lamp returns';members.append(capacity);
     if(group.removalPending){const pending=document.createElement('p');pending.className='inline-notice v2-group-removal-pending';pending.textContent=group.removalNeedsReconfirmation?'This group changed since removal began. Review its current lamps before continuing.':group.pendingRemovalIds.length?group.pendingRemovalIds.length+' '+(group.pendingRemovalIds.length===1?'lamp still needs':'lamps still need')+' confirmed departure.'+(group.dissolutionPending?' The main lamp is kept until every departure is confirmed.':' Remaining group members stay together.'):'The group removal still needs its final confirmation.';members.append(pending);members.open=true;}
     const reconfirmRemoval=group.dissolutionPending&&group.removalNeedsReconfirmation&&ready&&/^[0-9a-f]{32}$/.test(sync?.incarnation||'');
@@ -2708,6 +2721,7 @@ async function groupSceneAction(action,{outsideQueue=false}={}) {
   finally{editor.busy=false;groupEditorMutations.delete(editor.id);renderGroupScenes();renderLamps();}
 }
 $('refreshAllGroups').onclick=refreshRoomGroups;$('closeGroupEditor').onclick=closeGroupEditor;
+$('addGroupEditorLamps').onclick=()=>{if(groupEditor?.id)appV2?.addGroupLamps(groupEditor.id);};
 async function removeGroupOrderMember(editor,targetId,expectedIncarnation) {
   // A retained row must never act on a different editor opened after it rendered.
   if(!editor||groupEditor!==editor)return;
@@ -3189,6 +3203,7 @@ appV2=mountAppV2({
  message:status,navigate:(name,section)=>{if(section)settingsView=section;page(name);},
  pair:async()=>{const result=await connect(null,{navigate:false});return result?.connected===true&&/^[0-9a-f]{12}$/.test(result.id||'')?Object.freeze({...result}):result;},discover:()=>discover(true),refreshGroups:refreshRoomGroups,
  findNewLamps:()=>refreshNewMeshLamps({explicit:true}),openGroup:openGroupEditor,
+ addGroupLamp:addLampToExistingGroup,
  power:async(id)=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer available.');return changeCardPower(entry);},
  select:async(id,section,options={})=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');if(busy||connecting||fleetLampInstalling(id))throw Error('This lamp is finishing another task. Please try again in a moment.');return openCardSettings(entry,{section,signal:options.signal,isCurrent:options.isCurrent,navigate:false,preferWifi:section==='hardware'&&!advancedAvailable()});},
  setupDetails:async({id,name,style,room,onProgress})=>{

@@ -48,7 +48,9 @@ export class GroupDiscovery {
     const value = this.getTarget();
     if (!value) return null;
     const lamp = candidate(value);
-    return {...lamp, epoch: value.epoch, role: value.sync?.role, version: value.sync?.version};
+    const advertised=value.sync?.protocolVersions;
+    const protocolVersions=Array.isArray(advertised)&&advertised.length<=3?[2,3].filter(version=>advertised.includes(version)):[];
+    return {...lamp, epoch: value.epoch, role: value.sync?.role, version: value.sync?.version, protocolVersions};
   }
   candidates() {
     const values = new Map();
@@ -62,7 +64,8 @@ export class GroupDiscovery {
     if (run.cancelled) throw failure('Group discovery cancelled.', {cancelled: true});
     const target = this.target();
     if (Boolean(target) !== Boolean(run.target) || target &&
-      ['id','address','epoch','role','version'].some(key => target[key] !== run.target[key])) {
+      (['id','address','epoch','role','version'].some(key => target[key] !== run.target[key]) ||
+       target.protocolVersions.join(',') !== run.target.protocolVersions.join(','))) {
       run.stop();
       throw failure('Selected lamp changed. Choose the group again.', {stale: true});
     }
@@ -133,7 +136,7 @@ export class GroupDiscovery {
     return {sync, token: raw.token, firmwareVersion: validFirmwareVersion(raw.firmware?.version), name: label(raw.name) || lamp.name};
   }
   eligibility(sync, target) {
-    if (target && !supportsGroupProtocol(target.sync||{version:target.version},sync.version)) return {joinable: false, message: 'Update these lamps to the same group firmware version before joining.'};
+    if (target && !supportsGroupProtocol(target.sync||target,sync.version)) return {joinable: false, message: 'Update these lamps to the same group firmware version before joining.'};
     const order = Array.isArray(sync.order) ? sync.order.map(entry => entry.id) : [];
     const limit=groupMemberLimit(sync);
     if ((order.length >= limit || sync.members >= limit-1) && !order.includes(target?.id)) {
@@ -199,13 +202,13 @@ export class GroupDiscovery {
       try {
         if (typeof response.data !== 'string' || response.data.length > 64) throw Error();
         const fields = parseGroupCode(response.data);
-        if (fields.leader !== lamp.id) throw Error();
-        code = 'CL1-' + fields.leader + '-' + fields.key;
+        if (fields.leader !== lamp.id || (fields.protocol===3)!==(before.sync.version===3)) throw Error();
+        code = (fields.protocol===3?'CL3-':'CL1-') + fields.leader + '-' + fields.key;
       } catch {throw failure('Coordinator returned an invalid group invitation. Refresh discovery.');}
-      // Discard an invitation if the coordinator rebooted, changed role, or
-      // the selected joining lamp/session changed while the request ran.
+      // Discard an invitation if the coordinator rebooted, recreated its group,
+      // or changed protocol/role while the selected lamp/session was checked.
       const after = await this.read(lamp, run, authorization, true);
-      if (after.sync.role !== 1 || after.token !== before.token) throw failure('Coordinator changed while joining. Choose the group again.');
+      if (after.sync.role !== 1 || after.token !== before.token || after.sync.version !== before.sync.version || after.sync.incarnation !== before.sync.incarnation) throw failure('Coordinator changed while joining. Choose the group again.');
       const eligibleAfter = this.eligibility(after.sync, run.target);
       if (!eligibleAfter.joinable) throw failure(eligibleAfter.message);
       this.assertCurrent(lamp, run);

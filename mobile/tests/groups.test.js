@@ -736,3 +736,65 @@ test('modern v2 member removal keeps its coordinator instead of issuing an unfen
   assert.deepEqual(writes(f).map(row=>[row.id,row.op,row.path]),[[ids[1],'sync',undefined],[ids[0],'request','/api/group/remove']]);
   assert.deepEqual(storage.read(),{version:2,sources:[]});
 });
+
+test('a closed reviewed Add action performs no acquisition or group write',async()=>{
+ const f=fixture();await assert.rejects(f.groups.join(ids[3],ids[0],{isCurrent:()=>false}),error=>error.cancelled&&error.confirmed&&!error.uncertain);
+ assert.equal(f.leases.length,0);assert.equal(writes(f).length,0);assert.equal(f.groups.snapshot().busyIds.length,0);
+});
+
+test('closing a reviewed Add while its connection is opening releases the late lease without a write',async()=>{
+ const f=fixture(),gate=defer();let current=true;f.hooks.set(ids[0],{acquireDelay:gate.promise});
+ const pending=f.groups.join(ids[3],ids[0],{isCurrent:()=>current});await tick();current=false;gate.resolve();
+ await assert.rejects(pending,error=>error.cancelled&&!error.uncertain);assert.equal(writes(f).length,0);assert(f.leases.every(lease=>lease.released));
+});
+
+test('a reviewed Add rejects a different coordinator incarnation before requesting an invitation',async()=>{
+ const f=fixture();expanded(f);f.models.get(ids[3]).sync.protocolVersions=[2,3];
+ await assert.rejects(f.groups.join(ids[3],ids[0],{expectedIncarnation:'e'.repeat(32)}),error=>error.stale&&!error.uncertain);
+ assert.equal(writes(f).length,0);assert.equal(f.calls.filter(call=>call.op==='invite').length,0);
+});
+
+test('a recreated coordinator after invitation cannot enroll a reviewed lamp',async()=>{
+ const f=fixture();expanded(f);f.models.get(ids[3]).sync.protocolVersions=[2,3];f.hooks.set(ids[0],{invite:(_,model)=>{model.sync.incarnation='e'.repeat(32);}});
+ await assert.rejects(f.groups.join(ids[3],ids[0],{expectedIncarnation:groupIncarnation(ids[0])}),error=>error.stale&&!error.uncertain);assert.equal(writes(f).length,0);
+});
+
+test('closing a reviewed Add after invitation still prevents the membership write',async()=>{
+ const f=fixture();let current=true;f.hooks.set(ids[0],{invite:()=>{current=false;}});
+ await assert.rejects(f.groups.join(ids[3],ids[0],{isCurrent:()=>current}),error=>error.cancelled&&error.confirmed&&!error.uncertain);assert.equal(writes(f).length,0);
+});
+
+test('closing after a membership write is uncertain and never replays the join',async()=>{
+ const f=fixture();let current=true;f.hooks.set(ids[3],{afterSync:()=>{current=false;}});
+ await assert.rejects(f.groups.join(ids[3],ids[0],{isCurrent:()=>current}),error=>error.uncertain===true);
+ assert.equal(writes(f).filter(call=>call.op==='sync').length,1);assert.equal(f.models.get(ids[3]).sync.role,2);assert(f.leases.every(lease=>lease.released));
+ await f.groups.refresh();assert.equal(writes(f).filter(call=>call.op==='sync').length,1);assert.equal(f.groups.snapshot().lamps.find(row=>row.id===ids[3]).role,2);
+});
+
+test('review guards retain legacy version-two groups without an incarnation',async()=>{
+ const f=fixture();const result=await f.groups.join(ids[3],ids[0],{isCurrent:()=>true,expectedIncarnation:null});assert.equal(result.phase,'joined');assert.equal(writes(f).length,1);
+});
+
+test('known 1.15.7 standalone Sonata effects explain how to join before invitation or membership writes',async()=>{
+ const f=fixture(),model=f.models.get(ids[3]);Object.assign(model,{mode:53,startupMode:53});model.firmware.version='1.15.7';const before=structuredClone(model);
+ await assert.rejects(f.groups.join(ids[3],ids[0]),error=>error.needsSharedEffect&&error.targetId===ids[3]&&/shared effect, such as Fire/.test(error.message));
+ assert.equal(f.calls.filter(call=>call.op==='invite').length,0);assert.equal(writes(f).length,0);assert.deepEqual(model,before);
+});
+
+test('a known 1.15.7 coordinator also requires a shared effect without changing its startup settings',async()=>{
+ const f=fixture(),model=f.models.get(ids[0]);Object.assign(model,{mode:55,startupMode:54});model.firmware.version='1.15.7';const before=structuredClone(model);
+ await assert.rejects(f.groups.join(ids[3],ids[0]),error=>error.needsSharedEffect&&error.targetId===ids[0]);assert.equal(f.calls.filter(call=>call.op==='invite').length,0);assert.equal(writes(f).length,0);assert.deepEqual(model,before);
+});
+
+test('the known firmware compatibility explanation does not impose its effect ceiling on future firmware',async()=>{
+ const f=fixture(),model=f.models.get(ids[3]);model.mode=53;model.firmware.version='1.15.8';assert.equal((await f.groups.join(ids[3],ids[0])).phase,'joined');
+});
+
+test('a coordinator recreated during the follower’s last preflight read is fenced before the reviewed join',async()=>{
+ const f=fixture();expanded(f);f.models.get(ids[3]).sync.protocolVersions=[2,3];f.hooks.set(ids[3],{afterRead:(_,__,count)=>{if(count===3)f.models.get(ids[0]).sync.incarnation='e'.repeat(32);}});
+ await assert.rejects(f.groups.join(ids[3],ids[0],{expectedIncarnation:groupIncarnation(ids[0])}),error=>error.stale&&!error.uncertain);assert.equal(writes(f).length,0);
+});
+
+test('a no-op move to the existing group stays a no-op even while an individual effect is selected',async()=>{
+ const f=fixture();f.models.get(ids[1]).firmware.version='1.15.7';f.models.get(ids[1]).mode=53;assert.equal((await f.groups.move(ids[1],ids[0])).phase,'already-member');assert.equal(writes(f).length,0);
+});

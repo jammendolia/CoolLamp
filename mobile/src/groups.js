@@ -183,22 +183,24 @@ export class Groups {
     for (const value of values) {const entry=this.source(value);if(entry)candidates.set(entry.id,{...candidates.get(entry.id),...entry});}
     this.entries=candidates;return [...candidates.values()].slice(0,64);
   }
-  async leased(id, readOnly, operation, run = null) {
+  async leased(id, readOnly, operation, run = null, reviewGuard = null) {
+    reviewGuard?.();
     if(this.forgotten.has(id))throw problem('Authorize this lamp again before managing its groups.',{needsAuthorization:true});
     const current=(this.getLamps() || []).map(value=>this.source(value)).find(value=>value?.id===id);
     const retained=this.entries.get(id);
     const entry=current || (readOnly&&retained?fields(retained,['id','name','address','hostname']):null);
     if (!entry) throw problem('This lamp is no longer in discovery. Refresh Groups.', {stale:true});
     const revision=this.revision(id),locator=current?JSON.stringify(fields(current,['address','deviceId','accessoryManaged'])):null;
-    const lease = await this.acquire(id,{entry,readOnly,purpose:readOnly?'groups-scan':'groups-action'});
+    const lease = await this.acquire(id,{entry,readOnly,purpose:readOnly?'groups-scan':'groups-action',...(reviewGuard?{isCurrent:()=>{try{reviewGuard();return true;}catch{return false;}}}:{})});
     const lamp=lease?.lamp || lease?.transport;
     try {
       if (!lamp || typeof lamp.refresh !== 'function' || typeof lease.release !== 'function') throw problem('Lamp connection could not be verified.');
-      const context={id,lamp,epoch:lamp.epoch,base:lamp.base,token:session(lamp),run,revision,locator};
+      const context={id,lamp,epoch:lamp.epoch,base:lamp.base,token:session(lamp),run,revision,locator,reviewGuard};
       this.guard(context);return await operation(context);
     } finally {try {await lease?.release?.();} catch { /* A cleanup failure cannot replay or change a group action. */ }}
   }
   guard(context) {
+    context.reviewGuard?.();
     const {lamp,id,epoch,base,run}=context;
     if (run?.cancelled) throw problem('Group discovery cancelled.', {cancelled:true});
     if(this.forgotten.has(id)||context.revision!==this.revision(id))throw problem('Lamp authorization changed. Refresh Groups before trying again.',{stale:true,needsAuthorization:true});
@@ -483,44 +485,59 @@ export class Groups {
       await this.clearSource(id);return {id,saved:true,phase:'dissolved',confirmed,pending:[],coordinatorStopped:true};
     }));
   }
-  join(id,leaderId) {return this.transfer(id,leaderId,false);}
+  join(id,leaderId,options) {return this.transfer(id,leaderId,false,options);}
   move(id,leaderId) {return this.transfer(id,leaderId,true);}
-  transfer(id,leaderId,moving) {
+  transfer(id,leaderId,moving,{isCurrent,expectedIncarnation}={}) {
     if(id===leaderId)return Promise.reject(problem('A coordinator cannot follow itself.'));
+    if(expectedIncarnation!==undefined&&expectedIncarnation!==null&&!incarnation(expectedIncarnation))return Promise.reject(problem('Refresh this group before adding lamps.',{stale:true}));
+    let writeStarted=false;
+    const reviewGuard=raw=>{
+      if(typeof isCurrent==='function'&&!isCurrent())throw problem('This group selection closed or changed. Check its lamps before trying again.',{cancelled:true,confirmed:!writeStarted,uncertain:writeStarted});
+      if(raw&&expectedIncarnation&&incarnation(raw.sync?.incarnation)!==expectedIncarnation)throw problem('This group changed. Open Add lamps again before joining.',{stale:true,uncertain:writeStarted});
+    };
+    const fresh=async context=>{reviewGuard();const raw=await this.fresh(context);reviewGuard(context.id===leaderId?raw:null);return raw;};
+    const sharedEffect=raw=>{
+      // This installed firmware admits only its legacy shared-effect range.
+      // Future firmware must remain free to advertise a larger group renderer.
+      if(raw.firmware?.version==='1.15.7'&&Number.isInteger(raw.mode)&&raw.mode>47)throw problem('Choose a shared effect, such as Fire, on '+(raw.name||'this lamp')+' before adding it to a group. Your startup settings stay the same.',{incompatible:true,needsSharedEffect:true,targetId:raw.deviceId});
+    };
     return this.action([id,leaderId],async()=>{
+      reviewGuard();
       let source=null,sourceIncarnation='',left=false,outcome,failure;
       try{outcome=await this.leased(leaderId,false,coordinator=>this.leased(id,false,async target=>{
       let code=null;
       try {
-        const original=await this.fresh(target);this.expect(original,moving?2:0);
+        const original=await fresh(target);this.expect(original,moving?2:0);
         const old=membership(original);
         if(moving)source=old.leader;
         if(moving&&old.leader===leaderId)return {id,leader:leaderId,saved:true,phase:'already-member',active:original.sync.active===true};
-        let destination=await this.fresh(coordinator);this.capacity(destination,original);
-        code=await this.queued(coordinator,lamp=>lamp.syncInvite());
+        sharedEffect(original);
+        let destination=await fresh(coordinator);this.capacity(destination,original);sharedEffect(destination);
+        code=await this.queued(coordinator,lamp=>{reviewGuard(lamp.raw);return lamp.syncInvite();});reviewGuard();
         let invitation;try {invitation=parseGroupCode(code);}catch {throw problem('Coordinator returned an invalid private invitation.');}
         if(invitation.leader!==leaderId)throw problem('Coordinator invitation changed. Refresh Groups.',{stale:true});
         if((invitation.protocol===3)!==(destination.sync.version===3))throw problem('Coordinator invitation protocol changed. Refresh Groups.',{stale:true});
         invitation=null;
-        destination=await this.fresh(coordinator);this.capacity(destination,original);
-        const before=await this.fresh(target);if(!sameMembership(before,old))throw problem('Lamp membership changed before joining. Refresh Groups.',{stale:true});
+        destination=await fresh(coordinator);this.capacity(destination,original);sharedEffect(destination);
+        const before=await fresh(target);sharedEffect(before);if(!sameMembership(before,old))throw problem('Lamp membership changed before joining. Refresh Groups.',{stale:true});
         if(moving){
           sourceIncarnation=incarnation(before.sync.incarnation);await this.pending(source,id,sourceIncarnation,true);
-          await this.mutation(target,old,lamp=>lamp.configureSync(0,'',sourceIncarnation),next=>next.sync.role===0,'leave-unconfirmed');left=true;
-          destination=await this.fresh(coordinator);this.capacity(destination,original);
+          await this.mutation(target,old,lamp=>{reviewGuard(coordinator.lamp.raw);writeStarted=true;return lamp.configureSync(0,'',sourceIncarnation);},next=>next.sync.role===0,'leave-unconfirmed');left=true;
+          destination=await fresh(coordinator);this.capacity(destination,original);sharedEffect(destination);
         }
-        const independent=await this.fresh(target);this.expect(independent,0);
+        const independent=await fresh(target);this.expect(independent,0);sharedEffect(independent);
+        if(expectedIncarnation){destination=await fresh(coordinator);this.capacity(destination,independent);sharedEffect(destination);}
         this.guard(coordinator);this.capacity(coordinator.lamp.raw,independent);
         const joined=await this.mutation(target,membership(independent),lamp=>{
-          this.guard(coordinator);this.capacity(coordinator.lamp.raw,lamp.raw);return lamp.configureSync(2,code);
+          reviewGuard(coordinator.lamp.raw);this.guard(coordinator);this.capacity(coordinator.lamp.raw,lamp.raw);sharedEffect(coordinator.lamp.raw);sharedEffect(lamp.raw);writeStarted=true;return lamp.configureSync(2,code);
         },next=>next.sync.role===2&&next.sync.leader===leaderId&&(destination.sync.version!==3||next.sync.version===3),'join-unconfirmed');
-        return {id,leader:leaderId,saved:true,leftPrevious:left,phase:'joined',active:joined.sync.active===true};
+        reviewGuard(coordinator.lamp.raw);return {id,leader:leaderId,saved:true,leftPrevious:left,phase:'joined',active:joined.sync.active===true};
       }catch(error){
         if(left)throw problem('Left the previous group; joining the new group was not confirmed. Refresh this lamp before trying again.',{leftPrevious:true,phase:'left',uncertain:uncertain(error)||error.uncertain===true});
         if(error.groupPublic)throw error;
         throw problem(uncertain(error)?'The private invitation or group change was not confirmed. Refresh before trying again.':'Could not prepare this group change. Refresh Groups and check both lamps.',{uncertain:uncertain(error),phase:'preflight'});
       }finally {code=null;}
-    }));}catch(error){failure=error;}
+    },null,reviewGuard),null,reviewGuard);}catch(error){failure=error;}
       // Release destination/target links before touching the source coordinator.
       // Source cleanup still runs if the destination join failed after departure.
       const sourceCleanup=left?await this.cleanupSource(source,id,sourceIncarnation):null;
