@@ -170,14 +170,20 @@ void (async () => {
 })().catch(fail);
 """#
 
-_ = NSApplication.shared
-NSApplication.shared.setActivationPolicy(.prohibited)
-let runner = WindowTimerSmoke(script: "(() => {\n'use strict';\n" + modules + tests + "\n})();")
-let deadline = Date().addingTimeInterval(25)
-runner.start()
-while runner.result == nil && Date() < deadline {
-    RunLoop.current.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.05)))
+// The command-line entry point starts on the main thread; explicitly enter
+// its actor isolation before using the WebKit delegate and its results.
+precondition(Thread.isMainThread)
+let status: Int32 = MainActor.assumeIsolated {
+    _ = NSApplication.shared
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    let runner = WindowTimerSmoke(script: "(() => {\n'use strict';\n" + modules + tests + "\n})();")
+    let deadline = Date().addingTimeInterval(25)
+    runner.start()
+    while runner.result == nil && Date() < deadline {
+        RunLoop.current.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.05)))
+    }
+    if runner.result == nil { runner.fail("exceeded the 25 second watchdog") }
+    runner.webView.configuration.userContentController.removeScriptMessageHandler(forName: "smoke")
+    return runner.result ?? 1
 }
-if runner.result == nil { runner.fail("exceeded the 25 second watchdog") }
-runner.webView.configuration.userContentController.removeScriptMessageHandler(forName: "smoke")
-exit(runner.result ?? 1)
+exit(status)
