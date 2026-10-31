@@ -1,7 +1,7 @@
 // Latest unsent slider values are coalesced; submitted commands are never
 // replayed. Scope and the owning UI gate are checked immediately before send.
 export class LiveLightQueue {
- constructor({send,current,ready=()=>true,error=()=>{},settled=()=>{},discarded=()=>{},delay=120,set=setTimeout,clear=clearTimeout,now=()=>performance.now()}) {
+ constructor({send,current,ready=()=>true,error=()=>{},settled=()=>{},discarded=()=>{},delay=120,set=(...args)=>globalThis.setTimeout(...args),clear=timer=>globalThis.clearTimeout(timer),now=()=>performance.now()}) {
   Object.assign(this,{send,current,ready,error,settled,discarded,delay,set,clear,now});this.values=new Map();this.timer=null;this.running=false;this.generation=0;
  }
  key(operation,option){if(operation==='brightness')return 'brightness';if(operation==='effectOptions'&&['speed','intensity'].includes(option))return option;throw Error('Unsupported live light control.');}

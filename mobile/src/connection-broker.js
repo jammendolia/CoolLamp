@@ -59,7 +59,9 @@ function publicRaw(raw,id){
 // their selected transport and existing receipt contract; selection never replays
 // a write. Adapters own authorization, hardware admission and transport cleanup.
 export class ConnectionBroker {
- constructor({now=Date.now,ttl=15000,onStatus,setTimer=setTimeout,clearTimer=clearTimeout}={}){
+ // WKWebView requires Window timers to retain their Window receiver even when
+ // the scheduler is stored and called through a broker instance.
+ constructor({now=Date.now,ttl=15000,onStatus,setTimer=(callback,delay)=>globalThis.setTimeout(callback,delay),clearTimer=handle=>globalThis.clearTimeout(handle)}={}){
   if(typeof now!=='function'||!Number.isFinite(ttl)||ttl<1)throw Error('Invalid connection broker clock or freshness.');
   Object.assign(this,{now,ttl,onStatus,setTimer,clearTimer});this.records=new Map();this.revisions=new Map();this.versions=new Map();this.selections=new Map();this.active=new Map();
  }
