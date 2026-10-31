@@ -26,7 +26,7 @@ bool lampUpdateOwnsResources(){return updater;}
 String lampToken="fixture-private-control-token";
 LampControlHttpAdapter resourceAdapter(80);
 bool exerciseResourceAdapter=false;
-LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::MeshStatus||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household);assert((endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Household)==mutation);assert(form=="power=1"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));if(exerciseResourceAdapter)return resourceAdapter.executeControl(endpoint,mutation,form,confidential);++calls;return {replyStatus,replyBody};}
+LampControlReply lampControlRequest(uint8_t endpoint,bool mutation,const String& form,bool confidential){assert(side==2);assert(endpoint==LampControlEndpoint::State||endpoint==LampControlEndpoint::MeshStatus||endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Scene||endpoint==LampControlEndpoint::Household);assert((endpoint==LampControlEndpoint::Power||endpoint==LampControlEndpoint::Scene||endpoint==LampControlEndpoint::Household)==mutation);assert(form=="power=1"||form=="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170"||form=="action=status"||form.empty());assert(confidential==(endpoint==LampControlEndpoint::Household));if(exerciseResourceAdapter)return resourceAdapter.executeControl(endpoint,mutation,form,confidential);++calls;return {replyStatus,replyBody};}
 namespace LampFirmwareRelay {bool copyFleetKey(uint8_t* out){memcpy(out,fleet,16);return true;}String fleetId(){return "1122334455667788";}}
 namespace LampEspNow {
 bool enqueue(const uint8_t* bytes,size_t size,const uint8_t*,bool){assert(size<=250);frames.push_back({side,{bytes,bytes+size}});return true;}
@@ -148,6 +148,17 @@ int main(int argc,char** argv){
   assert(start("0000000000000002").status==202);complete();const auto fresh=result(0,"0000000000000002");
   assert(numberField(fresh.body,"httpStatus")==200&&decode(fresh.body)=="Applied once."&&calls==1);
   run(100);assert(start("0000000000000002").status==200&&calls==1);
+ }
+ else if(scenario=="compact-scene-low-memory"){
+  exerciseResourceAdapter=true;
+  resourceAdapter.on("/api/sync/scene",HTTP_POST,[]{assert(side==2&&resourceAdapter.controlActive()&&resourceAdapter.uri()=="/api/sync/scene"&&resourceAdapter.arg("scene")=="0");++calls;resourceAdapter.send(200,"text/plain","Group scene saved.");});
+  const String form="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170";
+  fakeFreeHeap=23388;fakeLargestBlock=9204;side=0;
+  assert(Origin::request(targetId,requestId,"5","2",form).status==202);complete();const auto accepted=result();
+  assert(numberField(accepted.body,"httpStatus")==200&&decode(accepted.body)=="Group scene saved."&&calls==1);
+  fakeFreeHeap=23388;fakeLargestBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;side=0;
+  assert(Origin::request(targetId,"0000000000000002","5","2",form).status==202);complete();const auto denied=result(0,"0000000000000002");
+  assert(numberField(denied.body,"httpStatus")==503&&decode(denied.body)=="Control resources unavailable. This request was not executed."&&calls==1);
  }
  else if(scenario=="confidential"){
   assert(!Origin::allowed(LampControlEndpoint::State,0x81)&&!Origin::allowed(LampControlEndpoint::Config,0x82));

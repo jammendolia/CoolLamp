@@ -1,11 +1,13 @@
 #include "LampEdisonEffects.h"
 #include "LampModel.h"
+#include "LampEffectPackageBuild.h"
 
 bool lampEdisonProfileMatches(){
   return LampModel::factoryAvailable() && !strcmp(LampModel::current().id,"edison-v1") &&
     getLampStyle()==LampPhysicalStyle::Edison && LampEdison::matchingGeometry(NUM_LEDS,lampMidpoint);
 }
 
+#if !COOLLAMP_EFFECT_PACK_REPLACE_NATIVE
 void renderEdisonEffect(uint8_t mode,uint32_t clock){
   if(!lampEffectAvailable(mode)){fill_solid(leds,NUM_LEDS,CRGB::Black);return;}
   const auto color=getLampColor(mode);const auto options=getLampEffectOptions(mode);
@@ -25,3 +27,4 @@ void renderEdisonEffect(uint8_t mode,uint32_t clock){
     leds[index]=CRGB(pixel.r,pixel.g,pixel.b);
   }
 }
+#endif

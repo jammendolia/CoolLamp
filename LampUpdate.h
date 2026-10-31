@@ -47,6 +47,14 @@ struct LampUpdatePolicyJsonSnapshot {
   uint8_t coordination=0;
   bool valid=false;
 };
+// Volatile loop-owned admission evidence. No addresses, credentials or records.
+// phase:0 unused,1 waiting,2 preflight refused,3 task allocation failed,
+// 4 post-allocation refused,5 running,6 completed,7 TLS-block reservation failed.
+struct LampUpdateWorkerAdmission {
+  uint32_t beforeFree=0,beforeLargest=0,afterFree=0,afterLargest=0,taskControlBytes=0;
+  uint8_t phase=0;
+};
+static_assert(sizeof(LampUpdateWorkerAdmission)<=24,"Worker admission evidence must stay bounded");
 static_assert(sizeof(LampUpdatePolicyJsonSnapshot)<=84,"Policy read snapshot must stay bounded");
 LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson();
 void appendLampUpdatePolicyJson(LampJsonSink& out,const LampUpdatePolicyJsonSnapshot& snapshot);
@@ -56,6 +64,7 @@ struct LampUpdateJsonSnapshot {
   LampUpdatePolicyJsonSnapshot policy{};
   UpdateHttpDiagnosticsSnapshot http{};
   LampUpdateAutomatic::Snapshot automaticService{};
+  LampUpdateWorkerAdmission workerAdmission{};
   char deviceId[13]{};
   uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
   bool wifi=false,healthy=false,publisher=false;

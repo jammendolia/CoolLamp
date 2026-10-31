@@ -47,6 +47,10 @@ std::atomic<bool> workerFinished{false};
 bool manual = false;
 uint8_t job = 0;
 LampUpdateHandoff handoff;
+bool dispatchReady=false;
+uint32_t dispatchReadyAt=0;
+uint32_t lastWorkerStackFree=0; // Loop-owned, current boot only; no persistence.
+LampUpdateWorkerAdmission workerAdmission;
 std::atomic<bool> healthy{false};
 LampUpdateHealth bootHealth;
 uint32_t nextCheck = 0, restartAt = 0;
@@ -98,18 +102,8 @@ bool legacyAttemptMatches(const FirmwareManifest& artifact){
   return !strcmp(version,attemptedVersion);
 }
 
-bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
-  UpdateHttp http; int code = 0; int64_t length = 0;
-  // Discovery must bypass a cached Latest redirect. Installation rechecks the
-  // exact offered release, never a second Latest lookup that could go backward.
-  const char* manifestName=UpdatePublisher::enforced()?"coollamp-manifest-v2.txt":"coollamp-manifest.txt";
-  const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/" + manifestName :
-    String("latest/download/") + manifestName + "?check=" + String(esp_random(), HEX);
-  if (!http.open(String(ROOT) + path, code, length,background?&cancelBackground:nullptr,
-                 background?backgroundBudget:LampUpdateControlPolicy::ExplicitBudgetMs)) {
-    if(background&&(http.cancelled()||http.memoryFailure())){backgroundReadDeferred=true;return false;}
-    fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK);return false;
-  }
+// Keep manifest text/signature work out of the connection/header caller frame.
+__attribute__((noinline)) bool finishReleaseCheck(UpdateHttp& http,int code,int64_t length,bool installing,bool background) {
   char text[UpdatePublisher::ManifestCapacity] = {}; size_t used = 0;
   if (code == 200 && (length < 0 || length < sizeof(text))) {
     while (used < sizeof(text) - 1) {
@@ -149,6 +143,20 @@ bool checkRelease(bool installing = false,bool background = false,uint32_t backg
   portEXIT_CRITICAL(&mux);
   phase(newer ? (installing ? UPDATE_CHECKING : UPDATE_AVAILABLE) : UPDATE_IDLE); return true;
 }
+bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  // Discovery must bypass a cached Latest redirect. Installation rechecks the
+  // exact offered release, never a second Latest lookup that could go backward.
+  const char* manifestName=UpdatePublisher::enforced()?"coollamp-manifest-v2.txt":"coollamp-manifest.txt";
+  const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/" + manifestName :
+    String("latest/download/") + manifestName + "?check=" + String(esp_random(), HEX);
+  if (!http.open(String(ROOT) + path, code, length,background?&cancelBackground:nullptr,
+                 background?backgroundBudget:LampUpdateControlPolicy::ExplicitBudgetMs)) {
+    if(background&&(http.cancelled()||http.memoryFailure())){backgroundReadDeferred=true;return false;}
+    fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK);return false;
+  }
+  return finishReleaseCheck(http,code,length,installing,background);
+}
 bool recordAttempt(const String& version) {
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
@@ -156,14 +164,9 @@ bool recordAttempt(const String& version) {
   if (ok) strlcpy(attemptedVersion, version.c_str(), sizeof(attemptedVersion));
   return ok;
 }
-void downloadRelease() {
-  phase(UPDATE_DOWNLOADING);
-  const FirmwareManifest selected = candidate;
-  portENTER_CRITICAL(&mux);status.totalBytes=selected.size;portEXIT_CRITICAL(&mux);
-  const String version = versionText(selected.version);
-  UpdateHttp http; int code = 0; int64_t length = 0;
-  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
-  if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
+// Keep transfer buffers out of the TLS handshake's caller stack. In particular,
+// do not reserve the image prefix/read buffers while esp_tls connects.
+__attribute__((noinline)) void receiveRelease(UpdateHttp& http,const FirmwareManifest& selected,const String& version) {
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   esp_ota_handle_t ota = 0;
   uint8_t buffer[1024], digest[32]; size_t received = 0,written=0;
@@ -209,6 +212,16 @@ void downloadRelease() {
   if(!LampUpdateAttempt::prepare(selected,explicitRepair)||!recordAttempt(version)){fail(UPDATE_STORAGE);return;}
   if(esp_ota_set_boot_partition(target)!=ESP_OK){fail(UPDATE_IMAGE);return;}
   phase(UPDATE_RESTARTING);
+}
+void downloadRelease() {
+  phase(UPDATE_DOWNLOADING);
+  const FirmwareManifest selected = candidate;
+  portENTER_CRITICAL(&mux);status.totalBytes=selected.size;portEXIT_CRITICAL(&mux);
+  const String version = versionText(selected.version);
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
+  if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
+  receiveRelease(http,selected,version);
 }
 void installRelease() {
   // Keep the manifest and download stack frames separate on this small device.
@@ -292,7 +305,8 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
   // loop. serviceLampUpdater() dispatches after the resource owners have run.
   if(operation==2){startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_INTERNET);}
   if(automaticJob){automaticService.enable();automaticService.internetStarted();}
-  handoff.queue();return true;
+  workerAdmission={};workerAdmission.phase=1;workerAdmission.taskControlBytes=sizeof(StaticTask_t);
+  dispatchReady=false;handoff.queue();return true;
 }
 } // namespace
 
@@ -430,10 +444,31 @@ static void serviceAutomaticUpdates(uint32_t now,const LampUpdateStatus& current
 }
 void serviceLampUpdater() {
   const uint32_t now = millis();
+  const auto refuseDispatch=[&](uint8_t reason){
+    // No worker has been notified and no image bytes have been written. Arm
+    // the retry before relinquishing this accepted automatic request; otherwise
+    // its still-due scheduler immediately repeats the same failed allocation.
+    const uint32_t jitter=(automaticJob||jobBackground)?esp_random():0;
+    if(automaticJob){
+      automaticService.fallback(now,reason,jitter);
+      automaticView=automaticService.snapshot(now);
+    }
+    if(jobBackground){
+      nextCheck=now+LampUpdateAutomatic::RetryMs+jitter%(LampUpdateAutomatic::RetryJitterMs+1);
+      backgroundDeferred=false;
+    }
+    portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
+    dispatchReady=false;backgroundActive=false;automaticJob=false;handoff.cancel();
+    if(jobBackground)phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);
+    else fail(UPDATE_MEMORY);
+  };
   if(worker&&workerFinished.load(std::memory_order_acquire)){
     // No TLS, NVS or candidate access remains in the completed task. Remove
     // the handle before any later request/status builder can observe it.
-    const TaskHandle_t completed=worker;worker=nullptr;
+    const TaskHandle_t completed=worker;
+    lastWorkerStackFree=uxTaskGetStackHighWaterMark(completed);
+    workerAdmission.phase=6;
+    worker=nullptr;
     vTaskDelete(completed);workerFinished=false;
     const uint8_t outcome=automaticOutcome.exchange(0);
     const auto finished=getLampUpdateStatus();
@@ -477,20 +512,48 @@ void serviceLampUpdater() {
   // CoolLamp's loop services Network and Bluetooth before this point. Crossing
   // a full subsequent pass covers HTTP, BLE, USB and automatic request origins,
   // including a BLE request made after the current loop's group service pass.
-  if(handoff.service()){
+  if(handoff.service()){dispatchReady=true;dispatchReadyAt=now;}
+  if(dispatchReady){
+    workerAdmission.beforeFree=heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    workerAdmission.beforeLargest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     // An accepted request has crossed the existing full-loop ownership
     // barrier. Only now allocate its stack; idle lamps retain no HTTPS task.
     if(jobBackground&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(now),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t))){
-      portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
-      backgroundActive=false;backgroundDeferred=true;
-      phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);handoff.cancel();return;
+      workerAdmission.phase=2;
+      refuseDispatch(lampControlTrafficIdle(now)?LampUpdateAutomatic::Memory:LampUpdateAutomatic::ControlBusy);return;
     }
+    if(!jobBackground&&!LampUpdateControlPolicy::manualStartReady(workerAdmission.beforeFree,workerAdmission.beforeLargest,sizeof(StaticTask_t))){
+      // A response can outlive the originating handler. Give its bounded send
+      // owner time to release it without sleeping or repeatedly creating tasks.
+      if(LampUpdateControlPolicy::withinBudget(now,dispatchReadyAt,LampUpdateControlPolicy::DispatchSettleMs))return;
+      workerAdmission.phase=2;refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    dispatchReady=false;
     workerFinished=false;
-    if(xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)!=pdPASS){
-      worker=nullptr;portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
-      backgroundActive=false;automaticJob=false;handoff.cancel();fail(UPDATE_MEMORY);return;
+    // Temporarily occupy the contiguous TLS block so FreeRTOS places its
+    // smaller stack in another fragment. Release it before the actual heap
+    // check/start; it is neither retained idle nor used as an SDK TLS buffer.
+    void* tlsHeadroom=heap_caps_malloc(LampUpdateControlPolicy::MinLargest,MALLOC_CAP_8BIT);
+    if(!tlsHeadroom){
+      workerAdmission.phase=7;
+      refuseDispatch(LampUpdateAutomatic::Memory);return;
     }
-    xTaskNotifyGive(worker);return;
+    const bool taskCreated=xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)==pdPASS;
+    heap_caps_free(tlsHeadroom);
+    if(!taskCreated){
+      workerAdmission.phase=3;
+      worker=nullptr;refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    // The allocator may consume the only large TLS block even if the totals
+    // fitted. The worker is still waiting for its sole start notification.
+    workerAdmission.afterFree=heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    workerAdmission.afterLargest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if(!LampUpdateControlPolicy::memoryReady(workerAdmission.afterFree,workerAdmission.afterLargest)){
+      workerAdmission.phase=4;
+      const auto unstarted=worker;worker=nullptr;vTaskDelete(unstarted);
+      refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    workerAdmission.phase=5;xTaskNotifyGive(worker);return;
   }
   const auto current = getLampUpdateStatus();
   static uint8_t previousPhase = UPDATE_IDLE;
@@ -524,8 +587,11 @@ LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
   FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
   snapshot.attempt=LampUpdateAttempt::captureStatus(offered);
   snapshot.policy=captureLampUpdatePolicyJson();snapshot.http=captureUpdateHttpDiagnostics();
+  snapshot.workerAdmission=workerAdmission;
   snapshot.heap=ESP.getFreeHeap();snapshot.largest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-  snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):0;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
+  // Retain the completed worker's lifetime watermark so a short HTTPS check
+  // can be measured after cleanup, without retaining its handle or stack.
+  snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):lastWorkerStackFree;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
   snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
   if(includeAutomatic){
     snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
@@ -563,6 +629,11 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
   if(includeAutomatic){
     if(strlen(snapshot.deviceId)!=12){out.fail();return;}
     const auto& a=snapshot.automaticService;
+    const auto& w=snapshot.workerAdmission;
+    add(",\"workerAdmission\":{\"version\":1,\"phase\":");add(w.phase);
+    add(",\"stackBytes\":");add(LampUpdateControlPolicy::WorkerStackBytes);add(",\"taskControlBytes\":");add(w.taskControlBytes);
+    add(",\"beforeFree\":");add(w.beforeFree);add(",\"beforeLargest\":");add(w.beforeLargest);
+    add(",\"afterFree\":");add(w.afterFree);add(",\"afterLargest\":");add(w.afterLargest);add('}');
     add(",\"deviceId\":\"");add(snapshot.deviceId);add("\",\"automaticService\":{\"version\":1,\"state\":");add(a.state);
     add(",\"reason\":");add(a.reason);add(",\"retryInMs\":");add(a.retryInMs);add(",\"donorWaitMs\":");add(a.donorWaitMs);
     add(",\"internetAttempts\":");add(a.internetAttempts);add(",\"donorOffers\":");add(a.donorOffers);

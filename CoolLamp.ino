@@ -7,6 +7,8 @@
 #include <Preferences.h>
 #include "LampConfig.h"
 #include "LampGeometry.h"
+#include "LampEffectFrame.h"
+#include "LampEffectRegistry.h"
 #include "LampStyle.h"
 #include "LampModel.h"
 #include "LampEdisonEffects.h"
@@ -34,6 +36,12 @@
 #include <new>
 #include "LampPlatformLogPriming.h"
 SET_LOOP_TASK_STACK_SIZE(6144);
+void renderAtmosphereEffect(uint8_t mode);
+#include "LampFireEffects.h"
+void renderSolidEffect(uint8_t mode);
+void renderLegacyEffect(uint8_t mode);
+void renderLegacyDots(uint8_t mode);
+#include "LampEffectPackageBuild.h"
 
 // ESP32-C3 Mini wiring.
 #define DATA_PIN 0
@@ -103,7 +111,10 @@ uint16_t activeLedCount = DEFAULT_LED_COUNT;
 #define MODE_EDISON_ORBIT 50
 #define MODE_EDISON_INDUCTION 51
 #define MODE_EDISON_SOUND_FILAMENT 52
-#define MODE_MAX MODE_EDISON_SOUND_FILAMENT
+#define MODE_SONATA_ARIA 53
+#define MODE_SONATA_DUET 54
+#define MODE_SONATA_CADENZA 55
+#define MODE_MAX MODE_SONATA_CADENZA
 static_assert(LAMP_AUDIO_SCK > 4 && LAMP_AUDIO_WS > 4 && LAMP_AUDIO_SD > 4, "Preserve prototype GPIO0–4");
 uint32_t effectClockMs = 0;
 uint16_t lampBeat16(uint16_t bpm, uint32_t base = 0);
@@ -138,10 +149,10 @@ void setup() {
     delay(2000);ESP.restart();return;
   }
 
+  LampModel::begin();
   beginLampAudio();
   loadLampSettings();
   loadLampGeometry();
-  LampModel::begin();
   beginLampStyle();
   loadLampRotation();
   loadLampColors();
@@ -167,6 +178,9 @@ void setup() {
       .setCorrection(TypicalLEDStrip);
   FastLED.setMaxPowerInVoltsAndMilliamps(5, lampSettings.milliAmps);
   FastLED.setBrightness(Brightness);
+  // Allocate the pinned RMT backend before Wi-Fi/BLE fragment the heap.
+  // Keep the strip dark; the chosen startup light begins in loop().
+  FastLED.show(0);
 
   // HW-040 biases A/B; bias the switch internally even when its R1 is unpopulated.
   rotaryEncoder.setEncoderType(EncoderType::SW_FLOAT);
@@ -181,6 +195,10 @@ void setup() {
   LampFirmwareRelay::begin();
   LampMeshAdapter::begin();LampCommission::begin();
 }
+
+#if COOLLAMP_EFFECT_PACK_PROTOTYPE
+#include "LampEffectPackagePrototype.h"
+#endif
 
 void loop() {
   const LampRuntimeMetrics::LoopScope loopTiming(lampRuntimeMetrics, micros);
@@ -269,98 +287,42 @@ void loop() {
   for (unsigned step = 0; step < steps; ++step) {
   effectClockMs += 16;
   if(lampGroupScene()) { renderGroupScene(lampSyncRenderTime(now)); continue; }
+  const LampEffectFrame::Context effectFrame{effectClockMs,NUM_LEDS,lampMidpoint,lampEffectiveMotionPath()};
+#if COOLLAMP_EFFECT_PACK_PROTOTYPE
+  if(!LampEffectPackagePrototype::render(Mode,effectClockMs))
+#endif
   switch (Mode) {
+    case MODE_SONATA_ARIA: case MODE_SONATA_DUET: case MODE_SONATA_CADENZA:
+      renderSonataEffect(Mode,effectFrame); break;
+#if !COOLLAMP_EFFECT_PACK_REPLACE_NATIVE
     case MODE_EDISON_FILAMENT: case MODE_EDISON_EUREKA: case MODE_EDISON_ORBIT:
     case MODE_EDISON_INDUCTION: case MODE_EDISON_SOUND_FILAMENT:
       renderEdisonEffect(Mode,effectClockMs); break;
+#endif
     case MODE_SPECTRUM_RISE: case MODE_BASS_LAUNCH: case MODE_SPECTRAL_EMBERS: case MODE_BEAT_BLOOM: case MODE_BAND_FOUNTAIN:
     case MODE_VU_METER: case MODE_RAINBOW_EMBERS:
     case MODE_SOUND_GLOW: case MODE_SOUND_METER:
       renderAudioEffect(Mode, lampSyncRenderTime(now)); break;
     case MODE_DROPLETS: case MODE_DROPLETS_OUTWARD: case MODE_LIGHTNING: case MODE_TIDE: case MODE_FIREFLIES:
     case MODE_HEARTBEAT: case MODE_STARS: case MODE_BREATHING: case MODE_BLOBS:
-      renderNewEffect(Mode, effectClockMs); break;
-    case MODE_CUSTOM: fill_solid(leds, NUM_LEDS, CRGB::White); break;
-    case MODE_AURORA: Aurora(); break;
-    case MODE_RAIN: Rain(); break;
-    case MODE_EMBERS: Embers(); break;
-    case MODE_LAVA: Lava(); break;
-    case MODE_PLASMA: Plasma(); break;
-    case MODE_COMET_COLLISION: CometCollision(); break;
-    case MODE_FIRE_BLUE: FireSplit(false, false, 1); break;
-    case MODE_FIRE_GREEN: FireSplit(false, false, 2); break;
-    case MODE_FIRE_PURPLE: FireSplit(false, false, 3); break;
+      renderSpatialEffect(Mode, effectFrame); break;
+    case MODE_AURORA: case MODE_RAIN: case MODE_EMBERS: case MODE_LAVA:
+    case MODE_PLASMA: case MODE_COMET_COLLISION:
+      renderAtmosphereEffect(Mode); break;
 
-    case MODE_PACIFICA:
-      pacifica_loop();
-      break;
+    case MODE_PACIFICA: case MODE_RAINBOW: case MODE_RAINBOW_GLITTER:
+    case MODE_CONFETTI: case MODE_SINELON: case MODE_BPM: case MODE_JUGGLE:
+      renderLegacyEffect(Mode); break;
 
-    case MODE_FIRE:
-      Fire2012();
-      break;
+    case MODE_FIRE: case MODE_FIRESPLIT: case MODE_FIRESPLIT_REVERSE:
+    case MODE_FIRESPLIT_REVERSE_COLORS: case MODE_FIRE_BLUE:
+    case MODE_FIRE_GREEN: case MODE_FIRE_PURPLE:
+      renderFireEffect(Mode); break;
 
-    case MODE_FIRESPLIT:
-      FireSplit(false, false, 0);
-      break;
-
-    case MODE_FIRESPLIT_REVERSE:
-      FireSplit(true, false, 0);
-      break;
-
-    case MODE_FIRESPLIT_REVERSE_COLORS:
-      FireSplit(false, true, 0);
-      break;
-
-    case MODE_WHITE:
-      White();
-      break;
-
-    case MODE_RED:
-      Red();
-      break;
-    case MODE_GREEN:
-      Green();
-    break;
-    case MODE_BLUE:
-      Blue();
-    break;
-    case MODE_PURPLE:
-      Purple();
-    break;
-    case MODE_PINK:
-      Pink();
-    break;
-    case MODE_YELLOW:
-      Yellow();
-    break;
-    case MODE_CYAN:
-      Cyan();
-    break;
-
-    case MODE_RAINBOW:
-      Rainbow();
-      break;
-
-    case MODE_RAINBOW_GLITTER:
-      RainbowWithGlitter();
-      break;
-
-    case MODE_CONFETTI:
-      Confetti();
-      break;
-
-    case MODE_SINELON:
-      Sinelon();
-      break;
-
-    case MODE_BPM:
-      Bpm();
-      break;
-
-    case MODE_JUGGLE:
-      Juggle();
-      break;
-
+    case MODE_WHITE: case MODE_RED: case MODE_GREEN: case MODE_BLUE:
+    case MODE_PURPLE: case MODE_PINK: case MODE_YELLOW: case MODE_CYAN:
+    case MODE_CUSTOM:
+      renderSolidEffect(Mode); break;
 
   }
   gHue = effectClockMs / 20;

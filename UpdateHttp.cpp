@@ -11,26 +11,64 @@
 
 namespace {
 std::atomic<int> httpStage{0}, httpCode{0}, httpHost{0}, tlsError{0}, tlsFlags{0}, transportError{0};
-esp_err_t githubBundle(void* config) {
-  static const int suites[]={MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,0};
-  mbedtls_ssl_conf_ciphersuites(static_cast<mbedtls_ssl_config*>(config),suites);
-  return esp_crt_bundle_attach(config);
+std::atomic<UpdateHttp*> placementOwner{nullptr};
+constexpr uint32_t tlsMemoryCaps=MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
+#ifdef COOL_LAMP_TEST_IMAGE
+// Bench-only best-effort numeric allocation evidence. The callback never
+// allocates, logs, reads heap state, or retains the SDK's function-name pointer.
+std::atomic<uint32_t> failedBytes{0},failedCaps{0},failedCount{0};
+std::atomic<bool> allocationProbe{false};
+void allocationFailed(size_t bytes,uint32_t caps,const char*){
+  failedBytes.store(uint32_t(bytes),std::memory_order_relaxed);
+  failedCaps.store(caps,std::memory_order_relaxed);
+  failedCount.fetch_add(1,std::memory_order_relaxed);
 }
-bool splitUrl(const String& url,String& host,String& path) {
+#endif
+bool splitUrl(String& url,String& host) {
   if(!url.startsWith("https://")||url.length()>2047)return false;
   for(size_t i=0;i<url.length();++i)if(uint8_t(url[i])<=32||url[i]==127||url[i]=='#')return false;
   const int slash=url.indexOf('/',8);if(slash<0)return false;
-  host=url.substring(8,slash);path=url.substring(slash);
-  return host=="github.com"||host=="release-assets.githubusercontent.com"||host=="objects.githubusercontent.com"||host=="github-releases.githubusercontent.com";
+  host=url.substring(8,slash);
+  if(!(host=="github.com"||host=="release-assets.githubusercontent.com"||host=="objects.githubusercontent.com"||host=="github-releases.githubusercontent.com"))return false;
+  // Core 3.3.11 removes this prefix in place. Keep one validated long URL/path
+  // allocation through TLS, rather than retaining a second signed asset path.
+  // A redirect replaces url with an absolute URL before this validation repeats.
+  url.remove(0,slash);return true;
 }
 }
-void UpdateHttp::close(){if(tls)esp_tls_conn_destroy(tls);tls=nullptr;cursor=buffered=0;}
+void UpdateHttp::releaseInputPlacement(){
+  if(inputPlacement){heap_caps_free(inputPlacement);inputPlacement=nullptr;}
+}
+void UpdateHttp::closeConnection(){
+  if(tls)esp_tls_conn_destroy(tls);
+  tls=nullptr;releaseInputPlacement();bundleAttached=false;cursor=buffered=0;
+}
+void UpdateHttp::close(){
+  closeConnection();UpdateHttp* expected=this;
+  placementOwner.compare_exchange_strong(expected,nullptr);
+}
+esp_err_t UpdateHttp::protectedBundle(void* config){
+  UpdateHttp* owner=placementOwner.load();
+  if(!owner)return ESP_ERR_INVALID_STATE;
+  const auto result=esp_crt_bundle_attach(config);
+  owner->bundleAttached=result==ESP_OK;
+  return result;
+}
+esp_err_t UpdateHttp::protectedGithubBundle(void* config){
+  static const int suites[]={MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,0};
+  mbedtls_ssl_conf_ciphersuites(static_cast<mbedtls_ssl_config*>(config),suites);
+  return protectedBundle(config);
+}
 bool UpdateHttp::allowed() const {
   return !cancelled()&&LampUpdateControlPolicy::withinBudget(millis(),started,budget);
 }
 String updateHttpDiagnostics(){return String(",\"httpStage\":")+httpStage.load()+",\"httpCode\":"+httpCode.load()+",\"httpHost\":"+httpHost.load()+",\"tlsError\":"+tlsError.load()+",\"tlsFlags\":"+tlsFlags.load()+",\"transportError\":"+transportError.load();}
 UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics(){
-  return {httpStage.load(),httpCode.load(),httpHost.load(),tlsError.load(),tlsFlags.load(),transportError.load()};
+  UpdateHttpDiagnosticsSnapshot result{httpStage.load(),httpCode.load(),httpHost.load(),tlsError.load(),tlsFlags.load(),transportError.load()};
+#ifdef COOL_LAMP_TEST_IMAGE
+  result.allocationProbe=allocationProbe.load();result.failedBytes=failedBytes.load();result.failedCaps=failedCaps.load();result.failedCount=failedCount.load();
+#endif
+  return result;
 }
 int UpdateHttp::receive(void* output,size_t size){
   const uint32_t idle=millis();
@@ -55,19 +93,54 @@ bool UpdateHttp::send(const char* text){
   }
   return left==0;
 }
+UpdateHttp::HeaderResult UpdateHttp::readResponseHeaders(String& url,const String& host,int& code,int64_t& length){
+  // This noinline frame starts only after certificate verification returns.
+  // Neither a static parser nor another heap allocation is retained between jobs.
+  UpdateHttpHeaders headers;
+  httpStage=4;
+  while(allowed()&&!headers.complete()){
+    if(cursor==buffered){const int n=receive(buffer,sizeof(buffer));if(n<=0){close();return HeaderResult::Error;}cursor=0;buffered=n;}
+    if(!headers.feed(char(buffer[cursor++]))){httpStage=5;close();return HeaderResult::Error;}
+  }
+  if(!allowed()){close();return HeaderResult::Error;}
+  code=headers.code;length=headers.length;
+  httpCode=code;httpStage=6;
+  if(code==301||code==302||code==303||code==307||code==308){
+    if(headers.location[0]=='/'&&headers.location[1]!='/')url=String("https://")+host+headers.location;
+    else url=headers.location;
+    closeConnection();return HeaderResult::Redirect;
+  }
+  // Release assets have Content-Length. Reject unsupported body framing rather
+  // than guessing boundaries or accepting a truncated/encoded firmware image.
+  if(code==200&&(length<0||headers.transferEncoded||headers.encoded)){close();return HeaderResult::Error;}
+  remaining=length;done=length==0;return HeaderResult::Ready;
+}
 bool UpdateHttp::open(String url,int& code,int64_t& length,const std::atomic<bool>* cancel,uint32_t totalMs){
-  close();done=false;started=millis();budget=totalMs;cancellation=cancel;memoryError=false;httpStage=1;httpCode=0;tlsError=0;tlsFlags=0;transportError=0;
+#ifdef COOL_LAMP_TEST_IMAGE
+  if(!allocationProbe.load())allocationProbe=heap_caps_register_failed_alloc_callback(allocationFailed)==ESP_OK;
+#endif
+  close();done=false;started=millis();budget=totalMs;cancellation=cancel;memoryError=false;
+  UpdateHttp* expected=nullptr;
+  if(!placementOwner.compare_exchange_strong(expected,this))return false;
+  httpStage=1;httpCode=0;tlsError=0;tlsFlags=0;transportError=0;
   for(unsigned redirects=0;redirects<6;++redirects){
-    if(!allowed())return false;
-    String host,path;if(!splitUrl(url,host,path))return false;
+    if(!allowed()){close();return false;}
+    String host;if(!splitUrl(url,host)){close();return false;}
     httpHost=host=="github.com"?1:2;httpStage=2;
     // IDF 5.5.5's async entry still selects for cfg.timeout_ms while connecting.
     // Keep that SDK poll short; enforce the independent connection/TLS and
     // whole-request clocks here. DNS and individual crypto calls remain SDK work.
     esp_tls_cfg_t config{};config.timeout_ms=LampUpdateControlPolicy::ConnectPollMs;config.non_block=true;
-    config.crt_bundle_attach=host=="github.com"?githubBundle:esp_crt_bundle_attach;
-    if(!LampUpdateControlPolicy::memoryReady(heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))){memoryError=true;return false;}
-    tls=esp_tls_init();if(!tls){memoryError=true;return false;}
+    config.crt_bundle_attach=host=="github.com"?protectedGithubBundle:protectedBundle;
+    if(!LampUpdateControlPolicy::memoryReady(heap_caps_get_free_size(tlsMemoryCaps),heap_caps_get_largest_free_block(tlsMemoryCaps))){memoryError=true;close();return false;}
+    inputPlacement=heap_caps_malloc(LampUpdateControlPolicy::MinLargest,tlsMemoryCaps);
+    if(!inputPlacement){memoryError=true;close();return false;}
+    tls=esp_tls_init();if(!tls){memoryError=true;close();return false;}
+    // Protect the input-sized region only while the SDK allocates its 2120-byte
+    // context and16-byte tracker. Holding it through DNS/TCP can starve packets.
+    // INIT may run TLS setup immediately, so do not assume an observable later
+    // CONNECTING boundary. SDK input-allocation failure remains an honest error.
+    releaseInputPlacement();
     const uint32_t connectingAt=millis();
     int connected=0;
     while(allowed()&&LampUpdateControlPolicy::withinBudget(millis(),connectingAt,LampUpdateControlPolicy::ConnectBudgetMs)&&connected==0){
@@ -93,32 +166,21 @@ bool UpdateHttp::open(String url,int& code,int64_t& length,const std::atomic<boo
       config.non_block=true;
       if(!connected)vTaskDelay(1);
     }
-    if(connected!=1||!allowed()||!LampUpdateControlPolicy::withinBudget(millis(),connectingAt,LampUpdateControlPolicy::ConnectBudgetMs)){
+    if(connected!=1||!bundleAttached||!allowed()||!LampUpdateControlPolicy::withinBudget(millis(),connectingAt,LampUpdateControlPolicy::ConnectBudgetMs)){
       int error=0,flags=0;esp_tls_error_handle_t handle=nullptr;
       if(esp_tls_get_error_handle(tls,&handle)==ESP_OK)transportError=esp_tls_get_and_clear_last_error(handle,&error,&flags);
+      // The pinned esp-tls error tracker can expose either sign. Preserve its
+      // evidence while distinguishing this exact allocator failure from a
+      // certificate, protocol or network failure.
+      memoryError=error==MBEDTLS_ERR_SSL_ALLOC_FAILED||error==-MBEDTLS_ERR_SSL_ALLOC_FAILED;
       tlsError=error;tlsFlags=flags;close();return false;
     }
     httpStage=3;
-    if(!send("GET ")||!send(path.c_str())||!send(" HTTP/1.1\r\nHost: ")||!send(host.c_str())||
+    if(!send("GET ")||!send(url.c_str())||!send(" HTTP/1.1\r\nHost: ")||!send(host.c_str())||
        !send("\r\nUser-Agent: CoolLamp/" LAMP_FIRMWARE_VERSION "\r\nAccept-Encoding: identity\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")){close();return false;}
-    UpdateHttpHeaders headers;
-    httpStage=4;
-    while(allowed()&&!headers.complete()){
-      if(cursor==buffered){const int n=receive(buffer,sizeof(buffer));if(n<=0){close();return false;}cursor=0;buffered=n;}
-      if(!headers.feed(char(buffer[cursor++]))){httpStage=5;close();return false;}
-    }
-    if(!allowed()){close();return false;}
-    code=headers.code;length=headers.length;
-    httpCode=code;httpStage=6;
-    if(code==301||code==302||code==303||code==307||code==308){
-      if(headers.location[0]=='/'&&headers.location[1]!='/')url=String("https://")+host+headers.location;
-      else url=headers.location;
-      close();continue;
-    }
-    // Release assets have Content-Length. Reject unsupported body framing rather
-    // than guessing boundaries or accepting a truncated/encoded firmware image.
-    if(code==200&&(length<0||headers.transferEncoded||headers.encoded)){close();return false;}
-    remaining=length;done=length==0;return true;
+    const auto response=readResponseHeaders(url,host,code,length);
+    if(response==HeaderResult::Redirect)continue;
+    return response==HeaderResult::Ready;
   }
   close();return false;
 }

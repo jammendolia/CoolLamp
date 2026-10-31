@@ -379,22 +379,33 @@ int main(){
  resetLampBleControlTransfer(19);
  resetLampBleControlTransfer(19);fakeFreeHeap=16316;fakeLargestBlock=2048;
  const auto compactCalls=calls;const std::string compactForm="brightness=90";
- const auto compactSubmit=[&](uint16_t tx){
-  assert(send(begin(tx,LampControlEndpoint::StatePatch,Mutation,compactForm.size()),19)==0);
-  std::vector<uint8_t> frame{1,2,Chunk,uint8_t(tx),uint8_t(tx>>8),0,0};frame.insert(frame.end(),compactForm.begin(),compactForm.end());assert(send(frame,19)==0);
+ const auto compactSubmit=[&](uint16_t tx,uint8_t endpoint,const std::string& form){
+  assert(send(begin(tx,endpoint,Mutation,form.size()),19)==0);
+  for(size_t offset=0;offset<form.size();offset+=13){
+   std::vector<uint8_t> frame{1,2,Chunk,uint8_t(tx),uint8_t(tx>>8),uint8_t(offset),uint8_t(offset>>8)};
+   frame.insert(frame.end(),form.begin()+offset,form.begin()+std::min(offset+13,form.size()));assert(send(frame,19)==0);
+  }
   assert(send(commit(tx),19)==0);
  };
- compactSubmit(1);assert(u16(out+4)==200&&calls==compactCalls+1&&lastEndpoint==42&&lastForm==compactForm&&send(commit(1),19)==2);
+ compactSubmit(1,LampControlEndpoint::StatePatch,compactForm);assert(u16(out+4)==200&&calls==compactCalls+1&&lastEndpoint==42&&lastForm==compactForm&&send(commit(1),19)==2);
  const auto compactFloor=LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+2*LampControlResourcePolicy::roundedReplyBytes(compactForm.size())+24*32;
- fakeFreeHeap=compactFloor-1;compactSubmit(2);assert(u16(out+4)==503&&payload()=="Control resources unavailable. No command executed."&&calls==compactCalls+1);
+ fakeFreeHeap=compactFloor-1;compactSubmit(2,LampControlEndpoint::StatePatch,compactForm);assert(u16(out+4)==503&&payload()=="Control resources unavailable. No command executed."&&calls==compactCalls+1);
  fakeFreeHeap=compactFloor;assert(send(page(2),19)==0&&u16(out+4)==503&&send(commit(2),19)==2&&calls==compactCalls+1);
- compactSubmit(3);assert(u16(out+4)==200&&calls==compactCalls+2);
- fakeLargestBlock=527;compactSubmit(4);assert(u16(out+4)==503&&calls==compactCalls+2);
+ compactSubmit(3,LampControlEndpoint::StatePatch,compactForm);assert(u16(out+4)==200&&calls==compactCalls+2);
+ fakeLargestBlock=527;compactSubmit(4,LampControlEndpoint::StatePatch,compactForm);assert(u16(out+4)==503&&calls==compactCalls+2);
  fakeFreeHeap=16316;fakeLargestBlock=2048;
  assert(send(begin(5,LampControlEndpoint::AppearanceSave,Mutation),19)==0&&send(commit(5),19)==0&&u16(out+4)==503&&calls==compactCalls+2);
+ // The physical Sonata profile sits below the general mutation floor, but a
+ // scene write has a fixed 432-byte record and an explicitly reserved NVS
+ // workspace. It is admitted over Bluetooth without weakening other writes.
+ const std::string sceneForm="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170";
+ fakeFreeHeap=23388;fakeLargestBlock=9204;
+ compactSubmit(6,LampControlEndpoint::Scene,sceneForm);assert(u16(out+4)==200&&calls==compactCalls+3&&lastEndpoint==LampControlEndpoint::Scene&&lastForm==sceneForm);
+ fakeLargestBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;
+ compactSubmit(7,LampControlEndpoint::Scene,sceneForm);assert(u16(out+4)==503&&calls==compactCalls+3);
  // An updater still rejects this ordinary mutation before admission. A new
  // compact budget never overrides update ownership or replays old Commit.
- updating=true;assert(send(begin(6,LampControlEndpoint::StatePatch,Mutation),19)==3&&calls==compactCalls+2);updating=false;
+ updating=true;assert(send(begin(8,LampControlEndpoint::StatePatch,Mutation),19)==3&&calls==compactCalls+3);updating=false;
  resetLampBleControlTransfer(20);fakeFreeHeap=16316;fakeLargestBlock=2048;
  const auto currentCalls=calls;const std::string currentForm="view=current";
  outSize=lampBleControlMetadata(out,sizeof(out));assert(payload().find("current-state-v1")!=std::string::npos);
@@ -405,7 +416,7 @@ int main(){
  for(uint16_t bytes:{uint16_t(1),uint16_t(11),uint16_t(13),uint16_t(1024)})assert(send(begin(2,LampControlEndpoint::State,Read,bytes),20)==2&&calls==currentCalls+1);
  assert(send(begin(2,LampControlEndpoint::Firmware,Read,currentForm.size()),20)==2&&calls==currentCalls+1);
  assert(send(begin(2,LampControlEndpoint::State,Read),20)==0&&send(commit(2),20)==0&&calls==currentCalls+2&&lastForm.empty());
- std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/compact-patch/legacy-mutation admission, allocation-free immutable503 read refusals, unchanged persistent mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
+  std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/compact-patch-and-scene/legacy-mutation admission, allocation-free immutable503 read refusals, unchanged persistent mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-control-') as directory:

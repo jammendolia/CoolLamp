@@ -178,7 +178,7 @@ public:
     // reconciliation rather than replay on a different route.
     const bool boundedRead=LampControlResourcePolicy::readEndpoint(id,mutation);
     if(!(boundedRead?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
-                   LampControlResourcePolicy::compactMutationEndpoint(id,mutation)?LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
+                   LampControlResourcePolicy::compactMutationEndpoint(id,mutation)?LampControlResourcePolicy::compactMutationEndpointReady(id,ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
                    LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap())))
       return {503,"Control resources unavailable. This request was not executed."};
     clearFields();

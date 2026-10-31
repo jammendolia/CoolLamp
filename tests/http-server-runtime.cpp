@@ -255,6 +255,7 @@ struct Fixture {
     server.on("/api/effects/schema",HTTP_POST,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/power",HTTP_POST,[this](){if(!auth(true))return;const char* const fields[]={"on"};if(!server.fieldsAllowed(fields,1)||server.arg("on")!="1"){server.send(400,"text/plain","Invalid form.");return;}++mutations;server.send(200,"text/plain","Light on.");});
     server.on("/api/state/patch",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"application/json","{\"outcome\":\"executed\"}");});
+    server.on("/api/sync/scene",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"text/plain","Group scene saved.");});
     server.on("/large",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(4000,'a')));});
     server.on("/full-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(5998,'a')+"\""));});
     server.on("/max-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(8190,'a')+"\""));});
@@ -777,9 +778,23 @@ int main(int argc,char** argv){
     fakeFreeHeap=floor-1;const int denied=connect(f.listener,post("/api/state/patch",form));f.finish(denied,40);
     contains(denied,"503 Service Unavailable");contains(denied,"This request was not executed");assert(f.mutations==1);
     fakeFreeHeap=floor;const int fresh=connect(f.listener,post("/api/state/patch",form));f.finish(fresh,40);contains(fresh,"200 OK");assert(f.mutations==2);
+    // The physical Sonata failure had 23,388 free bytes and a 9,204-byte
+    // largest block. A fixed 432-byte scene save must execute there, while its
+    // separate NVS workspace and exact form budget still fail closed.
+    const std::string scene="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170";
+    assert(LampControlResourcePolicy::compactMutationHttpPath("/api/sync/scene",true));
+    assert(LampControlResourcePolicy::compactMutationEndpoint(LampControlEndpoint::Scene,true));
+    assert(LampControlResourcePolicy::compactMutationHttpReady("/api/sync/scene",23388,9204,scene.size()));
+    fakeFreeHeap=23388;fakeLargestFreeBlock=9204;
+    const int sceneOk=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneOk,40);contains(sceneOk,"200 OK");assert(f.mutations==3);
+    const uint32_t sceneFloor=uint32_t(LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::CompactScenePersistenceBytes+LampControlResourcePolicy::roundedReplyBytes(scene.size())+24*32);
+    fakeFreeHeap=sceneFloor-1;const int sceneLow=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneLow,40);contains(sceneLow,"503 Service Unavailable");assert(f.mutations==3);
+    fakeFreeHeap=23388;fakeLargestFreeBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;
+    const int sceneFragmented=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneFragmented,40);contains(sceneFragmented,"503 Service Unavailable");assert(f.mutations==3);
     // Legacy/persistent mutations still wait under their unchanged floor.
+    fakeLargestFreeBlock=9204;
     const int legacy=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
-    assert(f.mutations==2);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==2);
+    assert(f.mutations==3);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==3);
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;

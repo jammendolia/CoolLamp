@@ -1,19 +1,24 @@
 #include "LampControl.h"
+#include "LampEffectRegistry.h"
+#include "LampStyle.h"
 
 static_assert(LAMP_EFFECT_CAPACITY == MODE_MAX, "Keep the Bluetooth effect bound in sync");
+static_assert(LAMP_BASE_EFFECT_COUNT==LampEffects::BaseCount&&LAMP_EFFECT_COUNT==LampEffects::LegacyCount&&LAMP_EFFECT_CAPACITY==LampEffects::Count,"Keep the protocol catalog bounds in sync");
+
+static LampEffects::Availability lampEffectAvailability(bool regional,bool capture){
+  return {lampHasMicrophone(),lampSyncFollowing(),regional&&lampEdisonProfileMatches(),uint8_t(regional?lampSyncRole():0),capture&&lampMicrophoneEnabled(),regional&&lampStyleUsesWholeStrip()};
+}
 
 // V1 remains a dense slot table. Optional availability metadata fences gaps;
-// all non-Edison lamps retain their original 38/47-slot catalogs.
+// Other designs retain their original 38/47 slots; Edison stays at 51/52.
 uint8_t lampAvailableEffectCount() {
-  if(lampEdisonProfileMatches()&&lampSyncRole()==0)return lampHasMicrophone()?52:51;
-  return (lampHasMicrophone() || lampSyncFollowing()) ? LAMP_EFFECT_COUNT : LAMP_BASE_EFFECT_COUNT;
+  return LampEffects::catalogCount(lampEffectAvailability(true,false));
 }
 bool lampEffectAvailable(uint8_t mode){
-  if(mode<1)return false;
-  if(mode<=LAMP_BASE_EFFECT_COUNT)return true;
-  if(mode<=LAMP_EFFECT_COUNT)return lampHasMicrophone()||lampSyncFollowing();
-  // Region effects are standalone. Legacy Mirror packets cannot negotiate them.
-  return mode<=lampAvailableEffectCount()&&(mode!=52||lampMicrophoneEnabled());
+  if(!LampEffects::find(mode))return false;
+  const auto requirement=LampEffects::requirement(mode);
+  if(requirement==LampEffects::Requirement::General)return true;
+  return LampEffects::available(mode,lampEffectAvailability(LampEffects::needsEdison(mode)||LampEffects::needsSonata(mode),requirement==LampEffects::Requirement::EdisonAudio));
 }
 uint8_t lampNextAvailableEffect(uint8_t current,int delta){
   const int bound=lampAvailableEffectCount();

@@ -1,4 +1,5 @@
 // Fire2012 by Mark Kriegsman, July 2012
+#include "LampFireEffects.h"
 // as part of "Five Elements" shown here: http://youtu.be/knWiGsmgycY
 ////
 // This basic one-dimensional 'fire' simulation works roughly as follows:
@@ -39,35 +40,23 @@
 bool gReverseDirection = false;
 void Fire2012()
 {
-// Array of temperature readings at each simulation cell
-  uint8_t* heat = fireHeat;
+  updateFireHeat(fireHeat, NUM_LEDS, COOLING, SPARKING);
+  drawFireLane(fireHeat, NUM_LEDS, gReverseDirection ? NUM_LEDS - 1 : 0,
+               gReverseDirection ? -1 : 1, false, 0);
+}
 
-  // Step 1.  Cool down every cell a little
-    const int coolingRange = ((COOLING * 10) / NUM_LEDS) + 2;
-    for( int i = 0; i < NUM_LEDS; i++) {
-      heat[i] = qsub8( heat[i], random8(0, coolingRange > 255 ? 255 : coolingRange));
-    }
-
-    // Step 2.  Heat from each cell drifts 'up' and diffuses a little
-    for( int k= NUM_LEDS - 1; k >= 2; k--) {
-      heat[k] = (heat[k - 1] + heat[k - 2] + heat[k - 2] ) / 3;
-    }
-
-    // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
-    if( random8() < SPARKING ) {
-      int y = random8(NUM_LEDS < 7 ? NUM_LEDS : 7);
-      heat[y] = qadd8( heat[y], random8(160,255) );
-    }
-
-    // Step 4.  Map from heat cells to LED colors
-    for( int j = 0; j < NUM_LEDS; j++) {
-      CRGB color = HeatColor( heat[j]);
-      int pixelnumber;
-      if( gReverseDirection ) {
-        pixelnumber = (NUM_LEDS-1) - j;
-      } else {
-        pixelnumber = j;
-      }
-      leds[pixelnumber] = color;
-    }
+void renderFireEffect(uint8_t mode) {
+  struct Recipe { uint8_t flags, palette; };
+  // Flags: bit0 reverses travel; bit1 reverses the ordinary heat palette.
+  // Plain Fire owns its separate whole-strip history and direction setting.
+  static constexpr Recipe recipes[] = {
+    {0,0}, {0,0}, {1,0}, {2,0}, {0,1}, {0,2}, {0,3}
+  };
+  static_assert(MODE_FIRE == 4 && MODE_FIRE_PURPLE == 10 &&
+    sizeof(recipes) == 2 * (MODE_FIRE_PURPLE - MODE_FIRE + 1),
+    "Keep fire recipes aligned with unchanged effect IDs");
+  if (mode < MODE_FIRE || mode > MODE_FIRE_PURPLE) return;
+  if (mode == MODE_FIRE) { Fire2012(); return; }
+  const auto& recipe = recipes[mode - MODE_FIRE];
+  FireSplit(recipe.flags & 1, recipe.flags & 2, recipe.palette);
 }

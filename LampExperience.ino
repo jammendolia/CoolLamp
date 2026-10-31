@@ -1,4 +1,5 @@
 #include "LampExperience.h"
+#include "LampGeometry.h"
 #include "LampControlHttpAdapter.h"
 #include "LampCommandLedger.h"
 #include "LampModel.h"
@@ -28,13 +29,16 @@ bool commandRevisionParse(const String& text,uint32_t& value){
 void observeLampAppearance(){
   uint8_t bytes[LampCommands::SnapshotBytes]{};size_t at=0;
   const auto state=getLampControlState();bytes[at++]=state.mode;bytes[at++]=state.brightness;bytes[at++]=state.power;
-  static_assert(3+LAMP_EFFECT_CAPACITY*10+18+3<=LampCommands::SnapshotBytes,"Receipt snapshot must include every effect slot");
+  static_assert(3+LAMP_EFFECT_CAPACITY*10+18+5<=LampCommands::SnapshotBytes,"Receipt snapshot must include every effect slot and group scope");
   for(uint8_t mode=1;mode<=LAMP_EFFECT_CAPACITY;++mode){const auto c=getLampColor(mode);const auto o=getLampEffectOptions(mode);
     bytes[at++]=c.enabled;bytes[at++]=c.r;bytes[at++]=c.g;bytes[at++]=c.b;
     bytes[at++]=o.speed;bytes[at++]=o.intensity;bytes[at++]=o.dual;bytes[at++]=o.r;bytes[at++]=o.g;bytes[at++]=o.b;
   }
   for(uint8_t zone=0;zone<3;++zone){const auto c=lampVuColors[zone];bytes[at++]=c.r;bytes[at++]=c.g;bytes[at++]=c.b;const auto f=lampFountainColors[zone];bytes[at++]=f.r;bytes[at++]=f.g;bytes[at++]=f.b;}
   bytes[at++]=lampFountainCustom;bytes[at++]=lampGroupScene();bytes[at++]=lampSyncFollowing();
+  // A Mirror coordinator can otherwise look identical to an independent lamp.
+  // Fence role/pause transitions before accepting an appearance draft.
+  bytes[at++]=lampSyncRole();bytes[at++]=lampSyncPaused();
   if(!lightCommands.observe(bytes,sizeof(bytes))){lightCommands.begin((uint64_t(esp_random())<<32|esp_random())|1);lightCommands.observe(bytes,sizeof(bytes));}
 }
 String receiptJson(const LampCommands::Receipt* receipt,uint64_t requestedBoot,uint64_t id){
@@ -84,7 +88,8 @@ void appendSchemaParameter(LampJsonSink& out,const char* key,uint32_t low,uint32
 }
 }
 
-void beginLampExperience(){LampModel::begin();LampHousehold::begin();lightCommands.begin((uint64_t(esp_random())<<32|esp_random())|1);observeLampAppearance();}
+// setup() loads the model and style together before appearance/rendering.
+void beginLampExperience(){LampHousehold::begin();lightCommands.begin((uint64_t(esp_random())<<32|esp_random())|1);observeLampAppearance();}
 String lampRevisionJson(){
   observeLampAppearance();const String identity=lampIdentity();if(identity.length()!=12)return String();
   const auto color=getLampColor(Mode);const auto options=getLampEffectOptions(Mode);
@@ -94,7 +99,8 @@ String lampRevisionJson(){
     out.concat("\",\"revision\":");out.concat(lightCommands.currentRevision());out.concat(",\"nextCommandId\":\"");out.concat(next);
     out.concat("\",\"mode\":");out.concat(Mode);out.concat(",\"brightness\":");out.concat(Brightness);out.concat(",\"power\":");out.concat(PowerOn?"true":"false");
     out.concat(",\"currentColor\":[");out.concat(color.enabled);out.concat(',');out.concat(color.r);out.concat(',');out.concat(color.g);out.concat(',');out.concat(color.b);
-    out.concat("],\"currentOptions\":[");out.concat(options.speed);out.concat(',');out.concat(options.intensity);out.concat(',');out.concat(options.dual);out.concat(',');out.concat(options.r);out.concat(',');out.concat(options.g);out.concat(',');out.concat(options.b);out.concat("]}");
+    out.concat("],\"currentOptions\":[");out.concat(options.speed);out.concat(',');out.concat(options.intensity);out.concat(',');out.concat(options.dual);out.concat(',');out.concat(options.r);out.concat(',');out.concat(options.g);out.concat(',');out.concat(options.b);out.concat(']');
+    out.concat(",\"syncRole\":");out.concat(lampSyncRole());out.concat('}');
   },512);
 }
 String lampDescriptorJson(){
@@ -102,8 +108,8 @@ String lampDescriptorJson(){
   if(identitySnapshot.length()!=12||revisionSnapshot.isEmpty())return String();
   return lampJsonReply([&](LampJsonSink& out){
   out.concat("{\"descriptorVersion\":2,\"deviceId\":");out.quote(identitySnapshot);out.concat(",\"firmwareVersion\":\"" LAMP_FIRMWARE_VERSION "\",\"model\":");LampModel::appendJson(out);out.concat(",\"state\":");out.concat(revisionSnapshot);
-  out.concat(",\"hardware\":{\"ledCount\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat(",\"motionPath\":");if(lampMotionPathSaveUncertain())out.concat("null");else out.concat(lampMotionPath);out.concat(",\"currentBudgetMa\":");out.concat(lampSettings.milliAmps);out.concat(",\"microphone\":");out.concat((lampHasMicrophone()?"true":"false"));out.concat(",\"style\":");appendLampStyleJson(out);out.concat("}");
-  out.concat(",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\",\"current-state-v1\",\"mesh-neighborhood-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":");out.concat(UpdatePublisher::enforced()?"true":"false");out.concat(",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}");
+  out.concat(",\"hardware\":{\"ledCount\":");out.concat(NUM_LEDS);out.concat(",\"midpoint\":");out.concat(lampMidpoint);out.concat(",\"motionPath\":");if(!lampStyleUsesWholeStrip()&&lampMotionPathSaveUncertain())out.concat("null");else out.concat(lampEffectiveMotionPath());out.concat(",\"currentBudgetMa\":");out.concat(lampSettings.milliAmps);out.concat(",\"microphone\":");out.concat((lampHasMicrophone()?"true":"false"));out.concat(",\"style\":");appendLampStyleJson(out);out.concat("}");
+  out.concat(",\"capabilities\":{\"catalogVersions\":[1,2],\"sceneVersions\":[2,3],\"control\":[\"http-auth\",\"bonded-ble-rpc\",\"owner-mesh\",\"partial-state-v1\",\"revision-snapshot-v1\",\"group-revision-v1\",\"command-receipts-v1\",\"household-light-v1\",\"group-dissolution-v1\",\"current-state-v1\",\"mesh-neighborhood-v1\"],\"persistence\":[\"per-effect-appearance-v2\",\"legacy-startup-defaults\",\"shared-group-appearance\"],\"updates\":[\"https-pinned\",\"ble-pinned\",\"trusted-donation\",\"quiet-policy-v1\",\"ble-resume-lease-v1\",\"staged-rollout-v1\",\"publisher-signatures-v2\",\"update-status-v2\",\"local-update-cue-v1\"],\"commissioning\":[\"physical-comparison-v1\",\"physical-comparison-v2\",\"six-second-pairing\"],\"publisherProvisioned\":");out.concat(UpdatePublisher::enforced()?"true":"false");out.concat(",\"householdCredentials\":true,\"householdPermissions\":\"light-control\",\"nativeBondInvitations\":false,\"coordinatorMigration\":false,\"notifications\":false,\"automaticRadioRollout\":false}");
   out.concat(",\"motionPathVersion\":1,\"audioCaptureVersion\":1,\"limits\":{\"groupMembers\":32,\"legacyGroupMembers\":9,\"localPresence\":16,\"forwardingHops\":4,\"bleConnections\":1,\"bleBonds\":3,\"householdPhones\":8,\"requestBytes\":1024,\"responseBytes\":8192,\"schemaPageEntries\":4,\"schemaPageBytes\":4096,\"receipts\":8,\"receiptLifetimeMs\":120000,\"appearanceWriteIntervalMs\":2000},\"compatibility\":{\"legacyCatalog\":true,\"expandedGroupRequiresEveryMember\":true,\"appearanceMigrationPending\":");out.concat(lampAppearanceMigrationPending()?"true":"false");out.concat(",\"inventory\":\"multi-broker-local-snapshots\"}}");
   });
 

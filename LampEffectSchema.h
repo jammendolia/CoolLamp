@@ -1,13 +1,15 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+#include "LampEffectRegistry.h"
 namespace LampEffectSchema {
 // Empty requirements mean every physical design, independent of artwork
 // recommendations. Future effects may supply an explicit canonical style list.
 struct StyleRequirement {const char* const* ids=nullptr;uint8_t count=0;};
 inline StyleRequirement styles(uint8_t localId,bool scene){
   static const char* const edison[]={"edison"};
-  return !scene&&localId>=48&&localId<=52?StyleRequirement{edison,1}:StyleRequirement{};
+  static const char* const sonata[]={"sonata"};
+  return scene?StyleRequirement{}:LampEffects::needsEdison(localId)?StyleRequirement{edison,1}:LampEffects::needsSonata(localId)?StyleRequirement{sonata,1}:StyleRequirement{};
 }
 inline bool compatible(StyleRequirement required,const char* style){
   if(!required.count)return true;
@@ -16,14 +18,12 @@ inline bool compatible(StyleRequirement required,const char* style){
   return false;
 }
 inline const char* key(uint8_t id){
-  static const char* const keys[]={"pacifica","aurora","rain","fire","split-fire-rising","split-fire-falling","split-fire-rising-reversed-colors","blue-gas-fire","witch-fire","purple-fire","embers","lava","plasma","rainbow","rainbow-glitter","confetti","comet-collision","sinelon","bpm","juggle","white","red","green","blue","purple","pink","yellow","cyan","custom-solid","droplets-rising","lightning-storm","color-tide","fireflies","heartbeat","shooting-stars","breathing-glow","lava-blobs","droplets-falling","sound-glow","sound-meter","spectrum-rise","bass-launch","spectral-embers","beat-bloom","three-band-fountain","vu-meter","rainbow-embers"};
-  static const char* const edison[]={"edison-filament","edison-eureka","edison-orbit","edison-induction","edison-sound-filament"};
-  return id>=1&&id<=47?keys[id-1]:id>=48&&id<=52?edison[id-48]:"unknown";
+  return LampEffects::key(id);
 }
-inline bool motion(uint8_t id){return id>=1&&id<=51&&!(id>=21&&id<=29);}
+inline bool motion(uint8_t id){return id>=1&&id<=LampEffects::Count&&id!=52&&!(id>=21&&id<=29);}
 inline bool intensity(uint8_t id){return motion(id)||id==52;}
 inline const char* intensityRole(uint8_t id){return id==30||id==33||id==38?"density-and-glow":id==31||id==35?"activity-and-glow":"glow";}
 inline bool automatic(uint8_t id){return id<=28||(id>=41&&id<=44)||id==47;}
 inline bool zonePalette(uint8_t id){return id==45||id==46;}
-inline bool secondary(uint8_t id){return id>=1&&id<=52&&!zonePalette(id);}
+inline bool secondary(uint8_t id){return id>=1&&id<=LampEffects::Count&&!zonePalette(id);}
 }

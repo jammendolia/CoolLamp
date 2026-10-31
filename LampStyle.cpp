@@ -17,6 +17,7 @@ bool valid(uint8_t code){return code<=LAMP_PHYSICAL_STYLE_MAX;}
 // older, missing and corrupt records remain explicitly unclassified.
 void beginLampStyle() {
   current=LampPhysicalStyle::Unspecified;saved=false;
+  lampWholeStripStyle=LampModel::locked()&&!strcmp(LampModel::factoryStyle(),"sonata");
   Preferences preferences;
   if(!preferences.begin("coollamp",true))return;
   if(preferences.getType(key)==PT_U8){
@@ -24,11 +25,12 @@ void beginLampStyle() {
     if(valid(code)){current=static_cast<LampPhysicalStyle>(code);saved=true;}
   }
   preferences.end();
+  lampWholeStripStyle=getLampStyle()==LampPhysicalStyle::Sonata;
 }
 LampPhysicalStyle getLampStyle(){
   if(!LampModel::locked())return current;
   const char* const id=LampModel::factoryStyle();
-  return !strcmp(id,"helix")?LampPhysicalStyle::Helix:!strcmp(id,"large-helix")?LampPhysicalStyle::LargeHelix:!strcmp(id,"corkscrew")?LampPhysicalStyle::Corkscrew:!strcmp(id,"edison")?LampPhysicalStyle::Edison:LampPhysicalStyle::Unspecified;
+  return !strcmp(id,"helix")?LampPhysicalStyle::Helix:!strcmp(id,"large-helix")?LampPhysicalStyle::LargeHelix:!strcmp(id,"corkscrew")?LampPhysicalStyle::Corkscrew:!strcmp(id,"edison")?LampPhysicalStyle::Edison:!strcmp(id,"sonata")?LampPhysicalStyle::Sonata:LampPhysicalStyle::Unspecified;
 }
 uint8_t lampStyleCode(){return static_cast<uint8_t>(getLampStyle());}
 const char* lampStyleId(){
@@ -37,6 +39,7 @@ const char* lampStyleId(){
     case LampPhysicalStyle::LargeHelix:return "large-helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
     case LampPhysicalStyle::Edison:return "edison";
+    case LampPhysicalStyle::Sonata:return "sonata";
     default:return "unspecified";
   }
 }
@@ -46,6 +49,7 @@ const char* lampStyleFamily(){
     case LampPhysicalStyle::LargeHelix:return "helix";
     case LampPhysicalStyle::Corkscrew:return "corkscrew";
     case LampPhysicalStyle::Edison:return "edison";
+    case LampPhysicalStyle::Sonata:return "sonata";
     default:return "unspecified";
   }
 }
@@ -67,6 +71,6 @@ bool configureLampStyle(uint8_t code){
   // Update the runtime classification only after the complete save succeeds.
   const bool written=preferences.putUChar(key,code)==sizeof(uint8_t);
   preferences.end();
-  if(written){current=static_cast<LampPhysicalStyle>(code);saved=true;}
+  if(written){current=static_cast<LampPhysicalStyle>(code);saved=true;lampWholeStripStyle=code==uint8_t(LampPhysicalStyle::Sonata);}
   return written;
 }

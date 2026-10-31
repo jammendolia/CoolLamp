@@ -3,6 +3,7 @@
 #include "AudioAnalysis.h"
 #include "AudioSpectrum.h"
 #include "LampNvsBlob.h"
+#include "LampModel.h"
 #include <driver/i2s_std.h>
 #include <driver/gpio.h>
 #include <freertos/semphr.h>
@@ -216,7 +217,9 @@ void beginLampAudio() {
   if(legacyAbsent) {
     LampNvsBlobPreferences factory;uint8_t hardware[4]{};
     if(factory.begin("lampmodel",true)) {
-      actual=sizeof(hardware);if(factory.readBlob(HardwareKey,hardware,actual)==ESP_OK && actual==sizeof(hardware) && validFlag(hardware))installed=hardware[1];
+      actual=sizeof(hardware);const esp_err_t foundHardware=factory.readBlob(HardwareKey,hardware,actual);
+      if(foundHardware==ESP_OK && actual==sizeof(hardware) && validFlag(hardware))installed=hardware[1];
+      else if(foundHardware==ESP_ERR_NVS_NOT_FOUND)installed=LampModel::defaultMicrophoneInstalled();
       factory.end();
     }
   }

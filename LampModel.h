@@ -12,6 +12,8 @@ bool valid(const Record& record);
 bool provision(const Record& record); // service/manufacturing caller only
 bool locked();
 bool factoryAvailable();
+// Only verified finished-product profiles may supply absent hardware defaults.
+bool defaultMicrophoneInstalled();
 const char* factoryStyle();
 void appendJson(LampJsonSink& out);
 String json();

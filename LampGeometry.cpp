@@ -32,7 +32,7 @@ void loadLampGeometry() {
   if (ok && data[0] == 1 && saved < 1024) lampMidpoint = saved;
 }
 bool saveLampGeometry(uint16_t midpoint, uint16_t count) {
-  if (!count || count > 1024 || midpoint >= count) return false;
+  if (lampStyleUsesWholeStrip() || !count || count > 1024 || midpoint >= count) return false;
   const uint8_t data[3] = {1, uint8_t(midpoint), uint8_t(midpoint >> 8)};
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
@@ -52,7 +52,7 @@ bool readStoredLampMotionPath(uint8_t& path){
   return valid;
 }
 bool saveLampMotionPath(uint8_t path){
-  if(path>1)return false;
+  if(lampStyleUsesWholeStrip()||path>1)return false;
   LampNvsBlobPreferences prefs;if(!prefs.begin(LAMP_MOTION_PATH_NAMESPACE,false)){motionUncertain=true;return false;}
   LampMotionPathRecord old,next;bool existed=false;
   if(!readMotion(prefs,old,existed)){motionUncertain=true;prefs.end();return false;}

@@ -98,16 +98,7 @@ static_assert(sizeof(LampBrowserUpload)<=640,"Keep browser preparation memory bo
 LampBrowserUpload* browserUpload=nullptr;
 constexpr uint32_t BrowserUploadPrepareMs=30000;
 
-const char* const effectNames[] = {
-  "Pacifica", "Aurora", "Rain", "Fire", "Split fire - rising", "Split fire - falling",
-  "Split fire - rising, reversed colors", "Blue gas fire", "Witch fire", "Purple fire",
-  "Embers", "Lava", "Plasma", "Rainbow", "Rainbow with glitter", "Confetti",
-  "Comet collision", "Sinelon", "BPM", "Juggle", "White", "Red", "Green",
-  "Blue", "Purple", "Pink", "Yellow", "Cyan", "Custom solid",
-  "Bouncing droplets - rising", "Lightning storm", "Color tide", "Fireflies", "Heartbeat", "Shooting stars", "Breathing glow", "Lava blobs", "Bouncing droplets - falling", "Sound glow", "Sound meter", "Spectrum Rise", "Bass Launch", "Spectral Embers", "Beat Bloom", "Three-band Fountain", "VU Meter", "Rainbow Embers",
-  "Filament", "Eureka", "Orbit", "Induction", "Sound Filament"
-};
-static_assert(sizeof(effectNames) / sizeof(effectNames[0]) == MODE_MAX, "Every mode needs a web label");
+static_assert(LampEffects::Count == MODE_MAX, "Every mode needs a web label");
 
 void loadLampSettings()
 {
@@ -255,9 +246,9 @@ String lampEffectCatalogEntry(uint8_t mode)
   const bool calm = mode == 1 || mode == 2 || mode == 3 || mode == 13 || mode == 30 || mode == 32 || mode == 33 || mode >= 36;
   const char* category = lampEffectNeedsAudio(mode) ? "audio" : mode >= 4 && mode <= 12 ? "fire" : calm ? "calm" : "color";
   return lampJsonReply([&](LampJsonSink& out){
-    out+="{\"id\":";out+=mode;out+=",\"name\":";out.quote(effectNames[mode-1]);
+    out+="{\"id\":";out+=mode;out+=",\"name\":";out.quote(LampEffects::name(mode));
     out+=",\"category\":";out.quote(category);out+=",\"speed\":";out+=LampEffectSchema::motion(mode)?"true":"false";
-    if(lampEdisonProfileMatches()){out+=",\"available\":";out+=lampEffectAvailable(mode)?"true":"false";}
+    if(lampEdisonProfileMatches()||lampStyleUsesWholeStrip()){out+=",\"available\":";out+=lampEffectAvailable(mode)?"true":"false";}
     if(mode>LAMP_EFFECT_COUNT)out+=",\"startupSupported\":false";
     out+='}';
   });
@@ -406,7 +397,7 @@ void sendLampState()
   // bound. Route hints continue on /api/sync/page; durable order is never cut.
   state.concat(",\"sync\":");if(!appendLampSyncJson(state,0,1,syncSnapshot)){state.fail();return;}
   state.concat(",\"lampStyle\":");appendLampStyleJson(state);
-  state.concat(",\"calibration\":{\"active\":");state.concat(lampCalibrationActive()?"true":"false");state.concat(",\"position\":");state.concat(lampCalibrationPosition());state.concat(",\"kind\":\"");state.concat((lampCalibrationCenter()?"center":"leds"));state.concat("\",\"centerSupported\":true}");
+  state.concat(",\"calibration\":{\"active\":");state.concat(lampCalibrationActive()?"true":"false");state.concat(",\"position\":");state.concat(lampCalibrationPosition());state.concat(",\"kind\":\"");state.concat((lampCalibrationCenter()?"center":"leds"));state.concat("\",\"centerSupported\":");state.concat(lampStyleUsesWholeStrip()?"false":"true");state.concat("}");
   state.concat(",\"rotation\":{\"enabled\":");state.concat(lampRotation.enabled?"true":"false");state.concat(",\"random\":");state.concat(lampRotation.random?"true":"false");state.concat(",\"category\":");state.concat(lampRotation.category);state.concat(",\"seconds\":");state.concat(lampRotation.seconds);state.concat("}");
   state.concat(",\"fountainColors\":[");
   for(unsigned i=0;i<3;++i){if(i)state.concat(',');const auto c=fountainPaletteColor(i);state.concat("[");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");}
@@ -415,7 +406,7 @@ void sendLampState()
   for(unsigned i=0;i<3;++i){if(i)state.concat(',');const auto c=renderVuColor(i);state.concat("[");state.concat(c.r);state.concat(",");state.concat(c.g);state.concat(",");state.concat(c.b);state.concat("]");}
   state.concat("]");
   state.concat(",\"midpoint\":");state.concat(lampMidpoint);state.concat(",\"effectiveMidpoint\":");state.concat(lampSplitCount(NUM_LEDS, lampMidpoint));
-  state.concat(",\"motionVersion\":1,\"motionPath\":");if(lampMotionPathSaveUncertain())state.concat("null");else state.concat(lampMotionPath);
+  state.concat(",\"motionVersion\":1,\"motionPath\":");if(!lampStyleUsesWholeStrip()&&lampMotionPathSaveUncertain())state.concat("null");else state.concat(lampEffectiveMotionPath());
   state.concat(",\"mode\":");state.concat(Mode);state.concat(",\"brightness\":");state.concat(Brightness);
   state.concat(",\"leds\":");state.concat(NUM_LEDS);state.concat(",\"milliamps\":");state.concat(lampSettings.milliAmps);
   state.concat(",\"power\":");state.concat(PowerOn ? "true" : "false");
@@ -425,7 +416,7 @@ void sendLampState()
   state.concat(",\"gateway\":");state.quote(gateway);
   state.concat(",\"dns\":[");state.quote(dns0);state.concat(",");state.quote(dns1);state.concat("]");
   state.concat(",\"hostname\":");state.quote(hostname);state.concat(",\"effects\":[");
-  for (size_t i = 0; i < effectCount; i++) { if (i) state.concat(','); state.quote(effectNames[i]); }
+  for (size_t i = 0; i < effectCount; i++) { if (i) state.concat(','); state.quote(LampEffects::name(i+1)); }
   state.concat("],\"colors\":[");
   for (uint16_t mode = 1; mode <= effectCount; ++mode) {
     if (mode > 1) state.concat(',');
@@ -720,7 +711,9 @@ void beginLampNetwork()
   lampToken = token;
   const char* headers[] = {"X-Lamp-Token"};
   lampServer.collectHeaders(headers, 1);
-  lampServer.on("/", HTTP_GET, []() {
+  // Stateless callbacks share std::function's function-pointer manager instead
+  // of retaining a separate manager and exception record for every lambda.
+  lampServer.on("/", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     lampServer.sendHeader("X-Content-Type-Options", "nosniff");
     lampServer.sendHeader("X-Frame-Options", "DENY");
@@ -733,8 +726,8 @@ void beginLampNetwork()
   });
   lampServer.on("/api/state", HTTP_GET, sendLampState);
   lampServer.on("/api/state/current", HTTP_GET, sendLampState);
-  lampServer.on("/api/descriptor",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
-  lampServer.on("/api/revision",HTTP_GET,[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampRevisionJson());});
+  lampServer.on("/api/descriptor",HTTP_GET,+[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampDescriptorJson());});
+  lampServer.on("/api/revision",HTTP_GET,+[](){if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",lampRevisionJson());});
   lampServer.on("/api/state/patch",HTTP_POST,handleLampStatePatch);
   lampServer.on("/api/appearance/save",HTTP_POST,handleLampAppearanceSave);
   lampServer.on("/api/receipt",HTTP_POST,handleLampReceipt);
@@ -742,17 +735,17 @@ void beginLampNetwork()
   lampServer.on("/api/household",HTTP_POST,handleLampHouseholdAdmin);
   lampServer.on("/api/household/challenge",HTTP_POST,handleLampHouseholdChallenge);
   lampServer.on("/api/household/control",HTTP_POST,handleLampHouseholdControl);
-  lampServer.on("/api/group/remove",HTTP_POST,[](){
+  lampServer.on("/api/group/remove",HTTP_POST,+[](){
     if(!authorizedLampRequest(true))return;const char* const fields[]={"target","order","session"};
     if(!lampServer.fieldsAllowed(fields,3)){lampServer.send(400,"text/plain","Invalid group removal fields.");return;}
     const auto reply=removeLampGroupMember(lampServer.arg("target"),lampServer.arg("order"),lampServer.arg("session"));lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/api/firmware/rollout",HTTP_POST,[](){
+  lampServer.on("/api/firmware/rollout",HTTP_POST,+[](){
     if(!authorizedLampRequest(true))return;const char* const fields[]={"action","manifest","command","ticket","target","targetBoot","proof"};
     if(!lampServer.fieldsAllowed(fields,7)){lampServer.send(400,"text/plain","Invalid rollout fields.");return;}
     const auto reply=LampRollout::request(lampServer.arg("action"),lampServer.arg("manifest"),lampServer.arg("command"),lampServer.arg("ticket"),lampServer.arg("target"),lampServer.arg("targetBoot"),lampServer.arg("proof"));lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/api/effects/schema",HTTP_POST,[](){
+  lampServer.on("/api/effects/schema",HTTP_POST,+[](){
     if(!authorizedLampRequest(true))return;uint32_t offset=0,count=0;
     const String kind=lampServer.arg("kind");const char* const fields[]={"kind","offset","count"};
     if(!lampServer.fieldsAllowed(fields,3)||(kind!="effects"&&kind!="scenes")||!readNumber("offset",0,46,offset)||!readNumber("count",1,4,count)){lampServer.send(400,"text/plain","Invalid schema page.");return;}
@@ -761,23 +754,23 @@ void beginLampNetwork()
     if(page.isEmpty())lampServer.send(503,"text/plain","Schema response memory unavailable. Nothing changed.");
     else lampServer.send(200,"application/json",std::move(page));
   });
-  lampServer.on("/api/sync/page",HTTP_POST,[](){
+  lampServer.on("/api/sync/page",HTTP_POST,+[](){
     if(!authorizedLampRequest(true))return;uint32_t cursor=0;const char* const fields[]={"cursor"};
     if(!lampServer.fieldsAllowed(fields,1)||!readNumber("cursor",0,30,cursor)){lampServer.send(400,"text/plain","Invalid group presence cursor.");return;}
     lampServer.send(200,"application/json",lampSyncJson(cursor));
   });
-  lampServer.setControlRead(LampControlEndpoint::Sync, [](){
+  lampServer.setControlRead(LampControlEndpoint::Sync, +[](){
     if(!authorizedLampRequest(false))return;
     lampServer.send(200,"application/json",lampSyncJson());
   });
-  lampServer.on("/api/factory-reset",HTTP_POST,[](){
+  lampServer.on("/api/factory-reset",HTTP_POST,+[](){
     if(!authorizedLampRequest(true))return;
     if(lampServer.arg("confirm")!="RESET"){lampServer.send(400,"text/plain","Confirm factory reset first.");return;}
     const bool ok=requestLampFactoryReset();
     lampServer.send(ok?200:409,"text/plain",ok?"Factory reset scheduled. Lamp restarting; pair it again afterward.":"Factory reset could not start. Wait for firmware updates to finish and retry.");
   });
   lampServer.on("/api/diagnostics", HTTP_GET, sendLampDiagnostics);
-  lampServer.on("/api/sync", HTTP_POST, []() {
+  lampServer.on("/api/sync", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
     const char* const fields[]={"role","leader","key","protocol","action","expectedIncarnation"};
@@ -794,7 +787,7 @@ void beginLampNetwork()
     if(!configureLampSync(role,lampServer.arg("leader"),lampServer.arg("key"),protocol,expectedIncarnation)){lampServer.send(expectedIncarnation.length()?409:400,"text/plain","Group changed, code is incompatible, or settings could not be saved. Refresh before trying again.");return;}
     lampServer.send(200,"text/plain",role?"Group settings saved.":"Left the group. Local settings restored.");
   });
-  lampServer.on("/api/sync/scene", HTTP_POST, []() {
+  lampServer.on("/api/sync/scene", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
     uint32_t scene,speed,intensity,r,g,b,r2,g2,b2;
@@ -805,18 +798,18 @@ void beginLampNetwork()
     const bool ok=configureLampScene(scene,speed,intensity,primary,secondary);
     lampServer.send(ok?200:409,"text/plain",ok?"Group scene saved.":"Select the coordinator, check its microphone, and try again.");
   });
-  lampServer.on("/api/sync/order", HTTP_POST, []() {
+  lampServer.on("/api/sync/order", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
     const bool ok=configureLampOrder(lampServer.arg("order"));
     lampServer.send(ok?200:409,"text/plain",ok?"Lamp order saved.":"Order changed or could not be saved. Refresh and try again.");
   });
-  lampServer.on("/api/sync/invite", HTTP_POST, []() {
+  lampServer.on("/api/sync/invite", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     const String invite=lampSyncInvite();
     lampServer.send(invite.length()?200:409,"text/plain",invite.length()?invite:"Create a group on this lamp first.");
   });
-  lampServer.on("/api/calibration", HTTP_POST, []() {
+  lampServer.on("/api/calibration", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources()){lampServer.send(409,"text/plain","Wait for the update to finish.");return;}
     const String action=lampServer.arg("action"),kind=lampServer.arg("kind");bool ok=false;
@@ -830,7 +823,7 @@ void beginLampNetwork()
     if(center){lampServer.send(ok?200:409,"text/plain",ok?(action=="save"?"Center saved. Normal lighting restored.":action=="cancel"?"Adjustment canceled. Previous center kept.":"Move the blinking white light with the knob. Click to save; ten seconds without input cancels."):"Could not adjust the center. Finish any other setup or retry saving.");return;}
     lampServer.send(ok?200:409,"text/plain",ok?(action=="save"?"LED count saved. Restarting lamp…":action=="cancel"?"Setup canceled. Previous LED count kept.":"Move the teal light to the last LED. Click the knob to save; double-click to cancel."):"Could not complete setup. Leave any lamp group before starting; retry if saving failed.");
   });
-  lampServer.on("/api/rotation", HTTP_POST, []() {
+  lampServer.on("/api/rotation", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources() || lampCalibrationActive()){lampServer.send(409,"text/plain","Finish setup or updating first.");return;}
     uint32_t enabled,random,category,seconds;
@@ -839,8 +832,9 @@ void beginLampNetwork()
     const bool ok=saveLampRotation(next);
     lampServer.send(ok?200:409,"text/plain",ok?"Effect rotation saved.":"Use an independent lamp or the group controller in Mirror effects. Audio-only needs a microphone.");
   });
-  lampServer.on("/api/geometry", HTTP_POST, []() {
+  lampServer.on("/api/geometry", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
+    if(lampStyleUsesWholeStrip()){lampServer.send(409,"text/plain","Sonata uses one continuous strip; no center adjustment is needed.");return;}
     if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
     if(lampServer.hasArg("pathVersion")||lampServer.hasArg("path")) {
       const char* const fields[]={"pathVersion","path"};uint32_t version,path;
@@ -862,7 +856,7 @@ void beginLampNetwork()
     const uint16_t split=lampMotionSplitCount(NUM_LEDS,lampMidpoint);if(split<NUM_LEDS)splitHeat[split]=200;
     lampServer.send(200,"text/plain","Center point saved and applied.");
   });
-  lampServer.on("/api/fountain-colors", HTTP_POST, []() {
+  lampServer.on("/api/fountain-colors", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources() || !lampHasMicrophone()){lampServer.send(409,"text/plain","Enable the microphone and finish updating first.");return;}
     FountainColor colors[3]={{255,65,0},{0,230,130},{75,30,255}};
@@ -875,7 +869,7 @@ void beginLampNetwork()
     if(!saveLampFountainColors(colors)){lampServer.send(500,"text/plain","Could not save Fountain colors.");return;}
     lampServer.send(200,"text/plain","Fountain colors saved and applied.");
   });
-  lampServer.on("/api/vu-colors", HTTP_POST, []() {
+  lampServer.on("/api/vu-colors", HTTP_POST, +[]() {
     if(!authorizedLampRequest(true))return;
     if(lampUpdateOwnsResources() || !lampHasMicrophone()){lampServer.send(409,"text/plain","Enable the microphone and finish updating first.");return;}
     VuColor colors[3]={{0,255,0},{255,255,0},{255,0,0}};
@@ -888,11 +882,11 @@ void beginLampNetwork()
     if(!saveLampVuColors(colors)){lampServer.send(500,"text/plain","Could not save VU colors.");return;}
     lampServer.send(200,"text/plain","VU colors saved and applied.");
   });
-  lampServer.on("/api/audio", HTTP_GET, []() {
+  lampServer.on("/api/audio", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampAudioJson());
   });
-  lampServer.on("/api/audio", HTTP_POST, []() {
+  lampServer.on("/api/audio", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
     if(lampServer.hasArg("action")||lampServer.hasArg("useVersion")) {
@@ -912,7 +906,7 @@ void beginLampNetwork()
     lampServer.send(200,"text/plain","Microphone settings saved. Restarting; reconnect to refresh effects.");
     restartAt = millis() + 1000;
   });
-  lampServer.on("/api/audio/tuning", HTTP_POST, []() {
+  lampServer.on("/api/audio/tuning", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (!lampHasMicrophone() || lampUpdateOwnsResources()) { lampServer.send(409,"text/plain","Enable the microphone and finish updating first."); return; }
     uint32_t gain,gate,scale;
@@ -922,14 +916,14 @@ void beginLampNetwork()
     if (!tuneLampAudio(gain,gate,scale)) { lampServer.send(500,"text/plain","Could not apply audio tuning. Try again."); return; }
     lampServer.send(200,"text/plain","Audio tuning saved for all audio effects.");
   });
-  lampServer.on("/api/audio/test", HTTP_POST, []() {
+  lampServer.on("/api/audio/test", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (!lampHasMicrophone() || !lampMicrophoneEnabled() || lampUpdateOwnsResources()) {
       lampServer.send(409,"text/plain","Enable the installed microphone and finish updating first."); return;
     }
     diagnoseLampAudio(); lampServer.send(200,"text/plain","Listening for 10 seconds.");
   });
-  lampServer.on("/api/style", HTTP_POST, []() {
+  lampServer.on("/api/style", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if(lampStyleLocked()){lampServer.send(409,"text/plain","Lamp design is factory set. USB service is required to change it.");return;}
     if (lampUpdateOwnsResources() || otaActive || lampCalibrationActive() || lampWifiSetupBusy() || lampFactoryResetPending()) {
@@ -944,7 +938,7 @@ void beginLampNetwork()
     }
     lampServer.send(200,"application/json",lampStyleJson());
   });
-  lampServer.on("/api/name", HTTP_POST, []() {
+  lampServer.on("/api/name", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
     String name = lampServer.arg("name"); name.trim();
@@ -959,20 +953,20 @@ void beginLampNetwork()
     if (mdnsStarted) MDNS.addServiceTxt("coollamp","tcp","name",lampName);
     lampServer.send(200,"text/plain","Lamp name saved.");
   });
-  lampServer.on("/api/identify", HTTP_POST, []() {
+  lampServer.on("/api/identify", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (lampIsUpdating() || lampPairingOpen() || lampSetupPulse()) { lampServer.send(409,"text/plain","Finish setup or updating before identifying the lamp."); return; }
     identifyUntil=millis()+2400;
     lampServer.send(200,"text/plain","Lamp is flashing white.");
   });
   lampServer.on("/api/scan", HTTP_POST, startLampScan);
-  lampServer.on("/api/scan", HTTP_GET, []() {
+  lampServer.on("/api/scan", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     ++scanPolls;
     lampServer.send(200, "application/json", scanResults);
   });
   lampServer.on("/api/config", HTTP_POST, saveLampConfiguration);
-  lampServer.on("/api/effects", HTTP_GET, []() {
+  lampServer.on("/api/effects", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     const uint8_t available=lampAvailableEffectCount();
     String catalog=lampJsonReply([&](LampJsonSink& catalog){catalog.concat('[');bool complete=true;
@@ -998,7 +992,7 @@ void beginLampNetwork()
       char expected[3]={char('0'+mode/100),char('0'+(mode/10)%10),char('0'+mode%10)};
       const size_t digits=mode<10?1:mode<100?2:3;
       const auto name=LampHttpJson::Check(entry.c_str(),entry.length()).member("name");
-      if(id.length!=digits||memcmp(id.bytes,expected+3-digits,digits)||!nameMatches(name,effectNames[mode-1])){complete=false;break;}
+      if(id.length!=digits||memcmp(id.bytes,expected+3-digits,digits)||!nameMatches(name,LampEffects::name(mode))){complete=false;break;}
       if(mode>1)complete=catalog.concat(',');
       if(complete)complete=catalog.concat(entry);
     }
@@ -1011,28 +1005,28 @@ void beginLampNetwork()
     }
     lampServer.send(200, "application/json", std::move(catalog));
   });
-  lampServer.on("/api/firmware", HTTP_GET, []() {
+  lampServer.on("/api/firmware", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampUpdateJson());
   });
-  lampServer.on("/api/firmware/check", HTTP_POST, []() {
+  lampServer.on("/api/firmware/check", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     const bool ok = requestLampUpdateCheck();
     lampServer.send(ok ? 202 : 409, "text/plain", ok ? "Checking for firmware updates…" : "Updater busy or starting. Try again shortly.");
   });
-  lampServer.on("/api/firmware/install", HTTP_POST, []() {
+  lampServer.on("/api/firmware/install", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     const bool ok = requestLampUpdateInstall();
     lampServer.send(ok ? 202 : 409, "text/plain", ok ? "Installing update. The lamp will restart when verified." : "No update available, or updater busy. Check again shortly.");
   });
-  lampServer.on("/api/firmware/automatic", HTTP_POST, []() {
+  lampServer.on("/api/firmware/automatic", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     uint32_t enabled;
     if (!readNumber("enabled", 0, 1, enabled)) { lampServer.send(400, "text/plain", "Invalid setting."); return; }
     const bool ok = !otaActive && setLampAutoUpdate(enabled);
     lampServer.send(ok ? 200 : 409, "text/plain", ok ? "Automatic update setting saved." : "Could not save while updater is busy. Try again shortly.");
   });
-  lampServer.on("/api/effect-options", HTTP_POST, []() {
+  lampServer.on("/api/effect-options", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (lampIsUpdating()) { lampServer.send(409,"text/plain","Wait for the update to finish."); return; }
     uint32_t mode,speed,intensity,dual,r,g,b;
@@ -1040,7 +1034,7 @@ void beginLampNetwork()
     setLampEffectOptions(mode,{uint8_t(speed),uint8_t(intensity),uint8_t(dual),uint8_t(r),uint8_t(g),uint8_t(b)});
     lampServer.send(200,"text/plain","Effect options applied. Save settings to remember them.");
   });
-  lampServer.on("/api/color", HTTP_POST, []() {
+  lampServer.on("/api/color", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, r, g, b;
@@ -1055,24 +1049,24 @@ void beginLampNetwork()
     setLampControl(mode, Brightness, PowerOn);
     lampServer.send(200, "text/plain", "Color applied. Save settings to keep it after restart.");
   });
-  lampServer.on("/api/bluetooth", HTTP_GET, []() {
+  lampServer.on("/api/bluetooth", HTTP_GET, +[]() {
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampBluetoothStatusJson());
   });
-  lampServer.on("/api/bluetooth/forget", HTTP_POST, []() {
+  lampServer.on("/api/bluetooth/forget", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (!lampPairingOpen() || otaActive) { lampServer.send(409, "text/plain", "Hold the knob for six seconds to open pairing first; wait for any update to finish."); return; }
     const bool forgotten=forgetLampPhones();
     lampServer.send(forgotten?200:500, "text/plain", forgotten?"Saved phones removed. Forget CoolLamp in your phone's Bluetooth settings before pairing again.":"Phone removal was incomplete or bond storage could not be verified. Reconcile before retrying.");
   });
-  lampServer.on("/api/defaults", HTTP_POST, []() {
+  lampServer.on("/api/defaults", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     if(Mode>LAMP_EFFECT_COUNT){lampServer.send(409,"text/plain","Choose another startup effect. Nothing saved.");return;}
     const bool saved = saveLampDefaults();
     lampServer.send(saved ? 200 : 500, "text/plain", saved ? "Startup effect and brightness saved." : "Could not save defaults.");
   });
-  lampServer.on("/api/preview", HTTP_POST, []() {
+  lampServer.on("/api/preview", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t mode, brightness;
@@ -1080,7 +1074,7 @@ void beginLampNetwork()
     if(!setLampControl(mode, brightness, lampServer.arg("keepPower") == "1" ? PowerOn : true)){lampServer.send(409,"text/plain","Invalid effect or brightness.");return;}
     lampServer.send(200, "text/plain", "Preview applied. Save settings to keep it after restart.");
   });
-  lampServer.on("/api/power", HTTP_POST, []() {
+  lampServer.on("/api/power", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     if (otaActive || lampRemoteUpdateBusy()) { lampServer.send(409, "text/plain", "Wait for the firmware upload to finish."); return; }
     uint32_t on;
@@ -1088,31 +1082,31 @@ void beginLampNetwork()
     if(!setLampControl(Mode, Brightness, on)){lampServer.send(409,"text/plain","Invalid power value.");return;}lampShowFrame(PowerOn?LampRuntimeMetrics::FrameKind::Control:LampRuntimeMetrics::FrameKind::Off);
     lampServer.send(200, "text/plain", PowerOn ? "Light on." : "Light off.");
   });
-  lampServer.on("/api/mesh/status", HTTP_GET, [](){
+  lampServer.on("/api/mesh/status", HTTP_GET, +[](){
     if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",LampMeshAdapter::statusJson());
   });
-  lampServer.on("/api/mesh/request", HTTP_POST, [](){
+  lampServer.on("/api/mesh/request", HTTP_POST, +[](){
     if(!authorizedLampRequest(true))return;
     const auto reply=LampMeshAdapter::request(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("endpoint"),lampServer.arg("method"),lampServer.arg("body"),lampServer.controlConfidential());lampServer.send(reply.status,"application/json",reply.body);
   });
   // This POST only reads a retained result; it never dispatches the command.
-  lampServer.on("/api/mesh/result", HTTP_POST, [](){
+  lampServer.on("/api/mesh/result", HTTP_POST, +[](){
     if(!authorizedLampRequest(true))return;
     const auto reply=LampMeshAdapter::result(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("offset"),lampServer.controlConfidential());lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/api/mesh/new", HTTP_GET, [](){
+  lampServer.on("/api/mesh/new", HTTP_GET, +[](){
     if(!authorizedLampRequest(false))return;lampServer.send(200,"application/json",LampCommission::candidatesJson());
   });
-  lampServer.on("/api/mesh/enroll/start", HTTP_POST, [](){
+  lampServer.on("/api/mesh/enroll/start", HTTP_POST, +[](){
     if(!authorizedLampRequest(true))return;uint32_t comparison=1;if(lampServer.hasArg("comparisonVersion")&&!readNumber("comparisonVersion",1,2,comparison)){lampServer.send(400,"text/plain","Invalid comparison version.");return;}const auto reply=LampCommission::start(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"),comparison);lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/api/mesh/enroll/status", HTTP_POST, [](){
+  lampServer.on("/api/mesh/enroll/status", HTTP_POST, +[](){
     if(!authorizedLampRequest(true))return;const auto reply=LampCommission::status(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"));lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/api/mesh/enroll/cancel", HTTP_POST, [](){
+  lampServer.on("/api/mesh/enroll/cancel", HTTP_POST, +[](){
     if(!authorizedLampRequest(true))return;const auto reply=LampCommission::cancel(lampServer.arg("target"),lampServer.arg("requestId"),lampServer.arg("broker"));lampServer.send(reply.status,"application/json",reply.body);
   });
-  lampServer.on("/update", HTTP_POST, []() {
+  lampServer.on("/update", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     const bool committed=otaComplete&&!browserUploadReplyRejected;
     lampServer.send(committed ? 200 : 400, "text/plain", otaMessage);
@@ -1120,7 +1114,7 @@ void beginLampNetwork()
   }, receiveLampUpdate);
   lampServer.on("/api/firmware/upload/prepare",HTTP_POST,prepareLampBrowserUpload);
   lampServer.on("/api/firmware/upload/status",HTTP_GET,sendLampBrowserUploadStatus);
-  lampServer.onNotFound([]() { lampServer.send(404, "text/plain", "Not found."); });
+  lampServer.onNotFound(+[]() { lampServer.send(404, "text/plain", "Not found."); });
   WiFi.persistent(false);
   // The lamp is mains-powered; keep reception responsive for phone controls
   // and group discovery rather than waiting for the router's DTIM interval.

@@ -50,6 +50,7 @@ bool beginLampCalibration(){
   resetLampCalibrationKnob();return true;
 }
 bool beginLampCenterCalibration(){
+  if(lampStyleUsesWholeStrip())return false;
   if(lampCalibrationActive())return lampCalibrationCenter();
   if(NUM_LEDS<2||lampUpdateOwnsResources()||lampFactoryResetPending())return false;
   auto* buffer=new(std::nothrow) CRGB[NUM_LEDS]{};if(!buffer)return false;

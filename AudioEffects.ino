@@ -1,6 +1,6 @@
-VuColor renderVuColor(uint8_t zone) {
+__attribute__((always_inline)) inline VuColor renderVuColor(uint8_t zone) {
   if(lampSyncVisual && lampSyncVisual->mode==46){const auto* c=lampSyncVisual->vu+zone*3;return {c[0],c[1],c[2]};}
-  return lampVuColors[zone];
+  const auto& c=lampVuColors[zone];return {c.r,c.g,c.b};
 }
 
 // Until a three-color palette is saved, retain the exact legacy color mapping.
@@ -21,7 +21,7 @@ static uint32_t audioBeatSeen=0, audioBassSeen=0;
 static uint8_t audioBandLevels[3]{}, audioPeak=0;
 static uint32_t audioPeakAt=0;
 
-CRGB audioMix(CRGB a,CRGB b,CRGB c,uint8_t x,uint8_t y,uint8_t z) {
+__attribute__((always_inline)) inline CRGB audioMix(CRGB a,CRGB b,CRGB c,uint8_t x,uint8_t y,uint8_t z) {
   const uint32_t sum=uint32_t(x)+y+z;
   if(!sum)return CRGB::Black;
   return CRGB((uint32_t(a.r)*x+uint32_t(b.r)*y+uint32_t(c.r)*z)/sum,
@@ -30,8 +30,8 @@ CRGB audioMix(CRGB a,CRGB b,CRGB c,uint8_t x,uint8_t y,uint8_t z) {
 }
 
 // Full rainbow for the spark layer only; same locations, timing and amplitude.
-CRGB audioRainbow(uint8_t hue) {
-  const CRGB wheel[7]={CRGB(255,0,0),CRGB(255,255,0),CRGB(0,255,0),CRGB(0,255,255),CRGB(0,0,255),CRGB(255,0,255),CRGB(255,0,0)};
+__attribute__((always_inline)) inline CRGB audioRainbow(uint8_t hue) {
+  static const CRGB wheel[7]={CRGB(255,0,0),CRGB(255,255,0),CRGB(0,255,0),CRGB(0,255,255),CRGB(0,0,255),CRGB(255,0,255),CRGB(255,0,0)};
   const uint16_t phase=uint16_t(hue)*6;
   return blend(wheel[phase>>8],wheel[(phase>>8)+1],uint8_t(phase));
 }

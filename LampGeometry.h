@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "LampStyle.h"
 
 // A split is a boundary after a one-based LED number, not an array index.
 // Zero selects the historical midpoint. Keep both sides nonempty when possible.
@@ -30,13 +31,14 @@ struct LampMotionPathRecord {
   uint8_t path()const{return data[1];}
 };
 extern uint8_t lampMotionPath; // 0 calibrated split, 1 one whole-strip lane.
+inline uint8_t lampEffectiveMotionPath(){return lampStyleUsesWholeStrip()?1:lampMotionPath;}
 bool readStoredLampMotionPath(uint8_t& path); // Missing=>Split; malformed/unreadable=>false.
 bool saveLampMotionPath(uint8_t path); // Owning loop, commit + exact readback.
 bool lampMotionPathSaveUncertain(); // Unreadable boot record/failed restoration must be reconciled.
 inline uint16_t lampMotionSplitCount(uint16_t count,uint16_t midpoint){
-  return lampMotionPath==1?count:lampSplitCount(count,midpoint);
+  return lampEffectiveMotionPath()==1?count:lampSplitCount(count,midpoint);
 }
 inline uint16_t lampMotionPosition(uint16_t index,uint16_t count,uint16_t midpoint){
   if(!count||count>1024||index>=count)return 0;
-  return lampCenteredPosition(index,count,lampMotionPath==1?0:midpoint);
+  return lampCenteredPosition(index,count,lampEffectiveMotionPath()==1?0:midpoint);
 }

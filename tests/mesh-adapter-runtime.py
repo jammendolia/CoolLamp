@@ -43,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='coollamp-mesh-adapter-',dir=ROOT/'.buil
     subprocess.run(command,check=True)
     scenarios=['neighborhood-bounds','neighborhood-read','remote-neighborhood-mutation','clock-peer','clock-peer-rollover','clock-receipt','confidential','http400','pagination','retention','no-route','same-id-content',
                'wrong-result','lost-receipts','updater-pause','direct-only','remote-direct-only',
-               'idle-auth-hold','resource-denied-no-replay']
+               'idle-auth-hold','resource-denied-no-replay','compact-scene-low-memory']
     for scenario in scenarios:subprocess.run([str(binary),scenario],check=True)
     current=(ROOT/'LampMeshAdapter.cpp').read_text()
     legacy=current.replace('||endpoint==MeshStatus','')
