@@ -99,13 +99,65 @@ test('invalid color patterns and completion missing fleet fingerprint fail close
   await assert.rejects(f.controller.start(row),error=>error.uncertain===true);assert(!f.statuses.some(value=>value.phase==='complete'));
  }
 });
-test('stale candidate, changed broker and replaced bridge locator cannot start another lamp',async()=>{
+test('changed candidate broker and replaced bridge locator cannot start another lamp',async()=>{
  const f=fixture(),row=await ready(f);
  await assert.rejects(f.controller.start({...row,broker:bridgeId}),/Refresh/);
  f.entries[0].address='http://192.168.1.3';await assert.rejects(f.controller.start(row));
  assert.equal(f.calls.filter(call=>call.path.endsWith('/start')).length,0);
- const old=fixture({now:()=>20000}),oldRow=await ready(old);old.controller.now=()=>40000;
- await assert.rejects(old.controller.start(oldRow),/Refresh/);assert.equal(old.calls.length,1);
+});
+test('an aged card refreshes the exact candidate before assigning a request ID or starting setup',async()=>{
+ let now=20000,ids=0;
+ const f=fixture({now:()=>now,id:()=> (++ids).toString(16).padStart(16,'0')}),row=await ready(f);
+ now+=20000;const original=f.bridge.request.bind(f.bridge),gate=deferred();let reading=false;
+ f.bridge.request=async(...args)=>{if(args[0]==='/api/mesh/new'){reading=true;await gate.promise;}return original(...args);};
+ const task=f.controller.start(row).catch(error=>error);
+ assert(f.controller.active,'A stale card should enter a cancellable read-only preflight');
+ while(!reading)await tick();assert.equal(ids,0);assert.equal(f.calls.filter(call=>call.fields).length,0);
+ await assert.rejects(f.controller.start(row),/Finish or cancel/);
+ gate.resolve();const result=await task;assert.equal(result.target,target);
+ assert.equal(ids,1);assert.equal(f.calls.filter(call=>call.path.endsWith('/start')).length,1);
+ assert.equal(f.calls.filter(call=>call.path==='/api/mesh/new').length,2);
+});
+test('an aged card cannot enroll an offline, claimed, missing or changed-broker target',async()=>{
+ for(const change of [row=>{row.online=false;},row=>{row.claimed=true;},row=>{row.id='ffeeddccbbaa';},row=>{row.broker=bridgeId;}]){
+  let now=20000,ids=0;const f=fixture({now:()=>now,id:()=>{ids++;return '0000000000000001';}}),row=await ready(f);
+  now+=20000;change(f.inventory.candidates[0]);await assert.rejects(f.controller.start(row));
+  assert.equal(ids,0);assert.equal(f.calls.filter(call=>call.fields).length,0);assert.equal(f.releases(),2);
+ }
+});
+test('canceling an aged-card refresh cannot assign an ID or dispatch a late Start',async()=>{
+ let now=20000,ids=0;
+ const f=fixture({now:()=>now,id:()=>{ids++;return '0000000000000001';}}),row=await ready(f);
+ now+=20000;const original=f.bridge.request.bind(f.bridge),gate=deferred();let reading=false;
+ f.bridge.request=async(...args)=>{if(args[0]==='/api/mesh/new'){reading=true;await gate.promise;}return original(...args);};
+ const task=f.controller.start(row).catch(error=>error);
+ assert(f.controller.active);while(!reading)await tick();
+ await f.controller.cancel();assert((await task).cancelled);gate.resolve();await tick();
+ assert.equal(ids,0);assert.equal(f.calls.filter(call=>call.fields).length,0);assert.equal(f.releases(),2);
+});
+test('a bridge locator change during an aged-card refresh fences the preflight before ID allocation',async()=>{
+ let now=20000,ids=0;
+ const f=fixture({now:()=>now,id:()=>{ids++;return '0000000000000001';}}),row=await ready(f);
+ now+=20000;const original=f.bridge.request.bind(f.bridge),gate=deferred();let reading=false;
+ f.bridge.request=async(...args)=>{if(args[0]==='/api/mesh/new'){reading=true;await gate.promise;}return original(...args);};
+ const task=f.controller.start(row).catch(error=>error);assert(f.controller.active);
+ while(!reading)await tick();f.entries[0].address='http://192.168.1.3';gate.resolve();
+ const error=await task;assert(error instanceof Error);assert.equal(error.confirmed,true);assert.equal(error.uncertain,false);
+ assert.equal(ids,0);assert.equal(f.calls.filter(call=>call.fields).length,0);assert.equal(f.releases(),2);
+});
+test('an aged v2 card cannot silently enroll a new target boot',async()=>{
+ let now=20000,ids=0;
+ const f=version2(fixture({now:()=>now,id:()=>{ids++;return '0000000000000001';}})),row=await ready(f);
+ now+=20000;f.inventory.candidates[0].targetBoot='3333333333333333';
+ await assert.rejects(f.controller.start(row,{comparisonVersion:2}));
+ assert.equal(ids,0);assert.equal(f.calls.filter(call=>call.fields).length,0);assert.equal(f.releases(),2);
+});
+test('queued Start cannot use a preflight observation older than its admission lifetime',async()=>{
+ let now=20000;const f=fixture({now:()=>now,timeout:60000}),row=await ready(f),original=f.bridge.request.bind(f.bridge);
+ f.bridge.request=async(...args)=>{if(args[0].endsWith('/start'))now+=15001;return original(...args);};
+ await assert.rejects(f.controller.start(row),error=>error.confirmed===true&&error.uncertain===false);
+ assert.equal(f.calls.filter(call=>call.path.endsWith('/start')).length,0);
+ assert.equal(f.controller.unconfirmed.size,0);
 });
 test('fresh inventory changing the broker cannot redirect an explicit setup',async()=>{
  const f=fixture(),row=await ready(f);f.inventory.candidates[0].broker=bridgeId;

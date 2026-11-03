@@ -1,9 +1,10 @@
 import {MeshTransport} from './mesh.js';
 
 export const BRIDGE_MODEL='coollamp.bridge.heltec-wifi-kit32-v3';
-export const BRIDGE_SETUP_MESSAGE='Bridge added. Follow its screen to join the setup network, then open 192.168.4.1 in a browser to connect it to home Wi-Fi. Return to Lamps → Bridges and choose Find a bridge to check its connection and lamps.';
+export const COORDINATOR_MODEL='coolstrip.coordinator.heltec-wifi-kit32-v3';
+export const BRIDGE_SETUP_MESSAGE='Bridge added. Open Settings → Bridges and choose Find a bridge to check its connection and lamps. If it still needs home Wi-Fi setup, follow its screen to join its setup network, then open 192.168.4.1 in a browser.';
 const storageKey='coollamp-bridges-v1',capacity=8;
-const canonical=value=>typeof value==='string'&&/^[a-f0-9]{12}$/.test(value);
+const canonical=value=>typeof value==='string'&&value.length===12&&/^[a-f0-9]{12}$/.test(value);
 const bridgeAddress=value=>typeof value==='string'&&value.split('.').length===4&&value.split('.').every(part=>/^(0|[1-9]\d{0,2})$/.test(part)&&Number(part)<=255)&&!['0.0.0.0','255.255.255.255'].includes(value)?value:null;
 const transaction=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value)&&!/^0+$/.test(value);
 const parse=value=>typeof value==='string'?JSON.parse(value):value;
@@ -11,23 +12,40 @@ const changed=()=>Object.assign(Error('Device setup changed or was canceled.'),{
 const unconfirmed=()=>Object.assign(Error('Device approval was saved, but its type was not confirmed. Check setup before continuing.'),{uncertain:true});
 const lightFields=['effects','effectCount','catalogVersion','mode','brightness','power','leds','colors','effectOptions','lampStyle','audio'];
 const allowedCapabilities=['mesh-control','trusted-cached-donation'];
+const bridgeModels=new Map([
+  [BRIDGE_MODEL,{name:'CoolLamp Bridge',deviceRole:'bridge',hostname:'coollamp-bridge-'}],
+  [COORDINATOR_MODEL,{name:'CoolStrip Coordinator',deviceRole:'coordinator',hostname:'coolstrip-coordinator-'}]
+]);
+function firmwareVersion(value){
+  if(typeof value!=='string'||value.length>64)return false;
+  const match=/^\d{1,5}\.\d{1,5}\.\d{1,5}(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(value);
+  return Boolean(match)&&match[0]===value&&(!match[1]||match[1].split('.').every(part=>part.length<=16&&(!/^\d+$/.test(part)||part==='0'||part[0]!=='0')));
+}
+
+// Route hints are derived only from a verified/saved recognized model. Never
+// turn an unknown descriptor model or device identity into a guessed hostname.
+export function bridgeHostname(value){
+  const model=bridgeModels.get(value?.modelId);
+  return model&&canonical(value?.id)?model.hostname+value.id.slice(8)+'.local':null;
+}
 
 // A truthful role/model is mandatory before this accessory can bypass lamp
 // setup. Unknown accessory roles and bridge-shaped light snapshots fail closed.
 export function bridgeDescriptor(value,target){
   if(!value||typeof value!=='object'||Array.isArray(value)||value.deviceId!==target||!canonical(target))throw unconfirmed();
   if(value.role===undefined||value.role==='lamp')return null;
-  if(value.role!=='bridge'||value.model?.id!==BRIDGE_MODEL||lightFields.some(field=>Object.hasOwn(value,field))||
+  const modelId=value.model?.id,model=bridgeModels.get(modelId);
+  if(value.role!=='bridge'||!model||value.deviceRole!==undefined&&value.deviceRole!==model.deviceRole||lightFields.some(field=>Object.hasOwn(value,field))||
     !Array.isArray(value.capabilities)||!allowedCapabilities.every(capability=>value.capabilities.includes(capability))||
-    typeof value.firmwareVersion!=='string'||!/^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(value.firmwareVersion))throw unconfirmed();
+    !firmwareVersion(value.firmwareVersion))throw unconfirmed();
   const name=typeof value.name==='string'?value.name.replace(/[\x00-\x1f\x7f]/g,'').trim().slice(0,32):'';
   const address=bridgeAddress(value.address);
-  return Object.freeze({id:target,role:'bridge',modelId:BRIDGE_MODEL,name:name||'CoolLamp Bridge',
+  return Object.freeze({id:target,role:'bridge',modelId,name:name||model.name,
     firmwareVersion:value.firmwareVersion,capabilities:Object.freeze([...allowedCapabilities]),...(address?{address}:{})});
 }
 
 function savedRecord(value){
-  if(!canonical(value?.id)||value.role!=='bridge'||value.modelId!==BRIDGE_MODEL||!canonical(value.meshBridgeId)||
+  if(!canonical(value?.id)||value.role!=='bridge'||!bridgeModels.has(value.modelId)||!canonical(value.meshBridgeId)||
     !Number.isSafeInteger(value.verifiedAt)||value.verifiedAt<0)return null;
   try{
     const descriptor=bridgeDescriptor({deviceId:value.id,role:value.role,model:{id:value.modelId},

@@ -197,16 +197,17 @@ const topics=[
   action:{id:'settings',label:'Open Settings'}
  },
  {
-  id:'bridges',title:'Help nearby lamps with a bridge',summary:'See which lamps your bridge can help, and manage its connection.',
-  paragraphs:['A CoolLamp Bridge helps nearby lamps communicate and receive automatic updates. It belongs to your household. It does not create a lighting group.'],
+  id:'bridges',title:'Help nearby lamps with a bridge',summary:'See your bridge’s lamps and connection.',
+  paragraphs:['A CoolLamp Bridge or compatible coordinator helps household lamps communicate and receive automatic updates. It does not create a lighting group.'],
   steps:[
-   'Tap Lamps in the bottom bar, then Bridges. Bridges is also in Settings. Open a bridge’s card to see its connection and lamps.',
-   'Choose Find a bridge for a missing bridge. For a new one, choose Add a bridge and follow the physical comparison and approval steps.',
+   'Open Settings → Bridges; choose All bridges if shown. Or tap Lamps in the bottom bar, then Bridges.',
+   'Choose Add a bridge for a new bridge or coordinator. On Lamps, choose Set up under New devices nearby.',
+   'Complete the physical comparison; press PRG only if every part matches. Use Find a bridge for a missing bridge.',
    'Lamps in the same household can use it. Add restores access after removal. New devices need Finish lamp setup first.',
    'Remove stops that bridge from helping the lamp; its settings and group stay saved. Choose Check change for an unconfirmed change.',
-   'The network name and Wi-Fi symbol show its checked connection. Open its setup page to reconfigure Wi-Fi. Lamps need Automatic updates turned on.'
+   'Wi-Fi details show the checked network. Open its setup page to change it. Lamps need Automatic updates turned on.'
   ],
-  paragraphsAfter:['Keep both powered. Nearby means detected; it does not guarantee a working update route.'],
+  paragraphsAfter:['Keep both powered near a household lamp. Detection does not guarantee a working update route.'],
   action:{id:'bridges',label:'Open your bridges'}
  },
  {

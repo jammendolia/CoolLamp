@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
-import {BridgeAccessoryStore,BRIDGE_MODEL,BRIDGE_SETUP_MESSAGE,bridgeDescriptor,identifyEnrolledBridge} from '../src/bridge-accessory.js';
+import {BridgeAccessoryStore,BRIDGE_MODEL,COORDINATOR_MODEL,BRIDGE_SETUP_MESSAGE,bridgeDescriptor,bridgeHostname,identifyEnrolledBridge} from '../src/bridge-accessory.js';
 
 const target='aabbccddeeff',bridgeId='112233445566',brokerId='123456789abc';
 const requestId='0102030405060708',fleetId='1111111111111111',targetBoot='2222222222222222',brokerBoot='3333333333333333';
 // The firmware independently creates commission advert/session nonces and mesh
 // session nonces. Identical fake values concealed the original integration bug.
 const targetMeshBoot='4444444444444444',brokerMeshBoot='5555555555555555';
+const coordinatorModel='coolstrip.coordinator.heltec-wifi-kit32-v3';
 const result={target,bridgeId,broker:brokerId,requestId,fleetId};
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 const storage=()=>{const values=new Map();return {values,getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value)};};
@@ -55,6 +56,55 @@ test('physically enrolled bridge is identified over the original broker without 
   assert.equal(f.accessories.has(target),true);assert.deepEqual(f.counts(),{releases:1,acquires:1,statusReads:2,meshReads:2});
   assert(f.calls.every(call=>['/api/mesh/enroll/status','/api/mesh/status','/api/mesh/request','/api/mesh/result'].includes(call.path)));
   const text=f.memory.getItem('coollamp-bridges-v1');assert(!text.includes('SECRET'));assert(!text.includes('targetBoot'));assert(!text.includes('requestId'));
+});
+
+test('physically approved CoolStrip coordinator is retained as a bridge with its real model and development version',async()=>{
+  const f=fixture();Object.assign(f.descriptor,{model:{id:coordinatorModel},deviceRole:'coordinator',name:'CoolStrip Coordinator',
+    firmwareVersion:'0.1.0-dev',address:'192.168.1.195',capabilities:[...f.descriptor.capabilities,'coolstrip-show-coordinator-v1']});
+  const record=await f.run();
+  assert.equal(record.role,'bridge');assert.equal(record.modelId,coordinatorModel);assert.equal(record.firmwareVersion,'0.1.0-dev');
+  assert.equal(record.name,'CoolStrip Coordinator');assert.equal(record.address,'192.168.1.195');
+  assert.equal(record.meshBridgeId,bridgeId);assert.equal(record.fleetId,fleetId);
+  const reloaded=new BridgeAccessoryStore(f.memory);
+  assert.deepEqual(reloaded.items,[record]);assert(!JSON.stringify(record).includes('SECRET'));
+  assert(!f.calls.some(call=>['/api/state','/api/effects','/api/mesh/enroll/start','/api/mesh/enroll/cancel'].includes(call.path)));
+});
+
+test('coordinator descriptors accept bounded development prereleases without weakening the recognized model contract',()=>{
+  const f=fixture();const valid={...f.descriptor,deviceRole:'coordinator',model:{id:coordinatorModel}};
+  for(const firmwareVersion of ['0.1.0','0.1.0-dev','0.1.0-dev.1','0.1.0-rc.2']){
+    const record=bridgeDescriptor({...valid,firmwareVersion},target);
+    assert.equal(record.modelId,coordinatorModel);assert.equal(record.firmwareVersion,firmwareVersion);
+  }
+  for(const firmwareVersion of ['0.1','0.1.0-','0.1.0-dev..1','0.1.0-dev.01','0.1.0/dev','0.1.0-<script>',
+    '0.1.0-dev\n','0.1.0-dev+unverified','0.1.0-'+('x'.repeat(65))])
+    assert.throws(()=>bridgeDescriptor({...valid,firmwareVersion},target));
+  for(const patch of [{model:{id:'coolstrip.coordinator.unknown'}},{role:'coordinator'},{deviceRole:'lamp'},
+    {deviceRole:'bridge'},{deviceId:bridgeId},{mode:13},{effects:[]},{capabilities:['mesh-control']}])
+    assert.throws(()=>bridgeDescriptor({...valid,firmwareVersion:'0.1.0-dev',...patch},target));
+});
+
+test('bridge hostname fallback follows the retained recognized model and rejects unverified route identities',()=>{
+  assert.equal(COORDINATOR_MODEL,coordinatorModel);
+  const memory=storage(),accessories=new BridgeAccessoryStore(memory),f=fixture();
+  for(const [modelId,expected] of [[BRIDGE_MODEL,'coollamp-bridge-eeff.local'],[COORDINATOR_MODEL,'coolstrip-coordinator-eeff.local']]){
+    const record=bridgeDescriptor({...f.descriptor,model:{id:modelId},firmwareVersion:'0.1.0-dev'},target);
+    assert.equal(bridgeHostname(record),expected);
+    accessories.remember(record,{bridgeId,fleetId,verifiedAt:1});
+    assert.equal(bridgeHostname(new BridgeAccessoryStore(memory).items[0]),expected);
+  }
+  for(const value of [null,{id:target,modelId:'coolstrip.coordinator.unknown'},
+    {id:target+'\n',modelId:coordinatorModel},{id:'aabbccdd/eff',modelId:coordinatorModel},
+    {id:'AABBCCDDEEFF',modelId:coordinatorModel}])assert.equal(bridgeHostname(value),null);
+});
+
+test('coordinator enrollment cannot bypass original household, session or target confirmation',async()=>{
+  for(const change of [f=>{f.statusPatch={fleetId:'9999999999999999'};},
+    f=>{f.replyPatch={targetBoot:'9999999999999999'};},f=>{f.replyPatch={target:bridgeId};},
+    f=>{f.replyPatch={httpStatus:403};},f=>{f.afterRequest=()=>{f.peerPatch={boot:'9999999999999999'};};}]){
+    const f=fixture();Object.assign(f.descriptor,{model:{id:coordinatorModel},deviceRole:'coordinator',firmwareVersion:'0.1.0-dev'});
+    change(f);await assert.rejects(f.run());assert.equal(f.accessories.items.length,0);assert.equal(f.counts().releases,1);
+  }
 });
 
 test('ordinary lamp and unsupported legacy descriptor continue normal lamp setup without accessory records',async()=>{

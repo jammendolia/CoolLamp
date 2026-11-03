@@ -1,4 +1,5 @@
 import {meshBridgeSupported} from './mesh.js';
+import {BRIDGE_MODEL,bridgeHostname} from './bridge-accessory.js';
 
 const canonical=value=>typeof value==='string'&&/^[a-f0-9]{12}$/.test(value);
 const fleet=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value)&&!/^0+$/.test(value);
@@ -11,7 +12,7 @@ export function meshRouteCandidates({target,activeBridge,entries=[],bridges=[],b
  const lamps=entries.filter(entry=>canonical(entry?.id)&&entry.id!==target&&entry.role!=='bridge');
  const accessories=bridges.slice(0,8).filter(entry=>canonical(entry?.id)&&entry.id!==target&&entry.role==='bridge'&&fleet(entry.fleetId));
  const wifi=[...lamps.filter(entry=>entry.address).map(entry=>({entry,kind:'wifi'})),
-  ...accessories.map(entry=>({entry:{...entry,address:entry.address||'coollamp-bridge-'+entry.id.slice(8)+'.local'},kind:'wifi',accessory:true}))];
+  ...accessories.map(entry=>({entry:{...entry,address:entry.address||bridgeHostname({...entry,modelId:entry.modelId??BRIDGE_MODEL})},kind:'wifi',accessory:true})).filter(candidate=>candidate.entry.address)];
  const rank=candidate=>candidate.entry.id===bridgeId?0:wifiFresh(candidate.entry)?1:candidate.accessory?2:3;
  wifi.sort((a,b)=>rank(a)-rank(b));
  const seen=new Set(candidates.map(candidate=>candidate.id));

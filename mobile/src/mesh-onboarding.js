@@ -110,7 +110,14 @@ export class MeshOnboarding {
   return value;
  }
  async request(run,path,{allowCancel=false}={}){
-  const guard=()=>this.check(run,{allowCancel});guard();
+  const guard=()=>{
+   this.check(run,{allowCancel});
+   // A card may remain visible while its old observation expires. Start is
+   // allowed only after the owned read-only preflight and while that fresh
+   // observation is still valid at the actual adapter dispatch.
+   if(path==='/api/mesh/enroll/start'&&(!run.freshCandidate||this.now()<run.row.observedAt||this.now()-run.row.observedAt>15000))
+    throw problem('The device list changed before setup could start. Refresh and try again.',{confirmed:true});
+  };guard();
   const fields={target:run.row.id,requestId:run.requestId,broker:run.row.broker};if(run.comparisonVersion===2)fields.comparisonVersion=2;
   return this.reply(parse(await this.bounded(()=>run.bridge.request(path,fields,run.epoch,guard),run.deadline,allowCancel?undefined:run.controller.signal)),run);
  }
@@ -120,12 +127,9 @@ export class MeshOnboarding {
   if(this.unconfirmed.has(candidate?.id))return Promise.reject(problem('Check this lamp’s previous setup before starting another session.',{requiresVerification:true,uncertain:true}));
   const row=this.candidates.get(candidate?.id);
   const entry=this.bridges().find(value=>value.id===row?.bridgeId);
-  if(!row||!entry||this.routes.get(row.id)!==locator(entry)||!row.online||candidate.bridgeId!==row.bridgeId||candidate.broker!==row.broker||this.now()-row.observedAt>15000)return Promise.reject(problem('Refresh the new-lamp list before starting setup.'));
+  if(!row||!entry||this.routes.get(row.id)!==locator(entry)||!row.online||candidate.bridgeId!==row.bridgeId||candidate.broker!==row.broker)return Promise.reject(problem('Refresh the new-lamp list before starting setup.'));
   if(![1,2].includes(comparisonVersion)||comparisonVersion===2&&row.comparisonVersion!==2)return Promise.reject(problem('This lamp does not support the requested physical comparison.'));
-  let requestId;for(let i=0;i<8;++i){const value=this.nextId();if(transaction(value)&&!this.usedIds.has(value)){requestId=value;break;}}
-  if(!requestId)return Promise.reject(problem('Could not create a fresh lamp setup. Refresh before trying again.'));
-  this.usedIds.add(requestId);
-  const run={row,entry,requestId,comparisonVersion,controller:new AbortController(),deadline:this.now()+this.timeout,cancelled:false,submitted:false};this.active=run;
+  const run={row,entry,comparisonVersion,controller:new AbortController(),deadline:this.now()+this.timeout,cancelled:false,submitted:false};this.active=run;
   run.promise=this.enroll(run).finally(()=>{if(this.active===run)this.active=null;});return run.promise;
  }
  async enroll(run){
@@ -147,7 +151,15 @@ export class MeshOnboarding {
    }else{
     const guard=()=>this.check(run);
     const fresh=this.inventory(parse(await this.bounded(()=>run.bridge.request('/api/mesh/new',undefined,run.epoch,guard),run.deadline,run.controller.signal)),run.entry);
-    this.check(run);if(!fresh.some(row=>row.id===run.row.id&&row.broker===run.row.broker&&row.online&&(run.comparisonVersion!==2||row.comparisonVersion===2&&row.targetBoot===run.row.targetBoot)))throw problem('The new lamp is no longer available. Refresh the list.');
+    this.check(run);
+    const candidate=fresh.find(row=>row.id===run.row.id&&row.broker===run.row.broker&&row.online&&(run.comparisonVersion!==2||row.comparisonVersion===2&&row.targetBoot===run.row.targetBoot));
+    if(!candidate)throw problem('The new lamp is no longer available. Refresh the list.');
+    run.row=candidate;run.freshCandidate=true;
+    this.candidates.set(candidate.id,candidate);this.routes.set(candidate.id,locator(run.entry));this.onCandidates(frozen([...this.candidates.values()]));
+    this.check(run);
+    let requestId;for(let i=0;i<8;++i){const value=this.nextId();if(transaction(value)&&!this.usedIds.has(value)){requestId=value;break;}}
+    if(!requestId)throw problem('Could not create a fresh lamp setup. Refresh before trying again.');
+    run.requestId=requestId;this.usedIds.add(requestId);
     run.submitted=true;
     try{value=await this.request(run,'/api/mesh/enroll/start');}
     catch(error){this.check(run);if(error.confirmed)throw error;/* Recover by same-session status only; never resend Start. */}

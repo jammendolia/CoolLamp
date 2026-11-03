@@ -4,6 +4,7 @@ import {discoverBridgePage} from '../src/bridge-discovery.js';
 import {BridgeAccessoryStore,BRIDGE_MODEL,bridgeDescriptor} from '../src/bridge-accessory.js';
 
 const brokerId='5894af4aec24',bridgeId='8c4856dab734';
+const coordinatorModel='coolstrip.coordinator.heltec-wifi-kit32-v3';
 const descriptor=id=>({deviceId:id,role:'bridge',model:{id:BRIDGE_MODEL},name:'CoolLamp Bridge',
  firmwareVersion:'0.2.2',capabilities:['mesh-control','trusted-cached-donation'],address:'192.168.1.197'});
 const peer=id=>({id,online:true,hops:1,boot:'7932df5b6d39a0e9'});
@@ -23,6 +24,35 @@ test('bridge discovery uses only verified paged reads and retains its route hint
  assert.equal(f.accessories.items[0].address,'192.168.1.197');
  assert.equal(f.accessories.items[0].meshBridgeId,brokerId);
  assert.equal(new BridgeAccessoryStore({getItem:key=>f.data.get(key)}).items[0].address,'192.168.1.197');
+});
+test('household discovery finds a development CoolStrip coordinator and retains its current address after reload',async()=>{
+ const f=setup();f.input.readDescriptor=async value=>({...descriptor(value.id),deviceRole:'coordinator',
+  model:{id:coordinatorModel},name:'CoolStrip Coordinator',firmwareVersion:'0.1.0-dev',address:'192.168.1.195'});
+ const result=await discoverBridgePage(f.input);
+ assert.equal(result.bridges.length,1);const record=result.bridges[0];
+ assert.equal(record.modelId,coordinatorModel);assert.equal(record.firmwareVersion,'0.1.0-dev');
+ assert.equal(record.address,'192.168.1.195');assert.equal(record.meshBridgeId,brokerId);
+ assert.equal(record.fleetId,'c8d27ebafed5d956');
+ const reloaded=new BridgeAccessoryStore({getItem:key=>f.data.get(key)});assert.deepEqual(reloaded.items,[record]);
+ assert.deepEqual(f.calls,['/api/mesh/status','/api/mesh/status']);
+});
+test('coordinator discovery reconfirms the same target session and preserves a previously saved card when the peer restarts',async()=>{
+ const f=setup(),coordinator=id=>({...descriptor(id),deviceRole:'coordinator',model:{id:coordinatorModel},firmwareVersion:'0.1.0-dev'});
+ const prior=f.accessories.remember(bridgeDescriptor(coordinator(bridgeId),bridgeId),{bridgeId:brokerId,fleetId:'c8d27ebafed5d956',verifiedAt:1});
+ f.input.readDescriptor=async value=>{
+  const fresh=snapshot([peer(bridgeId)]);fresh.peers[0].boot='1234567890abcdef';f.setSnapshot(fresh);
+  return {...coordinator(value.id),address:'192.168.1.195'};
+ };
+ const result=await discoverBridgePage(f.input);assert.equal(result.bridges.length,0);
+ assert.deepEqual(f.accessories.items,[prior]);assert.equal(f.accessories.items[0].address,'192.168.1.197');
+});
+test('unsupported or light-shaped coordinator advertisements cannot create bridge cards',async()=>{
+ for(const patch of [{model:{id:'coolstrip.coordinator.unknown'}},{role:'coordinator'},{deviceRole:'lamp'},
+  {power:false},{capabilities:['mesh-control']},{firmwareVersion:'0.1.0-dev\n'}]){
+  const f=setup();f.input.readDescriptor=async value=>({...descriptor(value.id),deviceRole:'coordinator',
+   model:{id:coordinatorModel},firmwareVersion:'0.1.0-dev',...patch});
+  const result=await discoverBridgePage(f.input);assert.equal(result.bridges.length,0);assert.equal(f.accessories.items.length,0);
+ }
 });
 test('four-neighbor pages preserve other devices and expose continuation',async()=>{
  const peers=Array.from({length:6},(_,i)=>peer((i+1).toString(16).padStart(12,'0'))),f=setup(peers),read=[];

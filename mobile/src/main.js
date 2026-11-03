@@ -14,7 +14,7 @@ import { MeshInventorySession, acquireMeshLamp, meshBridgeSupported } from './me
 import { ConnectionBroker, readOnlyConnectionFailure } from './connection-broker.js';
 import { MeshOnboarding } from './mesh-onboarding.js';
 import { acquireOnboardingBroker, onboardingDiscoveryMessage } from './mesh-onboarding-broker.js';
-import { BridgeAccessoryStore, identifyEnrolledBridge, BRIDGE_SETUP_MESSAGE } from './bridge-accessory.js';
+import { BridgeAccessoryStore, identifyEnrolledBridge, BRIDGE_SETUP_MESSAGE, bridgeHostname } from './bridge-accessory.js';
 import {discoverBridgePage} from './bridge-discovery.js';
 import {mountBridgeManagement} from './bridge-management.js';
 import {BridgeWifiBroker} from './bridge-wifi.js';
@@ -3272,7 +3272,7 @@ function tourPresentation(name,{active=true}={}){
 }
 function tourBlocked(){return Boolean(document.hidden||busy||connecting||liveLightSending||liveLight?.pending||styleSaving||identitySaving||wifiSetupAbort||wifiHandoff||wifiScanning||foregroundConnectionHold||wifiSettingsTarget||meshSelection||meshWizard||groupJoinPending||groupActions.size||groupEditorMutations.size||cardPowerTasks.size||groupEditor?.busy||resetTarget||state?.calibration?.active||centerStatus?.active||settingsRecovery?.active||firmwareConnectionBusy());}
 bridgeManagementUi=mountBridgeManagement($('bridgeManagement'),{
- bridges:()=>bridgeAccessories.items.map(entry=>({...entry,address:entry.address||'coollamp-bridge-'+entry.id.slice(8)+'.local'})),
+ bridges:()=>bridgeAccessories.items.map(entry=>({...entry,address:entry.address||bridgeHostname(entry)})),
  lamps:()=>store.items,http:CapacitorHttp,storage:localStorage,
  getPassword:async id=>(await credential(id)).value,setPassword:(id,value)=>credential(id,value),
  onFind:findHouseholdBridges,

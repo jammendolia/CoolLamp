@@ -1,5 +1,6 @@
 // A bridge changes only its own permission to serve a lamp. It never enrolls,
 // removes household ownership, changes a group or sends firmware by this page.
+import {BRIDGE_MODEL,bridgeHostname} from './bridge-accessory.js';
 export const BRIDGE_LINK_LIMIT=64;
 export const BRIDGE_LINK_RESPONSE_LIMIT=8192;
 const JOURNAL_KEY='coollamp-bridge-link-pending-v1',JOURNAL_LIMIT=4096,BRIDGE_LIMIT=8;
@@ -82,7 +83,7 @@ function receipt(value,record){
 export class BridgeManagementClient {
  constructor({bridge,http,getPassword,journal,lamps=()=>[],now=Date.now,nextRequest=newRequest,timeout=8000}={}){
   if(!canonical(bridge?.id)||typeof http?.request!=='function'||typeof getPassword!=='function'||!(journal instanceof BridgeLinkJournal))throw failure('Bridge connection is unavailable.');
-  this.bridge={id:bridge.id,name:name(bridge.name)||'CoolLamp Bridge',address:bridgeAddress(bridge.address||bridge.base||('coollamp-bridge-'+bridge.id.slice(-4)+'.local'))};
+  this.bridge={id:bridge.id,name:name(bridge.name)||'CoolLamp Bridge',address:bridgeAddress(bridge.address||bridge.base||bridgeHostname({...bridge,modelId:bridge.modelId??BRIDGE_MODEL}))};
   if(bridge.fleetId!==undefined){if(!nonce(bridge.fleetId))throw failure('This bridge’s saved household could not be verified.',{identity:true});this.bridge.fleetId=bridge.fleetId;}
   Object.assign(this,{http,getPassword,journal,lamps,now,nextRequest});this.timeout=Math.max(1,Math.min(8000,timeout));this.busy=false;this.nativeOwner=nativeOwner(http);Object.defineProperty(this,'nativeFlight',{get:()=>this.nativeOwner.flight});this.snapshot=null;
  }
