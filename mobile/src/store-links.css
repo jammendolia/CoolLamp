@@ -1,0 +1,21 @@
+.v2-settings-list > a {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+  min-height: 44px;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  text-align: left;
+  text-decoration: none;
+}
+
+.v2-settings-list > a:last-child {
+  border-bottom: 0;
+}
+
+.v2-settings-list > a > span:last-child {
+  color: var(--muted);
+  font-size: 1.7rem;
+}
