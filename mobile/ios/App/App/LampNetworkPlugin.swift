@@ -1,7 +1,31 @@
 import Foundation
 import Capacitor
+import CryptoKit
 import Security
 import UIKit
+
+private struct HomeInstallationIdentityRecord: Codable {
+    let version: Int
+    let installationId: String
+    let credentialKeyId: String
+    let credentialGeneration: Int
+    let displayName: String
+    let publicKeyThumbprint: String
+    let keyState: String
+
+    var capacitorValue: [String: Any] {
+        ["version": version, "installationId": installationId,
+         "credentialKeyId": credentialKeyId, "credentialGeneration": credentialGeneration,
+         "displayName": displayName, "publicKeyThumbprint": publicKeyThumbprint,
+         "keyState": keyState]
+    }
+}
+
+private enum HomeInstallationIdentityFailure: Error {
+    case locked
+    case unavailable
+    case recovery
+}
 
 @objc(LampNetworkPlugin)
 public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDelegate, NetServiceDelegate {
@@ -10,6 +34,7 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "discover", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "credential", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "homeInstallationIdentity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "firmwareDigest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setFirmwareScreenAwake", returnType: CAPPluginReturnPromise)
     ]
@@ -21,6 +46,16 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
     private static let firmwareScreenAwake = LampFirmwareScreenAwake(
         readFlag: { UIApplication.shared.isIdleTimerDisabled },
         writeFlag: { UIApplication.shared.isIdleTimerDisabled = $0 })
+    private let homeIdentityQueue = DispatchQueue(label: "com.coollamp.controller.home-installation-identity")
+    private static let homeIdentityFreshInstallMarker = "coollamp.home-installation-identity.initialized.v1"
+    private static let homeIdentityKeyTag = Data("com.coollamp.controller.home-installation-key.v1".utf8)
+    private static let homeIdentityMetadataService = "com.coollamp.controller.home-installation"
+    private static let homeIdentityMetadataAccount = "identity.v1"
+    private static let p256SubjectPublicKeyInfoHeader = Data([
+        0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
+        0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+        0x03, 0x01, 0x07, 0x03, 0x42, 0x00
+    ])
     private var firmwareScreenToken: String?
     private var firmwareBackgroundObserver: NSObjectProtocol?
 
@@ -81,6 +116,185 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
                 call.reject("Invalid firmware image."); return
             }
             call.resolve(["sha256": digest])
+        }
+    }
+
+    private static func homeIdentityMetadataQuery() -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: homeIdentityMetadataService,
+         kSecAttrAccount as String: homeIdentityMetadataAccount]
+    }
+
+    private static func homeIdentityKeyQuery() -> [String: Any] {
+        [kSecClass as String: kSecClassKey,
+         kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+         kSecAttrApplicationTag as String: homeIdentityKeyTag,
+         kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave]
+    }
+
+    private static func deleteHomeIdentityArtifacts() throws {
+        for query in [homeIdentityMetadataQuery(), homeIdentityKeyQuery()] {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                if status == errSecInteractionNotAllowed { throw HomeInstallationIdentityFailure.locked }
+                throw HomeInstallationIdentityFailure.unavailable
+            }
+        }
+    }
+
+    private static func randomOpaqueId(excluding: String? = nil) throws -> String {
+        for _ in 0..<4 {
+            var bytes = [UInt8](repeating: 0, count: 16)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+                throw HomeInstallationIdentityFailure.unavailable
+            }
+            let value = bytes.map { String(format: "%02x", $0) }.joined()
+            if value != String(repeating: "0", count: 32), value != excluding { return value }
+        }
+        throw HomeInstallationIdentityFailure.unavailable
+    }
+
+    private static func validLowerHex(_ value: String, count: Int, nonzero: Bool = false) -> Bool {
+        guard value.count == count,
+              value.range(of: "^[a-f0-9]{\(count)}$", options: .regularExpression) != nil else { return false }
+        return !nonzero || value != String(repeating: "0", count: count)
+    }
+
+    private static func publicKeyThumbprint(_ privateKey: SecKey) throws -> String {
+        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        var error: Unmanaged<CFError>?
+        guard let point = SecKeyCopyExternalRepresentation(publicKey, &error) as Data?,
+              point.count == 65, point.first == 0x04 else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        let digest = SHA256.hash(data: p256SubjectPublicKeyInfoHeader + point)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func readHomeIdentityMetadata() throws -> HomeInstallationIdentityRecord {
+        var query = homeIdentityMetadataQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecInteractionNotAllowed { throw HomeInstallationIdentityFailure.locked }
+        guard status == errSecSuccess, let data = item as? Data, data.count <= 2048 else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(json.keys) == Set(["version", "installationId", "credentialKeyId",
+                                     "credentialGeneration", "displayName",
+                                     "publicKeyThumbprint", "keyState"]),
+              let value = try? JSONDecoder().decode(HomeInstallationIdentityRecord.self, from: data),
+              value.version == 1, value.credentialGeneration == 1,
+              value.keyState == "active",
+              ["This iPhone", "This iPad"].contains(value.displayName),
+              validLowerHex(value.installationId, count: 32, nonzero: true),
+              validLowerHex(value.credentialKeyId, count: 32, nonzero: true),
+              value.installationId != value.credentialKeyId,
+              validLowerHex(value.publicKeyThumbprint, count: 64) else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        return value
+    }
+
+    private static func readHomeIdentityKey() throws -> SecKey {
+        var query = homeIdentityKeyQuery()
+        query[kSecReturnRef as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecInteractionNotAllowed { throw HomeInstallationIdentityFailure.locked }
+        guard status == errSecSuccess, item != nil else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        return item as! SecKey
+    }
+
+    private static func readVerifiedHomeIdentity() throws -> HomeInstallationIdentityRecord {
+        let metadata = try readHomeIdentityMetadata()
+        let key = try readHomeIdentityKey()
+        guard try publicKeyThumbprint(key) == metadata.publicKeyThumbprint else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        return metadata
+    }
+
+    private static func createHomeIdentity(displayName: String) throws -> HomeInstallationIdentityRecord {
+        var accessError: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(nil,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly, [.privateKeyUsage], &accessError) else {
+            throw HomeInstallationIdentityFailure.unavailable
+        }
+        let privateAttributes: [String: Any] = [
+            kSecAttrIsPermanent as String: true,
+            kSecAttrApplicationTag as String: homeIdentityKeyTag,
+            kSecAttrAccessControl as String: access
+        ]
+        let attributes: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
+            kSecPrivateKeyAttrs as String: privateAttributes
+        ]
+        var keyError: Unmanaged<CFError>?
+        guard let privateKey = SecKeyCreateRandomKey(attributes as CFDictionary, &keyError) else {
+            throw HomeInstallationIdentityFailure.unavailable
+        }
+        let installationId = try randomOpaqueId()
+        let credentialKeyId = try randomOpaqueId(excluding: installationId)
+        let metadata = HomeInstallationIdentityRecord(version: 1,
+            installationId: installationId, credentialKeyId: credentialKeyId,
+            credentialGeneration: 1, displayName: displayName,
+            publicKeyThumbprint: try publicKeyThumbprint(privateKey), keyState: "active")
+        let encoded: Data
+        do { encoded = try JSONEncoder().encode(metadata) }
+        catch { throw HomeInstallationIdentityFailure.unavailable }
+        let query = homeIdentityMetadataQuery().merging([
+            kSecValueData as String: encoded,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]) { _, new in new }
+        guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else {
+            _ = try? deleteHomeIdentityArtifacts()
+            throw HomeInstallationIdentityFailure.unavailable
+        }
+        return try readVerifiedHomeIdentity()
+    }
+
+    private static func loadOrCreateHomeIdentity(displayName: String) throws -> HomeInstallationIdentityRecord {
+        let defaults = UserDefaults.standard
+        let marker = defaults.object(forKey: homeIdentityFreshInstallMarker)
+        if marker == nil {
+            try deleteHomeIdentityArtifacts()
+            do {
+                let value = try createHomeIdentity(displayName: displayName)
+                defaults.set(true, forKey: homeIdentityFreshInstallMarker)
+                return value
+            } catch {
+                _ = try? deleteHomeIdentityArtifacts()
+                throw error
+            }
+        }
+        guard defaults.bool(forKey: homeIdentityFreshInstallMarker) else {
+            throw HomeInstallationIdentityFailure.recovery
+        }
+        return try readVerifiedHomeIdentity()
+    }
+
+    @objc func homeInstallationIdentity(_ call: CAPPluginCall) {
+        let displayName = UIDevice.current.userInterfaceIdiom == .pad ? "This iPad" : "This iPhone"
+        homeIdentityQueue.async {
+            do {
+                call.resolve(try Self.loadOrCreateHomeIdentity(displayName: displayName).capacitorValue)
+            } catch HomeInstallationIdentityFailure.locked {
+                call.reject("Unlock this device, then check this phone's Home access again.", "home-identity-locked")
+            } catch HomeInstallationIdentityFailure.recovery {
+                call.reject("This phone's Home identity needs recovery. Reinstall the app before joining a Home again.", "home-identity-recovery")
+            } catch {
+                call.reject("This device could not create a protected Home identity.", "home-identity-unavailable")
+            }
         }
     }
 

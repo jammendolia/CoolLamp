@@ -39,6 +39,7 @@ function fixture({ssid='Home network',ble=true,wifiGate,configGate,wifi={connect
   let bleWifiStatus=null,wifiSetupAbort=null,wifiSetupSerial=0,wifiHandoff=null,wifiScanning=false;
   const verifiedSelectedLamp=()=>Boolean(state&&lamp.identity===selected?.id);
   const advancedAvailable=()=>Boolean(state&&lamp.raw),bluetoothWifiAvailable=()=>lamp===bleLamp&&Boolean(state);
+  function renderNetworkNameSettings(){}
   function renderSettings(){${networkButtons}}
   ${rendering}
   ${network}

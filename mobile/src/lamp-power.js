@@ -30,7 +30,7 @@ export function lampPowerSnapshot(raw,catalog,checkedAt=Date.now()) {
 // The caller owns its per-card request and address/device-UUID revision through
 // isCurrent(). acquire must borrow the selected transport with a no-op release,
 // or create an independently owned lease without changing main selection.
-export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,onSnapshot=()=>{},now=Date.now}) {
+export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,onSnapshot=()=>{},onStage=()=>{},onAttempt=()=>{},now=Date.now}) {
   if(!canonical(id))throw cancelled('Find this lamp again so its identity can be verified.');
   if(typeof acquire!=='function')throw new Error('A lamp connection is required.');
   const expectedPower=typeof expected?.power==='boolean'?expected.power:null;
@@ -40,6 +40,7 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
   const requestCurrent=()=>{
     if(!isCurrent(id))throw cancelled('This lamp card changed. Refresh it before trying again.');
   };
+  const stage=value=>{requestCurrent();try{onStage(value);}catch{/* Presentation callbacks never own command admission. */}requestCurrent();};
   const identityCurrent=()=>{
     requestCurrent();
     if(!lamp||lamp.identity!==id||lamp.epoch!==epoch||lamp.base!==address)
@@ -50,7 +51,7 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
     identityCurrent();
     const snapshot=lampPowerSnapshot(raw,lamp.catalog,checkedAt);
     if(!snapshot||snapshot.id!==id)throw cancelled('This connection did not return the correct lamp’s power state.');
-    lastSnapshot=snapshot;onSnapshot(snapshot);identityCurrent();return snapshot;
+    lastSnapshot=snapshot;try{onSnapshot(snapshot);}catch{/* Observation sinks cannot change a verified device operation. */}identityCurrent();return snapshot;
   };
   const read=async()=>{
     identityCurrent();
@@ -75,12 +76,13 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
     });
   };
   try{
-    requestCurrent();lease=await acquire(id,{readOnly:expectedPower===null||!expectedGroup,purpose:'power'});
+    stage('connecting');lease=await acquire(id,{readOnly:expectedPower===null||!expectedGroup,purpose:'power'});
     lamp=lease?.lamp || lease?.transport;
     requestCurrent();
     if(!lamp||lamp.identity!==id||!Number.isInteger(lamp.epoch)||typeof lamp.base!=='string'||typeof lamp.enqueue!=='function')
       throw cancelled('The connection did not verify this lamp’s identity.');
     epoch=lamp.epoch;address=lamp.base;
+    if(expectedPower===null||!expectedGroup)stage('checking');
     const first=await read();identityCurrent();
     // A stale/unknown icon is a refresh action. Never infer a toggle from the
     // newly learned value during that same click.
@@ -98,9 +100,10 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
       if(blocked(raw)){publish(raw,now());throw cancelled('Finish this lamp’s update or LED setup before changing power.',{blocked:true});}
       if(satisfied(current)){publish(raw,now());throw cancelled('The requested state is already active.',{alreadyDesired:true});}
       if(current.power!==first.snapshot.power){publish(raw,now());throw cancelled('Power changed while this request was waiting. Its current state is shown on the card.',{powerChanged:true,alreadyDesired:false});}
-      attempted=true;
+      const attemptedAt=now();try{onAttempt(attemptedAt);}catch{/* Attempt observers are diagnostic only. */}identityCurrent();attempted=true;
     };
     try{
+      stage('sending');
       const command=()=>lamp.command('power',Number(desired),null,beforeWrite);
       // BLE has an action queue for RPC and a distinct binary wire queue.
       // Serialize power with both so an in-flight Leave cannot be overtaken.
@@ -113,6 +116,7 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
       throw error;
     }
     identityCurrent();
+    stage('checking');
     const confirmed=await read();identityCurrent();
     if(!sameGroup(confirmed.snapshot.group,expectedGroup)||confirmed.snapshot.power!==desired)
       throw Object.assign(new Error('The lamp did not confirm the requested power state. Refresh its card before trying again.'),{uncertain:true});
@@ -124,8 +128,15 @@ export async function runLampPower({id,expected=null,acquire,isCurrent=()=>true,
   }catch(failure){
     // No retry/reconnect/mutation verification path is allowed after an
     // uncertain reply. The owner can refresh separately on a later user action.
-    const error=failure instanceof Error?failure:new Error('Lamp power could not be verified. Refresh this card before trying again.');
-    if(attempted&&!error.confirmed&&!error.uncertain)error.uncertain=true;
+    let error=failure instanceof Error?failure:new Error('Lamp power could not be verified. Refresh this card before trying again.');
+    if(!attempted&&error.uncertain&&!error.confirmed){
+      const readFailure=new Error(error.message||'The lamp could not be checked.');
+      Object.assign(readFailure,{confirmed:true,noMutation:true});
+      error=readFailure;
+    }
+    if(attempted&&!error.uncertain)error.uncertain=true;
     throw error;
-  }finally{await lease?.release?.();}
+  }finally{
+    try{await lease?.release?.();}catch{/* Cleanup must not replace a confirmed or ambiguous device outcome. */}
+  }
 }

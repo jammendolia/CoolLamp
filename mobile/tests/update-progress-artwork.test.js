@@ -92,7 +92,7 @@ const id='aabbccddeeff',other='112233445566';
 test('the production UI model exposes owned IDs from storage without adopting discovery or mesh inventory',()=>{
  const start=source.indexOf(' model:()=>(',source.indexOf('appV2=mountAppV2(')),end=source.indexOf('\n tourNavigate:',start);
  const owned=[{id},{id:'ble:legacy-phone-record'}],discovered=[{id},{id:other}];
- const context={store:{items:owned},mergedLampEntries:()=>discovered,connectivity:null,groupsSnapshot:{groups:[],lamps:[]},selected:null,firmware:null,connecting:false,verifiedSelectedLamp:()=>false,state:null,tourBlocked:()=>false,independentLightingAllowed:()=>false};
+ const context={store:{items:owned},mergedLampEntries:()=>discovered,connectivity:null,groupsSnapshot:{groups:[],lamps:[]},automationModel:()=>null,peopleAccessState:{state:'not-configured'},selected:null,firmware:null,connecting:false,verifiedSelectedLamp:()=>false,state:null,tourBlocked:()=>false,independentLightingAllowed:()=>false};
  runInNewContext('this.model=({'+source.slice(start,end)+'}).model;',context);
  const model=context.model();assert.deepEqual(Array.from(model.ownedLampIds),[id,'ble:legacy-phone-record']);assert.equal(model.lamps,discovered);
  assert(!model.ownedLampIds.includes(other));assert.deepEqual(owned,[{id},{id:'ble:legacy-phone-record'}]);

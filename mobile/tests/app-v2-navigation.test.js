@@ -7,6 +7,9 @@ import {resolveLampStyle,lampStyleLocked,lampDesignLabel} from '../src/lamp-styl
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from '../src/onboarding.js';
 import {HELP_TOPICS} from '../src/help.js';
 import {startGuidedTour} from '../src/guided-tour.js';
+import {readHomeContext,buildLightsOverview,automationPresentation} from '../src/ecosystem-foundation.js';
+import {buildHomeExperienceProjectionV1} from '../src/home-experience-adapter.js';
+import {compilePeopleAccess} from '../src/people-access.js';
 
 // Exercise the mounted UI and its real delegated click handler. The small DOM
 // fixture supplies only browser presentation APIs; connection results and time
@@ -39,13 +42,23 @@ function fixture(select=async()=>({connected:true}),options={}){
       if(name.startsWith('data-'))button.dataset[name.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())]=attributeValue;
       else button.setAttribute(name,attributeValue);
      }
-     button.disabled=/\bdisabled\b/.test(tag[1]);button.hidden=/\bhidden\b/.test(tag[1]);this.children.push(button);
+     button.disabled=/(?:^|\s)disabled(?:\s|$|=)/.test(tag[1]);button.hidden=/\bhidden\b/.test(tag[1]);this.children.push(button);
     }
     for(const tag of value.matchAll(/<(?:input|select)\b([^>]*)>/g)){
      const id=tag[1].match(/\bid="([^"]+)"/)?.[1],input=id?element(id):new Element();
      input.value=tag[1].match(/\bvalue="([^"]*)"/)?.[1]||'';input.name=tag[1].match(/\bname="([^"]*)"/)?.[1]||'';input.checked=/\bchecked\b/.test(tag[1]);this.children.push(input);
     }
     this.body.children=this.children.filter(child=>child.dataset.v2!=='close');
+    }else if(this.id==='v2HomeContent'&&value.includes('v2-home-v1')){
+     for(const tag of value.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)){
+      const button=new Element();button._html=tag[2];
+      for(const attribute of tag[1].matchAll(/([\w-]+)="([^"]*)"/g)){
+       const [,name,attributeValue]=attribute;
+       if(name.startsWith('data-'))button.dataset[name.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())]=attributeValue;
+       else button.setAttribute(name,attributeValue);
+      }
+      button.disabled=/(?:^|\s)disabled(?:\s|$|=)/.test(tag[1]);this.children.push(button);
+     }
    }
   }
   get innerHTML(){return this._html;}
@@ -77,7 +90,7 @@ function fixture(select=async()=>({connected:true}),options={}){
   querySelector:()=>element('settings-navigation'),querySelectorAll:()=>[],createElement:()=>new Element(),
   addEventListener(name,callback){const handlers=listeners.get(name)||[];handlers.push(callback);listeners.set(name,handlers);}};
  let preferenceValue=options.preferences??null;
- const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,lampStyleLocked,lampDesignLabel,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,startGuidedTour:options.startTour||startGuidedTour,
+ const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,lampStyleLocked,lampDesignLabel,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,startGuidedTour:options.startTour||startGuidedTour,readHomeContext,buildLightsOverview,automationPresentation,buildHomeExperienceProjectionV1,compilePeopleAccess,
   localStorage:{getItem:()=>preferenceValue,setItem(key,value){if(options.failStorage)throw Error('Storage full');preferenceValue=value;}},
   setInterval:()=>++nextTimer,clearInterval(){},
   setTimeout(callback,delay){const id=++nextTimer;timers.set(id,{callback,at:now+delay});return id;},clearTimeout:id=>timers.delete(id)};
@@ -88,7 +101,7 @@ function fixture(select=async()=>({connected:true}),options={}){
  const ui=context.mount(api),dialog=element('v2Dialog');
  // Match main's initial navigation before offering the one-time guide.
  runInNewContext(startup,{page:name=>ui.navigate(name),appV2:ui});
- return {ui,dialog,messages,navigations,selections,element,tourSteps:context.getTourSteps,preferences:()=>preferenceValue,
+  return {ui,dialog,messages,navigations,selections,element,tourSteps:context.getTourSteps,preferences:()=>preferenceValue,active:()=>document.activeElement,
   status:()=>elements.get('v2DialogStatus')?.textContent||'',
   click(action,dataset={}){const button=dialog.children.find(candidate=>candidate.dataset.v2===action&&Object.entries(dataset).every(([name,value])=>candidate.dataset[name]===value))||new Element();button.dataset={...button.dataset,v2:action,...dataset};for(const callback of listeners.get('click')||[])callback({target:button});},
   cancel(){let prevented=false;const event={preventDefault(){prevented=true;}};for(const callback of dialog.listeners.get('cancel')||[])callback(event);if(!prevented)dialog.close();return prevented;},
@@ -100,6 +113,173 @@ function fixture(select=async()=>({connected:true}),options={}){
 function choose(ui,section='design'){
  ui.ui.chooseLight(section);ui.click('select-settings',{id:lamp.id,section});
 }
+
+function redesignedHomeModel({fresh=true,power=true}={}){
+ const checkedAt=Date.now();
+ return {lamps:[lamp],ownedLampIds:[lamp.id],groups:[],statuses:{[lamp.id]:{
+  wifi:{state:'connected',fresh:true,checkedAt},
+  lighting:{kind:'effect',power,mode:4,name:'Fire',fresh,checkedAt},
+  group:{state:'independent',leader:null,fresh:true,checkedAt}
+ }},connected:false,connecting:false};
+}
+
+const peopleState=(state='not-configured',extra={})=>({version:1,state,home:{id:null,name:'Primary home'},viewer:null,people:[],invitations:[],pendingTargets:[],activity:null,...extra});
+
+test('People and access is a Settings destination with visible checking and no unsupported invitation action',()=>{
+ const model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:peopleState('checking')},refreshes=[];
+ const ui=fixture(undefined,{model,api:{refreshPeopleAccess:()=>refreshes.push(true)}});ui.ui.navigate('people-access');
+ assert.match(ui.element('v2PeopleAccessContent').innerHTML,/Checking people and access/);assert.match(ui.element('v2PeopleAccessContent').innerHTML,/aria-busy="true"/);assert.doesNotMatch(ui.element('v2PeopleAccessContent').innerHTML,/Invite someone/);
+ ui.click('people-access-retry');assert.equal(refreshes.length,1);
+ model.peopleAccess=peopleState();ui.ui.refresh(true);assert.match(ui.element('v2PeopleAccessContent').innerHTML,/Sharing is not set up yet/);assert.doesNotMatch(ui.element('v2PeopleAccessContent').innerHTML,/Set up sharing|data-v2="people-invite"/);ui.dispose();
+});
+
+test('People and access escapes names and keeps phone details behind the person row',()=>{
+ const personId='5'.repeat(32),phoneId='1'.repeat(32),homeId='4'.repeat(32),model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:{version:1,state:'ready',home:{id:homeId,name:'Primary <home>'},viewer:{personId,installationId:phoneId,canManagePeople:true},people:[{id:personId,name:'Joe <owner>',role:'owner',status:'active',expiresAt:null,scope:{kind:'home',targetNames:[]},phones:[{id:phoneId,name:'This <phone>',status:'active'}]}],invitations:[],pendingTargets:[],activity:null}};
+ const ui=fixture(undefined,{model});ui.ui.navigate('people-access');const overview=ui.element('v2PeopleAccessContent').innerHTML;
+ assert.match(overview,/Joe &lt;owner&gt; · You/);assert.doesNotMatch(overview,/This &lt;phone&gt;/);assert.doesNotMatch(overview,/<owner>|<home>/);
+ ui.click('people-person',{personId});assert.match(ui.dialog.innerHTML,/This &lt;phone&gt;/);assert.doesNotMatch(ui.dialog.innerHTML,/people-remove-person|people-remove-phone/);ui.dispose();
+});
+
+test('People and access keeps stale people visible, names unfinished lights, and offers no write controls',()=>{
+ const personId='5'.repeat(32),phoneId='1'.repeat(32),otherId='6'.repeat(32),otherPhone='7'.repeat(32),homeId='4'.repeat(32);
+ const model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:{version:1,state:'unavailable',home:{id:homeId,name:'Primary home'},viewer:{personId,installationId:phoneId,canManagePeople:true},people:[{id:personId,name:'Joe',role:'owner',status:'active',expiresAt:null,scope:{kind:'home',targetNames:[]},phones:[{id:phoneId,name:'This phone',status:'active'}]},{id:otherId,name:'Lisa',role:'member',status:'active',expiresAt:null,scope:{kind:'home',targetNames:[]},phones:[{id:otherPhone,name:"Lisa's phone",status:'active'}]}],invitations:[],pendingTargets:[{id:'a10000000002',name:'Edison',outcome:'unavailable'}],activity:null}};
+ const ui=fixture(undefined,{model,api:{issueHomeInvitation(){},removeHomePhone(){},removeHomePerson(){}}});ui.ui.navigate('people-access');const html=ui.element('v2PeopleAccessContent').innerHTML;
+ assert.match(html,/Lisa/);assert.match(html,/Edison still needs the access update/);assert.doesNotMatch(html,/people-invite|people-remove/);ui.dispose();
+});
+
+test('a rejected light access update opens the product list for power and connection recovery',()=>{
+ const personId='5'.repeat(32),phoneId='1'.repeat(32),homeId='4'.repeat(32);
+ const model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:{version:1,state:'ready',home:{id:homeId,name:'Primary home'},viewer:{personId,installationId:phoneId,canManagePeople:true},people:[{id:personId,name:'Joe',role:'owner',status:'active',expiresAt:null,scope:{kind:'home',targetNames:[]},phones:[{id:phoneId,name:'This phone',status:'active'}]}],invitations:[],pendingTargets:[{id:'a10000000002',name:'Edison',outcome:'rejected'}],activity:null}};
+ const ui=fixture(undefined,{model});ui.ui.navigate('people-access');const html=ui.element('v2PeopleAccessContent').innerHTML;assert.match(html,/check its power and connection/);assert.match(html,/data-v2="people-access-devices"/);
+ ui.click('people-access-devices');assert.deepEqual(ui.navigations.at(-1),['lamps']);ui.dispose();
+});
+
+test('People and access shows identity recovery guidance without an ineffective retry',()=>{
+ const model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:peopleState('recovery-required')};
+ const ui=fixture(undefined,{model});ui.ui.navigate('people-access');const html=ui.element('v2PeopleAccessContent').innerHTML;
+ assert.match(html,/phone needs to be added again/);assert.match(html,/reinstall CoolLamp/);assert.doesNotMatch(html,/people-access-retry/);ui.dispose();
+});
+
+test('People and access asks for owner help without presenting a retry when retry cannot help',()=>{
+ const model={lamps:[],groups:[],statuses:{},connected:false,connecting:false,peopleAccess:peopleState('owner-help-required')};
+ const ui=fixture(undefined,{model});ui.ui.navigate('people-access');const html=ui.element('v2PeopleAccessContent').innerHTML;
+ assert.match(html,/access needs attention/);assert.match(html,/Home owner/);assert.doesNotMatch(html,/people-access-retry/);ui.dispose();
+});
+
+test('the default-off gate preserves the released Home while Home v1 removes marketing and account-status noise',()=>{
+ const released=fixture(undefined,{model:redesignedHomeModel()});assert.match(released.element('v2HomeContent').innerHTML,/A softer/);released.dispose();
+ const redesigned=fixture(undefined,{model:redesignedHomeModel(),api:{experience:'home-v1'}}),html=redesigned.element('v2HomeContent').innerHTML;
+ assert.match(html,/New reading lamp/);assert.match(html,/Bedroom · On · Fire/);assert.match(html,/data-v2="home-power"/);
+ assert.doesNotMatch(html,/A softer|permitted lights|This phone can control|Works locally|Remote access ready|Gift readiness|home-review-required/i);
+ assert.equal(redesigned.element('v2HomeSubtitle').textContent,'MY HOME');redesigned.dispose();
+});
+
+test('Automations visibly checks on entry and keeps the first schedule slice read-only',()=>{
+ const calls=[],model={lamps:[lamp],groups:[],statuses:{},connected:false,connecting:false,automations:{version:1,state:'idle',lastUpdatedAt:null,schedules:[]}};
+ const ui=fixture(undefined,{api:{model:()=>model,refreshAutomations(){calls.push('refresh');model.automations={version:1,state:'checking',lastUpdatedAt:null,schedules:[]};},cancelAutomationRefresh(){calls.push('cancel');}}});
+ ui.ui.navigate('automations');let html=ui.element('v2AutomationsContent').innerHTML;
+ assert.equal(calls.filter(value=>value==='refresh').length,1);assert.match(html,/Checking schedules/);assert.match(html,/v2-automation-spinner/);assert.match(html,/role="status"/);assert.match(html,/aria-busy="true"/);
+ assert.doesNotMatch(html,/New automation|RUNS AT HOME|home controller|local schedule|last run/i);
+ model.automations={version:1,state:'ready',lastUpdatedAt:123,schedules:[{id:'coolstrip-sunset-midnight',name:'Window display',state:'on',enabled:true,nextEvent:{action:'turn-on',when:{kind:'clock',value:'17:33'}}}]};ui.ui.refresh(true);html=ui.element('v2AutomationsContent').innerHTML;
+ assert.match(html,/UP NEXT/);assert.match(html,/Window display turns on at 5:33 PM/);assert.match(html,/Every day · Sunset to midnight/);assert.doesNotMatch(html,/completed|current power|last ran/i);ui.dispose();
+});
+
+test('Automations failures offer a useful next action without technical details',()=>{
+ const calls=[],model={lamps:[lamp],groups:[],statuses:{},connected:false,connecting:false,automations:{version:1,state:'unreachable',reasonCode:'unreachable',lastUpdatedAt:123,schedules:[{id:'coolstrip-sunset-midnight',name:'Window display',state:'on',nextEvent:{action:'turn-off',when:{kind:'midnight'}}}]}};
+ const ui=fixture(undefined,{api:{model:()=>model,refreshAutomations(){calls.push('retry');},cancelAutomationRefresh(){},navigate:(...args)=>calls.push(args)}});ui.ui.refresh(true);
+ let html=ui.element('v2AutomationsContent').innerHTML;assert.match(html,/Schedules couldn’t be refreshed/);assert.match(html,/Try again/);assert.match(html,/still listed/);assert.match(html,/Last checked/);assert.doesNotMatch(html,/UP NEXT|\bIP\b|password|bridge|coordinator|endpoint|transport/i);
+ ui.click('retry-automations');assert.equal(calls.at(-1),'retry');
+ model.automations={version:1,state:'attention',reasonCode:'access-needed',lastUpdatedAt:null,schedules:[]};ui.ui.refresh(true);html=ui.element('v2AutomationsContent').innerHTML;assert.match(html,/Open Settings/);ui.click('automation-recovery');assert.deepEqual(calls.at(-1),['bridges']);ui.dispose();
+});
+
+test('schedule attention gives distinct location and saved-data recovery guidance',()=>{
+ const model={lamps:[lamp],groups:[],statuses:{},connected:false,connecting:false,automations:{version:1,state:'ready',lastUpdatedAt:123,schedules:[{id:'night',name:'Window display',state:'attention',reasonCode:'home-location-needed',primaryAction:'set-home-location'}]}},ui=fixture(undefined,{api:{model:()=>model,refreshAutomations(){},cancelAutomationRefresh(){}}});ui.ui.refresh(true);
+ let html=ui.element('v2AutomationsContent').innerHTML;assert.match(html,/Home location is needed/);assert.match(html,/Set up location/);ui.click('automation-location-help');assert.match(ui.dialog.innerHTML,/Sunset schedules need your Home’s location/);assert.match(ui.dialog.innerHTML,/existing schedule was not changed/);ui.click('close');
+ model.automations={version:1,state:'ready',lastUpdatedAt:123,schedules:[{id:'night',name:'Window display',state:'attention',reasonCode:'saved-schedule-needs-recovery',primaryAction:'view-recovery'}]};ui.ui.refresh(true);html=ui.element('v2AutomationsContent').innerHTML;assert.match(html,/View recovery/);ui.click('automation-storage-help');assert.match(ui.dialog.innerHTML,/saved schedule could not be read safely/);assert.doesNotMatch(ui.dialog.innerHTML,/location/i);ui.dispose();
+});
+
+test('Home v1 shows target-local progress, blocks duplicate taps, and claims success only from a confirmed outcome',async()=>{
+ const gate=deferred(),calls=[];let progress;
+ const ui=fixture(undefined,{model:redesignedHomeModel(),api:{experience:'home-v1',power:(target,options)=>{calls.push(target);progress=options.onProgress;return gate.promise;}}});
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});assert.match(ui.element('v2HomeContent').innerHTML,/Connecting to New reading lamp/);
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});assert.equal(calls.length,1);assert.equal(calls[0].homeId,'local-home');assert.equal(calls[0].deviceId,lamp.id);assert.equal(calls[0].mode,'change');
+ progress('sending');assert.match(ui.element('v2HomeContent').innerHTML,/Turning New reading lamp off/);
+ progress('checking');assert.match(ui.element('v2HomeContent').innerHTML,/Checking the change on New reading lamp/);
+ gate.resolve({outcome:'confirmed',power:false,changed:true});await settle();assert.match(ui.element('v2HomeContent').innerHTML,/New reading lamp is now off/);ui.dispose();
+});
+
+test('Home v1 uncertainty keeps last-confirmed state and Check current state is read-only',async()=>{
+ const requests=[],ui=fixture(undefined,{model:redesignedHomeModel(),api:{experience:'home-v1',power:async target=>{
+  requests.push(target);return requests.length===1?{outcome:'uncertain'}:{outcome:'confirmed',power:false,refreshed:true};
+ }}});
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});await settle();let html=ui.element('v2HomeContent').innerHTML;
+ assert.match(html,/may have changed/);assert.match(html,/Last confirmed: On/);assert.match(html,/Check current state/);assert.match(html,/data-v2="home-power"[^>]*aria-disabled="true"/);assert.equal(requests.length,1);
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});await settle();assert.equal(requests.length,1);
+ ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();html=ui.element('v2HomeContent').innerHTML;
+ assert.equal(requests.length,2);assert.equal(requests[1].mode,'check');assert.match(html,/New reading lamp is off/);ui.dispose();
+});
+
+test('Home v1 stale power offers a read-only check instead of inferring a toggle',async()=>{
+ const requests=[],ui=fixture(undefined,{model:redesignedHomeModel({fresh:false}),api:{experience:'home-v1',power:async target=>{requests.push(target);return {outcome:'confirmed',power:true,refreshed:true};}}});
+ const html=ui.element('v2HomeContent').innerHTML;assert.match(html,/Last confirmed on/);assert.match(html,/data-v2="home-check"/);assert.doesNotMatch(html,/data-v2="home-power"/);
+ ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();assert.equal(requests[0].mode,'check');ui.dispose();
+});
+
+test('Home v1 safe failure recovery stays read-only instead of becoming a power toggle',async()=>{
+ const requests=[],ui=fixture(undefined,{model:redesignedHomeModel({fresh:false}),api:{experience:'home-v1',power:async target=>{
+  requests.push(target);return requests.length===1?{outcome:'failed',safeToRetry:true,message:'We could not check this light. No change was sent.'}:{outcome:'confirmed',power:true,refreshed:true};
+ }}});
+ ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();let html=ui.element('v2HomeContent').innerHTML;
+ assert.match(html,/No change was sent/);assert.match(html,/Check current state/);assert.doesNotMatch(html,/data-v2="home-power"/);
+ ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();assert.deepEqual(requests.map(request=>request.mode),['check','check']);ui.dispose();
+});
+
+test('Home v1 reports a state refresh without claiming that it changed the light',async()=>{
+ const ui=fixture(undefined,{model:redesignedHomeModel(),api:{experience:'home-v1',power:async()=>({outcome:'confirmed',power:true,refreshed:true})}});
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});await settle();const html=ui.element('v2HomeContent').innerHTML;
+ assert.match(html,/Current state: New reading lamp is on\. No change was sent\./);assert.doesNotMatch(html,/is now on/);ui.dispose();
+});
+
+test('Home v1 keeps focus on the same light when Check becomes Power',async()=>{
+ const model=redesignedHomeModel({fresh:false}),ui=fixture(undefined,{api:{experience:'home-v1',model:()=>model,power:async()=>{
+  model.statuses[lamp.id].lighting.fresh=true;model.statuses[lamp.id].lighting.checkedAt=Date.now();return {outcome:'confirmed',power:true,refreshed:true};
+ }}}),check=ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-check'&&button.dataset.id===lamp.id);
+ assert(check);check.focus();ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();
+ assert.equal(ui.active()?.dataset.v2,'home-power');assert.equal(ui.active()?.dataset.id,lamp.id);ui.dispose();
+});
+
+test('Home v1 projects only saved Home members, not nearby discovery results',()=>{
+ const discovered={id:'112233445566',name:'Nearby lamp',room:'Porch'},model=redesignedHomeModel(),checkedAt=Date.now();
+ model.lamps.push(discovered);model.statuses[discovered.id]={wifi:{state:'connected',fresh:true,checkedAt},lighting:{kind:'effect',power:true,mode:1,name:'Rain',fresh:true,checkedAt},group:{state:'independent',leader:null,fresh:true,checkedAt}};
+ const ui=fixture(undefined,{model,api:{experience:'home-v1'}}),html=ui.element('v2HomeContent').innerHTML;
+ assert.match(html,/New reading lamp/);assert.doesNotMatch(html,/Nearby lamp/);ui.dispose();
+});
+
+test('Home v1 keeps one concise separate-light notice and gives accurate group participation counts',()=>{
+ const checkedAt=Date.now(),second={id:'112233445566',name:'Edison',room:'Living room'},third={id:'223344556677',name:'Shelf lamp',room:'Den'};
+ const memberStatus=(state,leader)=>({wifi:{state:'connected',fresh:true,checkedAt},lighting:{kind:state==='leader'?'group':'effect',power:true,mode:4,name:'Fire',fresh:true,checkedAt},group:{state,leader,active:state==='leader',paused:state==='follower',fresh:true,checkedAt}});
+ const model={lamps:[lamp,second,third],ownedLampIds:[lamp.id,second.id,third.id],groups:[{id:lamp.id,name:'Evening lights',leader:{id:lamp.id,verified:true,checkedAt,role:1,sync:{role:1,active:true,paused:false}},followers:[second,third].map(value=>({id:value.id,verified:true,checkedAt,role:2,sync:{role:2,active:false,paused:true}}))}],statuses:{[lamp.id]:memberStatus('leader',lamp.id),[second.id]:memberStatus('follower',lamp.id),[third.id]:memberStatus('follower',lamp.id)},connected:false,connecting:false};
+ const ui=fixture(undefined,{model,api:{experience:'home-v1'}}),html=ui.element('v2HomeContent').innerHTML;
+ assert.equal((html.match(/class="v2-home-v1-attention"/g)||[]).length,1);assert.match(html,/Edison is playing separately/);assert.match(html,/Open Evening lights to return/);
+ assert.match(html,/1 playing · 2 separate/);assert.match(html,/Shelf lamp/);assert.match(html,/Playing separately/);
+ assert.equal((html.match(/data-v2="home-power"/g)||[]).length,1);ui.dispose();
+});
+
+test('Home v1 leaves bridges off the daily lighting surface and suppresses unrecognized product controls',()=>{
+ const checkedAt=Date.now(),requests=[],bridge={id:'112233445566',name:'Home hub',productKind:'bridge',capabilities:{power:true}},unknown={id:'223344556677',name:'Mystery controller',productKind:'coolstrip-controllre',capabilities:{power:true}};
+ const model={lamps:[bridge,unknown],ownedLampIds:[bridge.id,unknown.id],groups:[],statuses:{},connected:false,connecting:false};
+ for(const row of [bridge,unknown])model.statuses[row.id]={wifi:{state:'connected',fresh:true,checkedAt},lighting:{kind:'effect',power:true,mode:1,name:'Rain',fresh:true,checkedAt},group:{state:'independent',leader:null,fresh:true,checkedAt}};
+ const ui=fixture(undefined,{model,api:{experience:'home-v1',power:async request=>requests.push(request)}}),html=ui.element('v2HomeContent').innerHTML;
+ assert.doesNotMatch(html,/Home hub/);assert.match(html,/Mystery controller/);assert.doesNotMatch(html,/data-v2="home-power"/);
+ ui.click('home-power',{id:bridge.id,homeKind:'device'});ui.click('home-power',{id:unknown.id,homeKind:'device'});assert.equal(requests.length,0);ui.dispose();
+});
+
+test('Home v1 command admission rejects hidden group and conflicting-capability mutations',()=>{
+ const checkedAt=Date.now(),requests=[],conflict={...lamp,capabilities:{power:true}},duplicate={...lamp,capabilities:{power:false}},model={lamps:[conflict,duplicate],ownedLampIds:[lamp.id],groups:[],statuses:{[lamp.id]:{wifi:{state:'connected',fresh:true,checkedAt},lighting:{kind:'effect',power:true,mode:4,name:'Fire',fresh:true,checkedAt},group:{state:'independent',leader:null,fresh:true,checkedAt}}},connected:false,connecting:false};
+ const ui=fixture(undefined,{model,api:{experience:'home-v1',power:async request=>requests.push(request)}}),html=ui.element('v2HomeContent').innerHTML;
+ assert.doesNotMatch(html,/data-v2="home-power"/);assert.match(html,/data-v2="home-check"/);
+ ui.click('home-power',{id:lamp.id,homeKind:'device'});ui.click('home-power',{id:lamp.id,homeKind:'group'});assert.equal(requests.length,0);ui.dispose();
+});
 
 test('the card gear immediately opens persistent accessible progress through a twenty-second connection',async()=>{
  const gate=deferred(),ui=fixture(()=>gate.promise);
@@ -341,7 +521,7 @@ for(const failed of [false,true])test('home discovery has visible work before it
  ui.click('discover');assertWorking(ui,'finding-lamps',/Looking for your lamps/);ui.click('discover');assert.equal(calls,1);
  if(failed)gate.reject(Error('No response from discovery'));else gate.resolve();await settle();assertWorkCleared(ui);
  if(failed){assert.equal(ui.dialog.open,true);assert.match(ui.status(),/No response/);assert.equal(ui.dialog.children.find(button=>button.dataset.v2==='discover').disabled,false);}
- else{assert.equal(ui.dialog.open,false);assert.deepEqual(ui.navigations,[['lamps']]);}
+ else{assert.equal(ui.dialog.open,false);assert.deepEqual(ui.navigations,[['lights']]);}
  ui.dispose();
 });
 
@@ -394,17 +574,17 @@ test('the explicit Help setup guide works when automatic later guides are disabl
  pending.ui.navigate('help');pending.click('help-action',{helpAction:'setup'});assert.match(pending.dialog.innerHTML,/Check this lamp/);assert.doesNotMatch(pending.dialog.innerHTML,/data-v2="pair"/);assert.equal(pairs.length,0);pending.dispose();
 });
 
-test('production bottom Help navigation hides lamp controls and preserves an active update sender',()=>{
- const start=mainSource.indexOf('function page(name,'),end=mainSource.indexOf('\n\nconst $ =',start),calls=[],elements=new Map(),nav=[{dataset:{page:'help'},setAttribute(key,value){this[key]=value;},removeAttribute(key){delete this[key];}}],sender=new AbortController();
+test('the Help route highlights Settings, hides lamp controls and preserves an active update sender',()=>{
+ const start=mainSource.indexOf('function page(name,'),end=mainSource.indexOf('\n\nconst $ =',start),calls=[],elements=new Map(),nav=[{dataset:{page:'app-settings'},setAttribute(key,value){this[key]=value;},removeAttribute(key){delete this[key];}}],sender=new AbortController();
  assert(start>=0&&end>start);
  const element=id=>{if(!elements.has(id))elements.set(id,{hidden:false,textContent:'',querySelector:()=>({focus:()=>calls.push('focus-help')}),dataset:{}});return elements.get(id);};
  const context={$:element,settingsView:'network',navigationSerial:0,wifiSettingsTarget:null,groupFocusSerial:0,pendingGroupFocus:null,meshWizard:null,
   cancelMeshSelection:()=>calls.push('cancel-read-only-search'),hideWifiPassword:()=>calls.push('hide-password'),closeGroupEditor:()=>calls.push('close-group-editor'),scheduleLampStatusRefresh:()=>calls.push('schedule-visible-inventory'),
   refreshLampFirmware:()=>calls.push('firmware-read'),refreshPublicFirmware:()=>calls.push('release-read'),refreshBasicBluetoothTelemetry:()=>calls.push('ble-read'),refreshNewMeshLamps:()=>calls.push('mesh-read'),refreshRoomGroups:()=>calls.push('group-read'),
-  appV2:{navigate:route=>calls.push('navigate-'+route)},settingsRecovery:{check:()=>calls.push('check-read-only-recovery')},window:{scrollTo(){}},
+  appV2:{navigate:route=>calls.push('navigate-'+route)},settingsRecovery:{check:()=>calls.push('check-read-only-recovery')},window:{scrollTo(){}},cancelPeopleAccessRefresh:()=>calls.push('cancel-people-access'),refreshPeopleAccess:()=>calls.push('refresh-people-access'),
   document:{querySelectorAll:()=>nav},cardFirmwareTasks:new Map([['aabbccddeeff',{abort:sender}]]),mergedLampEntries:()=>[]};
  runInNewContext(mainSource.slice(start,end)+'\npage("help");',context);
- assert.equal(element('page-help').hidden,false);for(const id of ['home','lamps','groups','settings','app-settings'])assert.equal(element('page-'+id).hidden,true);
+ assert.equal(element('page-help').hidden,false);for(const id of ['home','lights','automations','lamps','groups','settings','app-settings','people-access'])assert.equal(element('page-'+id).hidden,true);
  assert.equal(nav[0]['aria-current'],'page');assert(calls.includes('navigate-help'));assert(calls.includes('focus-help'));assert.equal(sender.signal.aborted,false);assert(!calls.some(value=>value.endsWith('-read')));
 });
 
@@ -442,7 +622,7 @@ test('tour step plans use real context and only expose detailed lighting for a v
  const connected=ui.tourSteps({...ui.model,lamps:[lamp,{...lamp,id:'112233445566'}],selected:lamp,connected:true,tourLightingReady:true});assert.equal(connected.length,12);
  assert(connected.some(step=>step.selector==='#brightness'&&/overall light level/.test(step.text)));assert(connected.some(step=>step.id==='groups'));
  const unknown=ui.tourSteps({...ui.model,lamps:[lamp],selected:lamp,connected:true,tourLightingReady:false});assert(!unknown.some(step=>step.id==='brightness'));
- for(const step of connected){assert(step.selector.length<=256);assert(step.text.length<=1000);assert(['home','lamps','effects','app-settings','help'].includes(step.page));}
+ for(const step of connected){assert(step.selector.length<=256);assert(step.text.length<=1000);assert(['home','lights','automations','effects','app-settings'].includes(step.page));}
  ui.dispose();
 });
 
@@ -452,7 +632,7 @@ test('actual tour presentation routes only render cached controls and preserve t
  const context={$:element,settingsView:'hardware',appTourActive:false,appTourSettingsView:null,firmwareBackgroundGeneration:3,
   renderLamps:()=>calls.push('cached-lamps'),renderSettings:()=>calls.push('cached-settings'),renderOptions:()=>calls.push('cached-options'),scheduleLampStatusRefresh:()=>calls.push('schedule'),
   appV2:{navigate:(...args)=>calls.push(args)},app2Pending:new Map([[lamp.id,{uncertain:true}]])};
- runInNewContext(mainSource.slice(start,end),context);for(const name of ['home','lamps','effects','app-settings','help'])assert.equal(context.tourPresentation(name),true);
+ runInNewContext(mainSource.slice(start,end),context);for(const name of ['home','lights','automations','effects','app-settings','help'])assert.equal(context.tourPresentation(name),true);
  assert.equal(context.appTourActive,true);assert.equal(context.firmwareBackgroundGeneration,4);assert.equal(context.settingsView,'lighting');assert.equal(context.tourPresentation('groups'),false);
  assert.equal(context.tourPresentation('help',{active:false}),true);assert.equal(context.appTourActive,false);assert.equal(context.settingsView,'hardware');assert.equal(context.app2Pending.get(lamp.id).uncertain,true);
  assert.equal(element('page-help').hidden,false);assert(calls.filter(Array.isArray).every(([,options])=>options.tour===true));

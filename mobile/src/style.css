@@ -98,6 +98,11 @@ summary::-webkit-details-marker { display: none; }
 summary::after { content: '+'; color: var(--muted); font-size: 1.375rem; font-weight: 350; margin-left: auto; }
 details[open] > summary::after { content: '−'; }
 details[open] { padding-bottom: 20px; }
+.network-name-details { margin: 22px 0 8px; }
+.network-name-details .toggle { margin-top: 10px; }
+.router-name-preview { margin: 18px 0 4px; color: var(--muted); font-size: 0.8125rem; }
+.router-name-preview strong { display: block; margin-top: 5px; color: #f4f3ed; font-size: 0.875rem; overflow-wrap: anywhere; }
+.network-name-details #applyNetworkName { width: 100%; margin-top: 12px; }
 .summary-detail { margin-left: auto; font-size: 0.6875rem; font-weight: 400; color: var(--muted); }
 summary .summary-detail + * { margin-left: 0; }
 .effects-heading { font-size: 0.8125rem; margin: 10px 0 0; color: var(--muted); }
@@ -203,6 +208,9 @@ summary .summary-detail + * { margin-left: 0; }
 .saved-wifi-row strong { display: block; overflow-wrap: anywhere; }
 .saved-wifi-row .hint { margin: 4px 0; }
 .saved-wifi-row .lamp-connection { flex: 0 0 44px; }
+.connection-care { display: grid; gap: 10px; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface-low); }
+.connection-care h3, .connection-care p { margin: 0; }
+.connection-care button { margin-top: 4px; }
 .lamp-bluetooth.is-active { color: #82bcff; border-color: #4c8bd4; background: #17304d; }
 .lamp-group[data-state=leader] { color: var(--accent); border-color: #68ab95; background: #1b3939; }
 .lamp-group[data-state=follower] { color: var(--sound); border-color: #9480b7; background: #302941; }
@@ -303,6 +311,11 @@ progress { width: 100%; height: 10px; margin-top: 20px; accent-color: var(--acce
   .hero-meta,.hero-brightness { grid-column: 1; }
   .effect-pane { padding: 28px 30px 18px; }
   .effect-grid,.group-scene-choices { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+@media (max-width: 420px) {
+  .network-name-details summary { flex-wrap: wrap; align-items: flex-start; }
+  .network-name-details summary > span:first-child { flex: 1 1 0; min-width: 0; }
+  .network-name-details .summary-detail { order: 2; flex: 1 0 100%; margin-left: 0; }
 }
 @media (max-width: 380px) {
   main { padding-left: 16px; padding-right: 16px; }

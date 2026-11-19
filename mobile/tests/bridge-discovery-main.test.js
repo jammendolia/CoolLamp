@@ -65,6 +65,7 @@ function fixture({peers=6,acquire,descriptor,status,fresh=false}={}){
   appV2:{endTour:reason=>calls.push('end-tour:'+reason),navigate:name=>calls.push('navigate:'+name)},
   settingsView:'lighting',groupFocusSerial:0,pendingGroupFocus:null,meshWizard:null,
   cancelMeshSelection:()=>calls.push('cancel-selection'),hideWifiPassword:()=>calls.push('hide-password'),closeGroupEditor:()=>calls.push('close-group-editor'),
+  cancelPeopleAccessRefresh:()=>calls.push('cancel-people-access'),
   scheduleLampStatusRefresh:()=>calls.push('schedule-status'),settingsRecovery:{check:()=>calls.push('check-recovery')},window:{scrollTo:()=>calls.push('scroll')},
   bridgeManagementUi:{refresh:()=>{assert.equal(element('page-bridges').hidden,false);calls.push('refresh-bridge-panel');}},
   renderSettings:denied('lamp settings'),refreshGroupCoordinators:denied('group coordinator discovery'),

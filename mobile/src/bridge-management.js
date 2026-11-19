@@ -5,7 +5,10 @@ export const BRIDGE_LINK_LIMIT=64;
 export const BRIDGE_LINK_RESPONSE_LIMIT=8192;
 const JOURNAL_KEY='coollamp-bridge-link-pending-v1',JOURNAL_LIMIT=4096,BRIDGE_LIMIT=8;
 const nativeOwners=new WeakMap();
-function nativeOwner(http){let owner=nativeOwners.get(http);if(!owner){owner={flight:null};nativeOwners.set(http,owner);}return owner;}
+export function sharedLocalRequestOwner(http){
+ if(!http||typeof http.request!=='function')throw Error('Local request service is unavailable.');
+ let owner=nativeOwners.get(http);if(!owner){owner={flight:null};nativeOwners.set(http,owner);}return owner;
+}
 const canonical=value=>typeof value==='string'&&/^[a-f0-9]{12}$/.test(value);
 const nonce=value=>typeof value==='string'&&/^[a-f0-9]{16}$/.test(value)&&!/^0+$/.test(value);
 const revision=value=>Number.isInteger(value)&&value>=1&&value<=0xffffffff;
@@ -85,7 +88,7 @@ export class BridgeManagementClient {
   if(!canonical(bridge?.id)||typeof http?.request!=='function'||typeof getPassword!=='function'||!(journal instanceof BridgeLinkJournal))throw failure('Bridge connection is unavailable.');
   this.bridge={id:bridge.id,name:name(bridge.name)||'CoolLamp Bridge',address:bridgeAddress(bridge.address||bridge.base||bridgeHostname({...bridge,modelId:bridge.modelId??BRIDGE_MODEL}))};
   if(bridge.fleetId!==undefined){if(!nonce(bridge.fleetId))throw failure('This bridge’s saved household could not be verified.',{identity:true});this.bridge.fleetId=bridge.fleetId;}
-  Object.assign(this,{http,getPassword,journal,lamps,now,nextRequest});this.timeout=Math.max(1,Math.min(8000,timeout));this.busy=false;this.nativeOwner=nativeOwner(http);Object.defineProperty(this,'nativeFlight',{get:()=>this.nativeOwner.flight});this.snapshot=null;
+  Object.assign(this,{http,getPassword,journal,lamps,now,nextRequest});this.timeout=Math.max(1,Math.min(8000,timeout));this.busy=false;this.nativeOwner=sharedLocalRequestOwner(http);Object.defineProperty(this,'nativeFlight',{get:()=>this.nativeOwner.flight});this.snapshot=null;
  }
  async owner(signal){
   let value=await this.getPassword(this.bridge.id);if(signal?.aborted)throw cancelled();value=typeof value==='object'?value?.value:value;

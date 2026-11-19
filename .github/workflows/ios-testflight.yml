@@ -45,6 +45,8 @@ jobs:
           npm install --global pnpm@11.19.0
           python -m pip install codemagic-cli-tools==0.69.0
       - name: Test and prepare app
+        env:
+          VITE_COOLLAMP_HOME_V1: '1'
         run: |
           pnpm install --frozen-lockfile
           pnpm test

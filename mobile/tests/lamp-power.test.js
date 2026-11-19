@@ -24,7 +24,7 @@ function fixture({role=0,power=true}={}) {
       if(action==='power'){raw.power=Boolean(value);if(raw.sync?.role===2&&!value){raw.sync.paused=true;raw.sync.active=false;}}
       this.state={...raw};
     });}};
-  const options={id,expected:{power,group:group(role)},acquire:async()=>{calls.acquire++;if(lamp.onAcquire)await lamp.onAcquire();return {lamp,release:async()=>calls.release++};},
+  const options={id,expected:{power,group:group(role)},acquire:async()=>{calls.acquire++;if(lamp.onAcquire)await lamp.onAcquire();return {lamp,release:async()=>{calls.release++;if(lamp.onRelease)await lamp.onRelease();}};},
     isCurrent:()=>current,onSnapshot:snapshot=>snapshots.push(snapshot),now:()=>++clock};
   return {options,lamp,raw,writes,reads,snapshots,calls,other,setCurrent:value=>current=value};
 }
@@ -46,6 +46,34 @@ test('unknown or stale power/membership clicks only refresh and release the same
     assert.equal(result.refreshed,true);assert.equal(result.desired,null);assert.equal(result.changed,false);
     assert.deepEqual(f.writes,[]);assert.deepEqual(f.raw,before);assert.deepEqual(f.reads,[id]);assert.equal(f.calls.release,1);
   }
+});
+
+test('power reports allowlisted connection, send, and verification stages without changing command semantics',async()=>{
+  const changing=fixture(),stages=[],attempts=[],order=[];
+  changing.options.onStage=stage=>{stages.push(stage);order.push(stage);};changing.options.onAttempt=at=>{attempts.push(at);order.push('attempt');};changing.lamp.beforeCommand=()=>order.push('queue-ready');
+  assert.equal((await runLampPower(changing.options)).changed,true);
+  assert.deepEqual(stages,['connecting','sending','checking']);assert.equal(attempts.length,1);assert.deepEqual(order,['connecting','sending','queue-ready','attempt','checking']);
+  const checking=fixture(),readStages=[];checking.options.expected=null;checking.options.onStage=stage=>readStages.push(stage);
+  assert.equal((await runLampPower(checking.options)).refreshed,true);
+  assert.deepEqual(readStages,['connecting','checking']);
+  const presentationFailure=fixture();presentationFailure.options.onStage=()=>{throw Error('Detached view');};
+  assert.equal((await runLampPower(presentationFailure.options)).changed,true);assert.equal(presentationFailure.writes.length,1);
+  const observerFailure=fixture();observerFailure.options.onSnapshot=()=>{throw Error('Detached cache');};
+  assert.equal((await runLampPower(observerFailure.options)).changed,true);assert.equal(observerFailure.writes.length,1);
+});
+
+test('post-write scope loss is uncertain and pre-write scope loss never sends',async()=>{
+  const after=fixture(),afterAttempts=[];after.options.onAttempt=at=>afterAttempts.push(at);after.lamp.onWrite=()=>after.setCurrent(false);
+  await assert.rejects(runLampPower(after.options),error=>error.uncertain===true);assert.equal(after.writes.length,1);assert.equal(afterAttempts.length,1);
+  const before=fixture(),beforeAttempts=[];before.options.onAttempt=at=>beforeAttempts.push(at);before.lamp.beforeCommand=()=>before.setCurrent(false);
+  await assert.rejects(runLampPower(before.options),error=>error.cancelled===true&&error.uncertain!==true);assert.deepEqual(before.writes,[]);assert.deepEqual(beforeAttempts,[]);
+});
+
+test('connection cleanup failure never replaces a verified or ambiguous device outcome',async()=>{
+  const confirmed=fixture();confirmed.lamp.onRelease=()=>{throw Error('Release failed');};
+  assert.equal((await runLampPower(confirmed.options)).changed,true);assert.equal(confirmed.calls.release,1);
+  const uncertain=fixture();uncertain.lamp.onWrite=()=>{throw Object.assign(Error('Reply lost'),{uncertain:true});};uncertain.lamp.onRelease=()=>{throw Error('Release failed');};
+  await assert.rejects(runLampPower(uncertain.options),error=>error.message==='Reply lost'&&error.uncertain===true);assert.equal(uncertain.calls.release,1);
 });
 
 test('known independent and coordinator power use absolute requested Off and preserve unrelated state',async()=>{
@@ -123,6 +151,12 @@ test('uncertain acknowledgment never reconnects, retries, or probes the mutation
   const f=fixture();f.lamp.onWrite=()=>{throw Object.assign(new Error('Reply lost'),{uncertain:true});};
   await assert.rejects(runLampPower(f.options),error=>error.uncertain);assert.deepEqual(f.writes,[{action:'power',value:0}]);
   assert.deepEqual(f.reads,[id]);assert.equal(f.calls.acquire,1);assert.equal(f.calls.release,1);
+});
+
+test('an uncertain transport failure before any write is a safe read failure, not an ambiguous mutation',async()=>{
+  const f=fixture();f.lamp.onRead=()=>{throw Object.assign(new Error('Timed out reading state'),{uncertain:true});};
+  await assert.rejects(runLampPower(f.options),error=>error.noMutation===true&&error.confirmed===true&&error.uncertain!==true);
+  assert.deepEqual(f.writes,[]);assert.equal(f.calls.acquire,1);assert.equal(f.calls.release,1);
 });
 
 test('readback requires requested power, same membership and paused follower Off',async()=>{

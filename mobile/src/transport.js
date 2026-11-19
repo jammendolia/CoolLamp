@@ -13,7 +13,7 @@ const controlPaths={'/api/state':1,'/api/state/current':1,'/api/sync/status':2,'
  '/api/firmware/automatic':21,'/api/factory-reset':22,'/api/bluetooth':24,'/api/bluetooth/forget':24,'/api/style':25,'/api/effects':26,'/api/firmware/fleet':27,
  '/api/mesh/status':28,'/api/mesh/request':29,'/api/mesh/result':30,'/api/power':31,'/api/preview':32,'/api/defaults':33,'/api/color':34,'/api/effect-options':35,
  '/api/mesh/new':36,'/api/mesh/enroll/start':37,'/api/mesh/enroll/status':38,'/api/mesh/enroll/cancel':39,
- '/api/descriptor':40,'/api/effects/schema':41,'/api/state/patch':42,'/api/appearance/save':43,'/api/receipt':44,'/api/revision':45,'/api/firmware/policy':46,'/api/sync/page':47,'/api/household':48,'/api/firmware/rollout':51,'/api/group/remove':52};
+ '/api/descriptor':40,'/api/effects/schema':41,'/api/state/patch':42,'/api/appearance/save':43,'/api/receipt':44,'/api/revision':45,'/api/firmware/policy':46,'/api/sync/page':47,'/api/household':48,'/api/firmware/rollout':51,'/api/group/remove':52,'/api/wifi/reselect':53};
 const publicFields=(value,fields)=>Object.fromEntries(fields.filter(field=>['string','boolean','number'].includes(typeof value?.[field])).map(field=>[field,value[field]]));
 const consumerCallbacks=Object.freeze({state:'onState',firmware:'onFirmware',options:'onOptions',disconnect:'onDisconnect'});
 function publicControlSync(value){

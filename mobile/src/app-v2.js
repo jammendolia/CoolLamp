@@ -4,6 +4,9 @@ import {resolveLampStyle,lampStyleLocked,lampDesignLabel} from './lamp-style.js'
 import {OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT} from './onboarding.js';
 import {HELP_TOPICS} from './help.js';
 import {startGuidedTour} from './guided-tour.js';
+import {readHomeContext,buildLightsOverview,automationPresentation} from './ecosystem-foundation.js';
+import {buildHomeExperienceProjectionV1} from './home-experience-adapter.js';
+import {compilePeopleAccess} from './people-access.js';
 import './guided-tour.css';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -32,10 +35,9 @@ export function appTourSteps(model){
  const steps=[
   {id:'home',page:'home',selector:'nav [data-page="home"]',title:'Welcome home',text:'Home brings your lamps and groups together. The buttons along the bottom take you to different parts of CoolLamp.'},
   {id:'add',page:'home',selector:'#page-home .v2-page-heading [data-v2="add"]',title:'Add a lamp',text:'This plus button starts the setup guide. It helps you connect a lamp, give it a name and choose its room. For now, we’re only looking.'},
-  {id:'lamps',page:'lamps',selector:'nav [data-page="lamps"]',title:'Find the lamp you want',text:'Tap Lamps here to see your saved lamps. Look for the name and room on each card. Tap a lamp’s card to open its lighting controls.'}
+  {id:'lights',page:'lights',selector:'nav [data-page="lights"]',title:'Find the light you want',text:'Lights keeps rooms, groups that play together, and individual devices distinct. Tap a light to open its controls.'}
  ];
- if(model.lamps?.length)steps.push({id:'lamp-card',page:'lamps',selector:'#lampList .v2-lamp-card',title:'One card for each lamp',text:'This card belongs to the lamp named on it. The power label tells you whether it controls this lamp or its group. The gear opens its settings. Wait for a connection check before changing settings.'});
- steps.push({id:'effects',page:'lamps',selector:'nav [data-page="effects"]',title:'Choose a lighting pattern',text:'Effects is where you choose a steady color, moving pattern or sound effect. Choose your lamp when asked. The available patterns and controls come from that lamp.'});
+ if(model.lamps?.length)steps.push({id:'lamp-card',page:'lights',selector:'#v2LightsContent [data-v2="open-lamp"]',title:'One place for each light',text:'The room helps you find it. Open the light before changing its brightness, effect, sound response, or settings.'});
  if(model.tourLightingReady===true&&model.connected&&model.selected?.id)steps.push(
   {id:'power',page:'effects',selector:'#power',title:'Turn the light on or off',text:'This button changes the light on the connected lamp named above. Turning it off keeps the lamp connected. This tour leaves its current light alone.'},
   {id:'brightness',page:'effects',selector:'#brightness',title:'Make it softer or brighter',text:'After the tour, slide Brightness toward Soft for less light or toward Luminous for more light. This changes the overall light level. Effect intensity changes the pattern instead.'},
@@ -43,15 +45,17 @@ export function appTourSteps(model){
  );
  if(model.lamps?.length>=2)steps.push({id:'groups',page:'home',selector:'#v2HomeContent [data-v2="create-group"]',title:'Let lamps play together',text:'New group guides you through choosing at least two lamps to share an effect. Each lamp must confirm joining. You can keep your lamps separate too.'});
  steps.push(
+  {id:'automations',page:'automations',selector:'nav [data-page="automations"]',title:'Let lighting follow a routine',text:'Automations show your schedules, what is coming next, and anything that needs your attention.'},
   {id:'settings',page:'app-settings',selector:'#page-app-settings [data-v2="lamp-settings"]',title:'Name and startup effect',text:'Lamp details is where you choose a lamp’s name and room. The startup effect and brightness are the pattern and light level it uses when you plug it in. In Effects, choose Use these settings at startup to remember them.'},
   {id:'designs',page:'app-settings',selector:'#page-app-settings [data-v2="appearance"]',title:'Lamp designs',text:'Lamp designs contains the physical shape and strip setup. A finished lamp normally comes configured. Use these settings only when you want to check or adjust its setup.'},
-  {id:'help',page:'help',selector:'nav [data-page="help"]',title:'Help is always here',text:'Tap Help whenever you need a reminder. Open a topic for step-by-step instructions. Give me a tour will show you around again. You’re ready to explore.'}
+  {id:'help',page:'app-settings',selector:'#page-app-settings [data-v2="help"]',title:'Help is always here',text:'Help and guides live in Settings. Open a topic for step-by-step instructions, or take this tour again.'}
  );
  return steps;
 }
 export function mountAppV2(api){
- const preferences=readAppPreferences(localStorage),home=document.getElementById('v2HomeContent'),dialog=document.getElementById('v2Dialog');
- let route='home',lastHome='',setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false,groupAddReview=null;
+ const preferences=readAppPreferences(localStorage),homeContext=readHomeContext(localStorage),home=document.getElementById('v2HomeContent'),lights=document.getElementById('v2LightsContent'),automations=document.getElementById('v2AutomationsContent'),peopleAccess=document.getElementById('v2PeopleAccessContent'),dialog=document.getElementById('v2Dialog');
+ let route='home',lastHome='',lastLights='',lastAutomations='',lastPeopleAccess='',peopleAccessView=null,setupStep=0,setupName='',setupRoom='Living room',setupStyle='helix',setupAutomatic=false,working=false,setupId=null,selectionTask=null,workingTask=null,disposed=false,groupAddReview=null;
+ const redesignedHome=api.experience==='home-v1',homeOperations=new Map(),homeOperationTimers=new Map();
  const persist=()=>{try{if(!preferenceWrites.has(preferences))throw Error('Read unavailable');const text=JSON.stringify(preferences);if(text.length>GUIDE_STORAGE_LIMIT)throw Error('Preferences too large');localStorage.setItem('coollamp-app2',text);return true;}catch{api.message('This phone could not remember the guide preferences. Your lamp’s confirmed changes are kept.');return false;}};
  let storedPreferences=true;try{storedPreferences=localStorage.getItem('coollamp-app2')!==null;}catch{}
  const guide=new OnboardingGuide(preferences,persist,{ownedIds:ownedGuideIds(api.model()),stored:storedPreferences});
@@ -122,15 +126,108 @@ export function mountAppV2(api){
    if(feedback){feedback.dataset.state='error';feedback.textContent=message;feedback.scrollIntoView({block:'nearest'});}api.message(message);
   }finally{clearTimeout(timer);task.controller.signal.removeEventListener('abort',abort);if(selectionTask===task)cancelSelection();}
  }
+ function projectRedesignedHome(model,now=Date.now()){
+  const owned=new Set(Array.isArray(model.ownedLampIds)?model.ownedLampIds:[]),lamps=(model.lamps||[]).filter(light=>owned.has(light.id)),ids=new Set(lamps.map(light=>light.id));
+  const statuses=Object.fromEntries(Object.entries(model.statuses||{}).filter(([id])=>ids.has(id))),groups=(model.groups||[]).filter(group=>owned.has(group.id));
+  return buildHomeExperienceProjectionV1({version:1,home:homeContext.active,lamps,groups,statuses,savedLooks:model.savedLooks||[],preferences:{rooms:preferences.rooms,groups:preferences.groups}},{now});
+ }
+ function homeLightSummary(light){
+  const value=light?.lighting;if(!value||value.freshness==='unknown')return 'Status needs a check';
+  const state=value.power?value.effect?.name?`On · ${value.effect.name}`:'On':'Off';
+  return value.freshness==='fresh'?state:`Last confirmed ${state.toLocaleLowerCase()}`;
+ }
+ function homeOperationMarkup(targetId,kind){
+  const operation=homeOperations.get(targetId),statusId='v2HomeOperation-'+targetId;
+  if(!operation)return `<div id="${statusId}" class="v2-home-v1-operation" role="status" aria-live="polite" aria-atomic="true" hidden></div>`;
+  const pending=operation.state==='pending';
+  const phase=operation.phase==='sending'?(operation.desired===null?`Checking ${operation.name}…`:`Turning ${operation.name} ${operation.desired?'on':'off'}…`):operation.phase==='checking'?(operation.desired===null?`Checking ${operation.name}…`:`Checking the change on ${operation.name}…`):`Connecting to ${operation.name}…`;
+  const message=pending?phase:operation.message;
+  const followUp=operation.state==='uncertain'||operation.state==='failed'&&operation.safeToRetry?`<button type="button" class="secondary" data-v2="home-check" data-id="${esc(targetId)}" data-home-kind="${esc(kind)}">Check current state</button>`:operation.state==='failed'?`<button type="button" class="secondary" data-v2="${kind==='group'?'open-group':'open-lamp'}" data-id="${esc(targetId)}">Open ${kind==='group'?'group':'light'}</button>`:'';
+  return `<div id="${statusId}" class="v2-home-v1-operation" data-state="${esc(operation.state)}" data-home-operation-message="${esc(message)}" role="status" aria-live="polite" aria-atomic="true" aria-busy="${pending}">${pending?'<span class="v2-home-v1-spinner" aria-hidden="true"></span>':''}<span data-home-operation-copy></span>${followUp}</div>`;
+ }
+ function announceHomeOperations(){
+  for(const status of home.querySelectorAll('[data-home-operation-message]')){
+   const copy=status.querySelector('[data-home-operation-copy]'),message=status.dataset.homeOperationMessage;delete status.dataset.homeOperationMessage;
+   Promise.resolve().then(()=>{if(!disposed&&home.contains(status)&&copy)copy.textContent=message;});
+  }
+ }
+ function homeQuickAction(light,{kind='device',group=null}={}){
+  const targetId=light?.actionTargetId,operation=targetId?homeOperations.get(targetId):null,pending=operation?.state==='pending',mutationBlocked=pending||operation?.state==='uncertain';if(!targetId)return '';
+   if(kind==='group'||['bridge','unknown'].includes(light.productKind)||light.capabilities.power==='unsupported')return '';
+   const canChange=light.capabilities.power==='supported'&&light.lighting.freshness==='fresh'&&(kind==='group'?group?.evidence==='fresh':['independent','separate'].includes(light.group.current));
+  if(!canChange)return `<button type="button" class="v2-home-v1-check" data-v2="home-check" data-id="${esc(targetId)}" data-home-kind="${esc(kind)}" aria-disabled="${pending}" aria-busy="${pending}" aria-label="Check ${esc(light.name)} current state">Check</button>`;
+  return `<button type="button" class="v2-home-power" data-v2="home-power" data-id="${esc(targetId)}" data-home-kind="${esc(kind)}" aria-disabled="${mutationBlocked}" aria-busy="${pending}" aria-pressed="${light.lighting.power}" aria-label="${operation?.state==='uncertain'?`Check ${esc(light.name)} current state before changing it`:`Turn ${esc(light.name)} ${light.lighting.power?'off':'on'}`}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M7 5a8 8 0 1 0 10 0"/></svg></button>`;
+ }
+ function redesignedHomeCard({kind,id,name,detail,art,light,group}){
+  const targetId=light?.actionTargetId||id,action=kind==='group'?'open-group':'open-lamp';
+  return `<div class="v2-home-v1-card-wrap" data-target-id="${esc(targetId)}"><div class="v2-home-v1-row"><button type="button" class="v2-home-v1-card" data-v2="${action}" data-id="${esc(targetId)}">${art}<span><strong>${esc(name)}</strong><small>${esc(detail)}</small></span>${icon('arrow')}</button>${homeQuickAction(light?{...light,name}:light,{kind,group})}</div>${homeOperationMarkup(targetId,kind)}</div>`;
+ }
+ function renderRedesignedHome(model,projection){
+  document.getElementById('v2HomeSubtitle').textContent=projection.home.name.toUpperCase();
+  const rooms=new Map(projection.rooms.map(value=>[value.id,value.name])),memberIds=new Set(projection.groups.flatMap(group=>group.members.map(member=>member.deviceId)));
+  const separate=projection.lights.find(light=>light.productKind!=='bridge'&&light.actionTargetId&&light.group.current==='separate'&&light.group.groupId);
+  const separateGroup=separate?projection.groups.find(group=>group.id===separate.group.groupId):null;
+  const attention=separate&&separateGroup?.actionTargetId?`<section class="v2-home-v1-attention" aria-label="Needs attention"><strong>${esc(separate.name)} is playing separately</strong><button type="button" class="secondary" data-v2="open-group" data-id="${esc(separateGroup.actionTargetId)}">Open ${esc(separateGroup.name)} to return</button></section>`:'';
+  const groupCards=projection.groups.filter(group=>group.actionTargetId).map(group=>{
+    const leader=projection.lights.find(light=>light.actionTargetId===group.actionTargetId),playing=group.members.filter(member=>member.current==='playing').length,separateCount=group.members.filter(member=>member.current==='separate').length,needsCheck=group.members.length-playing-separateCount+group.unmatchedMemberCount;
+   const counts=[playing?`${playing} playing`:'',separateCount?`${separateCount} separate`:'',needsCheck?`${needsCheck} ${needsCheck===1?'needs':'need'} a check`:''].filter(Boolean).join(' · ')||'Group needs a check';
+    return redesignedHomeCard({kind:'group',id:group.actionTargetId,name:group.name,detail:counts,art:'<span class="v2-group-art" aria-hidden="true"><i></i><i></i><i></i></span>',light:leader,group});
+  }).join('');
+  const deviceCards=projection.lights.filter(light=>light.productKind!=='bridge'&&light.actionTargetId&&light!==separate&&(!memberIds.has(light.id)||light.group.current==='separate')).map(light=>{
+   const place=rooms.get(light.roomId),detail=[place,light.group.current==='separate'?'Playing separately':'',homeLightSummary(light)].filter(Boolean).join(' · ');
+   return redesignedHomeCard({kind:'device',id:light.actionTargetId,name:light.name,detail,art:lampDrawing(light.lampStyle||'unspecified'),light});
+  }).join('');
+  const cards=groupCards+deviceCards;
+  if(!projection.lights.length){home.innerHTML='<section class="v2-welcome">'+lampDrawing('unspecified')+'<h2>A little light.<br>A lovely beginning.</h2><p>Add your first lamp. We’ll help identify it, name it, and place it in a room.</p><button data-v2="add">Add your first lamp</button><button class="secondary" data-v2="discover">Find lamps already at home</button></section>';return;}
+  home.innerHTML=`${attention}<div class="v2-section-title v2-home-v1-title"><h2>Lights</h2><button class="text-button" data-v2="lights">View all</button></div><div class="v2-home-v1-list">${cards||'<div class="v2-empty-small"><p>Your lights will appear here after setup.</p><button type="button" class="secondary" data-v2="lights">Open Lights</button></div>'}</div>`;announceHomeOperations();
+ }
+ async function runHomePower(targetId,{readOnly=false,kind='device'}={}){
+  const existing=homeOperations.get(targetId);if(!redesignedHome||disposed||existing?.state==='pending'||!readOnly&&existing?.state==='uncertain')return;
+  let projection;try{projection=projectRedesignedHome(api.model());}catch{api.message('Home could not be refreshed. Open Lights and try again.');return;}
+  const light=projection.lights.find(value=>value.actionTargetId===targetId),group=kind==='group'?projection.groups.find(value=>value.actionTargetId===targetId):null;
+  if(!light){api.message('This light is no longer available in this Home. Open Lights to check it.');return;}
+   if(kind!=='device'||['bridge','unknown'].includes(light.productKind)){api.message('Open this item to see the controls currently available.');return;}
+   if(light.capabilities.power==='unsupported'||!readOnly&&light.capabilities.power!=='supported'){api.message('Check this light before changing its power.');return;}
+  const canChange=!readOnly&&light.lighting.freshness==='fresh'&&(kind==='group'?group?.evidence==='fresh':['independent','separate'].includes(light.group.current));
+  const operation={targetId,homeId:projection.home.id,kind,name:kind==='group'?group?.name||light.name:light.name,desired:canChange?!light.lighting.power:null,lastConfirmed:light.lighting.power,state:'pending',phase:'connecting'};
+  homeOperations.set(targetId,operation);clearTimeout(homeOperationTimers.get(targetId));homeOperationTimers.delete(targetId);refresh(true);
+  const current=()=>{if(disposed||homeOperations.get(targetId)!==operation)return false;try{return projectRedesignedHome(api.model()).home.id===operation.homeId;}catch{return false;}};
+  const onProgress=phase=>{if(!current()||!['connecting','sending','checking'].includes(phase))return;operation.phase=phase;refresh(true);};
+  let result;
+  try{result=await api.power({homeId:operation.homeId,deviceId:targetId,mode:operation.desired===null?'check':'change'},{onProgress});}
+  catch(error){result={outcome:error?.uncertain?'uncertain':'failed',message:error?.message,safeToRetry:Boolean(error?.noMutation)};}
+  if(!current()){if(homeOperations.get(targetId)===operation)homeOperations.delete(targetId);return;}
+  if(result?.outcome==='confirmed'){
+   operation.state='confirmed';operation.message=result.refreshed?`Current state: ${operation.name} is ${result.power?'on':'off'}. No change was sent.`:result.noop?`${operation.name} is already ${result.power?'on':'off'}. No change was sent.`:operation.desired===null?`${operation.name} is ${result.power?'on':'off'}.`:`${operation.name} is now ${result.power?'on':'off'}.`;
+   const timer=setTimeout(()=>{if(homeOperations.get(targetId)===operation){homeOperations.delete(targetId);homeOperationTimers.delete(targetId);refresh(true);}},4000);homeOperationTimers.set(targetId,timer);
+  }else if(result?.outcome==='uncertain'){
+   operation.state='uncertain';operation.message=`${operation.name} may have changed. We couldn’t check it yet.${typeof operation.lastConfirmed==='boolean'?` Last confirmed: ${operation.lastConfirmed?'On':'Off'}.`:''}`;
+  }else{
+   operation.state='failed';operation.safeToRetry=Boolean(result?.safeToRetry);operation.message=result?.message||`We couldn’t reach ${operation.name}. Keep it powered on, then try again.`;
+  }
+  refresh(true);
+ }
  function refresh(force=false){
   if(document.hidden&&!force)return;
   const model=api.model(),lamps=model.lamps||[],groups=model.groups||[],independent=lamps.filter(l=>!groups.some(g=>g.id===l.id||g.followers?.some(f=>f.id===l.id)));
+  renderLights(model,force);renderAutomations(model,force);renderPeopleAccess(model,force);
+  if(api.experience==='home-v1'){
+   let projection;try{projection=projectRedesignedHome(model);}catch{
+    document.getElementById('v2HomeSubtitle').textContent='YOUR HOME';home.innerHTML='<section class="v2-home-v1-attention"><strong>Home could not be refreshed</strong><button type="button" class="secondary" data-v2="lights">Open Lights</button></section>';return;
+   }
+   const key=JSON.stringify([projection.home,projection.rooms,projection.groups,projection.lights,[...homeOperations.entries()].map(([id,value])=>[id,value.state,value.phase,value.message,value.safeToRetry])]);
+   if(!force&&key===lastHome)return;lastHome=key;
+   const focused=home.contains(document.activeElement)?{action:document.activeElement.dataset.v2,id:document.activeElement.dataset.id}:null;
+   renderRedesignedHome(model,projection);
+    if(focused?.action){const controls=[...home.querySelectorAll('[data-v2]')],replacement=controls.find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id&&!button.disabled)||controls.find(button=>button.dataset.id===focused.id&&['home-power','home-check'].includes(button.dataset.v2)&&!button.disabled)||controls.find(button=>button.dataset.id===focused.id&&['open-lamp','open-group'].includes(button.dataset.v2)&&!button.disabled);replacement?.focus({preventScroll:true});}
+   document.getElementById('v2Version').textContent='CoolLamp 2.0.6';return;
+  }
   const heroLamp=lamps.find(lamp=>lamp.id===model.selected?.id)||lamps[0],heroStyle=lampDrawingStyle(heroLamp);
   const key=JSON.stringify([heroLamp?.id,heroStyle,lamps.map(l=>[l.id,l.name,l.room,l.firmwareVersion,lampDrawingStyle(l),model.statuses?.[l.id]?.lighting?.power,model.statuses?.[l.id]?.lighting?.fresh]),groups.map(g=>[g.id,g.name,g.followers?.length,g.available,g.pendingRemovalIds?.length]),model.connected,preferences.rooms,preferences.groups]);
   if(!force&&key===lastHome)return;lastHome=key;
   const focused=home.contains(document.activeElement)?{action:document.activeElement.dataset.v2,id:document.activeElement.dataset.id}:null;
   document.getElementById('v2HomeSubtitle').textContent=lamps.length?`${lamps.length} ${lamps.length===1?'lamp':'lamps'} · Your home`:'Make room for a little light';
-  home.innerHTML=lamps.length?`<section class="v2-hero"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2>A softer<br>kind of evening.</h2><p>Your light. Your way.</p><button data-v2="choose-light">Find your feeling ${icon('arrow')}</button></div>${lampDrawing(heroStyle)}</section><div class="v2-section-title"><h2>Your groups</h2><button class="text-button" data-v2="create-group">+ New group</button></div><div class="v2-home-groups">${groups.length?groups.map(g=>`<div class="v2-home-group-card"><button class="v2-home-group" data-v2="open-group" data-id="${esc(g.id)}"><span class="v2-group-art" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>${esc(groupName(g.id,g.name))}</strong><small>${1+(g.followers?.length||0)} ${(g.followers?.length||0)===0?'lamp':'lamps'} · ${g.available?'Ready to control':'Waiting for a connection'}${g.pendingRemovalIds?.length?' · Removal needs attention':''}</small></span>${icon('arrow')}</button><button type="button" class="secondary v2-home-group-add" data-v2="add-group-lamps" data-id="${esc(g.id)}" aria-label="Add lamps to ${esc(groupName(g.id,g.name))}">Add lamps</button></div>`).join(''):'<div class="v2-empty-small"><p>Your lamps work individually. Bring two or more together whenever you like.</p></div>'}</div><div class="v2-section-title"><h2>Individual lamps</h2><button class="text-button" data-v2="lamps">View all</button></div><div class="v2-individual-list">${independent.length?independent.map(l=>`<button data-v2="open-lamp" data-id="${esc(l.id)}">${lampDrawing(lampDrawingStyle(l))}<span><strong>${esc(l.name||'CoolLamp')}</strong><small>${esc(room(l.id))} · Tap to control</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">Your lamps are playing in groups. Open a group to control them.</p>'}</div><button class="v2-care-card" data-v2="updates">${icon('check')}<span><strong>A little care, handled for you.</strong><small>Updates and automatic update preferences</small></span>${icon('arrow')}</button>`:`<section class="v2-welcome">${lampDrawing('unspecified')}<p class="eyebrow">WELCOME TO COOLLAMP</p><h2>A little light.<br>A lovely beginning.</h2><p>Add your first lamp. We’ll take you through it, one simple step at a time.</p><button data-v2="add">Add your first lamp</button><button class="secondary" data-v2="discover">Find lamps already at home</button></section><p class="v2-private">Your lamps work locally. No account required.</p>`;
+  home.innerHTML=lamps.length?`<section class="v2-hero"><div><p class="eyebrow">MAKE YOURSELF AT HOME</p><h2>A softer<br>kind of evening.</h2><p>Your light. Your way.</p><button data-v2="choose-light">Find your feeling ${icon('arrow')}</button></div>${lampDrawing(heroStyle)}</section><div class="v2-section-title"><h2>Your groups</h2><button class="text-button" data-v2="create-group">+ New group</button></div><div class="v2-home-groups">${groups.length?groups.map(g=>`<div class="v2-home-group-card"><button class="v2-home-group" data-v2="open-group" data-id="${esc(g.id)}"><span class="v2-group-art" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>${esc(groupName(g.id,g.name))}</strong><small>${1+(g.followers?.length||0)} ${(g.followers?.length||0)===0?'lamp':'lamps'} · ${g.available?'Ready to control':'Waiting for a connection'}${g.pendingRemovalIds?.length?' · Removal needs attention':''}</small></span>${icon('arrow')}</button><button type="button" class="secondary v2-home-group-add" data-v2="add-group-lamps" data-id="${esc(g.id)}" aria-label="Add lamps to ${esc(groupName(g.id,g.name))}">Add lamps</button></div>`).join(''):'<div class="v2-empty-small"><p>Your lamps work individually. Bring two or more together whenever you like.</p></div>'}</div><div class="v2-section-title"><h2>Individual lamps</h2><button class="text-button" data-v2="lamps">View all</button></div><div class="v2-individual-list">${independent.length?independent.map(l=>`<button data-v2="open-lamp" data-id="${esc(l.id)}">${lampDrawing(lampDrawingStyle(l))}<span><strong>${esc(l.name||'CoolLamp')}</strong><small>${esc(room(l.id))} · Tap to control</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">Your lamps are playing in groups. Open a group to control them.</p>'}</div><button class="v2-care-card" data-v2="updates">${icon('check')}<span><strong>A little care, handled for you.</strong><small>Updates and automatic update preferences</small></span>${icon('arrow')}</button>`:`<section class="v2-welcome">${lampDrawing('unspecified')}<p class="eyebrow">WELCOME TO COOLLAMP</p><h2>A little light.<br>A lovely beginning.</h2><p>Add your first lamp. We’ll take you through it, one simple step at a time.</p><button data-v2="add">Add your first lamp</button><button class="secondary" data-v2="discover">Find lamps already at home</button></section>`;
   for(const button of home.querySelectorAll('[data-v2="open-group"],[data-v2="open-lamp"]')){
     const id=button.dataset.id,observed=model.statuses?.[id],group=groups.find(g=>g.id===id),entry=lamps.find(l=>l.id===id);
     if(!observed?.lighting?.fresh||!observed?.group?.fresh||!entry)continue;
@@ -138,7 +235,62 @@ export function mountAppV2(api){
     const power=document.createElement('button');power.type='button';power.className='v2-home-power';power.dataset.v2='power';power.dataset.id=id;power.setAttribute('aria-pressed',String(observed.lighting.power));power.setAttribute('aria-label',(observed.lighting.power?'Turn off ':'Turn on ')+(group?groupName(id,group.name):entry.name));power.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M7 5a8 8 0 1 0 10 0"/></svg>';wrapper.append(power);
   }
   if(focused?.action){const replacement=[...home.querySelectorAll('[data-v2]')].find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id);replacement?.focus({preventScroll:true});}
-  document.getElementById('v2Version').textContent='CoolLamp 2.0.5';
+  document.getElementById('v2Version').textContent='CoolLamp 2.0.6';
+ }
+ function renderLights(model,force=false){
+  if(!lights)return;
+  const view=buildLightsOverview(model,{rooms:preferences.rooms,groupNames:preferences.groups});
+  const key=JSON.stringify([homeContext.activeHomeId,homeContext.active.name,view.rooms.map(row=>[row.name,row.devices.map(device=>device.id)]),view.groups,view.devices.map(device=>[device.id,device.name,device.room,lampDrawingStyle(device)])]);
+  if(!force&&key===lastLights)return;lastLights=key;
+  document.getElementById('v2LightsHome').textContent=homeContext.active.name.toUpperCase();
+  const roomCards=view.rooms.map(row=>`<button type="button" class="v2-room-card" data-v2="open-room" data-room="${esc(row.name)}"><span><strong>${esc(row.name)}</strong><small>${row.devices.length} ${row.devices.length===1?'light':'lights'}</small></span>${icon('arrow')}</button>`).join('');
+  const groupCards=view.groups.map(group=>`<div class="v2-play-card"><button type="button" data-v2="open-group" data-id="${esc(group.id)}"><span><strong>${esc(group.name)}</strong><small>${group.count} ${group.count===1?'light':'lights'} playing together${group.separate?` · ${group.separate} separate`:''}${group.available?'':' · Last known group'}${group.attention?' · Needs attention':''}</small></span>${icon('arrow')}</button><button type="button" class="secondary" data-v2="add-group-lamps" data-id="${esc(group.id)}">Add lights</button></div>`).join('');
+  const deviceCards=view.devices.map(device=>`<button type="button" data-v2="open-lamp" data-id="${esc(device.id)}">${lampDrawing(lampDrawingStyle(device))}<span><strong>${esc(device.name)}</strong><small>${esc(device.room)}${device.kind==='strip'?' · Strip':''}</small></span>${icon('arrow')}</button>`).join('');
+  lights.innerHTML=view.devices.length?`<div class="v2-overview-heading"><p>ROOMS</p></div><div class="v2-room-grid">${roomCards}</div><div class="v2-overview-heading"><p>PLAY TOGETHER</p><button type="button" class="text-button" data-v2="create-group">+ New group</button></div><div class="v2-play-list">${groupCards||'<p class="hint">Create a group when two or more lights should share an effect.</p>'}</div><div class="v2-overview-heading"><p>INDIVIDUAL</p></div><div class="v2-individual-list">${deviceCards}</div><button type="button" class="secondary v2-device-care-link" data-v2="devices">Device setup &amp; maintenance</button>`:`<section class="v2-welcome v2-lights-empty">${lampDrawing('unspecified')}<h3>Add your first light</h3><p>We’ll help identify it, name it, and place it in a room.</p><button type="button" data-v2="add">Add a light</button></section>`;
+ }
+ function renderAutomations(model,force=false){
+  if(!automations)return;
+  const view=automationPresentation(model.automations),key=JSON.stringify([homeContext.activeHomeId,view]);if(!force&&key===lastAutomations)return;lastAutomations=key;
+  document.getElementById('v2AutomationsHome').textContent=homeContext.active.name.toUpperCase();
+  const notice=view.notice?`<section class="v2-automation-notice" data-kind="${esc(view.notice.kind)}" role="status" aria-live="polite" aria-busy="${view.notice.kind==='checking'}">${view.notice.kind==='checking'?'<span class="v2-automation-spinner" aria-hidden="true"></span>':''}<div><strong>${esc(view.notice.title)}</strong>${view.notice.detail?`<p>${esc(view.notice.detail)}</p>`:''}</div>${view.notice.action?`<button type="button" class="secondary" data-v2="${esc(view.notice.action.id)}">${esc(view.notice.action.label)}</button>`:''}</section>`:'';
+  const upNext=view.next?`<section class="v2-automation-next"><p class="eyebrow">UP NEXT</p><strong>${esc(view.next.label)}</strong></section>`:'';
+  const schedules=view.schedules.map(schedule=>{
+   const action=schedule.action?`<button type="button" class="secondary" data-v2="${esc(schedule.action.id)}">${esc(schedule.action.label)}</button>`:'';
+   return `<article class="v2-automation-row" data-state="${esc(schedule.state)}"><span><strong>${esc(schedule.name)}</strong><small>${esc(schedule.detail)}${schedule.next&&schedule.state==='on'?` · Next: ${esc(schedule.next.label)}`:''}</small></span><span class="v2-automation-chip">${esc(schedule.status)}</span>${action}</article>`;
+  }).join('');
+  const empty=view.empty?`<section class="v2-automation-empty"><h3>${esc(view.empty.title)}</h3><p>${esc(view.empty.detail)}</p></section>`:'';
+  automations.innerHTML=`${notice}${upNext}${schedules?`<div class="v2-overview-heading"><p>SCHEDULES</p></div><div class="v2-automation-list">${schedules}</div>`:''}${empty}`;
+ }
+ function peopleNoticeAction(action){
+  if(!action)return '';
+  if(['retry','check-again'].includes(action.id)&&typeof api.refreshPeopleAccess==='function')return `<button type="button" class="secondary" data-v2="people-access-retry">${esc(action.label)}</button>`;
+  return '';
+ }
+ function renderPeopleAccess(model,force=false){
+  if(!peopleAccess)return;
+  let view;try{view=compilePeopleAccess(model.peopleAccess);}catch{
+   view=compilePeopleAccess({version:1,state:'failed',home:{id:null,name:homeContext.active.name},viewer:null,people:[],invitations:[],pendingTargets:[],activity:null});
+  }
+  const key=JSON.stringify(view);if(!force&&key===lastPeopleAccess)return;lastPeopleAccess=key;peopleAccessView=view;
+  const focused=peopleAccess.contains(document.activeElement)?{action:document.activeElement.dataset.v2,id:document.activeElement.dataset.personId}:null;
+  document.getElementById('v2PeopleAccessHome').textContent=view.home.name.toUpperCase();
+   const notice=view.notice?`<section class="v2-people-notice" data-kind="${esc(view.notice.kind)}" role="status" aria-live="polite" aria-atomic="true" aria-busy="${view.notice.busy}">${view.notice.busy?'<span class="v2-automation-spinner" aria-hidden="true"></span>':''}<div><strong>${esc(view.notice.title)}</strong>${view.notice.detail?`<p>${esc(view.notice.detail)}</p>`:''}</div>${peopleNoticeAction(view.notice.action)}${view.notice.followUps?.length?`<div class="v2-people-follow-ups">${view.notice.followUps.map(item=>`<div><p>${esc(item.message)}</p>${item.action?.id==='open-devices'?`<button type="button" class="secondary" data-v2="people-access-devices">${esc(item.action.label)}</button>`:''}</div>`).join('')}</div>`:''}</section>`:'';
+   const invite='';
+  const invitations=view.invitations.length?`<div class="v2-overview-heading"><p>INVITATIONS</p></div><div class="v2-people-list">${view.invitations.map(row=>`<article class="v2-person-row"><span><strong>${esc(row.recipientName)}</strong><small>${esc(row.status)} · ${esc(row.detail)}</small></span></article>`).join('')}</div>`:'';
+  const people=view.people.length?`<div class="v2-overview-heading"><p>PEOPLE</p></div><div class="v2-people-list">${view.people.map(row=>`<button type="button" class="v2-person-row" data-v2="people-person" data-person-id="${esc(row.id)}" aria-label="${esc(row.action.accessibleLabel)}"><span><strong>${esc(row.name)}${row.isCurrent?' · You':''}</strong><small>${esc(row.roleLabel)} · ${esc(row.summary)}</small></span>${icon('arrow')}</button>`).join('')}</div>`:'';
+  const empty=view.empty?`<section class="v2-people-empty"><h3>${esc(view.empty.title)}</h3><p>${esc(view.empty.detail)}</p></section>`:'';
+  peopleAccess.innerHTML=`${notice}${invite}${invitations}${people}${empty}`;
+  if(focused){peopleAccess.querySelector(`[data-v2="${focused.action}"][data-person-id="${focused.id}"]`)?.focus({preventScroll:true});}
+ }
+ function openPersonAccess(personId){
+  const row=peopleAccessView?.people.find(value=>value.id===personId);if(!row){api.message('This person is no longer listed for this Home.');return;}
+   const phones=row.phones.map(phone=>`<article class="v2-phone-row"><span><strong>${esc(phone.name)}</strong><small>${esc(phone.detail)}</small></span></article>`).join('')||'<p class="hint">No active phones are listed.</p>';
+   const remove='';
+  sheet(row.name+(row.isCurrent?' · You':''),`<p><strong>${esc(row.roleLabel)}</strong></p><p>${esc(row.summary)}</p><div class="v2-overview-heading"><p>PHONES</p></div><div class="v2-phone-list">${phones}</div>${remove}`);
+ }
+ function openRoom(name){
+  const view=buildLightsOverview(api.model(),{rooms:preferences.rooms,groupNames:preferences.groups}),row=view.rooms.find(value=>value.name===name);if(!row){api.message('This room is no longer available.');return;}
+  sheet(name,`<p>Rooms help you find lights. A room does not silently turn them into a synchronized group.</p>${row.devices.map(device=>`<button class="v2-choice" type="button" data-v2="select-settings" data-section="lighting" data-id="${esc(device.id)}"><strong>${esc(device.name||'CoolLamp')}</strong><small>Open light controls</small>${icon('arrow')}</button>`).join('')}<button type="button" class="secondary" data-v2="create-group">Make lights play together</button>`);
  }
  function chooseLight(section='lighting'){
   const model=api.model();sheet('Choose your lights',`<p>Choose a lamp. We’ll find its best available connection.</p>${section==='lighting'?(model.groups||[]).map(g=>`<button class="v2-choice" data-v2="open-group" data-id="${esc(g.id)}"><strong>${esc(groupName(g.id,g.name))}</strong><small>Shared group lighting</small>${icon('arrow')}</button>`).join(''):''}${(model.lamps||[]).map(l=>`<button class="v2-choice" data-v2="select-settings" data-section="${section}" data-id="${esc(l.id)}"><strong>${esc(l.name)}</strong><small>${esc(room(l.id))}</small>${icon('arrow')}</button>`).join('')||'<p>Add a lamp to get started.</p>'}<button class="secondary" data-v2="add">Add a lamp</button>`);
@@ -154,7 +306,7 @@ export function mountAppV2(api){
   if(setupStep===0)sheet('A little more light',`${lampDrawing(drawingStyle)}<h3>Let’s meet your lamp.</h3><p>Plug it in and keep your phone nearby.</p><button data-v2="setup-next">Get started</button><button class="secondary" data-v2="mesh-setup">Add through another lamp</button><p class="hint">Already set up? <button class="text-button" data-v2="discover">Find lamps on home Wi-Fi</button></p>`);
   else if(setupStep===1)sheet('Make your lamp discoverable',`${lampDrawing(drawingStyle)}<div class="v2-step">1 of 3 · Connect</div><h3>Hold until blue.<br>Then let go.</h3><p>Press the knob for about six seconds. Release as soon as the whole lamp flashes blue.</p><p class="hint">Your phone will show a nearby lamp picker. Choose the lamp in front of you.</p><button data-v2="pair" ${working?'disabled':''}>Find my lamp</button><button class="text-button" data-v2="setup-back">Back</button>`);
   else if(setupNeedsReview)sheet('Let’s check what your lamp kept',`<p>Some setup steps may already be saved. Open this lamp’s settings to see its current choices. We will keep the earlier change unconfirmed and will not repeat it.</p><button data-v2="select-settings" data-id="${esc(setupId)}" data-section="overview">Check this lamp</button><button class="secondary" data-v2="guide-keep-current">Keep current settings and finish the guide</button><button class="text-button" data-v2="close">Finish later</button>`);
-  else if(setupStep===2)sheet('Make it yours',`<div class="v2-step">2 of 3 · Name</div><label for="v2SetupName">Lamp name</label><input id="v2SetupName" maxlength="32" value="${esc(setupName)}" placeholder="e.g. Reading corner" autocomplete="off"><label for="v2SetupRoom">Room</label><input id="v2SetupRoom" maxlength="48" value="${esc(setupRoom)}" autocomplete="off">${designLocked?`<p><strong>Lamp design: ${esc(lampDesignLabel(design))}</strong></p><p class="hint">This physical design is set at the factory.</p>`:`<label for="v2SetupStyle">Lamp design</label><select id="v2SetupStyle"><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option><option value="edison">Edison</option><option value="sonata">Sonata</option>${!['helix','large-helix','corkscrew','edison','sonata'].includes(setupStyle)?`<option value="${esc(setupStyle)}">Keep this lamp’s current design</option>`:''}</select>`}<p class="hint">Your existing hardware settings stay as configured.</p><button data-v2="setup-save">Continue</button><button class="text-button" data-v2="setup-back">Back</button>`);
+  else if(setupStep===2)sheet('Make it yours',`<div class="v2-step">2 of 3 · Name</div><label for="v2SetupName">Lamp name</label><input id="v2SetupName" maxlength="48" value="${esc(setupName)}" placeholder="e.g. Reading corner" autocomplete="off"><label for="v2SetupRoom">Room</label><input id="v2SetupRoom" maxlength="48" value="${esc(setupRoom)}" autocomplete="off">${designLocked?`<p><strong>Lamp design: ${esc(lampDesignLabel(design))}</strong></p><p class="hint">This physical design is set at the factory.</p>`:`<label for="v2SetupStyle">Lamp design</label><select id="v2SetupStyle"><option value="helix">Helix</option><option value="large-helix">Large helix</option><option value="corkscrew">Corkscrew</option><option value="edison">Edison</option><option value="sonata">Sonata</option>${!['helix','large-helix','corkscrew','edison','sonata'].includes(setupStyle)?`<option value="${esc(setupStyle)}">Keep this lamp’s current design</option>`:''}</select>`}<p class="hint">Your existing hardware settings stay as configured.</p><button data-v2="setup-save">Continue</button><button class="text-button" data-v2="setup-back">Back</button>`);
   else sheet('Your lamp is ready',`<div class="v2-step">3 of 3 · Ready</div><div class="v2-success">${icon('check')}</div><h3>Hello, ${esc(setupName)}.</h3><p>You can start using it now. Home Wi-Fi lets your lamp stay connected without your phone nearby.</p><label class="check"><input id="v2SetupAutomatic" type="checkbox" ${setupAutomatic?'checked':''}>Keep this lamp up to date automatically</label><p class="hint">${setupAutomaticKnown?'You can change this later.':'Keep its current preference unless you choose to turn automatic updates on.'} Phone transfers need you nearby with the app open.</p><button data-v2="setup-wifi">Connect to home Wi-Fi</button><button class="secondary" data-v2="setup-done">Start using my lamp</button>`);
   if(setupStep===2&&!setupNeedsReview&&!designLocked)document.getElementById('v2SetupStyle').value=setupStyle;
  }
@@ -173,7 +325,7 @@ export function mountAppV2(api){
   const model=api.model();
   if(model.tourBlocked||model.connecting||!api.tourNavigate){const message='Please finish the current connection, setup or update, then choose Give me a tour.';const feedback=document.getElementById('v2TourFeedback');if(feedback)feedback.textContent=message;else api.message(message);return;}
   if(dialog.open&&!first)return;
-  const originalRoute=route==='groups'?'home':route==='settings'?'app-settings':route,target=model.selected?.id,steps=appTourSteps(model),pages=new Map(steps.map(step=>[step.id,step.page]));
+  const originalRoute=['groups','lamps'].includes(route)?'lights':route==='settings'?'app-settings':route,target=model.selected?.id,steps=appTourSteps(model),pages=new Map(steps.map(step=>[step.id,step.page]));
   close();tourStarting=true;
   try{tour=startGuidedTour({steps:steps.map(({page,...step})=>step),onStep:step=>{api.tourNavigate(pages.get(step.id));},
    isCurrent:()=>!disposed&&!working&&!selectionTask&&!api.model().tourBlocked&&!api.model().connecting&&api.model().selected?.id===target,
@@ -220,7 +372,7 @@ export function mountAppV2(api){
   },{stage:'checking-groups',cancellable:true});
  }
  function findLamps(groups=false){sheet(groups?'Finding your groups':'Finding your lamps',`<p>Keep your lamps powered on. We’re checking which ones are available.</p><button class="secondary" data-v2="${groups?'discover-groups':'discover'}">Try again</button>`);
-  void run(async({isCurrent})=>{await (groups?api.refreshGroups():api.discover());if(!isCurrent())return;close();api.navigate(groups?'groups':'lamps');},{stage:groups?'checking-groups':'finding-lamps'});
+   void run(async({isCurrent})=>{await (groups?api.refreshGroups():api.discover());if(!isCurrent())return;close();api.navigate(groups?'groups':'lights');},{stage:groups?'checking-groups':'finding-lamps'});
  }
  document.addEventListener('click',event=>{if(disposed)return;const button=event.target.closest('[data-v2]');if(!button)return;const action=button.dataset.v2;
   if(action==='close'){if(!working||workingTask?.cancellable)close();return;}if(working||selectionTask)return;
@@ -238,7 +390,14 @@ export function mountAppV2(api){
   else if(action==='mesh-setup'){close();api.navigate('lamps');api.findNewLamps();api.message('Keep the new lamp near one you already own. New lamps appear above your inventory.');}
   else if(action==='discover'){findLamps();}
   else if(action==='discover-groups'){findLamps(true);}
-  else if(action==='lamps'){close();api.navigate('lamps');}
+   else if(action==='lamps'||action==='lights'){close();api.navigate('lights');}
+   else if(action==='devices'){close();api.navigate('lamps');}
+   else if(action==='people-access'){close();api.navigate('people-access');}
+   else if(action==='back-settings'){close();api.navigate('app-settings');}
+    else if(action==='people-access-retry'){void api.refreshPeopleAccess?.();}
+    else if(action==='people-access-devices'){close();api.navigate('lamps');}
+   else if(action==='people-person'){openPersonAccess(button.dataset.personId);}
+   else if(action==='open-room'){openRoom(button.dataset.room);}
   else if(action==='choose-light'){chooseLight();}
   else if(action==='open-lamp'||action==='select-settings'){if(!dialog.open)chooseLight(button.dataset.section||'lighting');const choice=[...dialog.querySelectorAll('[data-v2="select-settings"]')].find(value=>value.dataset.id===button.dataset.id)||button;void selectLight(choice);}
   else if(action==='open-group'){close();api.navigate('groups');void api.openGroup(button.dataset.id);}
@@ -269,13 +428,19 @@ export function mountAppV2(api){
     finally{if(current())renderGroupAdd(review);}
    },{stage:'joining-group'});
   }
-  else if(action==='power')void run(()=>api.power(button.dataset.id),{stage:'changing-power'});
+   else if(action==='home-power')void runHomePower(button.dataset.id,{kind:button.dataset.homeKind||'device'});
+   else if(action==='home-check')void runHomePower(button.dataset.id,{readOnly:true,kind:button.dataset.homeKind||'device'});
+   else if(action==='power')void run(()=>api.power(button.dataset.id),{stage:'changing-power'});
   else if(action==='create-group'){sheet('Finding your lamps','<p>We’re checking which lamps are ready to play together. This can take a little time when a lamp is out of reach.</p>');void run(async({isCurrent})=>{await api.refreshGroups();if(isCurrent())createGroup();},{stage:'checking-groups'});}
   else if(action==='create-group-save')void run(async({setStage,isCurrent})=>{const name=document.getElementById('v2GroupName').value.trim(),ids=[...dialog.querySelectorAll('[name="v2GroupMember"]:checked')].map(input=>input.value);if(!name)throw Error('Give your group a name.');if(ids.length<2)throw Error('Choose at least two lamps.');const generation=guideGeneration;let result;try{result=await api.createGroup(ids,{onProgress:setStage});}catch(error){if(generation!==guideGeneration||!isCurrent())return;sheet('Let’s check your group',`<p>Some lamps may already be playing together. Open Groups to see which lamps confirmed joining and finish the remaining steps.</p><p>${esc(error.message||'A lamp has not confirmed joining.')}</p><button data-v2="group-guide-review">Check my groups</button><button class="secondary" data-v2="close">Finish later</button>`);throw Object.assign(Error('Choose “Check my groups” to finish the existing group. We will not create it again.'),{guideReview:true,uncertain:error.uncertain});}preferences.groups[result.id]=name;persist();if(generation!==guideGeneration||!isCurrent())return;close();api.navigate('groups');await api.openGroup(result.id);},{stage:'creating-group'});
   else if(action==='updates'){close();api.navigate('lamps');document.getElementById('v2CarePanel').scrollIntoView({block:'start'});}
   else if(action==='lamp-settings'){chooseLight('overview');}
   else if(action==='network'){chooseLight('network');}
   else if(action==='bridges'){close();api.navigate('bridges');}
+  else if(action==='retry-automations'){void api.refreshAutomations?.();}
+  else if(action==='automation-recovery'){close();api.navigate('bridges');}
+  else if(action==='automation-location-help')sheet('Home location needed','<p>Sunset schedules need your Home’s location. This app can safely check an existing schedule, but this version does not change its location.</p><p>Your existing schedule was not changed.</p><button type="button" data-v2="automation-recovery">Open connection settings</button>');
+  else if(action==='automation-storage-help')sheet('Schedule recovery','<p>The saved schedule could not be read safely. Keep the display powered on and avoid replacing its schedule until its saved connection has been checked.</p><button type="button" data-v2="automation-recovery">Open connection settings</button>');
   else if(action==='hardware'){chooseLight('hardware');}
   else if(action==='appearance'){chooseLight('design');}
   else if(action==='help'){help();}
@@ -285,7 +450,7 @@ export function mountAppV2(api){
    else if(key==='audio-guide'){audioGuideStep=0;audioGuide();}
    else if(key==='center-settings')chooseLight('hardware');
    else if(key==='effects')chooseLight();
-   else{close();api.navigate(key==='settings'?'app-settings':key==='updates'?'lamps':key);if(key==='updates')document.getElementById('v2CarePanel').scrollIntoView({block:'start'});}
+    else{close();api.navigate(key==='settings'?'app-settings':key==='updates'?'lamps':key==='lamps'?'lights':key);if(key==='updates')document.getElementById('v2CarePanel').scrollIntoView({block:'start'});}
   }
   else if(action==='guide-preference'){const kept=guide.setLater(document.getElementById('v2LaterGuides').checked);const feedback=document.getElementById('v2GuideFeedback');if(feedback)feedback.textContent=kept?'Guide preference saved on this phone.':'This phone could not save the guide preference.';else close();}
   else if(action==='guide-group'){groupGuide();}
@@ -300,8 +465,16 @@ export function mountAppV2(api){
  dialog.addEventListener('close',()=>{groupAddReview=null;cancelSelection();});
  document.getElementById('v2Theme').addEventListener('change',event=>{preferences.theme=event.target.value;persist();applyTheme();});
  document.getElementById('v2LampSearch').addEventListener('input',event=>{const query=event.target.value.trim().toLowerCase();document.querySelectorAll('#lampList .lamp-entry').forEach(row=>{row.hidden=!row.textContent.toLowerCase().includes(query);});});
- const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh(true);});
+ const interval=setInterval(()=>refresh(),1000);document.addEventListener('visibilitychange',()=>{if(document.hidden)api.cancelAutomationRefresh?.();else refresh(true);});
  refresh(true);
  function startWelcome(){if(guide.welcome())sheet('Welcome to CoolLamp',`<p>Would you like a quick look around? We’ll point out the buttons and explain what they do. Then we’ll help you add your first lamp.</p><button type="button" data-v2="welcome-tour">Show me around</button><button type="button" class="secondary" data-v2="welcome-skip">Skip tour and set up my lamp</button><p class="hint">You can take the tour later from Help.</p>`);}
- return {groupName,room,refresh,chooseLight,openSettings,addGroupLamps,startWelcome,beginTour,endTour,navigate(name,{tour:tourNavigation=false}={}){if(!tourNavigation)endTour('navigation');const offerGroup=!tourNavigation&&name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===(['settings','app-settings','bridges'].includes(name)?'app-settings':name==='groups'?'home':name))button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(!tourNavigation&&name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();refresh();if(offerGroup)offerSecondGuide();},destroy(){disposed=true;endTour('disposed');api.tourNavigate?.(route,{active:false});++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);}};
+ return {groupName,room,refresh,chooseLight,openSettings,addGroupLamps,startWelcome,beginTour,endTour,navigate(name,{tour:tourNavigation=false}={}){
+  if(!tourNavigation)endTour('navigation');
+  const offerGroup=!tourNavigation&&name==='home'&&!working&&!selectionTask&&!dialog.open&&!api.model().connecting;
+  ++guideGeneration;if(dialog.open)close();route=name;document.body.dataset.v2Page=name;
+  document.getElementById('v2ScopeButton').hidden=name!=='effects';document.getElementById('v2ScopeButton').textContent=api.model().selected?.name||'Choose a lamp';
+  const primary=['settings','groups','lamps','lights','effects'].includes(name)?'lights':['app-settings','people-access','bridges','help'].includes(name)?'app-settings':name;
+  document.querySelectorAll('nav [data-page]').forEach(button=>{if(button.dataset.page===primary)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});
+  document.querySelector('#page-settings .settings-navigation').hidden=name==='effects';if(!tourNavigation&&name==='effects'&&!api.model().connected&&!api.model().connecting)chooseLight();if(name==='help')renderHelp();if(!tourNavigation&&name==='automations')void api.refreshAutomations?.();else if(name!=='automations')api.cancelAutomationRefresh?.();refresh();if(offerGroup)offerSecondGuide();
+  },destroy(){disposed=true;endTour('disposed');api.cancelAutomationRefresh?.();api.tourNavigate?.(route,{active:false});++guideGeneration;cancelSelection();clearWorkingPresentation(workingTask);clearInterval(interval);for(const timer of homeOperationTimers.values())clearTimeout(timer);homeOperationTimers.clear();homeOperations.clear();}};
 }

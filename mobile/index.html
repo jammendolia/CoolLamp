@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f6f3ed">
 <title>CoolLamp</title>
-<link rel="stylesheet" href="/src/store-links.css">
 </head>
 <body>
 <main id="app">
@@ -21,7 +20,7 @@
 </header>
 <nav aria-label="Main navigation">
 <button data-page="home" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10h-6v-7H9v7H3z"></path></svg><span>Home</span></button>
-<button data-page="lamps">
+<button data-page="lights">
 <svg viewBox="0 0 24 24" aria-hidden="true">
 <rect x="4" y="4" width="6" height="6" rx="2">
 </rect>
@@ -32,16 +31,18 @@
 <rect x="14" y="14" width="6" height="6" rx="2">
 </rect>
 </svg>
-<span>Lamps</span>
+<span>Lights</span>
 </button>
-<button data-page="effects"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3z"></path></svg><span>Effects</span></button>
+<button data-page="automations"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2M5 4l2 2M19 4l-2 2"></path></svg><span>Automations</span></button>
 <button data-page="app-settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"></path><circle cx="9" cy="7" r="3"></circle><circle cx="15" cy="17" r="3"></circle></svg><span>Settings</span></button>
-<button type="button" data-page="help"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 1 1 4.5 1.5c-1 1-2 1-2 2.5"></path><path d="M12 16.5h.01"></path></svg><span>Help</span></button>
 </nav>
 <section id="page-home"><div class="v2-page-heading"><div><p id="v2HomeSubtitle" class="eyebrow">MAKE YOURSELF AT HOME</p><h2 tabindex="-1">Your home</h2></div><button class="v2-add-button" data-v2="add" aria-label="Add a lamp">+</button></div><div id="v2HomeContent"></div></section>
+<section id="page-lights" hidden aria-labelledby="v2LightsTitle"><div class="v2-page-heading"><div><p id="v2LightsHome" class="eyebrow">MY HOME</p><h2 id="v2LightsTitle" tabindex="-1">Lights</h2></div><button class="v2-add-button" data-v2="add" aria-label="Add a light">+</button></div><p class="page-intro">Find lights by where they live or how they play together.</p><div id="v2LightsContent"></div></section>
+<section id="page-automations" hidden aria-labelledby="v2AutomationsTitle"><div class="v2-page-heading"><div><p id="v2AutomationsHome" class="eyebrow">MY HOME</p><h2 id="v2AutomationsTitle" tabindex="-1">Automations</h2></div></div><p class="page-intro">Lighting that keeps its rhythm at home.</p><div id="v2AutomationsContent"></div></section>
 <section id="page-help" hidden aria-labelledby="v2HelpTitle"><p class="eyebrow">A LITTLE GUIDANCE</p><h2 id="v2HelpTitle" tabindex="-1">Help</h2><p class="page-intro">Choose what you’d like to do.</p><div id="v2HelpContent"></div></section>
 <section id="page-bridges" hidden aria-labelledby="bridgesHeading"><h2 id="bridgesHeading" tabindex="-1" class="sr-only">Bridges</h2><div id="bridgeManagement"></div></section>
-<section id="page-app-settings" hidden><p class="eyebrow">MAKE IT YOURS</p><h2 tabindex="-1">Settings</h2><p class="page-intro">A home that feels like you.</p><div class="v2-settings-list"><button data-v2="lamp-settings"><span><strong>Lamp details</strong><small>Name, room and ownership</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a lamp’s network</small></span><span>›</span></button><button data-v2="bridges"><span><strong>Bridges</strong><small>Connection helpers and their lamps</small></span><span>›</span></button><button data-v2="updates"><span><strong>Lamp care</strong><small>Updates and automatic update preferences</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Physical shape and strip setup</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>Help &amp; guides</strong><small>Setup, controls and troubleshooting</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced & custom builds</strong><small>LED count, power limit and guided strip setup</small></span><span>›</span></button></div><div class="v2-settings-list v2-legal-links"><a href="https://jammendolia.github.io/CoolLamp/support/" target="_blank" rel="noopener"><span><strong>Support</strong><small>Setup help and problem reporting</small></span><span>↗</span></a><a href="https://jammendolia.github.io/CoolLamp/privacy/" target="_blank" rel="noopener"><span><strong>Privacy policy</strong><small>How CoolLamp handles information</small></span><span>↗</span></a></div><p class="v2-private" id="v2Version">CoolLamp 2.0.5</p><p class="v2-private">Local control · No account required</p></section>
+<section id="page-app-settings" hidden><p class="eyebrow">MY HOME</p><h2 tabindex="-1">Settings</h2><p class="page-intro">Home details, device care, and help.</p><div class="v2-settings-list"><button data-v2="people-access"><span><strong>People &amp; access</strong><small>See who can use this Home</small></span><span>›</span></button><button data-v2="devices"><span><strong>Lights &amp; devices</strong><small>Setup, updates, and maintenance</small></span><span>›</span></button><button data-v2="lamp-settings"><span><strong>Light details</strong><small>Name, room, and device settings</small></span><span>›</span></button><button data-v2="network"><span><strong>Home Wi-Fi</strong><small>Connect or change a light’s network</small></span><span>›</span></button><button data-v2="bridges"><span><strong>Home controllers</strong><small>Bridges, connection helpers, and local services</small></span><span>›</span></button><button data-v2="updates"><span><strong>Device care</strong><small>Updates and maintenance</small></span><span>›</span></button><button data-v2="appearance"><span><strong>Lamp designs</strong><small>Physical shape and strip setup</small></span><span>›</span></button></div><div class="panel"><label for="v2Theme">Appearance</label><select id="v2Theme"><option value="system">Follow my phone</option><option value="light">Light</option><option value="dark">Dark</option></select><p class="hint">Text size follows your phone’s accessibility settings.</p></div><div class="v2-settings-list"><button data-v2="help"><span><strong>Help &amp; guides</strong><small>Setup, controls, and troubleshooting</small></span><span>›</span></button><button data-v2="hardware"><span><strong>Advanced &amp; custom builds</strong><small>LED count, power limit, and guided strip setup</small></span><span>›</span></button></div><div class="v2-settings-list v2-legal-links"><a href="https://jammendolia.github.io/CoolLamp/support/" target="_blank" rel="noopener"><span><strong>Support</strong><small>Setup help and problem reporting</small></span><span>↗</span></a><a href="https://jammendolia.github.io/CoolLamp/privacy/" target="_blank" rel="noopener"><span><strong>Privacy policy</strong><small>How CoolLamp handles information</small></span><span>↗</span></a></div><p class="v2-private" id="v2Version">CoolLamp 2.0.6</p></section>
+<section id="page-people-access" hidden aria-labelledby="v2PeopleAccessTitle"><button type="button" class="text-button v2-back-link" data-v2="back-settings">‹ Settings</button><div class="v2-page-heading"><div><p id="v2PeopleAccessHome" class="eyebrow">MY HOME</p><h2 id="v2PeopleAccessTitle" tabindex="-1">People &amp; access</h2></div></div><p class="page-intro">See who can use this Home.</p><div id="v2PeopleAccessContent"></div></section>
   <p id="status" role="status" aria-live="polite">Find a lamp on Wi-Fi, or add one using Bluetooth.</p>
   <section id="page-lamps" hidden>
 <div class="section-title">
@@ -72,10 +73,10 @@
 <div id="meshSetupPattern" class="mesh-confirm-colors" hidden aria-label="Compare these four colors with the new device"></div>
 <form id="meshSetupForm" hidden>
 <fieldset id="meshSetupFields">
-<label for="meshSetupName">Lamp name</label><input id="meshSetupName" maxlength="32" required autocomplete="off">
+<label for="meshSetupName">Lamp name</label><input id="meshSetupName" maxlength="48" required autocomplete="off">
 <label for="meshSetupStyle">Lamp design</label><select id="meshSetupStyle"></select><p id="meshSetupDesign" class="hint" hidden></p>
 <div class="mesh-setup-grid"><div><label for="meshSetupLeds">Number of LEDs</label><input id="meshSetupLeds" type="number" min="1" max="1024" required></div><div><label for="meshSetupMilliamps">Power limit (mA)</label><input id="meshSetupMilliamps" type="number" min="100" max="20000" required></div></div>
-<label class="check"><input id="meshSetupMicrophone" type="checkbox">Microphone is installed</label>
+<label class="check"><input id="meshSetupMicrophone" type="checkbox" checked>Microphone is installed</label>
 <label class="check"><input id="meshSetupPower" type="checkbox">Turn the lamp on</label>
 <label class="check"><input id="meshSetupWifi" type="checkbox">Also connect to Wi-Fi (optional)</label>
 <div id="meshSetupWifiFields" hidden><label for="meshSetupSsid">Wi-Fi network</label><input id="meshSetupSsid" maxlength="32" autocomplete="off"><label for="meshSetupWifiPassword">Wi-Fi password</label><input id="meshSetupWifiPassword" type="password" maxlength="63" autocomplete="new-password"><label class="check"><input id="meshSetupWifiOpen" type="checkbox">This is an open network</label></div>
@@ -507,6 +508,19 @@
 <input id="lampName" maxlength="48" required>
 <label for="room">Room</label>
 <input id="room" maxlength="48">
+<details id="networkNameDetails" class="network-name-details">
+<summary><span>Name shown in your router</span><span id="networkNameSummary" class="summary-detail">Open to view</span></summary>
+<p class="hint">This helps you recognize the lamp in your router.</p>
+<label class="toggle" for="networkNameAutomatic"><input id="networkNameAutomatic" type="checkbox" checked> Use lamp name automatically</label>
+<div id="customNetworkName" hidden>
+<label for="networkName">Custom router name</label>
+<input id="networkName" maxlength="48" autocomplete="off" autocapitalize="none" spellcheck="false">
+</div>
+<p class="router-name-preview">Shown as <strong id="networkNamePreview">—</strong></p>
+<p id="networkNameFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
+<button id="applyNetworkName" type="button" class="secondary" hidden>Update router name</button>
+<p id="routerNameCaveat" class="hint" hidden>The lamp will restart and reconnect. Some routers take a few minutes to update or choose their own label.</p>
+</details>
 <button id="saveIdentity" disabled>Save name & room</button>
 <p id="identitySaveFeedback" class="hint setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
 <button id="identify" disabled type="button" class="secondary">Identify lamp</button>
@@ -613,6 +627,13 @@
 <div class="saved-wifi-row"><span id="savedWifiSignal" class="lamp-connection lamp-wifi" role="img" aria-label="Wi-Fi status unknown"></span><div><p class="hint">Network name</p><strong id="savedWifiName"></strong><p id="savedWifiConnection" class="hint"></p></div></div>
 <button id="reconfigureWifi" type="button" class="secondary">Reconfigure Wi-Fi</button>
 </div>
+<section id="wifiConnectionCare" class="connection-care" hidden aria-labelledby="wifiConnectionCareTitle">
+<h3 id="wifiConnectionCareTitle">Connection</h3>
+<p id="wifiConnectionCareMessage" class="setup-activity" role="status" aria-live="polite" aria-atomic="true"></p>
+<p id="wifiConnectionCareDetail" class="hint"></p>
+<button id="improveWifiConnection" type="button">Improve connection</button>
+<button id="checkWifiWithBluetooth" type="button" class="secondary" hidden>Use Bluetooth</button>
+</section>
 <div id="wifiNetworkEditor">
 <button id="scanWifi" type="button" class="secondary">Find Wi-Fi networks</button>
 <label for="networks">Nearby networks</label>

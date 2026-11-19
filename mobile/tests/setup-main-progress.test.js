@@ -5,6 +5,7 @@ import {runInNewContext} from 'node:vm';
 import {wifiSetupMessage} from '../src/wifi-setup.js';
 import {WifiSettingsSummary,renderSavedWifi} from '../src/wifi-settings-summary.js';
 import {lampStyleLocked,lampDesignLabel} from '../src/lamp-style.js';
+import {parseNetworkNameConfiguration} from '../src/network-name.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const id='aabbccddeeff',other='112233445566';
@@ -21,11 +22,16 @@ const styleButtons=extract("  $('lampStyleFields').disabled=","\n  if(brokenBlue
 
 function fixture({nameGate,styleGate,wifiGate,credentialGate,probeGate,autoGate,refreshGates=[],createGate,joinGate,locked=false}={}){
  const elements=new Map(),calls=[],writes=[],stored=[],progress=[],probes=[];
- const node=key=>{if(!elements.has(key))elements.set(key,{value:'',textContent:'',hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},focus(){calls.push({kind:'focus',key});}});return elements.get(key);};
+ const node=key=>{if(!elements.has(key))elements.set(key,{value:'',checked:false,textContent:'',hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},addEventListener(){},focus(){calls.push({kind:'focus',key});}});return elements.get(key);};
  for(const [key,value] of Object.entries({lampName:'Reading lamp',room:'Bedroom',lampStyle:'corkscrew',ssid:'Home network',wifiPassword:'test-only-password'}))node(key).value=value;
+ let acceptedName='Original';
+ const nameResponse=()=>({version:1,deviceId:id,displayName:acceptedName,managed:true,automatic:true,customName:'',suffix:'ddeeff',active:'coollamp-ddeeff',desired:acceptedName==='Original'?'coollamp-original-ddeeff':'coollamp-reading-lamp-ddeeff',pending:true,revision:1,maxLength:31});
  const original={id:'native-one',identity:id,deviceIdentity:id,epoch:4,supportsWifiSetup:true,raw:{apiVersion:1,lampStyle:{id:'helix',...(locked?{locked:true}:{})}},
   enqueue:action=>Promise.resolve().then(action),
-  async request(path,data,epoch,beforeWrite){beforeWrite?.();writes.push({kind:'name',path,data,epoch});if(nameGate)await nameGate.promise;return 'Lamp name saved.';},
+  async request(path,data,epoch,beforeWrite){
+   if(data!==undefined){beforeWrite?.();writes.push({kind:'name',path,data,epoch});if(nameGate)await nameGate.promise;acceptedName=data.name||acceptedName;return 'Lamp name saved.';}
+   return nameResponse();
+  },
   async configureLampStyle(style){writes.push({kind:'style',style});if(styleGate)await styleGate.promise;this.raw.lampStyle={id:style};return 'Lamp design saved.';},
   async configureWifi(ssid,password,open,options){writes.push({kind:'wifi',ssid,open});this.wifiOptions=options;if(wifiGate)return wifiGate.promise;return {version:1,phase:4,error:0,connected:true,ssid,address:'192.168.1.40',hostname:'lamp.local',usingDefaultPassword:true};},
   async command(op,value,_unused,guard){guard?.();writes.push({kind:'automatic',op,value});if(autoGate)await autoGate.promise;return true;},
@@ -34,7 +40,7 @@ function fixture({nameGate,styleGate,wifiGate,credentialGate,probeGate,autoGate,
  const replacement={...original,id:'native-two',identity:other,deviceIdentity:other,epoch:8,raw:{apiVersion:1,lampStyle:{id:'helix'}}};
  const store={items:[{id,deviceId:original.id,name:'Original',room:'Den'}],upsert(entry){stored.push({...entry});this.items=this.items.filter(value=>value.id!==entry.id).concat({...entry});return {...entry};},setLampStyle(target,style){calls.push({kind:'local-style',target,style});return true;}};
  let refreshCalls=0;
- const context={console,Promise,AbortController,TextEncoder,store,original,replacement,calls,writes,stored,progress,probes,$:node,wifiSetupMessage,WifiSettingsSummary,renderSavedWifi,lampStyleLocked,lampDesignLabel,connectivity:null,observeLampWifi(){},
+ const context={console,Promise,AbortController,TextEncoder,store,original,replacement,calls,writes,stored,progress,probes,$:node,wifiSetupMessage,WifiSettingsSummary,renderSavedWifi,lampStyleLocked,lampDesignLabel,parseNetworkNameConfiguration,connectivity:null,observeLampWifi(){},
   updatingLamp:()=>false,renderPower(){},renderOptions(){},renderLamps(){calls.push({kind:'render-lamps'});},renderFirmware(){calls.push({kind:'render-firmware'});},filterEffects(){},
   status:message=>calls.push({kind:'message',message}),rememberLampStyle(){},reportedLampStyle:value=>value,
   styleDefinition:value=>['helix','corkscrew'].includes(value)?{id:value}:null,
@@ -49,12 +55,14 @@ function fixture({nameGate,styleGate,wifiGate,credentialGate,probeGate,autoGate,
  runInNewContext(`
   let lamp=original,selected={...store.items[0]},state={power:true},busy=false,connecting=false,firmware={version:'1.15.3'};
   const bleLamp=original,wifiLamp={};let styleSaving=null,identitySaving=null,styleDraftDirty=true;
+  let networkNameConfig=null,networkNameScopeKey='',networkNameDirty=false,networkNameUnsupported=false,networkNameRestarting=false,networkNameRead=null;
   let bleWifiStatus=null,wifiSetupAbort=null,wifiSetupSerial=0,wifiHandoff=null,navigationSerial=0;
   const wifiSettingsSummary=new WifiSettingsSummary();
   const groupsSnapshot={lamps:[{id:'${id}',name:'Main lamp'},{id:'${other}',name:'Follower'}]};
   const verifiedSelectedLamp=()=>Boolean(state&&selected&&lamp.identity===selected.id);
   const advancedAvailable=()=>Boolean(state&&lamp.raw);
   const bluetoothWifiAvailable=()=>lamp===bleLamp&&Boolean(state)&&bleLamp.supportsWifiSetup;
+  function renderNetworkNameDraft(){}
   function renderSettings(){calls.push({kind:'render-settings',busy});renderWifiSettings();${identityButtons}}
   function renderLampStyleSettings(){const factoryStyle=lamp.raw?.lampStyle,factoryLocked=lampStyleLocked(factoryStyle);calls.push({kind:'render-style',saving:Boolean(styleSaving)});${styleButtons}}
   ${wifiSummary}
@@ -120,12 +128,12 @@ test('automatic-update preference disables settings before awaiting its one comm
 test('real name submit displays progress synchronously, deduplicates and records accepted save',async()=>{
  const nameGate=deferred(),f=fixture({nameGate}),pending=f.name();assert.equal(f.node('identitySaveFeedback').dataset.state,'working');assert.match(f.node('identitySaveFeedback').textContent,/Saving/);assert.equal(f.node('saveIdentity').attributes['aria-busy'],'true');assert.equal(f.node('saveIdentity').disabled,true);
  await f.name();await turns();assert.equal(f.writes.length,1);nameGate.resolve();await pending;
- assert.equal(f.stored.length,1);assert.equal(f.node('identitySaveFeedback').dataset.state,'idle');assert.match(f.node('identitySaveFeedback').textContent,/Lamp name saved/);assert.equal(f.node('saveIdentity').attributes['aria-busy'],'false');
+ assert.equal(f.stored.length,1);assert.equal(f.node('identitySaveFeedback').dataset.state,'idle');assert.match(f.node('identitySaveFeedback').textContent,/Lamp name and room saved/);assert.equal(f.node('saveIdentity').attributes['aria-busy'],'false');
 });
 
 test('lost name reply stops the spinner and remains unconfirmed without replay or local false success',async()=>{
  const nameGate=deferred(),f=fixture({nameGate}),pending=f.name();await turns();nameGate.reject(Object.assign(Error('Native reply lost.'),{uncertain:true}));await pending;
- assert.equal(f.writes.length,1);assert.equal(f.stored.length,0);assert.equal(f.node('identitySaveFeedback').dataset.state,'idle');assert.match(f.node('identitySaveFeedback').textContent,/could not confirm/);
+ assert.equal(f.writes.length,1);assert.equal(f.stored.length,0);assert.equal(f.node('identitySaveFeedback').dataset.state,'idle');assert.match(f.node('identitySaveFeedback').textContent,/Reconnect and check.*before pressing Save again/);
 });
 
 for(const kind of ['target','epoch'])test('late name completion after '+kind+' change cannot rename the selected lamp',async()=>{

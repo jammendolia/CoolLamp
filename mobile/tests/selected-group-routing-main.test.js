@@ -54,6 +54,7 @@ function fixture({role=1,leader=role===2?left:right,read,acquireHook}={}){
   advancedAvailable:()=>true,legacyWithoutGroups:()=>false,bluetoothFirmwareOwner:()=>context.owner||null,fleetLampInstalling:()=>context.installing===true,
   firmwareBackgroundWorkAllowed:()=>!context.foregroundConnectionHold&&!context.connecting&&!context.bluetoothFirmwareTask&&!context.cardFirmwareTasks.size&&!context.fleetUpdating,
   cancelMeshSelection(){},hideWifiPassword(){},scheduleLampStatusRefresh(){},renderSettings(){},renderOptions(){},renderLamps(){},
+  cancelPeopleAccessRefresh(){},refreshPeopleAccess(){},
   refreshLampFirmware(){},refreshPublicFirmware(){},refreshBasicBluetoothTelemetry(){},refreshNewMeshLamps(){},resumePendingFirmwareChecks(){},
   renderRoomGroups(){calls.push({op:'render-groups'});},renderGroupScenes(){if(context.groupEditor)calls.push({op:'controls',id:context.groupEditor.id});},
   status:message=>{element('status').textContent=message;calls.push({op:'status',message});},

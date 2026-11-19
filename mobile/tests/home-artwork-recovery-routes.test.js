@@ -22,14 +22,14 @@ test('an existing active bridge retains priority while reserving a paired Blueto
 // Only the drawing output is simplified so the asserted style is explicit.
 const source=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8');
 const styleDeclaration=source.match(/export const lampDrawingStyle=[^;]+;/)[0].replace('export ','');
-const start=source.indexOf(' function refresh(force=false)'),end=source.indexOf(' function chooseLight(',start);
+const start=source.indexOf(' function refresh(force=false)'),end=source.indexOf(' function renderLights(',start);
 function homeHarness(entry,others=[]){
  let html='',renders=0;const elements=new Map();
  const model={lamps:entry?[entry,...others]:others,groups:[],statuses:{},connected:false,selected:null};
  const home={contains:()=>false,querySelectorAll:()=>[],get innerHTML(){return html;},set innerHTML(value){html=value;renders++;}};
  const context={resolveLampStyle,home,api:{model:()=>model},preferences:{rooms:{},groups:{}},
   document:{hidden:false,activeElement:null,getElementById:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);}},
-  lastHome:'',room:()=>'',groupName:()=>'',esc:String,icon:()=>'',lampDrawing:style=>'<art style="'+style+'"/>'};
+  lastHome:'',renderLights(){},renderAutomations(){},renderPeopleAccess(){},room:()=>'',groupName:()=>'',esc:String,icon:()=>'',lampDrawing:style=>'<art style="'+style+'"/>'};
  runInNewContext(styleDeclaration+'\n'+source.slice(start,end)+'\nthis.refresh=refresh;',context);
  return {refresh:context.refresh,html:()=>html,renders:()=>renders,model};
 }

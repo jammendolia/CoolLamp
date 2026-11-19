@@ -332,7 +332,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.5;
+				MARKETING_VERSION = 2.0.6;
                 OTHER_LDFLAGS = ("$(inherited)", "-weak_framework", "AccessorySetupKit");
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.coollamp.controller;
@@ -356,7 +356,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0.5;
+				MARKETING_VERSION = 2.0.6;
                 OTHER_LDFLAGS = ("$(inherited)", "-weak_framework", "AccessorySetupKit");
 				PRODUCT_BUNDLE_IDENTIFIER = com.coollamp.controller;
 				PRODUCT_NAME = "$(TARGET_NAME)";

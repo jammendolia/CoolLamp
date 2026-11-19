@@ -14,16 +14,25 @@ import androidx.lifecycle.Lifecycle;
 import com.getcapacitor.*;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.security.spec.ECGenParameterSpec;
 import java.util.*;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
+import org.json.JSONObject;
 
 @CapacitorPlugin(name="LampNetwork")
 public class LampNetworkPlugin extends Plugin {
+    private static final String HOME_IDENTITY_ALIAS="coollamp-home-installation-v1";
+    private static final String HOME_IDENTITY_PREFERENCES="coollamp-home-installation-v1";
+    private static final String HOME_IDENTITY_RECORD="identity";
+    private static final String HOME_IDENTITY_RECOVERY="This phone's Home access identity needs recovery.";
+    private static final Object HOME_IDENTITY_LOCK=new Object();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int generation = 0;
     private NsdManager.DiscoveryListener discovery;
@@ -149,6 +158,87 @@ public class LampNetworkPlugin extends Plugin {
     @Override protected void handleOnDestroy(){
         super.handleOnDestroy();
         firmwareUi(()->{firmwareScreenDestroyed=true;restoreFirmwareScreen();finish("Discovery stopped.");});
+    }
+
+    private static String lowerHex(byte[] value) {
+        StringBuilder result=new StringBuilder(value.length*2);
+        for(byte item:value)result.append(String.format(Locale.ROOT,"%02x",item & 255));
+        return result.toString();
+    }
+    private static String randomOpaqueId(SecureRandom random) throws Exception {
+        for(int attempt=0;attempt<4;attempt++){
+            byte[] value=new byte[16];random.nextBytes(value);String result=lowerHex(value);
+            if(!result.equals("00000000000000000000000000000000"))return result;
+        }
+        throw new Exception(HOME_IDENTITY_RECOVERY);
+    }
+    private static String requiredString(JSONObject value,String key) throws Exception {
+        Object item=value.opt(key);if(!(item instanceof String))throw new Exception(HOME_IDENTITY_RECOVERY);return (String)item;
+    }
+    private static int requiredInteger(JSONObject value,String key) throws Exception {
+        Object item=value.opt(key);if(!(item instanceof Number))throw new Exception(HOME_IDENTITY_RECOVERY);
+        Number number=(Number)item;int result=number.intValue();
+        if(!Double.isFinite(number.doubleValue()) || number.doubleValue()!=result)throw new Exception(HOME_IDENTITY_RECOVERY);return result;
+    }
+    private static JSObject verifiedHomeIdentity(JSONObject metadata,KeyStore store) throws Exception {
+        if(metadata.length()!=7 || requiredInteger(metadata,"version")!=1 || requiredInteger(metadata,"credentialGeneration")!=1)
+            throw new Exception(HOME_IDENTITY_RECOVERY);
+        String installationId=requiredString(metadata,"installationId"),credentialKeyId=requiredString(metadata,"credentialKeyId"),
+            displayName=requiredString(metadata,"displayName"),thumbprint=requiredString(metadata,"publicKeyThumbprint"),keyState=requiredString(metadata,"keyState");
+        if(!installationId.matches("[a-f0-9]{32}") || !credentialKeyId.matches("[a-f0-9]{32}") ||
+           installationId.equals("00000000000000000000000000000000") || credentialKeyId.equals("00000000000000000000000000000000") || installationId.equals(credentialKeyId) ||
+           !"This Android phone".equals(displayName) || !thumbprint.matches("[a-f0-9]{64}") || !"active".equals(keyState))
+            throw new Exception(HOME_IDENTITY_RECOVERY);
+        java.security.cert.Certificate certificate=store.getCertificate(HOME_IDENTITY_ALIAS);
+        byte[] encoded=certificate==null?null:certificate.getPublicKey().getEncoded();
+        if(encoded==null || !"EC".equalsIgnoreCase(certificate.getPublicKey().getAlgorithm()) ||
+           !thumbprint.equals(lowerHex(MessageDigest.getInstance("SHA-256").digest(encoded))))
+            throw new Exception(HOME_IDENTITY_RECOVERY);
+        JSObject result=new JSObject();result.put("version",1);result.put("installationId",installationId);
+        result.put("credentialKeyId",credentialKeyId);result.put("credentialGeneration",1);result.put("displayName",displayName);
+        result.put("publicKeyThumbprint",thumbprint);result.put("keyState",keyState);return result;
+    }
+
+    @PluginMethod public void homeInstallationIdentity(PluginCall call) {
+        getBridge().execute(() -> {
+            synchronized(HOME_IDENTITY_LOCK){
+                try {
+                    KeyStore store=KeyStore.getInstance("AndroidKeyStore");store.load(null);
+                    android.content.SharedPreferences preferences=getContext().getSharedPreferences(HOME_IDENTITY_PREFERENCES,Context.MODE_PRIVATE);
+                    boolean hasMetadata=preferences.contains(HOME_IDENTITY_RECORD),hasKey=store.containsAlias(HOME_IDENTITY_ALIAS);
+                    if(hasMetadata!=hasKey){call.reject(HOME_IDENTITY_RECOVERY,"home-identity-recovery");return;}
+                    if(hasMetadata){
+                        String saved=preferences.getString(HOME_IDENTITY_RECORD,null);
+                        if(saved==null || saved.length()>1024){call.reject(HOME_IDENTITY_RECOVERY,"home-identity-recovery");return;}
+                        try{call.resolve(verifiedHomeIdentity(new JSONObject(saved),store));}
+                        catch(Exception error){call.reject(HOME_IDENTITY_RECOVERY,"home-identity-recovery");}return;
+                    }
+
+                    KeyPairGenerator generator=KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC,"AndroidKeyStore");
+                    generator.initialize(new KeyGenParameterSpec.Builder(HOME_IDENTITY_ALIAS,KeyProperties.PURPOSE_SIGN)
+                        .setAlgorithmParameterSpec(new ECGenParameterSpec("secp256r1"))
+                        .setDigests(KeyProperties.DIGEST_SHA256).build());
+                    generator.generateKeyPair();
+                    java.security.cert.Certificate certificate=store.getCertificate(HOME_IDENTITY_ALIAS);
+                    byte[] encoded=certificate==null?null:certificate.getPublicKey().getEncoded();
+                    if(encoded==null)throw new Exception(HOME_IDENTITY_RECOVERY);
+                    SecureRandom random=new SecureRandom();String installationId=randomOpaqueId(random),credentialKeyId;
+                    do{credentialKeyId=randomOpaqueId(random);}while(credentialKeyId.equals(installationId));
+                    String thumbprint=lowerHex(MessageDigest.getInstance("SHA-256").digest(encoded));
+                    JSONObject metadata=new JSONObject();metadata.put("version",1);metadata.put("installationId",installationId);
+                    metadata.put("credentialKeyId",credentialKeyId);metadata.put("credentialGeneration",1);
+                    metadata.put("displayName","This Android phone");metadata.put("publicKeyThumbprint",thumbprint);metadata.put("keyState","active");
+                    if(!preferences.edit().putString(HOME_IDENTITY_RECORD,metadata.toString()).commit())throw new Exception(HOME_IDENTITY_RECOVERY);
+                    call.resolve(verifiedHomeIdentity(metadata,store));
+                }catch(Exception error){
+                    try{
+                        KeyStore check=KeyStore.getInstance("AndroidKeyStore");check.load(null);
+                        if(check.containsAlias(HOME_IDENTITY_ALIAS)){call.reject(HOME_IDENTITY_RECOVERY,"home-identity-recovery");return;}
+                    }catch(Exception ignored){}
+                    call.reject("Could not create this phone's Home access identity.","home-identity-unavailable");
+                }
+            }
+        });
     }
 
     @PluginMethod public void credential(PluginCall call) {

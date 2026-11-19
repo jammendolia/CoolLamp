@@ -1,3 +1,4 @@
+import {validNetworkHostname} from './network-name.js';
 export const WIFI_SETUP = '7b610008-6e2b-4f3d-9a71-28e45c001001';
 export const WIFI_SETUP_CAPABILITY = 64;
 const operations = {wifiControl:14,wifiNetwork:15,wifiBegin:16,wifiChunk:17,wifiCommit:18};
@@ -40,7 +41,7 @@ export function decodeWifiSetup(data, expectedId) {
     if(!integer(data.index,0,15)||!integer(data.rssi,-128,0)||typeof data.open!=='boolean'||!data.ssid)throw Error('Invalid Wi-Fi network response.');
   } else if(!integer(data.phase,0,5)||!integer(data.error,0,3)||!integer(data.count,0,16)||
     typeof data.connected!=='boolean'||typeof data.usingDefaultPassword!=='boolean'||
-    typeof data.address!=='string'||typeof data.hostname!=='string'||!/^coollamp-[a-z0-9-]+\.local$/.test(data.hostname)||
+    typeof data.address!=='string'||!validNetworkHostname(data.hostname)||
     !/^[0-9a-f]{12}$/.test(data.deviceId)||expectedId&&data.deviceId!==expectedId)throw Error('Invalid Wi-Fi setup status or lamp identity.');
   if('wifiReason' in data&&!integer(data.wifiReason,0,65535)||
      'lastJoinError' in data&&!integer(data.lastJoinError,0,3)||

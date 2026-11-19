@@ -49,9 +49,20 @@ test('actual mesh setup handler keeps factory design while allowing an independe
  const transport={identity:id,raw,state:{power:true},enqueue:fn=>fn(),configureLampStyle:async()=>calls.push('style'),request:async(path,data)=>calls.push({path,data}),command:async()=>calls.push('power')};
  const task={lease:{lamp:transport},target:id,abort:new AbortController(),saving:false};
  Object.assign(node('meshSetupName'),{value:'Lamp'});node('meshSetupStyle').value='corkscrew';node('meshSetupLeds').value='183';node('meshSetupMilliamps').value='500';node('meshSetupMicrophone').checked=true;node('meshSetupPower').checked=true;
- const context={$:node,meshWizard:task,styleDefinition,lampStyleLocked,reportedLampStyle:normalizeLampStyle,rememberLampStyle(){},wifiCredentials(){throw Error('No Wi-Fi change expected');},
+ const context={$:node,meshWizard:task,TextEncoder,styleDefinition,lampStyleLocked,reportedLampStyle:normalizeLampStyle,rememberLampStyle(){},wifiCredentials(){throw Error('No Wi-Fi change expected');},
   store:{items:[{id}],upsert(){}},closeMeshWizard:async()=>calls.push('closed'),status(){}};
  runInNewContext(meshSubmit,context);await node('meshSetupForm').onsubmit({preventDefault(){}});
  assert.equal(calls.includes('style'),false);const writes=calls.filter(call=>call?.path);assert.equal(writes.length,1);assert.equal(writes[0].path,'/api/config');assert.equal(writes[0].data.leds,183);
  assert.equal('style' in writes[0].data,false);assert(calls.includes('closed'));
+});
+
+test('mesh setup enforces the shared 48-byte lamp-name limit for multibyte text',async()=>{
+ const elements=new Map(),node=key=>{if(!elements.has(key))elements.set(key,{value:'',checked:false,disabled:false,textContent:''});return elements.get(key);};
+ const calls=[],raw={name:'Lamp',lampStyle:style({locked:true}),ssid:'',leds:181,milliamps:500,startupMode:4,startupBrightness:100,audio:{installed:true}};
+ const transport={identity:id,raw,state:{power:true},enqueue:fn=>fn(),request:async(...args)=>calls.push(args)};
+ const task={lease:{lamp:transport},target:id,abort:new AbortController(),saving:false};
+ node('meshSetupName').value='💡'.repeat(13);node('meshSetupStyle').value='helix';node('meshSetupLeds').value='181';node('meshSetupMilliamps').value='500';node('meshSetupMicrophone').checked=true;node('meshSetupPower').checked=true;
+ runInNewContext(meshSubmit,{$:node,meshWizard:task,TextEncoder,styleDefinition});
+ await node('meshSetupForm').onsubmit({preventDefault(){}});
+ assert.equal(calls.length,0);assert.match(node('meshSetupStatus').textContent,/Check the lamp name/);
 });
