@@ -29,6 +29,7 @@ test('the actual Effects hero draws verified Sonata over stale cached or phone H
  assert.match(f.html(),/data-lamp-artwork="sonata"/);assert.match(f.html(),/lamp-artwork-sonata-curve/);
  assert.match(f.html(),/lamp-artwork-sonata-knob/);assert.match(f.html(),/aria-hidden="true"/);
  assert.deepEqual(f.context.lamp.raw,before);assert.equal(f.node('powerState').textContent,'Light is on');
+ assert.equal(f.node('powerHint').textContent,'Turns the light off while keeping the lamp connected.');
  f.render();assert.equal(f.renders(),1,'An unchanged drawing is retained during state polling.');
 });
 
@@ -50,6 +51,7 @@ test('Sonata retains its silhouette through power changes and never keeps anothe
  const f=fixture();f.render();assert.equal(f.node('lampArt').style.opacity,'1');
  f.context.state.power=false;f.render();assert.match(f.html(),/data-lamp-artwork="sonata"/);assert.equal(f.node('lampArt').style.opacity,'.2');
  assert.equal(f.node('powerState').textContent,'Light is off');assert.equal(f.renders(),1);
+ assert.equal(f.node('powerHint').textContent,'Turns the light on using its current effect and brightness.');
  f.context.state.power=true;f.render();assert.equal(f.node('lampArt').style.opacity,'1');
  f.context.selected=null;f.context.state=null;f.render();assert.match(f.html(),/data-lamp-artwork="unspecified"/);
 });

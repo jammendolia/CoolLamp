@@ -23,7 +23,7 @@ On **Light → Effect rotation**, enable automatic rotation and choose:
 - All available effects, light effects only, or audio effects only.
 - An interval in seconds or minutes, from **5 seconds to 24 hours**.
 
-Save once; the lamp runs the rotation without the app and remembers the configuration across restarts. Each effect retains its own colors, speed, intensity, and sound tuning. The selected effect runs for a full interval before rotation advances. A manual effect change starts a fresh interval. Disable rotation to keep one effect selected.
+Save once; the lamp runs the rotation without the app and remembers the configuration across restarts. Enabling rotation while the lamp can play immediately selects the first eligible next effect, so the saved change is visible at once. That effect then runs for a full interval before rotation advances again. If rotation is enabled while playback is paused, the current effect remains in place and the first advance waits for a full interval after playback resumes. Each effect retains its own colors, speed, intensity, and sound tuning. A manual effect change starts a fresh interval. Disable rotation to keep the current effect selected.
 
 Rotation pauses while the lamp is off, in LED setup, showing setup/identification flashes, updating, or displaying a group scene. It waits a fresh interval after these pauses instead of catching up through missed effects. A configured follower never runs its own rotation clock, including while its group connection is unavailable or paused. For synchronized rotation, configure the controller and select **Mirror effects**. The eight spatial group scenes are not part of the rotation pool.
 

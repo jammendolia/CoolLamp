@@ -7,6 +7,7 @@ import {startGuidedTour} from './guided-tour.js';
 import {readHomeContext,buildLightsOverview,automationPresentation} from './ecosystem-foundation.js';
 import {buildHomeExperienceProjectionV1} from './home-experience-adapter.js';
 import {compilePeopleAccess} from './people-access.js';
+import {APP_VERSION_LABEL} from './app-version.js';
 import './guided-tour.css';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -64,6 +65,7 @@ export function mountAppV2(api){
  const room=(id)=>api.model().lamps?.find(l=>l.id===id)?.room||(typeof preferences.rooms[id]==='string'?preferences.rooms[id]:'My home');
  const groupName=(id,fallback)=>typeof preferences.groups[id]==='string'?preferences.groups[id]:fallback||'Lamp group';
  const applyTheme=()=>{document.documentElement.dataset.appTheme=preferences.theme;document.getElementById('v2Theme').value=preferences.theme;};applyTheme();
+ document.getElementById('v2Version').textContent=APP_VERSION_LABEL;
  function cancelSelection(){const task=selectionTask;if(!task)return;selectionTask=null;task.controller.abort();delete dialog.dataset.selectionLoading;for(const button of dialog.querySelectorAll('[data-v2="select-settings"]'))button.disabled=false;task.button.removeAttribute('aria-busy');if(task.hint)task.hint.textContent=task.originalHint;}
  function clearWorkingPresentation(owner){
   if(!owner)return;
@@ -230,7 +232,7 @@ export function mountAppV2(api){
    const focused=homeFocusRequest||(home.contains(document.activeElement)?{action:document.activeElement.dataset.v2,id:document.activeElement.dataset.id,power:document.activeElement.dataset.power}:null);
    renderRedesignedHome(model,projection);
     if(focused?.action){const controls=[...home.querySelectorAll('[data-v2]')],replacement=controls.find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id&&(!focused.power||button.dataset.power===focused.power)&&!button.disabled)||controls.find(button=>button.dataset.id===focused.id&&['home-power','home-check'].includes(button.dataset.v2)&&!button.disabled)||controls.find(button=>button.dataset.id===focused.id&&['open-lamp','open-group'].includes(button.dataset.v2)&&!button.disabled);replacement?.focus({preventScroll:true});}
-   document.getElementById('v2Version').textContent='CoolLamp 2.0.5';return;
+   return;
   }
   const heroLamp=lamps.find(lamp=>lamp.id===model.selected?.id)||lamps[0],heroStyle=lampDrawingStyle(heroLamp);
   const key=JSON.stringify([heroLamp?.id,heroStyle,lamps.map(l=>[l.id,l.name,l.room,l.firmwareVersion,lampDrawingStyle(l),model.statuses?.[l.id]?.lighting?.power,model.statuses?.[l.id]?.lighting?.fresh]),groups.map(g=>[g.id,g.name,g.followers?.length,g.available,g.pendingRemovalIds?.length]),model.connected,preferences.rooms,preferences.groups]);
@@ -245,7 +247,6 @@ export function mountAppV2(api){
     const power=document.createElement('button');power.type='button';power.className='v2-home-power';power.dataset.v2='power';power.dataset.id=id;power.setAttribute('aria-pressed',String(observed.lighting.power));power.setAttribute('aria-label',(observed.lighting.power?'Turn off ':'Turn on ')+(group?groupName(id,group.name):entry.name));power.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M7 5a8 8 0 1 0 10 0"/></svg>';wrapper.append(power);
   }
   if(focused?.action){const replacement=[...home.querySelectorAll('[data-v2]')].find(button=>button.dataset.v2===focused.action&&button.dataset.id===focused.id);replacement?.focus({preventScroll:true});}
-  document.getElementById('v2Version').textContent='CoolLamp 2.0.5';
  }
  function renderLights(model,force=false){
   if(!lights)return;

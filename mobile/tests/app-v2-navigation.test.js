@@ -10,6 +10,7 @@ import {startGuidedTour} from '../src/guided-tour.js';
 import {readHomeContext,buildLightsOverview,automationPresentation} from '../src/ecosystem-foundation.js';
 import {buildHomeExperienceProjectionV1} from '../src/home-experience-adapter.js';
 import {compilePeopleAccess} from '../src/people-access.js';
+import {APP_VERSION_LABEL} from '../src/app-version.js';
 
 // Exercise the mounted UI and its real delegated click handler. The small DOM
 // fixture supplies only browser presentation APIs; connection results and time
@@ -90,7 +91,7 @@ function fixture(select=async()=>({connected:true}),options={}){
   querySelector:()=>element('settings-navigation'),querySelectorAll:()=>[],createElement:()=>new Element(),
   addEventListener(name,callback){const handlers=listeners.get(name)||[];handlers.push(callback);listeners.set(name,handlers);}};
  let preferenceValue=options.preferences??null;
- const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,lampStyleLocked,lampDesignLabel,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,startGuidedTour:options.startTour||startGuidedTour,readHomeContext,buildLightsOverview,automationPresentation,buildHomeExperienceProjectionV1,compilePeopleAccess,
+ const context={document,AbortController,DOMException,lampArtworkSvg,resolveLampStyle,lampStyleLocked,lampDesignLabel,OnboardingGuide,ownedGuideIds,confirmedGuideTarget,guideHelp,GUIDE_STORAGE_LIMIT,HELP_TOPICS:options.helpTopics||HELP_TOPICS,startGuidedTour:options.startTour||startGuidedTour,readHomeContext,buildLightsOverview,automationPresentation,buildHomeExperienceProjectionV1,compilePeopleAccess,APP_VERSION_LABEL,
   localStorage:{getItem:()=>preferenceValue,setItem(key,value){if(options.failStorage)throw Error('Storage full');preferenceValue=value;}},
   setInterval:()=>++nextTimer,clearInterval(){},
   setTimeout(callback,delay){const id=++nextTimer;timers.set(id,{callback,at:now+delay});return id;},clearTimeout:id=>timers.delete(id)};
@@ -113,6 +114,10 @@ function fixture(select=async()=>({connected:true}),options={}){
 function choose(ui,section='design'){
  ui.ui.chooseLight(section);ui.click('select-settings',{id:lamp.id,section});
 }
+
+test('the mounted app shows the package-derived version in Settings',()=>{
+ const ui=fixture();assert.equal(ui.element('v2Version').textContent,APP_VERSION_LABEL);ui.dispose();
+});
 
 test('lamp choosers explain the requested task instead of showing generic connection copy',()=>{
  const ui=fixture();
@@ -290,10 +295,11 @@ test('a late Home result cannot move focus back from another page',async()=>{
 
 test('selected and resumed Settings tasks focus their destination panel after navigation',()=>{
  const start=mainSource.indexOf('function focusSettingsSection('),end=mainSource.indexOf('\nfunction page(',start),calls=[];assert(start>=0&&end>start);
- const attributes=new Map(),panel={hidden:false,hasAttribute:name=>attributes.has(name),setAttribute:(name,value)=>attributes.set(name,value),focus:options=>calls.push(['focus',options]),scrollIntoView:options=>calls.push(['scroll',options])};
+ const attributes=new Map(),classes=new Set(),panel={hidden:false,hasAttribute:name=>attributes.has(name),setAttribute:(name,value)=>attributes.set(name,value),classList:{add:value=>classes.add(value)},focus:options=>calls.push(['focus',options]),scrollIntoView:options=>calls.push(['scroll',options])};
  const context={$:id=>id==='networkSettings'?panel:null,settingsView:'network'};
  runInNewContext(mainSource.slice(start,end)+'\nthis.focusSettingsSection=focusSettingsSection;',context);
  assert.equal(context.focusSettingsSection('network'),true);assert.equal(attributes.get('tabindex'),'-1');
+ assert.equal(classes.has('settings-section-focus-target'),true);
  assert.equal(calls.length,2);assert.equal(calls[0][0],'focus');assert.equal(calls[0][1].preventScroll,true);assert.equal(calls[1][0],'scroll');assert.equal(calls[1][1].block,'start');
  assert.match(mainSource,/if\(name==='settings'&&focusSection\)queueMicrotask\(\(\)=>focusSettingsSection\(settingsView\)\)/);
  assert.match(mainSource,/resumedLampTask[\s\S]+appV2\.openSettings\(resumedLampTask\.id,resumedLampTask\.section\)/);

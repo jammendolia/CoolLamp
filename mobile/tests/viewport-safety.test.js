@@ -40,4 +40,5 @@ test('app shell reserves both system safe areas and persistent navigation',()=>{
  assert.match(css,/padding-bottom:calc\(140px \+ env\(safe-area-inset-bottom\)\)/);
  assert.match(css,/body::before\{[^}]*height:env\(safe-area-inset-top\)/);
  assert.match(css,/dialog\{[^}]*inset-block-start:max\(12px,env\(safe-area-inset-top\)\)/);
+ assert.match(css,/\.settings-section-focus-target:focus\{outline:none\}/);
 });

@@ -155,6 +155,7 @@ function focusSettingsSection(section=settingsView){
   const target={lighting:'page-light',overview:'lampSummary',design:'lampStyleForm',hardware:'hardwareForm',network:'networkSettings',updates:'firmwareControls'}[section];
   const panel=target?$(target):null;if(!panel||panel.hidden)return false;
   if(!panel.hasAttribute('tabindex'))panel.setAttribute('tabindex','-1');
+  panel.classList.add('settings-section-focus-target');
   panel.focus({preventScroll:true});panel.scrollIntoView({block:'start'});return true;
 }
 function page(name,{preserveGroupFocus=false,preserveCardSettings=false,restoreScroll=false,focusSection=false,checkpoint=true}={}) {
@@ -465,7 +466,7 @@ function renderPower() {
   $('powerState').textContent=updatingLamp()?'Updating lamp':state?.power?'Light is on':state?'Light is off':'Not connected';
   $('lightModeBadge').textContent=sync?.scene>0?(groupScenes.find(x=>x.id===sync.scene)?.name||'Group scene'):(lamp?.catalog?.find(x=>x.id===state?.mode)?.name||'Choose an effect');
   $('brightnessHelp').textContent=sync?.active?'Brightness follows the coordinator. Pause this lamp’s sync to adjust it here.':'Shared lamp brightness.';
-  $('powerHint').textContent=!state?'Connect to a lamp to control its power.':updatingLamp()?'Wait for the firmware update to finish.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Groups when you are ready.':'Turns the light off while keeping the lamp connected.';
+  $('powerHint').textContent=!state?'Connect to a lamp to control its power.':updatingLamp()?'Wait for the firmware update to finish.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Groups when you are ready.':state.power?'Turns the light off while keeping the lamp connected.':'Turns the light on using its current effect and brightness.';
 }
 function renderOptions() {
   renderSavedLooks();
@@ -2096,13 +2097,14 @@ function renderLamps() {
 }
 async function discover(includeForgotten=false) {
   if(!isNative){status('Automatic discovery is available in the iPhone and Android app. You can enter a lamp address here.');return;}
-  $('discover').disabled=true;status('Looking for lamps on your Wi-Fi…');
+  const announce=includeForgotten||currentPage==='lamps';
+  $('discover').disabled=true;if(announce)status('Looking for lamps on your Wi-Fi…');
   if(includeForgotten)discovery.beginRefresh();
   try {
     const result=await readNativeLampDiscovery();discovered=discovery.remember(result.lamps);
-    renderLamps();status(discovered.length?'Tap a lamp’s gear to open its settings.':'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
+    renderLamps();if(announce)status(discovered.length?`Found ${discovered.length} lamp${discovered.length===1?'':'s'}. Choose a lamp to continue.`:'No lamps found. Check Local Network permission and that your phone and lamp use the same home network. You can also enter its address or use Bluetooth.');
     refreshLampFirmware({newDiscovery:true});
-  }catch(e){status(e.message);}finally{$('discover').disabled=false;}
+  }catch(e){if(announce)status(e.message);}finally{$('discover').disabled=false;}
 }
 $('discover').onclick=()=>discover(true);
 $('wifiConnect').onsubmit=async e=>{
