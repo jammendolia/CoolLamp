@@ -296,8 +296,13 @@ export class WifiTransport {
     if(!this.raw?.rotation)throw Error('Update lamp firmware to rotate effects.');
     if(typeof enabled!=='boolean'||typeof random!=='boolean'||![0,1,2].includes(category)||!Number.isInteger(seconds)||seconds<5||seconds>86400)throw Error('Choose an interval from 5 seconds to 24 hours.');
     if(enabled && (this.raw.sync?.role===2 || this.raw.sync?.scene || (category===2&&!this.raw.audio?.installed)))throw Error('Use the controller with Mirror effects selected. Audio-only needs a microphone.');
-    const message=await this.request('/api/rotation',{enabled:Number(enabled),random:Number(random),category,seconds});
-    await this.refresh();return message;
+    await verifiedSetting(this,{supported:raw=>raw.rotation&&typeof raw.rotation.enabled==='boolean',
+      path:'/api/rotation',data:{enabled:Number(enabled),random:Number(random),category,seconds},
+      matches:raw=>raw.rotation.enabled===enabled&&Boolean(raw.rotation.random)===random&&
+        raw.rotation.category===category&&raw.rotation.seconds===seconds,
+      message:'Rotation saved and checked.',
+      unconfirmedMessage:'We could not confirm the rotation change. Check the lamp’s rotation status before trying again.'});
+    return 'Rotation saved and checked.';
   }
   async configureGeometry(midpoint) {
     if(this.raw?.midpoint===undefined) throw new Error('Update lamp firmware to adjust its center point.');

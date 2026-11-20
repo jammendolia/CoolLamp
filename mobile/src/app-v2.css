@@ -157,6 +157,7 @@ html[data-app-theme=dark] .v2-welcome>.v2-lamp-drawing,html[data-app-theme=dark]
 .v2-home-v1-card>span:nth-child(2){flex:1;min-width:0}.v2-home-v1-card strong,.v2-home-v1-card small{display:block;overflow-wrap:anywhere}.v2-home-v1-card small{margin-top:5px;color:var(--muted);font-weight:400}.v2-home-v1-card>svg:last-child{width:17px;height:17px;flex:none;color:var(--muted)}
 .v2-home-v1-card>.v2-lamp-drawing{width:42px;height:68px;flex:none}.v2-home-v1-card>.v2-lamp-drawing[data-lamp-artwork=edison]{height:76px}.v2-home-v1-card>.v2-group-art{width:58px;height:58px}
 .v2-home-v1-check{min-width:64px;min-height:48px;padding:10px 12px;flex:none;background:var(--surface);color:var(--accent);border:1px solid var(--line)}
+.v2-home-power-set{display:grid;grid-template-columns:repeat(2,minmax(42px,1fr));gap:4px;flex:none;padding:4px;border:1px solid var(--line);border-radius:16px;background:var(--surface)}.v2-home-power-set button{min-width:42px;min-height:40px;padding:7px 9px;border:0;border-radius:11px;background:transparent;color:var(--accent);font-size:.82rem}.v2-home-power-set button:active{background:var(--surface-low)}.v2-home-power-set button[aria-disabled=true]{opacity:.55;pointer-events:none}
 .v2-home-v1-row>[aria-busy=true]{cursor:wait}.v2-home-v1-row>[aria-disabled=true]{opacity:.7}.v2-home-v1-operation{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:10px;margin:8px 0 0;padding:13px 15px;border-radius:16px;background:var(--surface-low);color:var(--muted);font-size:.9rem;line-height:1.4}
 .v2-home-v1-operation[data-state=failed],.v2-home-v1-operation[data-state=uncertain]{color:var(--ink);border:1px solid var(--control-line)}.v2-home-v1-operation button{grid-column:1/-1;width:100%;margin:2px 0 0}.v2-home-v1-spinner{width:17px;height:17px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:v2-home-v1-spin .8s linear infinite}
 @keyframes v2-home-v1-spin{to{transform:rotate(360deg)}}
@@ -179,3 +180,12 @@ html[data-app-theme=dark] .v2-welcome>.v2-lamp-drawing,html[data-app-theme=dark]
 @keyframes v2-automation-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.v2-automation-spinner{animation:none;border-top-color:var(--line);background:var(--accent)}}
 @media(max-width:370px){.v2-home-v1-card{padding:12px;gap:9px}.v2-home-v1-card>.v2-group-art{width:48px;height:52px}.v2-home-v1-check{min-width:58px;padding-inline:9px}}
+
+/* Keep interactive content clear of iPhone system chrome and the persistent
+   navigation. The top veil covers only the OS safe area while the page scrolls. */
+html{scroll-padding-block-start:calc(env(safe-area-inset-top) + 16px);scroll-padding-block-end:calc(132px + env(safe-area-inset-bottom))}
+body::before{content:"";position:fixed;z-index:39;inset:0 0 auto;height:env(safe-area-inset-top);background:var(--paper);pointer-events:none}
+main#app{padding-bottom:calc(140px + env(safe-area-inset-bottom))}
+dialog{inset-block-start:max(12px,env(safe-area-inset-top));inset-block-end:max(12px,env(safe-area-inset-bottom));max-height:calc(100dvh - max(12px,env(safe-area-inset-top)) - max(12px,env(safe-area-inset-bottom)))}
+:target,input,button,summary,details{scroll-margin-block-start:calc(env(safe-area-inset-top) + 16px);scroll-margin-block-end:calc(132px + env(safe-area-inset-bottom))}
+.daily-maintenance-note{margin:18px 0 24px}

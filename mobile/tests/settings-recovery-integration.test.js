@@ -238,6 +238,7 @@ function recoveryHandoffHarness({route='wifi',disconnectGate=null,leaseGate=null
     queueMicrotask:action=>{calls.push('queued-disconnect-check');queueMicrotask(action);},disconnectGate};
   runInNewContext(`let busy=false,connecting=false,meshSelection=null,wifiSettingsTarget=null,cardSettingsSerial=0,navigationSerial=7,bluetoothFirmwareConnectionSerial=3,liveLight={cancel(){calls.push('cancel-live-light');}};
     let selected={...entry},state=null,settingsView='network',settingsRecovery=null,styleSaving=false,settingsRestartWaitUntil=0,savedLookTask=null;
+    let settingsReconnectPaused=false,settingsReconnectFailure='';
     let wifiScanning=false,wifiScanSerial=0,centerTimer=null,centerStatus=null,centerWasActive=false,centerSerial=0,resetTarget=null;
     let wifiSetupAbort=null,wifiHandoff=null,bleWifiStatus=null,wifiSetupSerial=0,firmware=null,firmwareReceivedAt=0,effectOptions=null,vuDirty=false,fountainDirty=false,audioDirty=false,paneMode=null,editingBrightness=false,savedDevice=entry;
     const settingsUnconfirmedIds=new Set(),app2Pending=new Map(),fleetStatuses=new Map(),bleLamp={};
@@ -303,9 +304,23 @@ test('real recovery cancellation while acquiring a mesh lease releases the late 
   }finally{leaseGate.resolve();f.dispose();}
 });
 
+test('a final reconnect failure keeps the settings task in place and waits for an explicit retry',()=>{
+ let recoveryOptions;
+ const calls=[],view=elements(),context={...view,calls,SettingsConnectionRecovery:class{constructor(options){recoveryOptions=options;}}};
+ runInNewContext(`let settingsRecovery=null,settingsReconnectPaused=false,settingsReconnectFailure='',wifiSettingsTarget={automaticReconnect:true};
+  let selected={id:'${id}',name:'Reading lamp'},navigationSerial=7;
+  const cancelMeshSelection=()=>calls.push('cancel-mesh'),renderSettingsConnection=()=>calls.push('render'),status=message=>calls.push(message);
+  ${recoverySource}
+  globalThis.ui={state:()=>({paused:settingsReconnectPaused,failure:settingsReconnectFailure,wifiSettingsTarget})};`,context);
+ recoveryOptions.onFailure({id,name:'Reading lamp',navigation:7});
+ assert.equal(context.ui.state().paused,true);assert.equal(context.ui.state().wifiSettingsTarget,null);
+ assert.match(context.ui.state().failure,/Try reconnecting/);assert(calls.includes('cancel-mesh'));assert(calls.includes('render'));
+ assert(calls.some(value=>typeof value==='string'&&/place was kept/.test(value)));
+});
+
 function settingsConnectionHarness(){
   const view=elements(),context={...view,renderSettingsUpdate:()=>({active:false}),Date:class extends Date{static now(){return 10000;}}};
-  runInNewContext(`let selected={id:'${id}',name:'Reading lamp'},verified=false,held=false,settingsRestartWaitUntil=0;
+  runInNewContext(`let selected={id:'${id}',name:'Reading lamp'},verified=false,held=false,settingsRestartWaitUntil=0,settingsReconnectPaused=false,settingsReconnectFailure='';
     const wifiLamp={identity:selected.id},bleLamp={identity:selected.id},meshLamp={identity:selected.id,isMesh:true};let lamp=bleLamp;
     const verifiedSelectedLamp=()=>verified;const firmwareConnectionBusy=()=>held;
     ${settingsConnectionSource}

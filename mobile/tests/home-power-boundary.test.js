@@ -16,18 +16,20 @@ test('Home power admission keeps its Home and saved-target authorization live fo
  const match=source.match(/ power:async\(target,\{onProgress\}=\{\}\)=>\{[\s\S]*?\n \},\n select:/);
  assert(match);const property=match[0].replace(/,\n select:$/,'');
  let activeHomeId='home-a',scopeCurrent=null,calls=0;
+ let lastExpected,lastOptions;
  const context={
   store:{items:[entry]},localStorage:{},readHomeContext:()=>({activeHomeId}),mergedLampEntries:()=>[entry],cardPowerExpected:()=>({power:true,group:{role:0,leader:null}}),
-  changeCardPower:async(_entry,_expected,options)=>{calls++;scopeCurrent=options.isScopeCurrent;return {outcome:'confirmed'};}
+  changeCardPower:async(_entry,expected,options)=>{calls++;lastExpected=expected;lastOptions=options;scopeCurrent=options.isScopeCurrent;return {outcome:'confirmed'};}
  };
  runInNewContext(`const api={${property}};globalThis.power=api.power;`,context);
  assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'change'})).outcome,'confirmed');assert.equal(calls,1);assert.equal(scopeCurrent(),true);
+ assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'set',power:false})).outcome,'confirmed');assert.equal(calls,2);assert.equal(lastExpected,null);assert.equal(lastOptions.requestedPower,false);
  context.store.items=[];assert.equal(scopeCurrent(),false,'removing the saved target must revoke a queued command');
  context.store.items=[entry];activeHomeId='home-b';assert.equal(scopeCurrent(),false,'switching Home must revoke a queued command');
- assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'toggle'})).outcome,'failed');assert.equal(calls,1,'an unsupported mode must not reach the command lane');
- context.store.items=[];activeHomeId='home-a';assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'change'})).outcome,'failed');assert.equal(calls,1,'a discovered-only target must not reach the command lane');
+ assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'set',power:'off'})).outcome,'failed');
+ assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'toggle'})).outcome,'failed');assert.equal(calls,2,'an unsupported mode must not reach the command lane');
+ context.store.items=[];activeHomeId='home-a';assert.equal((await context.power({homeId:'home-a',deviceId:id,mode:'change'})).outcome,'failed');assert.equal(calls,2,'a discovered-only target must not reach the command lane');
 });
-
 function commandFixture(){
  const raw={deviceId:id,power:true,mode:1,firmware:{version:'1.9.6',phase:0,wifi:true},sync:{version:2,role:0,leader:null,paused:false,active:false},wifi:{connected:true,rssi:-60},calibration:{active:false}};
  const writes=[],invalidations=[],events=[];let tail=Promise.resolve(),scope=true,releaseCalls=0;

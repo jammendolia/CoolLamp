@@ -54,10 +54,12 @@ import { SettingsConnectionRecovery, settingsConnectionMessage, selectMeshRecove
 import { lampArtworkSvg } from './lamp-artwork.js';
 import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,automaticUpdateCardMessage} from './update-source.js';
 import {microphoneProvisioningDefault,readHomeContext} from './ecosystem-foundation.js';
+import {mountViewportSafety} from './viewport-safety.js';
 import {LegacyCoolStripScheduleClient,selectScheduleCoordinator,initialAutomationState,checkingAutomationState,failedAutomationState} from './schedule-service.js';
 import {HOME_EXPERIENCE_ID,homeExperienceEnabled} from './home-experience-gate.js';
 import {NativeInstallationIdentity} from './installation-identity.js';
 import {HomeAccessClient,homeAccessPeopleState} from './home-access-client.js';
+import {readNavigationSession,writeNavigationSession,rememberNavigation,resumableLampTask} from './navigation-session.js';
 const homeExperienceV1=homeExperienceEnabled({buildValue:import.meta.env.VITE_COOLLAMP_HOME_V1,allowQuery:import.meta.env.DEV,search:globalThis.location?.search||''});
 let appV2=null,app2Experience=null,app2ExperienceRun=null;
 let appTourActive=false,appTourSettingsView=null;
@@ -136,6 +138,8 @@ const liveGroupBluetooth=new Map();
 let connectivity=null,lampStatusTimer=null;
 let wifiSettingsTarget=null;
 let cardSettingsSerial=0,navigationSerial=0;
+let navigationSession=readNavigationSession(localStorage),currentPage=null;
+let settingsReconnectPaused=false,settingsReconnectFailure='';
 let bleConnectivityRead=null;
 let groupFocusSerial=0,pendingGroupFocus=null,roomGroupsRefreshQueued=false,roomGroupsGeneration=0,roomGroupsCompleted=0;
 let effectStyleFilter='all',styleDraftIdentity=null,styleDraftDirty=false,styleSaving=null,identitySaving=null;
@@ -147,10 +151,23 @@ async function credential(id, value) {
 }
 const firmwareFleetTrust=new FirmwareFleetTrust({credential,getPairedLamps:()=>store.items.filter(entry=>entry.deviceId)});
 function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
-function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
+function focusSettingsSection(section=settingsView){
+  const target={lighting:'page-light',overview:'lampSummary',design:'lampStyleForm',hardware:'hardwareForm',network:'networkSettings',updates:'firmwareControls'}[section];
+  const panel=target?$(target):null;if(!panel||panel.hidden)return false;
+  if(!panel.hasAttribute('tabindex'))panel.setAttribute('tabindex','-1');
+  panel.focus({preventScroll:true});panel.scrollIntoView({block:'start'});return true;
+}
+function page(name,{preserveGroupFocus=false,preserveCardSettings=false,restoreScroll=false,focusSection=false,checkpoint=true}={}) {
   appV2?.endTour?.('navigation');
+  const fromPage=currentPage;
   const route=name==='light'||name==='settings'&&settingsView==='lighting'?'effects':name;
   if(name==='effects'||name==='light'){name='settings';settingsView='lighting';}
+  if(checkpoint){
+    navigationSession=rememberNavigation(navigationSession,{scrollRoute:fromPage,scrollY:window.scrollY,route:name,settingsSection:settingsView,
+      ...(name==='settings'?{targetId:selected?.id||navigationSession.targetId,returnRoute:fromPage&&fromPage!=='settings'?fromPage:navigationSession.returnRoute}:{})});
+    writeNavigationSession(localStorage,navigationSession);
+  }
+  currentPage=name;
   cancelMeshSelection();
   ++navigationSerial;if(!preserveCardSettings)wifiSettingsTarget=null;
   if(name!=='groups'||!preserveGroupFocus){++groupFocusSerial;pendingGroupFocus=null;}
@@ -169,8 +186,9 @@ function page(name,{preserveGroupFocus=false,preserveCardSettings=false}={}) {
   appV2?.navigate(route);
   if(name==='people-access')void refreshPeopleAccess();else cancelPeopleAccessRefresh();
   settingsRecovery?.check();
-  window.scrollTo(0,0);
-  $('page-'+name)?.querySelector('h2')?.focus({preventScroll:true});
+  if(name==='settings'&&focusSection)queueMicrotask(()=>focusSettingsSection(settingsView));
+  else window.scrollTo(0,restoreScroll?(navigationSession.scroll[name]||0):0);
+  if(!focusSection)$('page-'+name)?.querySelector('h2')?.focus({preventScroll:true});
 }
 
 
@@ -688,19 +706,23 @@ function renderSettingsUpdate(){
 function renderSettingsConnection(){
   const update=renderSettingsUpdate();
   const waiting=!$('page-settings').hidden&&Boolean(selected)&&!verifiedSelectedLamp();
+  const paused=waiting&&settingsReconnectPaused;
   $('page-settings').dataset.connectionRecovering=String(waiting);
   $('settingsRecovery').hidden=!waiting||update.active;
+  $('settingsRecoveryRetry').hidden=!paused;
   if(waiting){
     const held=firmwareConnectionBusy()||Date.now()<settingsRestartWaitUntil;
-    $('settingsRecoveryTitle').textContent=held?'Waiting to reconnect':'Reconnecting to '+selected.name;
-    $('settingsRecoveryHint').textContent=held?'An update is using the connection. We’ll restore your settings when the connection is available.':'We’re finding the best available connection. You can return to Lamps at any time.';
-    $('connectionBadge').textContent=update.active?'Updating':held?'Waiting':'Reconnecting';
-    $('settingsConnection').textContent='Your settings will return when this lamp’s connection is verified.';
+    $('settingsRecoveryTitle').textContent=paused?'Couldn’t reconnect to '+selected.name:held?'Waiting to reconnect':'Reconnecting to '+selected.name;
+    $('settingsRecoveryHint').textContent=paused?(settingsReconnectFailure||'Keep the lamp powered on and nearby, then try again.'):held?'An update is using the connection. We’ll restore your settings when the connection is available.':'We’re finding the best available connection. You can return to Lamps at any time.';
+    $('connectionBadge').textContent=update.active?'Updating':paused?'Needs attention':held?'Waiting':'Reconnecting';
+    $('settingsConnection').textContent=paused?'Your place and settings section are still here.':'Your settings will return when this lamp’s connection is verified.';
   }else if(verifiedSelectedLamp()){
+    settingsReconnectPaused=false;settingsReconnectFailure='';$('settingsRecoveryRetry').hidden=true;
     const kind=lamp?.isMesh?'ESP-NOW mesh':lamp===wifiLamp?'Wi-Fi':'Bluetooth';
     $('connectionBadge').textContent=kind;$('settingsConnection').textContent=selected.name+' · '+kind;
   }
 }
+$('settingsRecoveryRetry').onclick=()=>{if(!selected||verifiedSelectedLamp())return;settingsReconnectPaused=false;settingsReconnectFailure='';renderSettingsConnection();void settingsRecovery?.check();};
 function resolvedStyle(entry=selected) {
   const raw=entry&&entry.id===selected?.id&&verifiedSelectedLamp()?lamp.raw?.lampStyle:null;
   const reported=reportedLampStyle(raw)?raw:null,cached=reportedLampStyle(entry?.lampStyle)?entry.lampStyle:null;
@@ -740,7 +762,7 @@ function renderLampStyleSettings() {
   if(state&&selected&&!/^[0-9a-f]{12}$/.test(selected.id))$('lampStyleScope').textContent='Reconnect over Wi-Fi or update this lamp so its identity can be verified before choosing a design.';
   if(factoryLocked)$('lampStyleScope').textContent='This lamp’s physical design is set at the factory. LED count and strip setup are separate settings below.';
 }
-function settingsSection(name,{preserveCardSettings=false}={}) {if(name!==settingsView)++navigationSerial;if(!preserveCardSettings&&wifiSettingsTarget){wifiSettingsTarget=null;++navigationSerial;}if(name==='groups'){settingsView='lighting';page('groups');return;}if(name!=='network')hideWifiPassword();settingsView=name;renderSettings();if(name==='network')queueMicrotask(()=>void loadWifiReselectStatus());}
+function settingsSection(name,{preserveCardSettings=false}={}) {if(name!==settingsView)++navigationSerial;if(!preserveCardSettings&&wifiSettingsTarget){wifiSettingsTarget=null;++navigationSerial;}if(name==='groups'){settingsView='lighting';page('groups');return;}if(name!=='network')hideWifiPassword();settingsView=name;navigationSession=rememberNavigation(navigationSession,{route:'settings',settingsSection:name,targetId:selected?.id||navigationSession.targetId});writeNavigationSession(localStorage,navigationSession);renderSettings();queueMicrotask(()=>focusSettingsSection(name));if(name==='network')queueMicrotask(()=>void loadWifiReselectStatus());}
 function legacyWithoutGroups(version){const parts=validFirmwareVersion(version)?.split('.').map(Number);return Boolean(parts&&parts[0]===1&&(parts[1]<6||parts[1]===6&&parts[2]<=6));}
 for(const button of document.querySelectorAll('[data-settings-section]'))button.onclick=()=>settingsSection(button.dataset.settingsSection);
 for(const button of document.querySelectorAll('[data-goto]'))button.onclick=()=>page(button.dataset.goto);
@@ -1547,7 +1569,7 @@ function cardPowerButton(entry){
   button.disabled=pending||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
   button.onclick=()=>changeCardPower(entry,cardPowerExpected(entry)?expected:null);return button;
 }
-async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgress,isScopeCurrent=()=>true}={}){
+async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgress,isScopeCurrent=()=>true,requestedPower=null}={}){
   const scopeCurrent=()=>{try{return isScopeCurrent()!==false;}catch{return false;}};
   if(!scopeCurrent())return Object.freeze({outcome:'failed',message:'The active Home changed. Open Home and choose the light again.'});
   if(cardPowerTasks.has(entry.id))return Object.freeze({outcome:'failed',message:'This lamp is already changing or checking its power.'});
@@ -1574,7 +1596,7 @@ async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgre
     if(snapshot.wifi)connectivity.observe(entry.id,{deviceId:entry.id,wifi:snapshot.wifi,checkedAt:snapshot.checkedAt,source:'state'});
   };
   try{
-    const result=await runLampPower({id:entry.id,expected,acquire:acquireGroupLamp,isCurrent,onSnapshot,onStage:stage=>onProgress?.(stage),onAttempt:attemptedAt=>{mutationAttemptedAt=attemptedAt;}});
+    const result=await runLampPower({id:entry.id,expected,requestedPower,acquire:acquireGroupLamp,isCurrent,onSnapshot,onStage:stage=>onProgress?.(stage),onAttempt:attemptedAt=>{mutationAttemptedAt=attemptedAt;}});
     if(!isCurrent())return Object.freeze({outcome:'failed',message:'This lamp changed while the app was checking it. Open the lamp to see its current state.'});
     const snapshot=result.snapshot,scope=snapshot.group?.role===1?'Group':'Lamp';
     const message=result.refreshed?snapshot.group?scope+' power checked · '+(snapshot.power?'On':'Off')+'.':'Power checked. Connect over Wi-Fi or update firmware to verify group membership.':
@@ -3497,26 +3519,50 @@ $('applyGroupAudio').onclick=()=>groupSceneAction(async target=>{
   groupAudioDirty=false;return result;
 });
 
-// Drafts belong to a lamp identity, never to the previously selected device.
-var playbackIdentity=null, rotationDirty=false;
+// Drafts and operation truth belong to one lamp identity, never to the
+// previously selected device. A submitted rotation stays separate from the
+// last confirmed snapshot until a fresh readback proves what the lamp saved.
+var playbackIdentity=null, rotationDirty=false, rotationOperation='idle', rotationConfirmed=null;
+const rotationReviewIds=new Set(),rotationConfirmedById=new Map();
+const selectedRotationIdentity=()=>/^[0-9a-f]{12}$/.test(selected?.id||'')?selected.id:null;
+function rotationSnapshot(value){
+  return value&&typeof value.enabled==='boolean'?{enabled:value.enabled,random:Boolean(value.random),category:Number(value.category),seconds:Number(value.seconds)}:null;
+}
+function rotationConfirmedLabel(raw,{needsCheck=false}={}){
+  if(!rotationConfirmed)return needsCheck?'Unknown · check':'Unknown';
+  if(needsCheck)return (rotationConfirmed.enabled?'On':'Off')+' · check';
+  return rotationConfirmed.enabled?(raw.sync?.role===2||raw.sync?.scene||raw.calibration?.active||!raw.power?'Paused':'Playing'):'Off';
+}
 function renderPlaybackTools() {
   renderPower();
   $('controls').disabled=busy&&!liveLightSending||updatingLamp()||!state||!independentLightingAllowed()||Boolean(state?.sync?.active)||Boolean(state?.calibration?.active);
   const raw=groupsAvailable()?state:null;
-  const identity=raw?lamp.identity:null;
-  if(playbackIdentity!==identity){playbackIdentity=identity;rotationDirty=false;$('rotationFeedback').textContent='';$('calibrationFeedback').textContent='';}
+  // Keep an uncertain operation attached to the selected lamp while its live
+  // state disappears during backgrounding or reconnect. Losing a transport is
+  // not evidence that a submitted write failed, and must never reopen Save.
+  const identity=selectedRotationIdentity();
+  if(playbackIdentity!==identity){
+    playbackIdentity=identity;rotationDirty=false;rotationOperation=identity&&rotationReviewIds.has(identity)?'uncertain':'idle';
+    rotationConfirmed=identity?(rotationConfirmedById.get(identity)||rotationSnapshot(raw?.rotation)):null;
+    $('rotationFeedback').textContent='';$('calibrationFeedback').textContent='';
+  }
   $('rotationPane').hidden=!raw?.rotation;
   $('calibrationPane').hidden=!raw?.calibration;
   renderSettings();
   const r=raw?.rotation,c=raw?.calibration;
   if(r){
-    $('rotationBadge').textContent=r.enabled?(raw.sync?.role===2||raw.sync?.scene||c?.active||!raw.power?'Paused':'Playing'):'Off';
-    $('rotationFields').disabled=busy||updatingLamp()||Boolean(c?.active)||raw.sync?.role===2;
-    if(!rotationDirty){
-      $('rotationEnabled').checked=r.enabled;$('rotationOrder').value=r.random?'random':'sequential';$('rotationCategory').value=r.category;
-      const minutes=r.seconds%60===0;$('rotationUnit').value=minutes?'60':'1';$('rotationInterval').value=minutes?r.seconds/60:r.seconds;
+    if(rotationOperation==='idle'){
+      rotationConfirmed=rotationSnapshot(r);if(identity&&rotationConfirmed)rotationConfirmedById.set(identity,rotationConfirmed);
     }
-  }
+    $('rotationBadge').textContent=rotationOperation==='pending'?'Saving…':rotationConfirmedLabel(raw,{needsCheck:rotationOperation==='uncertain'});
+    $('rotationFields').disabled=busy||updatingLamp()||Boolean(c?.active)||raw.sync?.role===2||rotationOperation==='uncertain';
+    $('checkRotation').hidden=rotationOperation!=='uncertain';
+    if(!rotationDirty){
+      const shown=rotationConfirmed||rotationSnapshot(r);
+      $('rotationEnabled').checked=shown.enabled;$('rotationOrder').value=shown.random?'random':'sequential';$('rotationCategory').value=shown.category;
+      const minutes=shown.seconds%60===0;$('rotationUnit').value=minutes?'60':'1';$('rotationInterval').value=minutes?shown.seconds/60:shown.seconds;
+    }
+  }else $('checkRotation').hidden=true;
   if(c){
     $('startCalibration').hidden=c.active;
     $('calibrationFields').hidden=!c.active||c.kind==='center';
@@ -3526,13 +3572,39 @@ function renderPlaybackTools() {
     if(document.activeElement!==$('calibrationPosition'))$('calibrationPosition').value=c.position;
   }
 }
-$('rotationForm').oninput=()=>{rotationDirty=true;};
+$('rotationForm').oninput=()=>{rotationDirty=true;$('rotationFeedback').textContent='Unsaved changes. The summary still shows the last confirmed rotation state.';};
 $('rotationForm').onsubmit=async e=>{
-  e.preventDefault();if(busy||connecting||!advancedAvailable())return;
+  e.preventDefault();if(busy||connecting||!advancedAvailable()||rotationOperation==='uncertain')return;
+  const target=lamp,ownerId=playbackIdentity,epoch=target?.epoch,locator=target?.base;
+  const ownsTarget=()=>Boolean(ownerId&&selected?.id===ownerId&&playbackIdentity===ownerId&&lamp===target&&target.epoch===epoch&&target.base===locator);
   const value={enabled:$('rotationEnabled').checked,random:$('rotationOrder').value==='random',category:Number($('rotationCategory').value),seconds:Number($('rotationInterval').value)*Number($('rotationUnit').value)};
-  busy=true;renderPlaybackTools();
-  try{const message=await lamp.enqueue(()=>lamp.configureRotation(value));rotationDirty=false;$('rotationFeedback').textContent=message;}
-  catch(e){$('rotationFeedback').textContent=e.message;}
+  rotationOperation='pending';$('rotationFeedback').textContent='Saving rotation and checking what the lamp kept…';busy=true;renderPlaybackTools();
+  try{
+    const message=await target.enqueue(()=>{if(!ownsTarget())throw Object.assign(Error('The selected lamp changed before rotation was saved.'),{confirmed:true,cancelled:true});return target.configureRotation(value);});
+    if(!ownsTarget())throw Object.assign(Error('The selected lamp changed while rotation was being checked.'),{confirmed:true,cancelled:true});
+    rotationConfirmed=rotationSnapshot(target.raw?.rotation);if(!rotationConfirmed)throw Object.assign(Error('The lamp did not provide its saved rotation status.'),{uncertain:true});
+    rotationConfirmedById.set(ownerId,rotationConfirmed);rotationReviewIds.delete(ownerId);
+    rotationOperation='idle';rotationDirty=false;$('rotationFeedback').textContent=message;
+  }
+  catch(error){
+    if(error.uncertain)rotationReviewIds.add(ownerId);
+    if(selected?.id===ownerId){rotationOperation=error.uncertain?'uncertain':'idle';
+      $('rotationFeedback').textContent=error.uncertain?error.message+' Last confirmed rotation remains '+(rotationConfirmed?.enabled?'On.':'Off.')+' Check its status before trying again.':error.message;}
+  }
+  finally{busy=false;renderPlaybackTools();}
+};
+$('checkRotation').onclick=async()=>{
+  if(busy||connecting||!advancedAvailable()||rotationOperation!=='uncertain')return;
+  const target=lamp,ownerId=playbackIdentity,epoch=target?.epoch,locator=target?.base;
+  const ownsTarget=()=>Boolean(ownerId&&selected?.id===ownerId&&playbackIdentity===ownerId&&lamp===target&&target.epoch===epoch&&target.base===locator);
+  busy=true;$('rotationFeedback').textContent='Checking the lamp’s rotation status…';renderPlaybackTools();
+  try{
+    await target.enqueue(()=>{if(!ownsTarget())throw Error('The selected lamp changed before its status could be checked.');return target.refresh(target.deviceIdentity||target.identity);});
+    if(!ownsTarget())throw Error('The selected lamp changed while its status was being checked.');
+    const confirmed=rotationSnapshot(target.raw?.rotation);if(!confirmed)throw Error('The lamp did not provide its rotation status.');
+    rotationConfirmed=confirmed;rotationConfirmedById.set(ownerId,confirmed);rotationReviewIds.delete(ownerId);
+    rotationOperation='idle';rotationDirty=false;$('rotationFeedback').textContent='Checked. Rotation is '+(rotationConfirmed.enabled?'on.':'off.');
+  }catch(error){if(selected?.id===ownerId)$('rotationFeedback').textContent='Rotation status could not be checked. '+error.message;}
   finally{busy=false;renderPlaybackTools();}
 };
 async function calibrationAction(action,position){
@@ -3708,14 +3780,14 @@ appV2=mountAppV2({
  experience:homeExperienceV1?HOME_EXPERIENCE_ID:'current',
  model:()=>({lamps:mergedLampEntries(),ownedLampIds:store.items.map(entry=>entry.id),selectedAutomatic:verifiedSelectedLamp()&&typeof firmware?.automatic==='boolean'?firmware.automatic:null,statuses:Object.fromEntries(mergedLampEntries().map(entry=>[entry.id,connectivity?.get(entry.id)])),groups:groupsSnapshot.groups,available:groupsSnapshot.lamps,automations:automationModel(),peopleAccess:peopleAccessState,selected,connecting,connected:verifiedSelectedLamp(),state,tourBlocked:tourBlocked(),tourLightingReady:verifiedSelectedLamp()&&independentLightingAllowed()&&!app2Pending.has(selected?.id)&&!settingsUnconfirmedIds.has(selected?.id)}),
  tourNavigate:tourPresentation,
- message:status,navigate:(name,section)=>{if(section)settingsView=section;page(name);},
+ message:status,navigate:(name,section)=>{if(section)settingsView=section;page(name,{focusSection:Boolean(section)});},
  refreshAutomations:refreshAutomationStatus,cancelAutomationRefresh,refreshPeopleAccess,
  pair:async()=>{const result=await connect(null,{navigate:false});return result?.connected===true&&/^[0-9a-f]{12}$/.test(result.id||'')?Object.freeze({...result}):result;},discover:()=>discover(true),refreshGroups:refreshRoomGroups,
  findNewLamps:()=>refreshNewMeshLamps({explicit:true}),openGroup:openGroupEditor,
  addGroupLamp:addLampToExistingGroup,
  power:async(target,{onProgress}={})=>{
   const scoped=typeof target!=='string',request=scoped?target||{}:{deviceId:target,homeId:null,mode:'change'},id=request.deviceId;
-  if(!['check','change'].includes(request.mode))return Object.freeze({outcome:'failed',message:'Open Home and choose the light action again.'});
+  if(!['check','change','set'].includes(request.mode)||request.mode==='set'&&typeof request.power!=='boolean')return Object.freeze({outcome:'failed',message:'Open Home and choose the light action again.'});
    const homeCurrent=()=>!request.homeId||request.homeId===readHomeContext(localStorage).activeHomeId;
    const targetCurrent=()=>!scoped||store.items.some(row=>row.id===id);
    const scopeCurrent=()=>homeCurrent()&&targetCurrent();
@@ -3723,9 +3795,9 @@ appV2=mountAppV2({
     return Object.freeze({outcome:'failed',message:'The active Home changed. Open Home and choose the light again.'});
    if(!targetCurrent())return Object.freeze({outcome:'failed',message:'This light has not been added to the active Home. Open Lights to finish setup.'});
   const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)return Object.freeze({outcome:'failed',message:'This lamp is no longer available. Open Lights to check your saved lamps.'});
-  return changeCardPower(entry,request.mode==='check'?null:cardPowerExpected(entry),{onProgress,isScopeCurrent:scopeCurrent});
+  return changeCardPower(entry,['check','set'].includes(request.mode)?null:cardPowerExpected(entry),{onProgress,isScopeCurrent:scopeCurrent,requestedPower:request.mode==='set'?request.power:null});
  },
- select:async(id,section,options={})=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');if(busy||connecting||fleetLampInstalling(id))throw Error('This lamp is finishing another task. Please try again in a moment.');return openCardSettings(entry,{section,signal:options.signal,isCurrent:options.isCurrent,navigate:false,preferWifi:section==='hardware'&&!advancedAvailable()});},
+ select:async(id,section,options={})=>{const entry=mergedLampEntries().find(row=>row.id===id);if(!entry)throw Error('This lamp is no longer in your inventory.');if(busy||connecting||fleetLampInstalling(id))throw Error('This lamp is finishing another task. Please try again in a moment.');settingsReconnectPaused=false;settingsReconnectFailure='';return openCardSettings(entry,{section,signal:options.signal,isCurrent:options.isCurrent,navigate:false,preferWifi:section==='hardware'&&!advancedAvailable()});},
  setupDetails:async({id,name,style,room,onProgress})=>{
   if(!verifiedSelectedLamp()||selected.id!==id||busy||updatingLamp())throw Error('Reconnect to the lamp you are setting up.');
   if(new TextEncoder().encode(name).length>48)throw Error('Use a shorter lamp name.');
@@ -3749,26 +3821,28 @@ settingsRecovery=new SettingsConnectionRecovery({
  getContext:()=>{const owned=wifiSettingsTarget?.automaticReconnect===true&&settingsRecovery?.active;
   return {id:selected?.id,name:selected?.name,section:settingsView,navigation:navigationSerial,
    active:!appTourActive&&!$('page-settings').hidden&&Boolean(selected)&&mergedLampEntries().some(entry=>entry.id===selected.id),connected:verifiedSelectedLamp(),
-   blocked:firmwareConnectionBusy()||Date.now()<settingsRestartWaitUntil||Boolean(styleSaving)||!owned&&Boolean(busy||connecting||meshSelection||wifiSettingsTarget),hidden:document.hidden};},
+   blocked:settingsReconnectPaused||firmwareConnectionBusy()||Date.now()<settingsRestartWaitUntil||Boolean(styleSaving)||!owned&&Boolean(busy||connecting||meshSelection||wifiSettingsTarget),hidden:document.hidden};},
  reconnect:async context=>{const entry=mergedLampEntries().find(value=>value.id===context.id);if(!entry)throw Error('This lamp was removed from the phone.');
   try{const result=await openCardSettings(entry,{section:context.section,automaticReconnect:true,signal:context.signal,isCurrent:context.isCurrent});
    if(!result?.connected)throw result?.error||Error('This lamp is out of reach.');return result;
   }finally{if(wifiSettingsTarget?.automaticReconnect&&wifiSettingsTarget.id===context.id&&wifiSettingsTarget.navigation===context.navigation)wifiSettingsTarget=null;}},
- onStatus:value=>{if(value.state==='idle'&&!settingsRecovery.active&&wifiSettingsTarget?.automaticReconnect&&wifiSettingsTarget.id===value.id){wifiSettingsTarget=null;cancelMeshSelection();}
+ onStatus:value=>{if(value.state==='reconnecting'){settingsReconnectPaused=false;settingsReconnectFailure='';}if(value.state==='idle'&&!settingsRecovery.active&&wifiSettingsTarget?.automaticReconnect&&wifiSettingsTarget.id===value.id){wifiSettingsTarget=null;cancelMeshSelection();}
   renderSettingsConnection();if(value.state==='connected'&&selected?.id===value.id&&!$('page-settings').hidden){
-  $('reconnect').hidden=true;renderSettings();renderOptions();renderFirmware();
+  settingsReconnectPaused=false;settingsReconnectFailure='';$('reconnect').hidden=true;renderSettings();renderOptions();renderFirmware();
    if(wifiReselectTask?.id===value.id&&wifiReselectTask.working)void loadWifiReselectStatus({operation:true});
   const unconfirmed=settingsUnconfirmedIds.has(value.id)||app2Pending.has(value.id);settingsUnconfirmedIds.delete(value.id);
   status('Reconnected to '+value.name+'.'+(unconfirmed?' Check its current settings; the earlier change was not confirmed.':''));}},
  onFailure:value=>{if(selected?.id!==value.id||navigationSerial!==value.navigation||$('page-settings').hidden)return;
-  if(wifiSettingsTarget?.automaticReconnect)wifiSettingsTarget=null;cancelMeshSelection();page('lamps');
-  status('We couldn’t reconnect to '+value.name+'. Keep it powered on and nearby, then tap its card to try again.');}
+  if(wifiSettingsTarget?.automaticReconnect)wifiSettingsTarget=null;cancelMeshSelection();settingsReconnectPaused=true;settingsReconnectFailure='Keep the lamp powered on and nearby, then choose Try reconnecting.';renderSettingsConnection();
+  status('We couldn’t reconnect to '+value.name+'. Your place was kept. Choose Try reconnecting when the lamp is powered and nearby.');}
 });
 setInterval(()=>settingsRecovery.check(),1000);
 setInterval(()=>{void refreshBrokerMeshInventory();},8000);
 setInterval(()=>{if(!document.hidden&&!$('page-settings').hidden&&settingsView==='network')renderWifiSettings();},1000);
-document.addEventListener('visibilitychange',()=>{settingsRecovery.check();if(!document.hidden)renderSettings();});
-page('home');
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&currentPage){navigationSession=rememberNavigation(navigationSession,{route:currentPage,settingsSection:settingsView,targetId:currentPage==='settings'?selected?.id||navigationSession.targetId:undefined,scrollRoute:currentPage,scrollY:window.scrollY,preserveTarget:currentPage==='settings'});writeNavigationSession(localStorage,navigationSession);}settingsRecovery.check();if(!document.hidden)renderSettings();});
+const resumedLampTask=resumableLampTask(navigationSession,store.items);
+if(resumedLampTask){settingsView=resumedLampTask.section;page(resumedLampTask.returnRoute,{restoreScroll:true,checkpoint:false});queueMicrotask(()=>appV2.openSettings(resumedLampTask.id,resumedLampTask.section));}
+else page(navigationSession.route==='settings'?'lights':navigationSession.route,{restoreScroll:true});
 appV2.startWelcome();
 setInterval(()=>{if(firmwareBackgroundWorkAllowed()&&!document.hidden&&!busy&&!connecting&&!updatingLamp())void loadApp2EffectSchema().catch(()=>{});},3000);
 renderPower();renderSettings();renderFirmware();
@@ -3787,3 +3861,4 @@ document.addEventListener('focusin',event=>{
     if(rect.bottom>limit-14)window.scrollBy({top:rect.bottom-limit+24,behavior:'instant'});
   });
 });
+mountViewportSafety();

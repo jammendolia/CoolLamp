@@ -48,6 +48,7 @@ class Radio {
     else if(op===24){
       const request=this.transactions.get(id);assert.equal(request.tx,tx);assert.equal(request.body.length,request.length);
       const text=new TextDecoder().decode(Uint8Array.from(request.body));this.requests.push({...request,body:text});
+      if(request.endpoint===10&&request.method===2){const fields=new URLSearchParams(text);this.model.rotation={enabled:fields.get('enabled')==='1',random:fields.get('random')==='1',category:Number(fields.get('category')),seconds:Number(fields.get('seconds'))};}
       if(request.endpoint===25&&request.method===2){const code=Number(new URLSearchParams(text).get('style'));this.model.lampStyle={version:1,code,id:['unspecified','helix','large-helix','corkscrew'][code],family:['unspecified','helix','helix','corkscrew'][code]};}
       let response=Object.hasOwn(this,'responseText')?this.responseText:request.endpoint===1?JSON.stringify(this.model):request.endpoint===26?JSON.stringify(this.model.effects.map((name,i)=>({id:i+1,name,category:i>=38?'audio':'calm',speed:true}))):this.largeResponse||'Saved';
       this.response.set(id,{tx,endpoint:request.endpoint,status:this.responseStatus||200,text:response,offset:0});

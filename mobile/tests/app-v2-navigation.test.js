@@ -17,7 +17,7 @@ import {compilePeopleAccess} from '../src/people-access.js';
 const source=readFileSync(new URL('../src/app-v2.js',import.meta.url),'utf8')
  .replace(/\r\n/g,'\n').replace(/^import .*;$/gm,'').replace(/\bexport /g,'');
 const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
-const startup=mainSource.slice(mainSource.indexOf("\npage('home');"),mainSource.indexOf('\nsetInterval',mainSource.indexOf("\npage('home');")));
+const startup='page("home");appV2.startWelcome();';
 const deferred=()=>{let resolve,reject;const promise=new Promise((done,fail)=>{resolve=done;reject=fail;});return {promise,resolve,reject};};
 const settle=async()=>{for(let turn=0;turn<12;turn++)await Promise.resolve();};
 const lamp={id:'aabbccddeeff',name:'New reading lamp',room:'Bedroom',phoneLampStyle:'helix'};
@@ -113,6 +113,20 @@ function fixture(select=async()=>({connected:true}),options={}){
 function choose(ui,section='design'){
  ui.ui.chooseLight(section);ui.click('select-settings',{id:lamp.id,section});
 }
+
+test('lamp choosers explain the requested task instead of showing generic connection copy',()=>{
+ const ui=fixture();
+ for(const [section,title,description] of [
+  ['network',"Choose a lamp’s Wi-Fi",'home Wi-Fi connection'],
+  ['updates','Choose a lamp to update','installed software'],
+  ['hardware','Choose a custom lamp','builder-only strip and hardware settings']
+ ]){
+  ui.ui.chooseLight(section);assert.match(ui.dialog.innerHTML,new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));assert.match(ui.dialog.innerHTML,new RegExp(description));
+  assert.equal(ui.dialog.querySelector('[data-v2="select-settings"]').dataset.section,section);
+  assert.doesNotMatch(ui.dialog.innerHTML,/best available connection/i);
+ }
+ ui.dispose();
+});
 
 function redesignedHomeModel({fresh=true,power=true}={}){
  const checkedAt=Date.now();
@@ -214,15 +228,16 @@ test('Home v1 uncertainty keeps last-confirmed state and Check current state is 
  }}});
  ui.click('home-power',{id:lamp.id,homeKind:'device'});await settle();let html=ui.element('v2HomeContent').innerHTML;
  assert.match(html,/may have changed/);assert.match(html,/Last confirmed: On/);assert.match(html,/Check current state/);assert.match(html,/data-v2="home-power"[^>]*aria-disabled="true"/);assert.equal(requests.length,1);
+ assert.equal(ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-power'&&button.dataset.id===lamp.id)?.disabled,true);
  ui.click('home-power',{id:lamp.id,homeKind:'device'});await settle();assert.equal(requests.length,1);
  ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();html=ui.element('v2HomeContent').innerHTML;
  assert.equal(requests.length,2);assert.equal(requests[1].mode,'check');assert.match(html,/New reading lamp is off/);ui.dispose();
 });
 
-test('Home v1 stale power offers a read-only check instead of inferring a toggle',async()=>{
+test('Home v1 stale power keeps explicit On and Off actions instead of inferring a toggle',async()=>{
  const requests=[],ui=fixture(undefined,{model:redesignedHomeModel({fresh:false}),api:{experience:'home-v1',power:async target=>{requests.push(target);return {outcome:'confirmed',power:true,refreshed:true};}}});
- const html=ui.element('v2HomeContent').innerHTML;assert.match(html,/Last confirmed on/);assert.match(html,/data-v2="home-check"/);assert.doesNotMatch(html,/data-v2="home-power"/);
- ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();assert.equal(requests[0].mode,'check');ui.dispose();
+ const html=ui.element('v2HomeContent').innerHTML;assert.match(html,/Last confirmed on/);assert.match(html,/data-v2="home-power-set"/);assert.match(html,/data-power="on"/);assert.match(html,/data-power="off"/);assert.doesNotMatch(html,/data-v2="home-power"/);
+ ui.click('home-power-set',{id:lamp.id,homeKind:'device',power:'off'});await settle();assert.equal(requests[0].mode,'set');assert.equal(requests[0].power,false);ui.dispose();
 });
 
 test('Home v1 safe failure recovery stays read-only instead of becoming a power toggle',async()=>{
@@ -240,12 +255,48 @@ test('Home v1 reports a state refresh without claiming that it changed the light
  assert.match(html,/Current state: New reading lamp is on\. No change was sent\./);assert.doesNotMatch(html,/is now on/);ui.dispose();
 });
 
-test('Home v1 keeps focus on the same light when Check becomes Power',async()=>{
+test('Home v1 keeps focus on the same light when an explicit stale-state action becomes Power',async()=>{
  const model=redesignedHomeModel({fresh:false}),ui=fixture(undefined,{api:{experience:'home-v1',model:()=>model,power:async()=>{
   model.statuses[lamp.id].lighting.fresh=true;model.statuses[lamp.id].lighting.checkedAt=Date.now();return {outcome:'confirmed',power:true,refreshed:true};
- }}}),check=ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-check'&&button.dataset.id===lamp.id);
- assert(check);check.focus();ui.click('home-check',{id:lamp.id,homeKind:'device'});await settle();
+ }}}),explicit=ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-power-set'&&button.dataset.id===lamp.id&&button.dataset.power==='on');
+ assert(explicit);explicit.focus();ui.click('home-power-set',{id:lamp.id,homeKind:'device',power:'on'});await settle();
  assert.equal(ui.active()?.dataset.v2,'home-power');assert.equal(ui.active()?.dataset.id,lamp.id);ui.dispose();
+});
+
+test('Home v1 preserves which explicit stale-state power action had focus',async()=>{
+ const model=redesignedHomeModel({fresh:false}),ui=fixture(undefined,{api:{experience:'home-v1',model:()=>model,power:async()=>({outcome:'failed',safeToRetry:true,message:'No change was sent.'})}});
+ const off=ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-power-set'&&button.dataset.id===lamp.id&&button.dataset.power==='off');
+ assert(off);off.focus();ui.click('home-power-set',{id:lamp.id,homeKind:'device',power:'off'});await settle();
+ assert.equal(ui.active()?.dataset.v2,'home-power-set');assert.equal(ui.active()?.dataset.power,'off');assert.equal(ui.active()?.dataset.id,lamp.id);ui.dispose();
+});
+
+test('a late Home result cannot pull focus back from another lamp',async()=>{
+ const other={...lamp,id:'112233445566',name:'Other lamp'},model=redesignedHomeModel({fresh:false}),first=deferred(),second=deferred();
+ model.lamps.push(other);model.ownedLampIds.push(other.id);model.statuses[other.id]={...model.statuses[lamp.id],lighting:{...model.statuses[lamp.id].lighting},group:{...model.statuses[lamp.id].group}};
+ const ui=fixture(undefined,{api:{experience:'home-v1',model:()=>model,power:request=>request.deviceId===lamp.id?first.promise:second.promise}});
+ const action=id=>ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-power-set'&&button.dataset.id===id&&button.dataset.power==='off');
+ action(lamp.id).focus();ui.click('home-power-set',{id:lamp.id,homeKind:'device',power:'off'});await settle();
+ action(other.id).focus();ui.click('home-power-set',{id:other.id,homeKind:'device',power:'off'});await settle();assert.equal(ui.active()?.dataset.id,other.id);
+ first.resolve({outcome:'failed',safeToRetry:true,message:'No change was sent.'});await settle();assert.equal(ui.active()?.dataset.id,other.id);
+ second.resolve({outcome:'failed',safeToRetry:true,message:'No change was sent.'});await settle();assert.equal(ui.active()?.dataset.id,other.id);ui.dispose();
+});
+
+test('a late Home result cannot move focus back from another page',async()=>{
+ const gate=deferred(),model=redesignedHomeModel({fresh:false}),ui=fixture(undefined,{api:{experience:'home-v1',model:()=>model,power:()=>gate.promise}});
+ const off=ui.element('v2HomeContent').children.find(button=>button.dataset.v2==='home-power-set'&&button.dataset.id===lamp.id&&button.dataset.power==='off'),destination=ui.element('v2LightsContent');
+ off.focus();ui.click('home-power-set',{id:lamp.id,homeKind:'device',power:'off'});await settle();ui.ui.navigate('lights');destination.focus();
+ gate.resolve({outcome:'failed',safeToRetry:true,message:'No change was sent.'});await settle();assert.equal(ui.active(),destination);ui.dispose();
+});
+
+test('selected and resumed Settings tasks focus their destination panel after navigation',()=>{
+ const start=mainSource.indexOf('function focusSettingsSection('),end=mainSource.indexOf('\nfunction page(',start),calls=[];assert(start>=0&&end>start);
+ const attributes=new Map(),panel={hidden:false,hasAttribute:name=>attributes.has(name),setAttribute:(name,value)=>attributes.set(name,value),focus:options=>calls.push(['focus',options]),scrollIntoView:options=>calls.push(['scroll',options])};
+ const context={$:id=>id==='networkSettings'?panel:null,settingsView:'network'};
+ runInNewContext(mainSource.slice(start,end)+'\nthis.focusSettingsSection=focusSettingsSection;',context);
+ assert.equal(context.focusSettingsSection('network'),true);assert.equal(attributes.get('tabindex'),'-1');
+ assert.equal(calls.length,2);assert.equal(calls[0][0],'focus');assert.equal(calls[0][1].preventScroll,true);assert.equal(calls[1][0],'scroll');assert.equal(calls[1][1].block,'start');
+ assert.match(mainSource,/if\(name==='settings'&&focusSection\)queueMicrotask\(\(\)=>focusSettingsSection\(settingsView\)\)/);
+ assert.match(mainSource,/resumedLampTask[\s\S]+appV2\.openSettings\(resumedLampTask\.id,resumedLampTask\.section\)/);
 });
 
 test('Home v1 projects only saved Home members, not nearby discovery results',()=>{
@@ -578,7 +629,8 @@ test('the Help route highlights Settings, hides lamp controls and preserves an a
  const start=mainSource.indexOf('function page(name,'),end=mainSource.indexOf('\n\nconst $ =',start),calls=[],elements=new Map(),nav=[{dataset:{page:'app-settings'},setAttribute(key,value){this[key]=value;},removeAttribute(key){delete this[key];}}],sender=new AbortController();
  assert(start>=0&&end>start);
  const element=id=>{if(!elements.has(id))elements.set(id,{hidden:false,textContent:'',querySelector:()=>({focus:()=>calls.push('focus-help')}),dataset:{}});return elements.get(id);};
- const context={$:element,settingsView:'network',navigationSerial:0,wifiSettingsTarget:null,groupFocusSerial:0,pendingGroupFocus:null,meshWizard:null,
+ const context={$:element,settingsView:'network',navigationSerial:0,wifiSettingsTarget:null,groupFocusSerial:0,pendingGroupFocus:null,meshWizard:null,currentPage:null,navigationSession:{scroll:{}},localStorage:{},
+  rememberNavigation:value=>value,writeNavigationSession(){},queueMicrotask:callback=>callback(),
   cancelMeshSelection:()=>calls.push('cancel-read-only-search'),hideWifiPassword:()=>calls.push('hide-password'),closeGroupEditor:()=>calls.push('close-group-editor'),scheduleLampStatusRefresh:()=>calls.push('schedule-visible-inventory'),
   refreshLampFirmware:()=>calls.push('firmware-read'),refreshPublicFirmware:()=>calls.push('release-read'),refreshBasicBluetoothTelemetry:()=>calls.push('ble-read'),refreshNewMeshLamps:()=>calls.push('mesh-read'),refreshRoomGroups:()=>calls.push('group-read'),
   appV2:{navigate:route=>calls.push('navigate-'+route)},settingsRecovery:{check:()=>calls.push('check-read-only-recovery')},window:{scrollTo(){}},cancelPeopleAccessRefresh:()=>calls.push('cancel-people-access'),refreshPeopleAccess:()=>calls.push('refresh-people-access'),

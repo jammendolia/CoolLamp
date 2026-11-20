@@ -48,6 +48,29 @@ test('unknown or stale power/membership clicks only refresh and release the same
   }
 });
 
+test('a stale card can request an absolute power state after a fresh read without inferring a toggle',async()=>{
+  const off=fixture({power:true});off.options.expected=null;off.options.requestedPower=false;
+  const changed=await runLampPower(off.options);
+  assert.equal(changed.changed,true);assert.equal(changed.desired,false);assert.deepEqual(off.writes,[{action:'power',value:0}]);
+  assert.deepEqual(off.reads,[id,id]);assert.equal(off.calls.release,1);
+
+  const alreadyOn=fixture({power:true});alreadyOn.options.expected=null;alreadyOn.options.requestedPower=true;
+  const noop=await runLampPower(alreadyOn.options);
+  assert.equal(noop.noop,true);assert.equal(noop.desired,true);assert.deepEqual(alreadyOn.writes,[]);assert.deepEqual(alreadyOn.reads,[id]);
+});
+
+test('absolute stale-state power still fails closed when membership changes before the write',async()=>{
+  const f=fixture({power:true});f.options.expected=null;f.options.requestedPower=false;
+  f.lamp.beforeCommand=()=>Object.assign(f.raw.sync,{role:1,leader:id});
+  await assert.rejects(runLampPower(f.options),error=>error.groupChanged&&error.cancelled);
+  assert.deepEqual(f.writes,[]);assert.equal(f.calls.release,1);
+});
+
+test('absolute power rejects malformed requested state before acquiring a lamp',async()=>{
+  const f=fixture();f.options.requestedPower='off';
+  await assert.rejects(runLampPower(f.options),/whether to turn/);assert.equal(f.calls.acquire,0);assert.deepEqual(f.writes,[]);
+});
+
 test('power reports allowlisted connection, send, and verification stages without changing command semantics',async()=>{
   const changing=fixture(),stages=[],attempts=[],order=[];
   changing.options.onStage=stage=>{stages.push(stage);order.push(stage);};changing.options.onAttempt=at=>{attempts.push(at);order.push('attempt');};changing.lamp.beforeCommand=()=>order.push('queue-ready');

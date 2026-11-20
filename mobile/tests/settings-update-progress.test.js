@@ -23,7 +23,7 @@ function extract(start,end,offset=0){
 const views=extract('function lampUpdateView(', '\nfunction resolvedStyle(');
 const settingsRender=extract('function renderSettings() {','\nfunction lampUpdateView(');
 const firmwareRender=extract('function renderFirmware() {','\nfunction verifiedOlderBluetoothSettings(');
-const playbackRender=extract('function renderPlaybackTools() {',"\n$('rotationForm').oninput=");
+const playbackRender=extract('var playbackIdentity=','\nasync function calibrationAction(');
 const setupActivity=extract('function setupActivity(', '\nfunction notifySetupProgress(');
 const progressCallback=extract('  const progress=value=>','\n  const result=await updateCardFirmware',source.indexOf('async function updateLampCard('));
 
@@ -66,19 +66,19 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   firmwareConnectionBusy:()=>Boolean(tasks.size||context.bluetoothFirmwareTask||[...statuses.values()].some(value=>['updating','restarting'].includes(value.state))),
   lampUpdatePresentation,lampArtworkSvg,lampStyleUsesWholeStrip,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
   updatingLamp:()=>tasks.has(context.selected?.id),publicFirmwareFresh:false,publicFirmwareRun:null,publicFirmwareError:'',publicFirmware:null,
-  state:null,busy:false,availableCardRelease:()=>null,validFirmwareVersion:()=>false,firmwareMessage:()=>'',
+  state:null,busy:false,liveLightSending:false,availableCardRelease:()=>null,validFirmwareVersion:()=>false,firmwareMessage:()=>'',
   renderFirmwareFeedback(){},renderBluetoothFirmwareControls(){},renderPower(){},renderLampStyleSettings(){},renderCenterTool(){},renderNetworkNameSettings(){},
   renderWifiSettings:()=>({name:null,editing:true}),
   connectivity:{get:()=>({group:null})},settingsView:'overview',wifiFailures:new Map(),advancedAvailable:()=>false,
   bluetoothWifiAvailable:()=>false,legacyWithoutGroups:()=>false,verifiedOlderBluetoothSettings:()=>false,
-  wifiScanning:false,connecting:false,wifiSetupAbort:null,wifiHandoff:null,identitySaving:null,bleWifiStatus:null,hideWifiPassword(){},
+  wifiScanning:false,connecting:false,settingsReconnectPaused:false,wifiSetupAbort:null,wifiHandoff:null,identitySaving:null,bleWifiStatus:null,hideWifiPassword(){},
   networkNameDirty:false,networkNameRead:null,sameNetworkNameScope:()=>false,
   groupsAvailable:()=>false,independentLightingAllowed:()=>true,playbackIdentity:null,rotationDirty:false,
   renderLamps:()=>{cardRenders++;},
   task:sender,current:()=>tasks.get(id)===sender,release:{version:'1.15.2'},bluetoothFirmwareConnectionSerial:0,
   acknowledgedBluetoothUpdateSource,firmwareUpdatePresentation,mergedLampEntries:()=>[owned],page:name=>pages.push(name)};
  const pages=[];
- runInNewContext(setupActivity+'\n'+views+'\n'+settingsRender+'\n'+playbackRender+'\n'+firmwareRender+'\n'+progressCallback+'\nthis.ui={render:renderSettingsConnection,view:lampUpdateView,progress};',context);
+ runInNewContext(setupActivity+'\n'+views+'\n'+settingsRender+'\n'+playbackRender+'\n'+firmwareRender+'\n'+progressCallback+'\nthis.ui={render:renderSettingsConnection,view:lampUpdateView,playback:renderPlaybackTools,progress};',context);
  context.ui.render();
  return {context,$,feedback,tasks,statuses,pending,sender,roots,journal,pages,render:context.ui.render,progress:context.ui.progress,
   view:()=>context.ui.view(context.selected),cardRenders:()=>cardRenders,
@@ -110,6 +110,54 @@ function assertNeutral(f){
  assert.equal(f.$('settingsUpdateProgress').hasAttribute('value'),false);
  assert(!f.$('settingsUpdateArt').innerHTML.includes('data-update-progress'));
 }
+
+test('rotation summary retains the last confirmed state and reconciles uncertainty with a read only check',async()=>{
+ const f=fixture({task:false,verified:true});
+ f.context.state={rotation:{enabled:false,random:true,category:0,seconds:30},sync:{role:0,scene:0},power:true};
+ f.context.lamp={identity:id,raw:f.context.state};f.context.groupsAvailable=()=>true;f.context.advancedAvailable=()=>true;
+ f.context.ui.playback();
+ assert.equal(f.$('rotationBadge').textContent,'Off');assert.equal(f.$('rotationEnabled').checked,false);
+
+ // A transport/state callback may expose the submitted value before the
+ // operation has a verified readback. It must not become confirmed UI.
+ f.context.rotationDirty=true;f.context.rotationOperation='pending';f.context.state.rotation.enabled=true;f.context.ui.playback();
+ assert.equal(f.$('rotationBadge').textContent,'Saving…');
+ f.context.rotationOperation='uncertain';f.context.ui.playback();
+ assert.equal(f.$('rotationBadge').textContent,'Off · check');assert.equal(f.$('checkRotation').hidden,false);assert.equal(f.$('rotationFields').disabled,true);
+
+ // A later explicit status check is allowed to replace the confirmed value.
+ f.context.rotationDirty=false;f.context.rotationOperation='idle';f.context.ui.playback();
+ assert.equal(f.$('rotationBadge').textContent,'Playing');assert.equal(f.$('checkRotation').hidden,true);assert.equal(f.$('rotationEnabled').checked,true);
+
+ let reads=0,writes=0;f.context.state.rotation.enabled=false;f.context.rotationOperation='uncertain';f.context.rotationDirty=true;
+ f.context.lamp.deviceIdentity=id;f.context.lamp.enqueue=action=>action();f.context.lamp.refresh=async()=>{reads++;};
+ f.context.lamp.configureRotation=async()=>{writes++;};f.context.ui.playback();await f.$('checkRotation').onclick();
+ assert.equal(reads,1);assert.equal(writes,0);assert.equal(f.context.rotationOperation,'idle');
+ assert.equal(f.$('rotationBadge').textContent,'Off');assert.match(f.$('rotationFeedback').textContent,/Checked\. Rotation is off/);
+});
+
+test('rotation uncertainty survives transient disconnect and same-lamp reconnect without replay',async()=>{
+ const f=fixture({task:false,verified:true});
+ f.context.state={rotation:{enabled:false,random:true,category:0,seconds:30},sync:{role:0,scene:0},power:true};
+ const first={identity:id,deviceIdentity:id,epoch:4,base:'http://lamp.local',raw:f.context.state,enqueue:action=>action()};
+ let writes=0;first.configureRotation=async()=>{writes++;throw Object.assign(Error('Reply lost.'),{uncertain:true});};
+ f.context.lamp=first;f.context.groupsAvailable=()=>Boolean(f.context.state);f.context.advancedAvailable=()=>true;f.context.ui.playback();
+ f.$('rotationEnabled').checked=true;f.$('rotationOrder').value='random';f.$('rotationCategory').value=0;f.$('rotationInterval').value=30;f.$('rotationUnit').value=1;
+ await f.$('rotationForm').onsubmit({preventDefault(){}});
+ assert.equal(writes,1);assert.equal(f.context.rotationOperation,'uncertain');assert.equal(f.$('rotationBadge').textContent,'Off · check');
+
+ f.context.state=null;f.context.ui.playback();
+ assert.equal(f.context.playbackIdentity,id);assert.equal(f.context.rotationOperation,'uncertain','a missing live snapshot must not clear the review barrier');
+
+ let reads=0;f.context.state={rotation:{enabled:false,random:true,category:0,seconds:30},sync:{role:0,scene:0},power:true};
+ const reconnected={identity:id,deviceIdentity:id,epoch:5,base:'http://lamp.local',raw:f.context.state,enqueue:action=>action(),
+  async refresh(){reads++;return this.raw;},async configureRotation(){writes++;}};
+ f.context.lamp=reconnected;f.context.ui.playback();
+ assert.equal(f.context.rotationOperation,'uncertain');assert.equal(f.$('rotationFields').disabled,true);assert.equal(f.$('checkRotation').hidden,false);
+ await f.$('rotationForm').onsubmit({preventDefault(){}});assert.equal(writes,1,'Save stays blocked until read-only reconciliation');
+ await f.$('checkRotation').onclick();assert.equal(reads,1);assert.equal(writes,1);assert.equal(f.context.rotationOperation,'idle');
+ assert.equal(f.$('rotationBadge').textContent,'Off');
+});
 
 test('unverified Settings shows the selected receiving model, acknowledged percentage and accessible progress',()=>{
  const f=fixture();

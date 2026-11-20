@@ -42,7 +42,8 @@ function fixture({role=1,leader=role===2?left:right,read,acquireHook}={}){
   };transports.set(id,value);return value;
  };
  const selectedTransport=transport(right);
- context={$:element,calls,document:{querySelectorAll:()=>[]},window:{scrollTo(){}},settingsView:'lighting',navigationSerial:3,wifiSettingsTarget:null,
+ context={$:element,calls,document:{querySelectorAll:()=>[]},window:{scrollY:0,scrollTo(){}},localStorage:{},settingsView:'lighting',navigationSerial:3,wifiSettingsTarget:null,
+  currentPage:'settings',navigationSession:{returnRoute:'lights',scroll:{}},rememberNavigation:value=>value,writeNavigationSession(){},
   groupFocusSerial:0,pendingGroupFocus:null,settingsRecovery:{check(){}},meshWizard:null,bridgeManagementUi:null,appTourActive:false,
   selected:entries[0],lamp:selectedTransport,bleLamp:selectedTransport,wifiLamp:{},state:{sync:{role}},busy:false,connecting:false,
   bluetoothFirmwareTask:null,bluetoothFirmwareConnectionSerial:4,foregroundConnectionHold:null,firmwareBackgroundGeneration:0,
