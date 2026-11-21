@@ -112,6 +112,7 @@ uint32_t otaLastActivity=0,restartAt=0;
 constexpr size_t IMAGE_PREFIX_SIZE=sizeof(esp_image_header_t)+sizeof(esp_image_segment_header_t)+sizeof(esp_app_desc_t);
 uint8_t imagePrefix[IMAGE_PREFIX_SIZE]{};size_t imagePrefixUsed=0;bool imageValidated=false;
 bool failContextAllocation=false;void* contextMemory=nullptr;size_t contextBytes=0;unsigned contextsFreed=0;
+void* operator new(size_t size){if(void* out=malloc(size))return out;throw std::bad_alloc();}
 void* operator new(size_t size,const std::nothrow_t&)noexcept{if(failContextAllocation)return nullptr;void* out=malloc(size);contextMemory=out;contextBytes=size;return out;}
 void operator delete(void* ptr)noexcept{if(ptr==contextMemory){for(size_t i=0;i<contextBytes;++i)assert(static_cast<uint8_t*>(ptr)[i]==0);contextMemory=nullptr;++contextsFreed;}free(ptr);}
 void operator delete(void* ptr,size_t)noexcept{::operator delete(ptr);}
