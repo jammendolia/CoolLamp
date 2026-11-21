@@ -73,7 +73,7 @@ test('same-version repair requires its matching receipt and fresh protected inac
  assert.equal(f.transfers,1);assert.equal(f.operations.filter(op=>op===4).length,1);
 });
 
-test('explicit retries retain protected BLE after reconciled Wi-Fi and zero-write phone failures, then reset after success',async()=>{
+test('a reconciled Wi-Fi pre-install failure keeps the next ordinary retry on Wi-Fi',async()=>{
  const f=fixture(),entry={id:identity,deviceId:'saved',address:'192.168.1.222'},requests=[],failures=[];
  let attempt,checkRejected=false;
  const firmware={version:'1.13.0',phase:0,latest:'0.0.0',error:0,progress:0,automatic:true,wifi:true,available:false};
@@ -92,28 +92,11 @@ test('explicit retries retain protected BLE after reconciled Wi-Fi and zero-writ
  assert.equal(f.journal.get(identity).wifiCheckAttempted,true);assert.equal(f.journal.pending().length,0);
  assert.deepEqual(requests.map(value=>value.method+' '+value.path),['GET /api/diagnostics','GET /api/diagnostics','GET /api/state','POST /api/firmware/check','GET /api/firmware']);
  assert.deepEqual(failures.map(value=>value.stage),['wifi-preflight']);
- const priorAttempt=f.journal.get(identity).attemptId,requestCount=requests.length;let retryWifiCalls=0;
- let failedPhoneAcquisitions=0,failedPhoneReleases=0;
- await assert.rejects(f.run({entry,wifi:async()=>{retryWifiCalls++;throw Error('Wi-Fi must not be retried.');},
-  acquireBluetooth:async()=>{failedPhoneAcquisitions++;return {lamp:{identity,refreshFirmware:async()=>({version:'1.13.0',phase:0}),
-   readFirmwareUpdateSnapshot:async()=>{throw Error('Protected read timed out.');}},release:async()=>{failedPhoneReleases++;}};}}),/Protected read timed out/);
- assert.equal(failedPhoneAcquisitions,2);assert.equal(failedPhoneReleases,2);assert.equal(retryWifiCalls,0);
- assert.equal(f.journal.get(identity).outcome,'installationNotStarted');assert.equal(f.journal.get(identity).wifiCheckAttempted,false);
- assert.equal(f.journal.get(identity).metadataIssued,false);assert.equal(f.journal.get(identity).beginAttempted,false);
- assert.equal(f.downloads,0);assert.equal(f.transfers,0);assert.deepEqual(f.operations,[]);
- const failedPhoneAttempt=f.journal.get(identity).attemptId;assert.notEqual(failedPhoneAttempt,priorAttempt);
- const result=await f.run({entry,wifi:async()=>{retryWifiCalls++;throw Error('Wi-Fi must not be retried.');}});
- assert.equal(result.outcome,'installed');assert.equal(result.installedVersion,f.manifest.version);
- assert.equal(retryWifiCalls,0);assert.equal(requests.length,requestCount);
- assert.notEqual(f.journal.get(identity).attemptId,failedPhoneAttempt);assert.equal(f.journal.get(identity).wifiCheckAttempted,false);
- assert.equal(f.downloads,1);assert.equal(f.transfers,1);assert.equal(f.acquisitions,4);
- assert.equal(f.operations.filter(op=>op===2).length,1);assert.equal(f.operations.filter(op=>op===4).length,1);
- assert.equal(f.journal.get(identity).sha256,f.manifest.sha256);assert.equal(f.journal.get(identity).size,f.manifest.size);
- const nextRelease=parsePhoneManifest(f.manifest.text.replace('1.15.1','1.16.0'));
- const next=await f.run({entry,manifest:nextRelease,wifi:async(target,version)=>{retryWifiCalls++;assert.equal(target.id,identity);assert.equal(version,nextRelease.version);
+ let retryWifiCalls=0;
+ const result=await f.run({entry,wifi:async(target,version)=>{retryWifiCalls++;assert.equal(target.id,identity);
   return {id:identity,state:'updated',verified:true,fresh:true,installedVersion:version};}});
- assert.equal(next.outcome,'installed');assert.equal(next.path,'wifi');assert.equal(retryWifiCalls,1);
- assert.equal(f.downloads,1);assert.equal(f.transfers,1);assert.equal(f.acquisitions,4);
+ assert.equal(result.outcome,'installed');assert.equal(result.path,'wifi');assert.equal(retryWifiCalls,1);
+ assert.equal(f.downloads,0);assert.equal(f.transfers,0);assert.deepEqual(f.operations,[]);
 });
 
 async function checkedWiFiAttempt(f,{metadata=false}={}){
@@ -150,30 +133,23 @@ test('failure observers cannot replace the safe reconciled Wi-Fi outcome',async(
  }
 });
 
-test('restored terminal Wi-Fi check proof retains its explicit retry route after app restart',async()=>{
+test('restored terminal Wi-Fi check proof retains ordinary Wi-Fi routing after app restart',async()=>{
  const f=fixture();await checkedWiFiAttempt(f);
  const memory=new Map([['coollamp-firmware-attempts-v1',JSON.stringify({version:1,records:[f.journal.get(identity)]})]]);
  const restored=new FirmwareAttemptJournal({getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)});
  let wifiCalls=0;
- const result=await f.run({attemptJournal:restored,entry:{id:identity,address:'192.168.1.222',deviceId:'saved'},wifi:async()=>{wifiCalls++;}});
- assert.equal(result.outcome,'installed');assert.equal(wifiCalls,0);assert.equal(f.downloads,1);assert.equal(f.transfers,1);
+ const result=await f.run({attemptJournal:restored,entry:{id:identity,address:'192.168.1.222',deviceId:'saved'},wifi:async(_entry,version)=>{
+  wifiCalls++;return {id:identity,state:'updated',verified:true,fresh:true,installedVersion:version};}});
+ assert.equal(result.outcome,'installed');assert.equal(wifiCalls,1);assert.equal(f.downloads,0);assert.equal(f.transfers,0);
  assert.equal(restored.get(identity).wifiCheckAttempted,false);assert.equal(restored.pending().length,0);
 });
 
-for(const invalid of ['identity','bootstrap'])test('saved BLE retry still verifies protected '+invalid+' before downloading or sending',async()=>{
- const f=fixture();await checkedWiFiAttempt(f);let wifiCalls=0,releases=0;
- await assert.rejects(f.run({entry:{id:identity,address:'192.168.1.222',deviceId:'saved'},wifi:async()=>{wifiCalls++;},
-  acquireBluetooth:async()=>({lamp:{identity:invalid==='identity'?'aabbccddeeff':identity,
-   refreshFirmware:async()=>({version:'1.10.0',phase:0})},release:async()=>{releases++;}})}),error=>invalid==='identity'?error.identity===true:error.bootstrapRequired===true);
- assert.equal(wifiCalls,0);assert.equal(f.downloads,0);assert.equal(f.transfers,0);assert.equal(releases,1);
-});
-
-for(const busyAt of ['preflight','after-download'])test('automatic available firmware blocks the '+busyAt+' BLE retry guard',async()=>{
+for(const busyAt of ['preflight','after-download'])test('automatic available firmware blocks the '+busyAt+' explicit phone-route guard',async()=>{
  const f=fixture();await checkedWiFiAttempt(f);let acquisitions=0,wifiCalls=0;
  const ready={version:'1.13.0',phase:0},armed={...ready,phase:2,automatic:true,available:true,latest:f.manifest.version};
  const observed=firmware=>({identity,observedAt:Date.now(),firmware,state:{mode:46,effectCount:47,brightness:55,power:true},
   receiver:{phase:0,error:0,committed:false,session:0,size:0,offset:0}});
- const result=await f.run({entry:{id:identity,address:'192.168.1.222',deviceId:'saved'},wifi:async()=>{wifiCalls++;},
+ const result=await f.run({entry:{id:identity,deviceId:'saved'},wifi:async()=>{wifiCalls++;},
   acquireBluetooth:async()=>{const firmware=busyAt==='preflight'||++acquisitions===2?armed:ready;return {
    lamp:{identity,refreshFirmware:async()=>firmware,readFirmwareUpdateSnapshot:async()=>observed(firmware),
     updateOverBluetooth:async()=>assert.fail('An armed automatic installer must not receive BLE update frames.')},release:async()=>{}};},

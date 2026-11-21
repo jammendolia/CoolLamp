@@ -40,22 +40,18 @@ test('verified diagnostics plus hung initial token snapshot enables BLE fallback
  assert.deepEqual(posts(f),[]);assert.deepEqual(f.calls.map(call=>new URL(call.url).pathname),['/api/diagnostics','/api/diagnostics','/api/state']);
 });
 
-test('production card update reaches its verified BLE lease after real fleet preflight fails before any POST',async()=>{
+test('production card update requires consent after real fleet preflight fails before any POST',async()=>{
  const f=fixture(),events=[],image=new Uint8Array(512),digest=createHash('sha256').update(image).digest('hex');
  const manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.15.1\nesp32c3\ndual-ota-2031616\n512\n'+digest+'\n');
  f.devices[0].handler=(_,path)=>{events.push(path);if(path==='/api/state')return new Promise(()=>{});};
- const entry={...f.entries()[0],deviceId:'saved-authorized-peripheral'};let senderCalls=0,pinned;
- const result=await updateCardFirmware({entry,manifest,wifi:(target,version)=>f.fleet.updateLamp(target,version),
-  acquireBluetooth:async target=>{
-   assert.equal(target.id,ids[0]);assert.deepEqual(posts(f),[]);events.push('acquire-bluetooth');
-   return {lamp:{identity:ids[0],refreshFirmware:async()=>{events.push('protected-firmware-status');return {version:'1.13.0',phase:0};},
-    updateOverBluetooth:async prepared=>{events.push('send-pinned-image');senderCalls++;assert.equal(prepared.manifest,pinned);
-     assert.equal(prepared.manifest.text,manifest.text);assert.equal(prepared.image,image);return {committed:true,version:'1.15.1'};}},
-    release:async()=>events.push('release-bluetooth')};
-  },download:async selected=>{events.push('download-pinned-release');pinned=selected;assert.equal(selected.text,manifest.text);return {manifest:selected,image};}});
- assert.equal(result.path,'bluetooth');assert.equal(result.state,'restarting');assert.equal(result.committed,true);assert.equal(senderCalls,1);
- assert.deepEqual(posts(f),[]);assert.deepEqual(events,['/api/diagnostics','/api/diagnostics','/api/state','acquire-bluetooth',
-  'protected-firmware-status','release-bluetooth','download-pinned-release','acquire-bluetooth','protected-firmware-status','send-pinned-image','release-bluetooth']);
+ const entry={...f.entries()[0],deviceId:'saved-authorized-peripheral'};let bluetoothAcquisitions=0,downloads=0;
+ await assert.rejects(updateCardFirmware({entry,manifest,wifi:(target,version)=>f.fleet.updateLamp(target,version),
+  acquireBluetooth:async()=>{bluetoothAcquisitions++;assert.fail('Phone fallback requires explicit consent.');},
+  download:async()=>{downloads++;assert.fail('Phone download requires explicit consent.');}}),error=>error.confirmed===true&&
+  error.uncertain===false&&error.installationNotStarted===true&&error.safeBluetoothFallback===false&&
+  error.phoneFallbackAvailable===true&&error.directInternetRetryAvailable===true&&error.fallbackRequiresConsent===true&&error.failedPath==='wifi');
+ assert.equal(bluetoothAcquisitions,0);assert.equal(downloads,0);assert.deepEqual(posts(f),[]);
+ assert.deepEqual(events,['/api/diagnostics','/api/diagnostics','/api/state']);
 });
 
 test('malformed initial read and missing boot token remain proven pre-POST failures',async()=>{

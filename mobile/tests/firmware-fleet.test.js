@@ -50,6 +50,20 @@ test('single card update marks a confirmed pre-install server failure safe for B
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);
  assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
 });
+test('Wi-Fi firmware failure exposes only bounded updater admission and HTTP stage evidence',async()=>{
+ for(const [workerAdmission,httpStage,expected]of [
+  [{phase:6,beforeFree:30000,password:'private'},2,{workerAdmissionPhase:6,httpStage:2}],
+  [{phase:8},-1,{}],
+  [{phase:'6'},'2',{}]
+ ]){
+  const {fleet,devices,entries}=setup();devices[0].polls=[{...status(),phase:5,error:8,workerAdmission,httpStage,tlsError:-32512,transportError:32794}];
+  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>{
+   assert.equal(error.workerAdmissionPhase,expected.workerAdmissionPhase);assert.equal(error.httpStage,expected.httpStage);
+   for(const field of ['workerAdmission','beforeFree','password','tlsError','transportError'])assert.equal(error[field],undefined);
+   return error.safeBluetoothFallback===true;
+  });
+ }
+});
 test('single card update does not mark an uncertain update check safe for BLE',async()=>{
  const {fleet,devices,calls,entries}=setup();devices[0].request=async(options,path)=>{if(path==='/api/firmware/check')throw Error('Reply lost.');};
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>!error.safeBluetoothFallback);

@@ -21,7 +21,7 @@ const version=value=>typeof value==='string'&&/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[
 const field=(value,key)=>{try{return Object.getOwnPropertyDescriptor(value,key)?.value;}catch{return undefined;}};
 const clock=()=>{const value=Date.now();return integer(value,0,Number.MAX_SAFE_INTEGER)?value:0;};
 const booleanFields=['metadataIssued','beginAttempted','commitAttempted','wifiCheckAttempted','wifiInstallAttempted'];
-const limits={firmwarePhase:[0,5],error:[0,9],firmwareError:[1,8],httpStatus:[100,599],acknowledgedBytes:[0,IMAGE_LIMIT],writesAttempted:[0,1048576],offset:[0,IMAGE_LIMIT]};
+const limits={firmwarePhase:[0,5],workerAdmissionPhase:[0,7],httpStage:[0,7],error:[0,9],firmwareError:[1,8],httpStatus:[100,599],acknowledgedBytes:[0,IMAGE_LIMIT],writesAttempted:[0,1048576],offset:[0,IMAGE_LIMIT]};
 // One optional final snapshot, never a per-frame log or update authority. Values
 // outside these bounds are omitted; arbitrary text and transport IDs cannot enter.
 const transferLimits={mtu:[23,517],chunkSize:[1,232],total:[1,IMAGE_LIMIT],acknowledgedBytes:[0,IMAGE_LIMIT],

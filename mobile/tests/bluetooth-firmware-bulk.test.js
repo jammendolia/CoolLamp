@@ -24,7 +24,7 @@ class Receiver {
   this.pkg=packageValue(size);this.mtu=mtu;this.capability=capability;this.notifications=notifications;
   this.current=true;this.clock=0;this.queries=0;this.reads=0;this.writes=[];this.pending=[];
   this.s={phase:0,error:0,session:0,size:0,offset:0,ack:0,committed:false};
-  this.manifest=[];this.accepted=0;this.sequence=0;this.wraps=0;this.windows=0;this.maxQueued=0;this.dataCalls=0;this.hash=createHash('sha256');
+  this.manifest=[];this.accepted=0;this.sequence=0;this.wraps=0;this.windows=0;this.maxQueued=0;this.dataCalls=0;this.hash=createHash('sha256');this.dropDataNotifications=new Set();
   this.services=[{uuid:SERVICE.toUpperCase(),characteristics:[{uuid:OTA_WRITE.toUpperCase(),properties:{write:true,writeWithoutResponse:true}}]}];
  }
  status(overrides={}) {
@@ -88,7 +88,7 @@ class Receiver {
    this.maxQueued=Math.max(this.maxQueued,this.pending.length);assert(this.pending.length<=4,'no fifth frame before a written ACK');
    if(this.rejectAt===++this.dataCalls){this.consume();this.s.phase=5;this.s.error=7;this.emit();}
    else if(!this.holdAck&&(this.pending.length===4||this.accepted===this.pkg.image.length)){
-    this.consume();if(!this.dropNotifications)this.emit();
+    this.consume();if(!this.dropNotifications&&!this.dropDataNotifications.has(this.windows))this.emit();
    }else if(this.staleNotifications)this.emit({session:this.s.session^1,ack:sequence,offset:this.accepted});
   }else if(op===4){
    assert.equal(kind,'response');assert.equal(this.pending.length,0);assert.equal(this.s.offset,this.pkg.image.length);
@@ -220,12 +220,31 @@ test('missing ACK bounds the fast window and does not optimistically report queu
  assert.deepEqual(progress.map(row=>row.progress),[0]);assert(!receiver.writes.some(row=>row.op===4));
 });
 
-test('lost fast-path notification polls written ACK without retransmission',async()=>{
- const receiver=new Receiver();receiver.dropNotifications=true;const transfer=receiver.transfer();
+test('one lost fast-path notification reconciles by read and later notifications resume without replay',async()=>{
+ const receiver=new Receiver({size:8192});receiver.dropDataNotifications.add(3);const transfer=receiver.transfer();
  assert.equal((await transfer.send(receiver.pkg)).committed,true);
  const data=receiver.writes.filter(row=>row.op===3);assert.equal(data.length,Math.ceil(receiver.pkg.image.length/232));
  assert.equal(new Set(data.map(row=>row.offset)).size,data.length);assert.equal(transfer.diagnostic().notificationFallback,'missed-ack');
+ assert.equal(transfer.diagnostic().notificationMode,'notifications');assert.equal(receiver.reads,2,'initial status plus one reconciliation read');
+ assert(transfer.diagnostic().notificationAcks>receiver.windows,'metadata, later data and Finish notifications remain usable');
  assert.equal(transfer.diagnostic().dataWriteMode,'without-response-four');assert(data.every(row=>row.kind==='bulk'));
+});
+
+test('persistent notification loss degrades after bounded misses and backs off stale polling reads',async()=>{
+ const receiver=new Receiver();receiver.dropNotifications=true;const delays=[];let lastAck=null,staleReads=0;
+ receiver.readOverride=()=>{
+  if(!receiver.writes.length)return {};
+  if(receiver.s.ack!==lastAck){lastAck=receiver.s.ack;staleReads=2;}
+  if(staleReads){--staleReads;return {session:receiver.s.session^1};}
+  return {};
+ };
+ const transfer=receiver.transfer({delay:async milliseconds=>{delays.push(milliseconds);receiver.clock+=milliseconds;}});
+ assert.equal((await transfer.send(receiver.pkg)).committed,true);
+ const data=receiver.writes.filter(row=>row.op===3),diagnostic=transfer.diagnostic();
+ assert.equal(new Set(data.map(row=>row.offset)).size,data.length);assert.equal(diagnostic.notificationFallback,'missed-ack');
+ assert.equal(diagnostic.notificationMode,'polling');assert.equal(diagnostic.notificationAcks,0);
+ assert(delays.includes(40)&&delays.includes(80));assert(delays.every(value=>value>=40&&value<=320),'poll delays stay bounded');
+ assert(receiver.reads<=1+3*(receiver.windows+3),'polling remains bounded to status windows, not Data frames');
 });
 
 test('receiver rejection retains its code and written bytes before response Cancel resets status',async()=>{

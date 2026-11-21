@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
+import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation} from '../src/firmware-update-ui.js';
 test('phone download completion never displays lamp sending 100 percent',()=>{
  for(const stage of ['downloading','downloaded','preparing','connecting','checking-result']){
   const value=firmwareUpdatePresentation({stage,progress:100});assert.equal(value.progress,undefined);assert(!/100%/.test(value.message));
@@ -17,9 +17,19 @@ test('known preflight failure gives one plain action and never asks users to cho
  const value=firmwareUpdateFailurePresentation(Error('Native operation error'));
  assert.match(value,/did not start/);assert.match(value,/Try again/);assert(!/reconnect|Bluetooth|Wi-Fi|Native/.test(value));
 });
-test('a reconciled unsent Wi-Fi failure explains the phone path on the next explicit attempt',()=>{
+test('a reconciled unsent Wi-Fi failure keeps the next explicit attempt on the Internet path',()=>{
  const value=firmwareUpdateResultPresentation({outcome:'installationNotStarted'},{stages:[{stage:'wifi-preflight',code:'wifi-check-rejected',metadataIssued:false,beginAttempted:false,commitAttempted:false,wifiInstallAttempted:false}]});
- assert.match(value,/your phone will send it/);assert(!/Bluetooth|Wi-Fi|reconnect|unchanged/.test(value));
+ assert.match(value,/retry/i);assert.match(value,/Internet download/);assert(!/phone will send|Bluetooth|reconnect|unchanged/.test(value));
+});
+test('a confirmed memory rejection offers explicit Internet and phone choices without raw diagnostics',()=>{
+ const error=Object.assign(Error('private allocator detail'),{fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:true,
+  confirmed:true,uncertain:false,installationNotStarted:true,safeBluetoothFallback:false,failedPath:'wifi',firmwarePhase:5,firmwareError:8});
+ const value=firmwareUpdateRouteChoicePresentation(error,'Reading lamp');assert.equal(value.title,'Internet download couldn’t start');
+ assert.match(value.message,/Reading lamp/);assert.match(value.message,/free memory/);assert.match(value.message,/No new firmware was installed/);
+ assert.match(value.message,/keep CoolLamp open/i);assert.match(value.message,/keep the phone near the lamp/i);
+ assert.equal(value.retryLabel,'Try Internet again');assert.equal(value.phoneLabel,'Send from phone');assert(!value.message.includes('private allocator'));
+ const fallback=firmwareUpdateFailurePresentation(error);assert.match(fallback,/This lamp/);assert.match(fallback,/No new firmware was installed/);assert(!fallback.includes('private allocator'));
+ for(const unsafe of [{...error,uncertain:true},{...error,uncertain:undefined},{...error,confirmed:false},{...error,installationNotStarted:false},{...error,safeBluetoothFallback:true},{...error,failedPath:'bluetooth'}])assert.equal(firmwareUpdateRouteChoicePresentation(unsafe),null);
 });
 test('an uncertain installation never offers the next transfer regardless of an earlier failure',()=>{
  const value=firmwareUpdateResultPresentation({outcome:'unresolved',message:'We’ll check your lamp.'},{stages:[{stage:'wifi-preflight',code:'wifi-check-rejected'}]});

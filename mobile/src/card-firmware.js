@@ -25,7 +25,7 @@ export function availableCardRelease(installed,manifest){
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
- attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{}}){
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
  if(exactReinstall&&!allowReinstall)throw Object.assign(Error('Confirm a reinstall before sending firmware.'),{confirmed:true,installationNotStarted:true,uncertain:false});
@@ -38,16 +38,6 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  // successful installation into a retry. This callback is never awaited.
  const reportTransfer=result=>{try{const value=safeFirmwareTransferMetrics(Object.getOwnPropertyDescriptor(result,'transferDiagnostic')?.value);if(value)Promise.resolve(onTransferDiagnostic(value)).catch(()=>{});}catch{}};
  current();
- // A new, explicitly approved retry may prefer its saved nearby route after
- // the previous attempt was confirmed as never starting an installation.
- // Keep that choice after a phone preflight fails before sending any frame.
- // Read that proof before begin() replaces the terminal journal record. Fresh
- // protected identity, receiver and version checks below remain mandatory.
- const previous=attemptJournal?.get(entry.id);
- const preferBluetoothRetry=!attempt&&typeof entry.deviceId==='string'&&entry.deviceId.length>0&&
-  previous?.outcome==='installationNotStarted'&&
-  ['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','dataIssued','cancelAttempted','resumeAttempted']
-   .every(field=>previous[field]===false);
  if(attemptJournal){attempt??=attemptJournal.begin(entry.id,release,{reinstall:allowReinstall});onAttempt(attempt);}
  const latest=()=>attemptJournal?.get(entry.id)||attempt;
  const finish=result=>{if(attemptJournal&&attempt)attemptJournal.settle(latest(),result);return result;};
@@ -79,7 +69,10 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  if(latest()?.commitUnconfirmed)return checkResult(unconfirmedCommit());
  // A strict reinstall needs protected target proof before any update mutation.
  // The existing allowReinstall repair mode keeps its prior route semantics.
- if(entry.address&&!preferBluetoothRetry&&!exactReinstall){
+ // An ordinary retry with a verified home route remains self-download-first.
+ // Callers request the phone route explicitly by supplying an address-less
+ // entry after the user consents; prior unstarted attempts cannot reroute it.
+ if(entry.address&&!exactReinstall){
   onProgress({stage:'wifi',progress:0});
   try{const result=await wifi(entry,release.version);current();
    if(result?.commitUnconfirmed)return stopUnstarted(unconfirmedCommit());
@@ -92,10 +85,19 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    return {...result,path:'wifi'};
   }
   catch(error){reportFailure(error,'wifi-preflight');current();if(error.commitUnconfirmed)return stopUnstarted(error);
-   if(!error.safeBluetoothFallback||error.uncertain||error.identity||error.stale||error.cancelled){
-   if(latest()?.wifiInstallAttempted)return checkResult(error);
+   const value=latest();
+   const mutationStarted=['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','dataIssued','cancelAttempted','resumeAttempted']
+    .some(field=>value?.[field]===true);
+   // safeBluetoothFallback is evidence that the direct attempt did not start;
+   // it is not user consent to download or send firmware from this phone.
+   if(error.safeBluetoothFallback===true&&!error.uncertain&&!error.identity&&!error.stale&&!error.cancelled&&!mutationStarted){
+    const canUsePhone=typeof phoneFallbackAvailable==='boolean'?phoneFallbackAvailable:typeof entry.deviceId==='string'&&entry.deviceId.length>0;
+    throw Object.assign(error,{confirmed:true,uncertain:false,installationNotStarted:true,safeBluetoothFallback:false,
+     phoneFallbackAvailable:canUsePhone,directInternetRetryAvailable:true,fallbackRequiresConsent:canUsePhone,failedPath:'wifi'});
+   }
+   if(value?.wifiInstallAttempted)return checkResult(error);
    return stopUnstarted(error);
-  }}
+  }
  }
  // A short protected preflight checks eligibility without holding the radio
  // through the phone's potentially slow Internet download.

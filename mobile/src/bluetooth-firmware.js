@@ -7,6 +7,7 @@ const root='https://github.com/jammendolia/CoolLamp/releases/';
 const version=value=>/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)&&value.split('.').every(part=>Number(part)<=65535);
 const error=(message,fields={})=>Object.assign(new Error(message),fields);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const notificationWaitMs=160,notificationMissLimit=3,pollInitialDelayMs=40,pollMaxDelayMs=320;
 // Hold ownership until a queued native subscribe/unsubscribe has really settled.
 // A replacement connection can poll; it must not race an older listener cleanup.
 const notificationOwners=new WeakMap();
@@ -110,7 +111,7 @@ export function bluetoothFirmwareFailureMessage(failure){
  return (failure.message||'Bluetooth update failed.')+cause+bytes+reason+check;
 }
 export class BluetoothFirmwareTransfer {
- constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now,monotonicNow=()=>globalThis.performance?.now?.(),allowBulkWrites=false}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now,monotonicNow,allowBulkWrites});this.session=0;this.sequence=0;this.cancelled=false;this.metadataIssued=false;this.beginAttempted=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;this.dataWriteMode='with-response';this.receiverBulkWrites=false;this.bulkWriteFallback=null;this.bulkWriteCalls=0;this.dataWritesPrepared=false;this.dataStartedAt=null;this.dataEndedAt=null;this.dataStartOffset=null;this.dataEndOffset=null;this.dataTimingValid=false;}
+ constructor({ble,deviceId,isCurrent=()=>true,onProgress=()=>{},delay=sleep,now=Date.now,monotonicNow=()=>globalThis.performance?.now?.(),allowBulkWrites=false}){Object.assign(this,{ble,deviceId,isCurrent,onProgress,delay,now,monotonicNow,allowBulkWrites});this.session=0;this.sequence=0;this.cancelled=false;this.metadataIssued=false;this.beginAttempted=false;this.commitAttempted=false;this.lastStatus=null;this.total=0;this.stage='preparing';this.beganAt=null;this.firstStop=null;this.mtu=null;this.chunkSize=null;this.mtuFallback=null;this.writeCalls=0;this.writeTimeMs=0;this.maxWriteMs=0;this.statusReads=0;this.statusTimeMs=0;this.maxStatusMs=0;this.dataFrames=0;this.dataBytesAttempted=0;this.issuedFrames=[];this.issuedOrder=0;this.observedOrder=0;this.notificationMode='polling';this.notificationFallback=null;this.notificationAcks=0;this.notificationMisses=0;this.notificationStatus=null;this.notificationRecord=null;this.notificationWaiter=null;this.dataWriteMode='with-response';this.receiverBulkWrites=false;this.bulkWriteFallback=null;this.bulkWriteCalls=0;this.dataWritesPrepared=false;this.dataStartedAt=null;this.dataEndedAt=null;this.dataStartOffset=null;this.dataEndOffset=null;this.dataTimingValid=false;}
  elapsed(start=this.beganAt){return start===null?0:Math.max(0,Math.floor(this.now()-start));}
  recordStop(reason){
   if(!this.firstStop)this.firstStop=Object.freeze({reason:stopReasons.has(reason)?reason:'cancelled',elapsedMs:this.elapsed()});
@@ -304,25 +305,46 @@ export class BluetoothFirmwareTransfer {
   if(at===null||this.dataEndedAt===null||at<this.dataEndedAt)this.dataTimingValid=false;
   this.dataEndedAt=at;this.dataEndOffset=offset;
  }
+ notificationMatch(ack,offset,phase){
+  if(this.notificationMode!=='notifications')return null;
+  const matched=this.matchingStatus(this.notificationStatus,ack,offset,phase);
+  if(matched){this.notificationMisses=0;++this.notificationAcks;}
+  return matched;
+ }
+ async pollStatus(ack,offset,phase,notificationsActive){
+  // The status read itself is the first bounded polling attempt. Waiting before
+  // every window adds one fixed delay per four Data frames and turns a full
+  // image into an unnecessarily long transfer when notifications are not
+  // available. Back off only after a read proves stale.
+  const end=this.now()+15000;let delayMs=0;
+  while(this.now()<end){
+   this.current();
+   if(notificationsActive){const notified=this.notificationMatch(ack,offset,phase);if(notified)return notified;}
+   if(delayMs){const remaining=end-this.now();if(remaining<=0)break;await this.delay(Math.min(delayMs,remaining));this.current();
+    if(notificationsActive){const notified=this.notificationMatch(ack,offset,phase);if(notified)return notified;}}
+   const state=await this.status(),matched=this.matchingStatus(state,ack,offset,phase);if(matched)return matched;
+   delayMs=Math.min(delayMs?delayMs*2:pollInitialDelayMs,pollMaxDelayMs);
+  }
+  this.recordStop('ack-timeout');throw error('The lamp did not acknowledge this transfer. No data was replayed.',{uncertain:true,stopReason:this.firstStop.reason});
+ }
  async wait(ack,offset,phase){
   if(this.notificationMode==='notifications'){
-   this.current();let matched=this.matchingStatus(this.notificationStatus,ack,offset,phase);
+   this.current();let matched=this.notificationMatch(ack,offset,phase);
    if(!matched){
     let timer;
     try{await new Promise(resolve=>{
-     this.notificationWaiter={ack,offset,phase,resolve};timer=setTimeout(()=>resolve(false),phase===4?500:160);
+     this.notificationWaiter={ack,offset,phase,resolve};timer=setTimeout(()=>resolve(false),phase===4?500:notificationWaitMs);
      if(this.matchingStatus(this.notificationStatus,ack,offset,phase))resolve(true);
     });}finally{clearTimeout(timer);this.notificationWaiter=null;}
-    this.current();matched=this.matchingStatus(this.notificationStatus,ack,offset,phase);
+    this.current();matched=this.notificationMatch(ack,offset,phase);
    }
-   if(matched){++this.notificationAcks;return matched;}
-   this.notificationMode='polling';this.notificationFallback='missed-ack';
+   if(matched)return matched;
+   // A delayed notification is not a broken subscription. Reconcile this ACK
+   // by read, and disable notifications only after consecutive misses.
+   this.notificationFallback='missed-ack';
+   if(++this.notificationMisses>=notificationMissLimit)this.notificationMode='polling';
   }
-  const end=this.now()+15000;
-  while(this.now()<end){const state=await this.status();
-   const matched=this.matchingStatus(state,ack,offset,phase);if(matched)return matched;
-   await this.delay(40);
-  }this.recordStop('ack-timeout');throw error('The lamp did not acknowledge this transfer. No data was replayed.',{uncertain:true,stopReason:this.firstStop.reason});
+  return this.pollStatus(ack,offset,phase,this.notificationMode==='notifications');
  }
  async write(frame){
   this.current();if(this.notificationStatus?.phase===5)this.receiverRejected(this.notificationStatus);

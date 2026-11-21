@@ -56,8 +56,34 @@ test('strict protected version mismatch is confirmed and never starts or retries
   failure.staleVersion&&failure.confirmed&&failure.installationNotStarted&&!failure.uncertain&&failure.expectedVersion===manifest.version&&failure.installedVersion==='1.11.0');
  assert.deepEqual(calls,['ble','release']);
 });
-test('confirmed pre-install Wi-Fi failure releases preflight before download and reacquires the intended lamp',async()=>{const {calls,options}=setup();options.wifi=async()=>{calls.push('wifi');throw Object.assign(Error('TLS failed'),{safeBluetoothFallback:true});};assert.equal((await updateCardFirmware(options)).path,'bluetooth');assert.deepEqual(calls,['wifi','ble','release','download','ble','transfer','release']);});
-test('uncertain, wrong identity, stale, or rejected Wi-Fi installation never falls back',async()=>{for(const fields of [{uncertain:true,safeBluetoothFallback:true},{identity:true,safeBluetoothFallback:true},{stale:true,safeBluetoothFallback:true},{}]){const {calls,options}=setup();options.wifi=async()=>{throw Object.assign(Error('failure'),fields);};await assert.rejects(updateCardFirmware(options));assert.deepEqual(calls,[]);}});
+test('confirmed pre-install Wi-Fi error 8 requires consent and never acquires Bluetooth or downloads',async()=>{
+ const {calls,options}=setup();let saved;
+ const attemptJournal={get:()=>saved,begin:()=>saved={outcome:'pending',attemptId:'attempt',safetyVersion:0,wifiCheckAttempted:false,
+  wifiInstallAttempted:false,metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false,dataIssued:false,
+  cancelAttempted:false,resumeAttempted:false},settle:()=>{}};
+ options.wifi=async()=>{calls.push('wifi');saved.wifiCheckAttempted=true;throw Object.assign(Error('Lamp did not have enough memory for the update.'),
+  {safeBluetoothFallback:true,firmwarePhase:5,firmwareError:8});};
+ await assert.rejects(updateCardFirmware({...options,attemptJournal}),failure=>failure.confirmed===true&&failure.uncertain===false&&
+  failure.installationNotStarted===true&&failure.safeBluetoothFallback===false&&failure.phoneFallbackAvailable===true&&
+  failure.directInternetRetryAvailable===true&&failure.fallbackRequiresConsent===true&&failure.failedPath==='wifi'&&
+  failure.firmwarePhase===5&&failure.firmwareError===8);
+ assert.equal(saved.outcome,'pending');assert.equal(saved.wifiCheckAttempted,true);assert.deepEqual(calls,['wifi']);
+});
+test('a Wi-Fi-only lamp is never offered an unavailable phone fallback',async()=>{
+ const {calls,options}=setup();delete options.entry.deviceId;options.wifi=async()=>{calls.push('wifi');throw Object.assign(Error('Internet download failed.'),{safeBluetoothFallback:true});};
+ await assert.rejects(updateCardFirmware(options),failure=>failure.confirmed===true&&failure.uncertain===false&&failure.installationNotStarted===true&&
+  failure.phoneFallbackAvailable===false&&failure.directInternetRetryAvailable===true&&failure.fallbackRequiresConsent===false&&failure.failedPath==='wifi');
+ assert.deepEqual(calls,['wifi']);
+});
+test('an ordinary retry after a confirmed unstarted attempt uses Wi-Fi again',async()=>{
+ const {calls,options}=setup();let saved={outcome:'installationNotStarted',wifiInstallAttempted:false,metadataIssued:false,beginAttempted:false,
+  commitAttempted:false,commitUnconfirmed:false,dataIssued:false,cancelAttempted:false,resumeAttempted:false};
+ const attemptJournal={get:()=>saved,begin:()=>saved={...saved,outcome:'pending',attemptId:'attempt',safetyVersion:0},settle:()=>{}};
+ options.wifi=async()=>{calls.push('wifi');return {state:'updated',verified:true,fresh:true,id:options.entry.id,installedVersion:manifest.version};};
+ const result=await updateCardFirmware({...options,attemptJournal});assert.equal(result.path,'wifi');assert.equal(result.outcome,'installed');
+ assert.deepEqual(calls,['wifi']);
+});
+test('uncertain, wrong identity, stale, or rejected Wi-Fi installation never offers or starts fallback',async()=>{for(const fields of [{uncertain:true,safeBluetoothFallback:true},{identity:true,safeBluetoothFallback:true},{stale:true,safeBluetoothFallback:true},{}]){const {calls,options}=setup();options.wifi=async()=>{calls.push('wifi');throw Object.assign(Error('failure'),fields);};await assert.rejects(updateCardFirmware(options),failure=>failure.phoneFallbackAvailable!==true&&failure.directInternetRetryAvailable!==true&&failure.fallbackRequiresConsent!==true);assert.deepEqual(calls,['wifi']);}});
 test('offline entry uses Bluetooth; wrong protected identity sends nothing',async()=>{const {calls,options,lamp}=setup();delete options.entry.address;lamp.identity='different';await assert.rejects(updateCardFirmware(options),error=>error.identity===true);assert.deepEqual(calls,['ble','release']);});
 test('old firmware requires bootstrap without downloading or transferring',async()=>{const {calls,options,lamp}=setup();delete options.entry.address;lamp.refreshFirmware=async()=>({version:'1.10.2'});await assert.rejects(updateCardFirmware(options),error=>error.bootstrapRequired===true);assert.deepEqual(calls,['ble','release']);});
 test('reconciles already-updated Bluetooth lamp without resending firmware',async()=>{const {calls,options,lamp}=setup();delete options.entry.address;lamp.refreshFirmware=async()=>({version:'1.12.0'});assert.equal((await updateCardFirmware(options)).state,'ready');assert.deepEqual(calls,['ble','release']);});

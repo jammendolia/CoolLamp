@@ -15,7 +15,7 @@ class Receiver {
   constructor() {
     this.pkg = packageValue(); this.clock = 1000; this.current = true; this.mtu = 247;
     this.s = {phase: 0, error: 0, session: 0, size: 0, offset: 0, ack: 0};
-    this.manifest = []; this.operations = []; this.dataOffsets = []; this.reads = 0;
+    this.manifest = []; this.operations = []; this.dataOffsets = []; this.reads = 0; this.delays = [];
   }
   async getMtu() { if (this.mtuUnavailable) throw Error('MTU lookup failed.'); return this.mtu; }
   async read(_id, _service, characteristic) {
@@ -48,7 +48,7 @@ class Receiver {
     if (!(op === 3 && this.loseDataAck)) this.s.ack = value.getUint16(6, true);
     if (op === 3 && this.onData) await this.onData();
   }
-  transfer() { return new BluetoothFirmwareTransfer({ble: this, deviceId: 'lamp', isCurrent: () => this.current, now: () => this.clock, delay: async milliseconds => { this.clock += milliseconds; }}); }
+  transfer() { return new BluetoothFirmwareTransfer({ble: this, deviceId: 'lamp', isCurrent: () => this.current, now: () => this.clock, delay: async milliseconds => { this.delays.push(milliseconds); this.clock += milliseconds; }}); }
 }
 async function failedTransfer(receiver, transfer) {
   let failure;
@@ -141,7 +141,8 @@ for (const fallback of ['unavailable', 'invalid']) test(`MTU ${fallback} records
   assert.equal(diagnostic.dataFrames, receiver.pkg.image.length / 8); assert.equal(diagnostic.dataBytesAttempted, receiver.pkg.image.length);
   assert.equal(diagnostic.writeCalls, receiver.operations.length); assert.equal(diagnostic.writeTimeMs, receiver.operations.length * 7); assert.equal(diagnostic.maxWriteMs, 7);
   assert.equal(diagnostic.statusReads, receiver.reads); assert.equal(diagnostic.statusTimeMs, receiver.reads * 3); assert.equal(diagnostic.maxStatusMs, 3);
-  assert.equal(diagnostic.elapsedMs, diagnostic.writeTimeMs + diagnostic.statusTimeMs); assert.equal(diagnostic.stopReason, null);
+  assert(receiver.delays.every(milliseconds => milliseconds >= 40 && milliseconds <= 320));
+  assert.equal(diagnostic.elapsedMs, diagnostic.writeTimeMs + diagnostic.statusTimeMs + receiver.delays.reduce((sum, value) => sum + value, 0)); assert.equal(diagnostic.stopReason, null);
   assert.equal(diagnostic.stopElapsedMs, null); assert(Object.isFrozen(diagnostic));
   for (const key of ['session', 'deviceId', 'identity', 'image', 'manifest', 'nativeError', 'credentials']) assert(!(key in diagnostic));
 });

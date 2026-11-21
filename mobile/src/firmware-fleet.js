@@ -15,6 +15,13 @@ const newer = (a, b) => {
   return false;
 };
 const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
+const boundedInteger=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
+function firmwareFailureEvidence(value){
+  const workerAdmissionPhase=value?.workerAdmission?.phase,httpStage=value?.httpStage,result={};
+  if(boundedInteger(workerAdmissionPhase,0,7))result.workerAdmissionPhase=workerAdmissionPhase;
+  if(boundedInteger(httpStage,0,7))result.httpStage=httpStage;
+  return result;
+}
 const parse = response => {
   try { return typeof response.data === 'string' ? JSON.parse(response.data) : response.data; }
   catch { throw failure('Invalid firmware response from lamp.', {invalidRead: true}); }
@@ -364,7 +371,7 @@ export class FirmwareFleet {
       } else if (fw.version !== originalVersion) {
         throw failure('Lamp firmware changed unexpectedly. Refresh the Wi-Fi list.');
       } else if (fw.phase === 5) {
-        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{firmwareError:fw.error,firmwarePhase:fw.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
+        throw failure(updateErrors[fw.error] || 'Lamp could not finish the update.',{firmwareError:fw.error,firmwarePhase:fw.phase,...firmwareFailureEvidence(fw),safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(fw.error)});
       } else if ([3,4].includes(fw.phase)) {
         if (!updating) deadline = this.now() + this.updateTimeout;
         updating = true; observedActivity = true;
@@ -390,7 +397,7 @@ export class FirmwareFleet {
         if (busyPhases.includes(identity.firmware.phase) || (identity.firmware.available && newer(identity.firmware.latest, identity.firmware.version))) {
           fw = identity.firmware; continue;
         }
-        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{firmwareError:identity.firmware.error,firmwarePhase:identity.firmware.phase,safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
+        if (identity.firmware.phase === 5) throw failure(updateErrors[identity.firmware.error] || 'Lamp could not finish the update.',{firmwareError:identity.firmware.error,firmwarePhase:identity.firmware.phase,...firmwareFailureEvidence(identity.firmware),safeBluetoothFallback:!updating&&!installSent&&!check.uncertain&&!check.conflict&&[1,2,3,8].includes(identity.firmware.error)});
         if(run.expectedVersion&&newer(run.expectedVersion,identity.firmware.version))throw failure('The lamp did not find the selected release. Refresh before trying again.');
         return this.live(lamp, run, identity, 'ready', 'Already up to date.');
       }

@@ -16,13 +16,14 @@ const classify=(error,stage='bluetooth-transfer')=>{const f=fixture();return f.d
 
 test('safe stage evidence and completion survive reload as immutable copies in a separate namespace',()=>{
  const {storage,diagnostics}=fixture();
- const row=diagnostics.failure(id,attempt,Object.assign(Error('Private native details.'),{updateDiagnostic:{phase:2,error:7,metadataIssued:true,beginAttempted:true,commitAttempted:false,acknowledgedBytes:232,writesAttempted:5,stopReason:'receiver-rejected'}}),{stage:'bluetooth-transfer'});
- assert.equal(row.stages[0].code,'receiver-rejected');assert.equal(row.stages[0].firmwarePhase,2);assert.equal(row.stages[0].acknowledgedBytes,232);
+ const row=diagnostics.failure(id,attempt,Object.assign(Error('Private native details.'),{workerAdmissionPhase:6,httpStage:2,updateDiagnostic:{phase:2,error:7,metadataIssued:true,beginAttempted:true,commitAttempted:false,acknowledgedBytes:232,writesAttempted:5,stopReason:'receiver-rejected'}}),{stage:'bluetooth-transfer'});
+ assert.equal(row.stages[0].code,'receiver-rejected');assert.equal(row.stages[0].firmwarePhase,2);assert.equal(row.stages[0].workerAdmissionPhase,6);assert.equal(row.stages[0].httpStage,2);assert.equal(row.stages[0].acknowledgedBytes,232);
  assert(Object.isFrozen(row)&&Object.isFrozen(row.stages)&&Object.isFrozen(row.stages[0]));
  assert.throws(()=>{row.stages[0].code='unknown';},TypeError);assert.equal(diagnostics.get(id).stages[0].code,'receiver-rejected');
  diagnostics.complete(id,attempt,{outcome:'transferStopped',installedVersion:'1.13.0',offset:232});
  assert.deepEqual(new FirmwareUpdateDiagnostics(storage).get(id),diagnostics.get(id));
  const report=JSON.parse(diagnostics.report(id));assert.equal(report.version,1);assert.equal(report.record.identity,undefined);assert.equal(report.record.attemptId,undefined);
+ assert.equal(report.record.stages[0].workerAdmissionPhase,6);assert.equal(report.record.stages[0].httpStage,2);
  assert(report.record.updatedAt>=report.record.startedAt);assert.equal(report.record.outcome,'transferStopped');
  assert(storage.writes.every(row=>row.key===FIRMWARE_UPDATE_DIAGNOSTICS_KEY));assert.equal(storage.getItem(FIRMWARE_ATTEMPT_KEY),null);
 });
@@ -66,7 +67,7 @@ test('only validated safe metrics survive hostile extra data, getters and cyclic
 test('invalid metrics, unrecognized stop reasons and invalid completion fields are omitted',()=>{
  const {diagnostics}=fixture();
  const result=diagnostics.failure(id,attempt,{updateDiagnostic:{metadataIssued:'true',beginAttempted:1,commitAttempted:null,phase:6,error:10,acknowledgedBytes:2031617,writesAttempted:1048577,stopReason:'private-network'},
-  httpStatus:600,firmwareError:9,offset:-1},{stage:'phone-download',safety:{offset:Infinity,wifiInstallAttempted:'true'}});
+  workerAdmissionPhase:8,httpStage:-1,httpStatus:600,firmwareError:9,offset:-1},{stage:'phone-download',safety:{offset:Infinity,wifiInstallAttempted:'true'}});
  assert.deepEqual(result.stages[0],{stage:'phone-download',at:result.stages[0].at,code:'unknown'});
  const done=diagnostics.complete(id,attempt,{outcome:'unresolved',installedVersion:'1.01.3 private',offset:2031617});
  assert.equal(done.installedVersion,undefined);assert.equal(done.offset,undefined);
@@ -121,7 +122,7 @@ test('v1 extra fields are stripped on migration; corrupt and future stores never
 });
 
 test('record, stage, storage and report bounds hold for worst-case safe metrics',()=>{
- const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage),error={firmwarePhase:5,error:9,firmwareError:8,httpStatus:599,
+ const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage),error={firmwarePhase:5,workerAdmissionPhase:7,httpStage:7,error:9,firmwareError:8,httpStatus:599,
   stopReason:'transport-disconnect',metadataIssued:true,beginAttempted:true,commitAttempted:true,wifiCheckAttempted:true,wifiInstallAttempted:true,offset:2031616,acknowledgedBytes:2031616,writesAttempted:1048576};
  for(let i=0;i<100;i++){
   const target=i.toString(16).padStart(12,'0');diagnostics.begin(target,attempt);
