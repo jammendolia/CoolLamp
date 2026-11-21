@@ -76,6 +76,12 @@ void* operator new[](std::size_t size){
   }
   return ::operator new(size);
 }
+void* operator new(std::size_t size,const std::nothrow_t&)noexcept{
+  try{return ::operator new(size);}catch(...){return nullptr;}
+}
+void* operator new[](std::size_t size,const std::nothrow_t&)noexcept{
+  try{return ::operator new[](size);}catch(...){return nullptr;}
+}
 void operator delete(void* memory)noexcept{
   for(size_t i=0;i<std::size(parserAllocations);++i)if(parserAllocations[i]==memory&&memory){
     static_assert(std::is_standard_layout<LampHttpParser::CompactParser>::value,"Request metadata is the parser's first member");
@@ -91,6 +97,8 @@ void operator delete(void* memory)noexcept{
 void operator delete[](void* memory)noexcept{::operator delete(memory);}
 void operator delete(void* memory,std::size_t)noexcept{::operator delete(memory);}
 void operator delete[](void* memory,std::size_t)noexcept{::operator delete(memory);}
+void operator delete(void* memory,const std::nothrow_t&)noexcept{::operator delete(memory);}
+void operator delete[](void* memory,const std::nothrow_t&)noexcept{::operator delete[](memory);}
 
 String lampToken="development-token";
 static uint64_t clockUs=0;

@@ -68,7 +68,7 @@ bool rejectWireMalloc=false;
 void* wireMalloc(size_t bytes){++wireMallocAttempts;return rejectWireMalloc?nullptr:std::malloc(bytes);}
 // Compile the unchanged production translation unit here so its legacy wire
 // allocator can be faulted independently of String and SDK allocations.
-#define malloc wireMalloc
+#define malloc(bytes) wireMalloc(bytes)
 #include "LampBleControl.cpp"
 #undef malloc
 #include "LampControlEndpoint.h"
@@ -281,7 +281,7 @@ int main(){
   }
   assert(send(commit(tx),15)==0);
  };
- for(const auto budget:{std::pair<uint32_t,uint32_t>{10752,2048},{13599,2048},{50000,1039}}){
+ for(const auto& budget:{std::pair<uint32_t,uint32_t>{10752,2048},{13599,2048},{50000,1039}}){
   fakeFreeHeap=budget.first;fakeLargestBlock=budget.second;submitForm(formSequence);
   assert(u16(out+4)==503&&calls==formCalls&&send(commit(formSequence++),15)==2);
  }
