@@ -341,7 +341,7 @@ void checkSinkBounds(){
   // before any output allocation, including a fragmented largest block.
   constexpr size_t bytes=102,rounded=(bytes+16)&~size_t(15);
   auto encode=[](LampJsonSink& s){s.quote(std::string(100,'x').c_str());};
-  for(const auto budget:{std::pair<size_t,size_t>{rounded+8703,rounded},{rounded+8704,rounded-1}}){
+  for(const auto& budget:{std::pair<size_t,size_t>{rounded+8703,rounded},{rounded+8704,rounded-1}}){
     heapBudget=budget.first;largestBudget=budget.second;stats={};
     {String denied=lampJsonReply(encode);assert(denied.isEmpty()&&stats.calls==0);}assert(stats.live==0);
   }
