@@ -379,7 +379,7 @@ int main(int argc,char** argv){
     turn(f.server,5000);runCloser();assert(sockets[waiting].closed&&sockets[prepared].closed&&!f.reads&&!f.mutations&&detachedRequests.at(prepared).absoluteTimeoutMs==5000);
   }else if(scenario=="parser-admission-bounds-and-recovery"){
     Fixture f;accountParserAllocation=true;
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto attempts=parserAllocationAttempts,allocations=totalParsers;
       const int denied=connect(f.listener,post("/api/power","on=1"));f.finish(denied);
       contains(denied,"503 Service Unavailable");contains(denied,"HTTP resources unavailable. No command was executed.");
@@ -454,7 +454,7 @@ int main(int argc,char** argv){
     assert(!LampControlResourcePolicy::readHttpPath("/",false));
   }else if(scenario=="mapped-page-low-memory-bounds-and-copy-failure"){
     Fixture f;static_assert(LampHttpServer::StaticPageHeapFloorBytes==11776);
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto began=millis();
       const int page=connect(f.listener,get("/"));f.finish(page,30);contains(page,"503 Service Unavailable");
       if(budget.second<ParserAllocationBytes)contains(page,"HTTP resources unavailable. No command was executed.");else contains(page,"Nothing changed");
@@ -723,7 +723,7 @@ int main(int argc,char** argv){
     assert(f.reads==6&&!f.mutations&&uint32_t(millis()-began)<100);
     // A denied read gets a bounded response while the original connection is
     // healthy. It does not wait five seconds without headers or execute later.
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{8703,7668},{16316,15}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{8703,7668},{16316,15}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
       const auto deniedAt=millis();const int fd=connect(f.listener,get());f.finish(fd,30);
       contains(fd,"503 Service Unavailable");assert(uint32_t(millis()-deniedAt)<100);
@@ -806,7 +806,7 @@ int main(int argc,char** argv){
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
       for(const char* body:{"on=1","on=%QQ"}){
         inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::Power,true,body,true);inControl=false;

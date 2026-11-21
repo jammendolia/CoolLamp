@@ -318,7 +318,7 @@ int main(int argc,char** argv){
  const auto deniedStorage=Preferences::storage;
  const auto deniedWrites=Preferences::writes;
  const auto deniedReserves=String::reserveCalls;
- for(const auto budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
+ for(const auto& budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
   fakeFreeHeap=budget.first;fakeLargestBlock=budget.second;
   for(const char* form:{"name=Blocked","name=%QQ"}){
    const auto denied=lampControlRequest(LampControlEndpoint::Name,true,form);
