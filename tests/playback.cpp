@@ -9,7 +9,7 @@
 uint32_t now=0;uint32_t millis(){return now;}void delay(int){}
 uint32_t esp_random(){return 0;}
 uint8_t Mode=4,Brightness=100,role=0,scene=0;
-bool PowerOn=true,updating=false,mic=false,failCount=false,edison=false,edisonAudio=true;
+bool PowerOn=true,updating=false,pairing=false,setupPulse=false,identifying=false,mic=false,failCount=false,failControl=false,edison=false,edisonAudio=true;
 constexpr int NUM_LEDS=134,MAX_LED_COUNT=1024;
 uint16_t savedCount=134;
 struct CRGB{uint8_t r=0,g=0,b=0;CRGB()=default;CRGB(int r,int g,int b):r(r),g(g),b(b){}static const CRGB Black,Red,White;};
@@ -24,23 +24,31 @@ struct Driver{Controller c;int brightness=100,shows=0;Controller& operator[](int
 void lampShowFrame(LampRuntimeMetrics::FrameKind kind){assert(kind==LampRuntimeMetrics::FrameKind::Calibration);FastLED.show();}
 uint8_t lampSyncRole(){return role;}uint8_t lampGroupScene(){return scene;}
 bool lampHasMicrophone(){return mic;}bool lampUpdateOwnsResources(){return updating;}
-bool lampPairingOpen(){return false;}bool lampSetupPulse(){return false;}bool lampIdentifyActive(){return false;}
+bool lampPairingOpen(){return pairing;}bool lampSetupPulse(){return setupPulse;}bool lampIdentifyActive(){return identifying;}
 uint8_t lampAvailableEffectCount(){return edison?(mic?52:51):mic?47:38;}
 bool lampEffectAvailable(uint8_t id){return id>=1&&id<=lampAvailableEffectCount()&&(id<=38||(id<=47?mic:edison&&(id!=52||edisonAudio)));}
-bool setLampControl(uint32_t m,uint32_t b,bool p){Mode=m;Brightness=b;PowerOn=p;return true;}
+bool setLampControl(uint32_t m,uint32_t b,bool p){if(failControl)return false;Mode=m;Brightness=b;PowerOn=p;return true;}
 void resetLampCalibrationKnob(){}
 void syncLampKnob(){}bool finishLampKnob(){return true;}
 bool saveLampLedCount(uint16_t count){if(failCount)return false;savedCount=count;return true;}
 #include "../LampPlayback.ino"
 int main(){
  LampRotation r;r.enabled=1;r.random=0;r.seconds=5;
- assert(saveLampRotation(r));lampRotation={};loadLampRotation();assert(lampRotation.enabled && lampRotation.seconds==5);
- now=4999;serviceLampRotation();assert(Mode==4);now=5000;serviceLampRotation();assert(Mode==5);
- PowerOn=false;now=20000;serviceLampRotation();PowerOn=true;now=24999;serviceLampRotation();assert(Mode==5);now=25000;serviceLampRotation();assert(Mode==6);
- role=2;now+=100000;serviceLampRotation();assert(Mode==6 && !saveLampRotation(r));role=0;
- scene=1;now+=100000;serviceLampRotation();assert(Mode==6 && !saveLampRotation(r));scene=0;
+ // Enabling advances once immediately, then gives that effect a full interval.
+ assert(saveLampRotation(r)&&Mode==5);assert(saveLampRotation(r)&&Mode==5);
+ lampRotation={};loadLampRotation();assert(lampRotation.enabled && lampRotation.seconds==5 && Mode==5);
+ now=4999;serviceLampRotation();assert(Mode==5);now=5000;serviceLampRotation();assert(Mode==6);
+ // Disabling freezes the current effect. Enabling while off saves without a
+ // hidden change and starts a fresh interval once playback resumes.
+ r.enabled=0;assert(saveLampRotation(r)&&Mode==6);r.enabled=1;PowerOn=false;assert(saveLampRotation(r)&&Mode==6);
+ now=20000;serviceLampRotation();PowerOn=true;now=24999;serviceLampRotation();assert(Mode==6);now=25000;serviceLampRotation();assert(Mode==7);
+ role=2;now+=100000;serviceLampRotation();assert(Mode==7 && !saveLampRotation(r));role=0;
+ scene=1;now+=100000;serviceLampRotation();assert(Mode==7 && !saveLampRotation(r));scene=0;
  r.category=2;assert(!saveLampRotation(r));mic=true;assert(saveLampRotation(r));now+=5000;serviceLampRotation();assert(Mode==39);
- r.category=1;r.random=1;assert(saveLampRotation(r));
+ // A true random re-enable excludes the active effect; subsequent saves while
+ // enabled never create another immediate advance.
+ r.enabled=0;assert(saveLampRotation(r));r.enabled=1;r.category=1;r.random=1;const uint8_t beforeRandom=Mode;assert(saveLampRotation(r)&&Mode!=beforeRandom);
+ const uint8_t afterRandom=Mode;r.seconds=10;assert(saveLampRotation(r)&&Mode==afterRandom);r.seconds=5;
  for(unsigned count:{38,47})for(unsigned current=1;current<=count;++current)for(unsigned draw=0;draw<100;++draw){
   auto next=nextRotationEffect(current,count,r,draw);assert(next>=1&&next<=38&&next!=current);
  }
@@ -67,9 +75,21 @@ int main(){
  edison=true;mic=false;r.category=1;r.random=0;now=100000;Mode=38;assert(saveLampRotation(r));now+=5000;serviceLampRotation();assert(Mode==48);
  Mode=51;now=0xfffffff0;assert(saveLampRotation(r));now+=5000;serviceLampRotation();assert(Mode==1);
  edison=false;mic=true;r.category=0;
- Preferences::failWrites=true;r.enabled=0;assert(!saveLampRotation(r)&&lampRotation.enabled);Preferences::failWrites=false;
+ const LampRotation beforeFailure=lampRotation;const uint8_t modeBeforeFailure=Mode;
+ Preferences::failWrites=true;r.enabled=0;assert(!saveLampRotation(r)&&lampRotation.enabled&&Mode==modeBeforeFailure);Preferences::failWrites=false;
+ assert(lampRotation.version==beforeFailure.version&&lampRotation.enabled==beforeFailure.enabled&&lampRotation.random==beforeFailure.random&&lampRotation.category==beforeFailure.category&&lampRotation.seconds==beforeFailure.seconds);
+ // Resource-owning presentation states save an enable without forcing an
+ // effect. The shared pause predicate covers both immediate start and service.
+ for(bool* paused:{&updating,&pairing,&setupPulse,&identifying}){
+  r.enabled=0;assert(saveLampRotation(r));Mode=4;*paused=true;r.enabled=1;assert(saveLampRotation(r)&&Mode==4);*paused=false;
+ }
+ // Durable configuration remains successful even if the immediate control
+ // application cannot be accepted; the normal scheduler can try later.
+ r.enabled=0;assert(saveLampRotation(r));Mode=4;failControl=true;r.enabled=1;assert(saveLampRotation(r)&&lampRotation.enabled&&Mode==4);failControl=false;
+ // A Mirror-effects coordinator can start rotation through the normal control path.
+ r.enabled=0;assert(saveLampRotation(r));role=1;Mode=4;r.enabled=1;r.category=1;r.random=0;assert(saveLampRotation(r)&&Mode==5);role=0;
  // Unsigned time arithmetic across millis rollover.
- r.enabled=1;r.category=1;r.random=0;now=0xfffffff0;assert(saveLampRotation(r));Mode=38;serviceLampRotation();now+=5000;serviceLampRotation();assert(Mode==1);
+ now=0xfffffff0;assert(saveLampRotation(r));Mode=38;serviceLampRotation();now+=5000;serviceLampRotation();assert(Mode==1);
  // Probe beyond the configured allocation without touching the normal buffer.
  leds[0]={7,8,9};assert(beginLampCalibration());assert(FastLED.c.n==1024 && FastLED.c.p!=leds);
  moveLampCalibration(1024);now+=50;assert(renderLampCalibration());assert(FastLED.c.p[1023].g==220&&leds[0].r==7);
@@ -94,5 +114,5 @@ int main(){
  now+=10000;assert(!renderLampCalibration()&&lampMidpoint==133);
  role=2;assert(beginLampCenterCalibration());assert(finishLampCalibration(false)&&role==2);role=0;
  now=0xfffffff0;assert(beginLampCenterCalibration());touchLampCalibration();now+=10000;assert(!renderLampCalibration()&&lampMidpoint==133);
- std::cout<<"PASS: rotation timing, filters, persistence, pause, rollover; calibration bounds, buffer restoration, timeout, save failure\n";
+ std::cout<<"PASS: immediate rotation start, timing, filters, persistence, pause, rollover; calibration bounds, buffer restoration, timeout, save failure\n";
 }

@@ -21,23 +21,36 @@ void loadLampRotation(){
   const bool ok=prefs.getBytesLength("rotationV1")==sizeof(saved) && prefs.getBytes("rotationV1",&saved,sizeof(saved))==sizeof(saved);
   prefs.end(); if(ok && validLampRotation(saved))lampRotation=saved;
 }
+static bool lampRotationRunnable(){
+  return lampRotation.enabled && PowerOn && !lampCalibrationActive() && lampSyncRole()!=2 && !lampGroupScene() &&
+    !lampUpdateOwnsResources() && !lampPairingOpen() && !lampSetupPulse() && !lampIdentifyActive();
+}
+static bool advanceLampRotation(){
+  uint64_t selectable=0;for(uint8_t id=1;id<=lampAvailableEffectCount();++id)if(lampEffectAvailable(id))selectable|=uint64_t(1)<<(id-1);
+  const uint8_t next=nextRotationEffect(Mode,lampAvailableEffectCount(),lampRotation,esp_random(),selectable);
+  return next && setLampControl(next,Brightness,PowerOn);
+}
 bool saveLampRotation(const LampRotation& next){
   if(!validLampRotation(next) || (next.enabled && (lampSyncRole()==2 || lampGroupScene() || (next.category==2 && !lampHasMicrophone()))))return false;
+  const bool start=!lampRotation.enabled && next.enabled;
   Preferences prefs;if(!prefs.begin("coollamp",false))return false;
   const bool ok=prefs.putBytes("rotationV1",&next,sizeof(next))==sizeof(next);prefs.end();
-  if(ok){lampRotation=next;rotationAt=millis();rotationMode=Mode;}return ok;
+  if(ok){
+    lampRotation=next;
+    if(start && lampRotationRunnable())advanceLampRotation();
+    rotationAt=millis();rotationMode=Mode;
+  }
+  return ok;
 }
 void serviceLampRotation(){
   const uint32_t now=millis();
-  if(!lampRotation.enabled || !PowerOn || lampCalibrationActive() || lampSyncRole()==2 || lampGroupScene() || lampUpdateOwnsResources() || lampPairingOpen() || lampSetupPulse() || lampIdentifyActive()){
+  if(!lampRotationRunnable()){
     rotationAt=now;rotationMode=Mode;return;
   }
   if(Mode!=rotationMode){rotationAt=now;rotationMode=Mode;return;}
   if(uint32_t(now-rotationAt)<lampRotation.seconds*1000U)return;
   rotationAt=now;
-  uint64_t selectable=0;for(uint8_t id=1;id<=lampAvailableEffectCount();++id)if(lampEffectAvailable(id))selectable|=uint64_t(1)<<(id-1);
-  const uint8_t next=nextRotationEffect(Mode,lampAvailableEffectCount(),lampRotation,esp_random(),selectable);
-  if(next && setLampControl(next,Brightness,PowerOn))rotationMode=Mode;
+  advanceLampRotation();rotationMode=Mode;
 }
 bool beginLampCalibration(){
   if(lampCalibrationActive())return !lampCalibrationCenter();
