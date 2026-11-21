@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('automatic_download_extract',ROOT/'tests/control-http-adapter.py')
 extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
 source=(ROOT/'LampUpdate.cpp').read_text()
-functions='\n'.join(extract.function(source,name) for name in ('bool recordAttempt(', 'void downloadRelease()'))
+functions='\n'.join(extract.function(source,name) for name in ('bool recordAttempt(', 'void receiveRelease(', 'void downloadRelease()'))
 fixture=r'''
 #include <cassert>
 #include <cstring>

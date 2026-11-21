@@ -78,6 +78,7 @@ PLATFORM = r'''
 #include "Arduino.h"
 #include "LampAudio.h"
 #include "LampUpdate.h"
+#include "LampUpdateControlPolicy.h"
 #include "LampSyncProtocol.h"
 #include "LampEspNow.h"
 #include "LampHttpJson.h"
@@ -113,7 +114,7 @@ LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.phase=UPDATE_ERROR
 FirmwareManifest candidate{};unsigned mux=0;
 LampUpdateAutomatic::Snapshot automaticView;
 struct {LampUpdateAutomatic::Snapshot snapshot(uint32_t){LampUpdateAutomatic::Snapshot out;out.retryInMs=21600000;out.donorWaitMs=30000;return out;}} automaticService;
-void* worker=reinterpret_cast<void*>(1);bool healthy=false;
+void* worker=reinterpret_cast<void*>(1);bool healthy=false;uint32_t lastWorkerStackFree=0;LampUpdateWorkerAdmission workerAdmission;
 constexpr int MALLOC_CAP_8BIT=1;unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
 namespace UpdatePublisher {bool enforced(){return false;}}
@@ -424,10 +425,19 @@ class StatusBuilderMemoryTests(unittest.TestCase):
         timing='template<class HttpMetrics>\n'+extract.function(network,'void appendLampRuntimeTimingJson(')
         bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+timing+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+extract.function(network,'bool captureLampNetworkText(')+'\n'+extract.function(network,'struct LampNetworkAddressWriter ')+ ';\n'+extract.function(network,'bool captureLampNetworkAddress(')+'\n'+state
         bodies+='\n'+extract.function(network,'String lampEffectCatalogEntry(')
-        catalog_registration=extract.registration(network,'/api/effects','GET')
+        catalog_registration=extract.registration(network,'/api/effects','GET').replace('LampEffects::name(', 'fixtureEffectName(')
         server=(ROOT/'LampHttpServer.h').read_text()
         metrics=extract.function(server,'struct Metrics ')
-        names=network[network.index('const char* const effectNames[]'):network.index('static_assert(sizeof(effectNames)')]
+        registry=(ROOT/'LampEffectRegistry.h').read_text()
+        sources['LampEffectRegistry.h']=registry
+        ordinary_names=re.findall(r'^\s*X\(\d+, "([^"\n]*)",',registry,re.MULTILINE)
+        capacity=re.search(r'\bCount=(\d+)',registry)
+        self.assertIsNotNone(capacity)
+        self.assertEqual(len(ordinary_names),int(capacity[1]))
+        names='#include "LampEffectRegistry.h"\nconst char* fixtureEffectName(uint8_t mode){return LampEffects::name(mode);}\n'
+        # Keep the future-name escaping/255-slot test at the name-provider seam;
+        # normal fixtures still read the production registry and handlers.
+        bodies=bodies.replace('LampEffects::name(', 'fixtureEffectName(')
         platform = PLATFORM.replace('ATTEMPT_JSON','\n'.join(extract.function(sources['LampUpdateAttempt.cpp'],signature) for signature in ['StatusSnapshot captureStatus(', 'void appendStatus(', 'String statusJson(const FirmwareManifest& image)']))
         platform=platform.replace('SYNC_JSON_SNAPSHOT',extract.function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
         colors=(ROOT/'LampColors.ino').read_text();sources['LampColors.ino']=colors
@@ -476,10 +486,10 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             # actual read handler's escaping and integer iteration. This is
             # handler completeness only; the real transport's unchanged8KiB
             # response cap separately rejects an oversized future v1 catalog.
-            ordinary_names=re.findall(r'"([^"\n]*)"',names)
-            unusual_names=ordinary_names+['Future '+str(i) for i in range(48,256)]
+            unusual_names=ordinary_names+['Future '+str(i) for i in range(len(ordinary_names)+1,256)]
+            self.assertEqual(len(unusual_names),255)
             unusual_names[:4]=['Quote" and backslash\\','LF\nCR\rTAB\t','Control\x01\x1f','Future café']
-            future_names='const char* const effectNames[]={'+','.join(json.dumps(value,ensure_ascii=False).replace('\\u0001','\\001').replace('\\u001f','\\037') for value in unusual_names)+'};'
+            future_names='const char* const effectNames[]={'+','.join(json.dumps(value,ensure_ascii=False).replace('\\u0001','\\001').replace('\\u001f','\\037') for value in unusual_names)+'};\nconst char* fixtureEffectName(uint8_t mode){return effectNames[mode-1];}\n'
             future=combined.replace(names,future_names).replace('availableEffects=47;measureCatalog("catalog47");','availableEffects=47;measureCatalog("catalog47");measureCatalogLoop255();').replace('int main(){','int main(){useCanonicalNames=false;')
             cpp.write_text(future)
             subprocess.run(['c++','-std=c++17','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
@@ -509,7 +519,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             if isinstance(firmware,dict):
                 self.assertEqual(firmware['version'],current_version,result['name']+' reports the wrong release version')
                 self.assertEqual(firmware['build'],'COOLLAMP-LOCAL-'+current_version,result['name']+' reports the wrong build identity')
-        names=re.findall(r'"([^"\n]*)"',names)
+        names=ordinary_names
         for result in results[7:9]+results[11:12]:
             value=result['value'];self.assertEqual(len(value),38 if result['name']=='catalog38' else 47)
             self.assertEqual([entry['id'] for entry in value],list(range(1,len(value)+1)))

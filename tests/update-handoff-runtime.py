@@ -49,10 +49,14 @@ bool cuePower=true;uint8_t cueBrightness=100;
 LampControlState getLampControlState(){return {4,cueBrightness,cuePower};}
 void setLampUpdateRoute(uint8_t route){status.route=route;}
 LampUpdateHandoff handoff;
+bool dispatchReady=false;uint32_t dispatchReadyAt=0;
 using TaskHandle_t=void*;
 struct StaticTask_t {uint8_t opaque[348];}; // Exact pinned C3 ELF size, not host RTOS.
 void* worker=nullptr;int mux=0;
 std::atomic<bool> workerFinished{false};
+uint32_t lastWorkerStackFree=0,simulatedWorkerStackFree=LampUpdateControlPolicy::WorkerStackBytes-128;
+LampUpdateWorkerAdmission workerAdmission;
+unsigned workerStackReads=0;
 bool taskCreateWorks=true,tlsLive=false;unsigned taskCreations=0,taskDeletes=0,tlsDestructs=0;
 bool manual=false;
 bool explicitRepair=false,attemptAllowed=true,measuredReady=false,attemptConfirmWorks=true;unsigned attemptConfirmCalls=0;
@@ -60,8 +64,26 @@ bool jobBackground=false,backgroundPriorAvailable=false,backgroundReadDeferred=f
 std::atomic<bool> backgroundActive{false},cancelBackground{false},backgroundDeferred{false};
 bool controlIdle=true;size_t freeHeap=65536,largestHeap=65536;
 constexpr unsigned MALLOC_CAP_8BIT=1;
+bool reservationLive=false,reservationWorks=true;
+unsigned reservationAllocations=0,reservationFrees=0;
+uint8_t reservationToken=0;
 size_t heap_caps_get_free_size(unsigned){return freeHeap;}
 size_t heap_caps_get_largest_free_block(unsigned){return largestHeap;}
+void* heap_caps_malloc(size_t size,unsigned caps){
+ assert(size==LampUpdateControlPolicy::MinLargest&&caps==MALLOC_CAP_8BIT&&!reservationLive);
+ ++reservationAllocations;if(!reservationWorks)return nullptr;
+ assert(freeHeap>=size&&largestHeap>=size);
+ freeHeap-=size;largestHeap-=size;reservationLive=true;return &reservationToken;
+}
+void heap_caps_free(void* token){
+ assert(token==&reservationToken&&reservationLive);
+ freeHeap+=LampUpdateControlPolicy::MinLargest;largestHeap+=LampUpdateControlPolicy::MinLargest;
+ reservationLive=false;++reservationFrees;
+}
+uint32_t uxTaskGetStackHighWaterMark(void* target){
+ assert(target&&target==worker&&workerFinished&&!tlsLive);
+ ++workerStackReads;return simulatedWorkerStackFree;
+}
 bool lampControlTrafficIdle(uint32_t){return controlIdle;}
 namespace LampUpdateAttempt {bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}bool confirmHealthy(const FirmwareManifest&){++attemptConfirmCalls;return attemptConfirmWorks;}}
 namespace LampUpdateAttempt {AdmissionReason automaticAdmissionReason(const FirmwareManifest&){return attemptAllowed?Eligible:Unconfirmed;}}
@@ -123,6 +145,7 @@ int esp_ota_get_state_partition(const void*,esp_ota_img_states_t* out){*out=imag
 int esp_ota_mark_app_valid_cancel_rollback(){++confirmations;return confirmWorks?ESP_OK:-1;}
 void xTaskNotifyGive(void* target){
  assert(target==worker);assert(!callerLive);assert(!audioActive);
+ assert(!reservationLive);
  assert(!radioActive&&udpBytes==0&&responseBytes==0);
  assert(responseFrees==1&&ownedReleases<=1);
  assert(status.phase==UPDATE_CHECKING&&(job==1||job==2));++notifications;
@@ -132,16 +155,19 @@ void xTaskNotifyGive(void* target){
 constexpr int pdPASS=1;
 int xTaskCreate(void(*function)(void*),const char*,size_t stack,void* argument,unsigned priority,void** out){
  assert(function&&!argument&&priority==1&&out==&worker&&!worker);
- assert(stack==8192&&!callerLive&&!audioActive&&!radioActive&&udpBytes==0&&responseBytes==0);
+ assert(reservationLive);
+ assert(stack==LampUpdateControlPolicy::WorkerStackBytes&&!callerLive&&!audioActive&&!radioActive&&udpBytes==0&&responseBytes==0);
  ++taskCreations;
  if(!taskCreateWorks)return 0;
  assert(freeHeap>=stack+sizeof(StaticTask_t)&&largestHeap>=stack+sizeof(StaticTask_t));
  freeHeap-=stack+sizeof(StaticTask_t);largestHeap-=stack+sizeof(StaticTask_t);
+ simulatedWorkerStackFree=LampUpdateControlPolicy::WorkerStackBytes-128;
  *out=reinterpret_cast<void*>(uintptr_t(taskCreations));return pdPASS;
 }
 void vTaskDelete(void* target){
  assert(target&&target!=worker&&workerFinished&&!tlsLive);
- ++taskDeletes;freeHeap+=8192+sizeof(StaticTask_t);largestHeap+=8192+sizeof(StaticTask_t);
+ assert(workerStackReads==taskDeletes+1&&lastWorkerStackFree==simulatedWorkerStackFree);
+ ++taskDeletes;freeHeap+=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);largestHeap+=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
 }
 constexpr int pdTRUE=1,portMAX_DELAY=-1;int pdMS_TO_TICKS(int ms){return ms;}
 struct WorkerDone{};unsigned workerWaits=0;bool cancelInside=false,deferInside=false;
@@ -151,9 +177,16 @@ void vTaskDelay(int ms){clockMs+=ms;if(cancelDuringClock)cancelBackground=true;}
 std::time_t fixtureTime(void*){return clockValid?1700000001:0;}
 unsigned checks=0,installs=0;bool checkWasBackground=false;uint32_t checkBudget=0;
 struct TlsOwner {
- void* memory=nullptr;
- TlsOwner(){assert(!tlsLive&&!responseBytes&&!audioActive&&!radioActive);memory=std::malloc(16384);assert(memory);tlsLive=true;++workerAllocations;}
- ~TlsOwner(){std::free(memory);tlsLive=false;++tlsDestructs;}
+ static constexpr size_t Bytes=16384;
+ void* memory=nullptr;size_t previousLargest=0;
+ TlsOwner(){
+  assert(!tlsLive&&!responseBytes&&!audioActive&&!radioActive);
+  assert(LampUpdateControlPolicy::memoryReady(freeHeap,largestHeap));
+  previousLargest=largestHeap;memory=std::malloc(Bytes);assert(memory);
+  freeHeap-=Bytes;largestHeap-=Bytes;tlsLive=true;++workerAllocations;
+  simulatedWorkerStackFree=640;
+ }
+ ~TlsOwner(){std::free(memory);freeHeap+=Bytes;largestHeap=previousLargest;tlsLive=false;++tlsDestructs;}
 };
 bool checkRelease(bool installing=false,bool background=false,uint32_t budget=LampUpdateControlPolicy::BackgroundBudgetMs){
  TlsOwner tls;
@@ -281,14 +314,18 @@ int main(int argc,char** argv){
   if(origin=="worker-install-reap"){status.available=true;status.phase=UPDATE_AVAILABLE;}
   const uint8_t operation=origin=="worker-install-reap"?2:1;
   assert(request(operation));tick();assert(!worker&&!taskCreations);tick();
-  assert(worker&&taskCreations==1&&freeHeap==idleFree-8192-sizeof(StaticTask_t));
+  assert(worker&&taskCreations==1&&freeHeap==idleFree-LampUpdateControlPolicy::WorkerStackBytes-sizeof(StaticTask_t));
+  assert(workerAdmission.phase==5&&workerAdmission.taskControlBytes==sizeof(StaticTask_t));
   runWorker(operation);
   assert(taskDeletes==0&&tlsDestructs==1&&lampUpdateOwnsResources());
+  assert(!workerStackReads&&!lastWorkerStackFree);
   // Status may already say Available/Idle/Error while the completed task's
   // handle is still valid. Every updater route must wait for loop-owned reap.
   assert(!requestLampUpdateCheck()&&!reserveLampManualUpdate()&&lampRemoteUpdateBusy());
   const auto completed=getLampUpdateStatus();(void)completed;assert(taskDeletes==0);
   tick();assert(!worker&&!workerFinished&&taskDeletes==1&&freeHeap==idleFree&&largestHeap==idleLargest);
+  assert(workerStackReads==1&&lastWorkerStackFree==640);
+  assert(workerAdmission.phase==6);
   if(operation==2){assert(installs==1&&restartAt);clockMs=restartAt;tick();assert(ESP.restarts==1&&!worker);}
   else {
    assert(!lampUpdateOwnsResources()&&requestLampUpdateCheck());tick();tick();
@@ -306,7 +343,7 @@ int main(int argc,char** argv){
   assert(taskCreations==2&&taskDeletes==1&&checks==1&&!worker);
  }else if(origin=="background-late-memory"||origin=="background-late-largest"||origin=="background-exact-worker-budget"){
   trigger=false;nextCheck=clockMs+1000000;
-  const size_t workerBytes=8192+sizeof(StaticTask_t);
+  const size_t workerBytes=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
   freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes;
   largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes;
   assert(request(1,false,true));tick();
@@ -317,8 +354,9 @@ int main(int argc,char** argv){
    assert(taskCreations==1&&worker&&freeHeap==LampUpdateControlPolicy::MinBackgroundFree&&largestHeap==LampUpdateControlPolicy::MinBackgroundLargest);
    runWorker(1);tick();assert(taskDeletes==1&&!worker&&checks==1);
   }else{
-   assert(!worker&&!taskCreations&&!notifications&&!job&&backgroundDeferred&&!backgroundActive);
+   assert(!worker&&!taskCreations&&!notifications&&!job&&!backgroundDeferred&&!backgroundActive&&!automaticJob&&!dispatchReady);
    assert(status.phase==UPDATE_IDLE&&status.error==UPDATE_OK);
+   assert(nextCheck-clockMs==LampUpdateAutomatic::RetryMs);
   }
  }else if(origin=="worker-cancel-before-tls"){
   trigger=false;nextCheck=clockMs+1000000;assert(request(1,false,true));tick();tick();
@@ -415,14 +453,15 @@ int main(int argc,char** argv){
  }else if(origin=="background-defer"){
   trigger=false;const auto pending=nextCheck;controlIdle=false;
   tick();assert(nextCheck==pending&&!job&&!audioStops&&status.phase==UPDATE_IDLE);
-  const size_t workerBytes=8192+sizeof(StaticTask_t);
+  const size_t workerBytes=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
   controlIdle=true;freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes-1;tick();assert(nextCheck==pending&&!job&&!audioStops);
   freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes;largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes-1;tick();assert(nextCheck==pending&&!job&&!audioStops);
   largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes;tick();assert(job==1&&jobBackground&&backgroundActive&&audioStops==1);
   // Recent traffic fences the queued check before its worker owns TLS.
   controlIdle=false;tick();assert(cancelBackground&&backgroundActive);tick();assert(!notifications&&!taskCreations&&!worker);
-  assert(!backgroundActive&&backgroundDeferred&&status.phase==UPDATE_IDLE&&status.error==UPDATE_OK&&!checks);
-  tick();assert(nextCheck==clockMs&&!job&&status.phase==UPDATE_IDLE);
+  assert(!backgroundActive&&!backgroundDeferred&&!automaticJob&&status.phase==UPDATE_IDLE&&status.error==UPDATE_OK&&!checks);
+  const auto retryAt=nextCheck;assert(retryAt-clockMs==LampUpdateAutomatic::RetryMs&&workerAdmission.phase==2);
+  tick();assert(nextCheck==retryAt&&!job&&status.phase==UPDATE_IDLE);
  }else if(origin=="background-cancel"||origin=="background-memory"||origin=="manual-noncancel"||origin=="install-noncancel"){
   trigger=false;nextCheck=clockMs+60000;status.available=true;status.phase=UPDATE_AVAILABLE;
   const bool background=origin=="background-cancel"||origin=="background-memory";
@@ -457,6 +496,7 @@ int main(int argc,char** argv){
  rpc.reset();
  assert(responseBytes==0&&responseFrees==1&&ownedReleases==unsigned(owned));
   assert(workerAllocations<=notifications&&tlsDestructs==workerAllocations&&!tlsLive);
+ assert(!reservationLive&&reservationFrees==reservationAllocations);
  std::cout<<"PASS: updater handoff "<<label<<"\n";
 }
 '''
@@ -504,7 +544,7 @@ class UpdateHandoffTests(unittest.TestCase):
                 wire.replace('malloc(size)','trackedMalloc(size)').replace('free(bytes)','trackedFree(bytes)'))
             cpp, binary = directory/'test.cpp', directory/'test'
             artifact=source[source.index('bool lampAutomaticUpdateArtifactAllowed('):source.index('bool lampUpdatePolicySaveUncertain(')]
-            artifact=source[source.index('bool legacyAttemptMatches('):source.index('bool checkRelease(')]+artifact
+            artifact=source[source.index('bool legacyAttemptMatches('):source.index('// Keep manifest text/signature work')]+artifact
             manual_progress=source[source.index('void setLampManualUpdateCueProgress(uint32_t written,uint32_t total)'):source.index('void setLampUpdateRoute(uint8_t route)')]
             manual_progress=source[source.index('void beginLampManualUpdateCue()'):source.index('void setLampManualUpdateCueProgress(uint32_t written)')]+manual_progress
             cpp.write_text(FIXTURE+actual_phase+cue+'\n#define time fixtureTime\n'+worker+'\n#undef time\n'+request+public+ownership+artifact+manual_progress+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)

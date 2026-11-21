@@ -145,6 +145,7 @@ SCENARIOS = r'''
 #include <iostream>
 #include <limits>
 #include "LampControl.h"
+namespace LampModel {bool defaultMicrophoneInstalled(){return false;}}
 uint32_t millis(){return Fixture::now;}
 uint32_t lampRenderedFrames=100,lampMaxRenderUs=1500;
 bool following=false;uint8_t syncRole=0;bool syncPaused=false;

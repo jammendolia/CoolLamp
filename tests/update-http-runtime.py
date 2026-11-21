@@ -17,6 +17,7 @@ struct String:std::string{
  bool startsWith(const char* s)const{return compare(0,strlen(s),s)==0;}
  int indexOf(char c,size_t at=0)const{auto n=find(c,at);return n==npos?-1:int(n);}
  String substring(size_t at,size_t to=npos)const{return substr(at,to==npos?npos:to-at);}
+ void remove(unsigned at,unsigned count){erase(at,count);}
 };
 inline String operator+(const String& s,int n){return std::string(s)+std::to_string(n);}
 uint32_t millis();void vTaskDelay(unsigned);
@@ -25,7 +26,7 @@ TLS = r'''
 #pragma once
 #include <cstddef>
 #include <cstdint>
-using esp_err_t=int;constexpr int ESP_OK=0;
+using esp_err_t=int;constexpr int ESP_OK=0,ESP_ERR_INVALID_STATE=0x103;
 constexpr int ESP_TLS_ERR_SSL_WANT_READ=-0x6900,ESP_TLS_ERR_SSL_WANT_WRITE=-0x6880;
 enum esp_tls_conn_state_t{ESP_TLS_INIT,ESP_TLS_CONNECTING,ESP_TLS_HANDSHAKE,ESP_TLS_DONE};
 struct esp_tls_t{unsigned response=0;size_t cursor=0;uint32_t started=0;esp_tls_conn_state_t state=ESP_TLS_INIT;bool internalSets=true;};
@@ -70,18 +71,28 @@ FIXTURE = r'''
 #include "UpdateHttp.h"
 #include "LampUpdateControlPolicy.h"
 #include <lwip/sockets.h>
+#include <mbedtls/ssl.h>
 uint32_t clockMs=0,delayScale=1,connectMs=0,cancelAt=UINT32_MAX;
 unsigned initCalls=0,destroyCalls=0,connectCalls=0,readCalls=0,writeCalls=0;
 unsigned clearedSetBypasses=0;esp_tls_t* currentTls=nullptr;
 bool neverConnect=false,neverRead=false,neverWrite=false,initFails=false,oneByteWrite=false;
 bool wantReadOnce=false,wantWriteOnce=false;
 size_t freeHeap=65536,largest=32768,maxWrite=0;
+bool placementLive=false;uint8_t placementToken=0;size_t placementBytes=0;
 std::atomic<bool> cancel{false};
 std::vector<std::string> responses;
 uint32_t millis(){return clockMs;}
 void vTaskDelay(unsigned n){clockMs+=n*delayScale;if(cancelAt!=UINT32_MAX&&clockMs>=cancelAt)cancel=true;}
 size_t heap_caps_get_free_size(unsigned){return freeHeap;}
 size_t heap_caps_get_largest_free_block(unsigned){return largest;}
+void* heap_caps_malloc(size_t bytes,unsigned){
+ if(placementLive||freeHeap<bytes||largest<bytes)return nullptr;
+ placementLive=true;placementBytes=bytes;freeHeap-=bytes;largest-=bytes;return &placementToken;
+}
+void heap_caps_free(void* pointer){
+ assert(pointer==&placementToken&&placementLive);
+ freeHeap+=placementBytes;largest+=placementBytes;placementBytes=0;placementLive=false;
+}
 esp_tls_t* esp_tls_init(){++initCalls;if(initFails)return nullptr;auto* p=new esp_tls_t;p->response=initCalls-1;p->started=clockMs;currentTls=p;return p;}
 void esp_tls_conn_destroy(esp_tls_t* p){assert(p);++destroyCalls;delete p;}
 int esp_tls_get_conn_state(esp_tls_t* p,esp_tls_conn_state_t* state){*state=p->state;return ESP_OK;}
@@ -112,7 +123,7 @@ int esp_tls_conn_new_async(const char* host,int length,int port,const esp_tls_cf
   }
   p->state=ESP_TLS_HANDSHAKE;return 0;
  }
- assert(p->state==ESP_TLS_HANDSHAKE&&cfg->non_block);p->state=ESP_TLS_DONE;return 1;
+ assert(p->state==ESP_TLS_HANDSHAKE&&cfg->non_block);mbedtls_ssl_config config{};assert(cfg->crt_bundle_attach(&config)==ESP_OK);p->state=ESP_TLS_DONE;return 1;
 }
 int esp_tls_conn_write(esp_tls_t*,const void*,size_t size){
  ++writeCalls;maxWrite=std::max(maxWrite,size);assert(size<=512);
@@ -194,9 +205,9 @@ class UpdateHttpRuntimeTests(unittest.TestCase):
             (folder/'Arduino.h').write_text(ARDUINO)
             (folder/'esp_tls.h').write_text(TLS)
             (folder/'lwip/sockets.h').write_text(SOCKETS)
-            (folder/'esp_heap_caps.h').write_text('#pragma once\n#include <cstddef>\nconstexpr unsigned MALLOC_CAP_8BIT=1;\nsize_t heap_caps_get_free_size(unsigned);size_t heap_caps_get_largest_free_block(unsigned);\n')
+            (folder/'esp_heap_caps.h').write_text('#pragma once\n#include <cstddef>\nconstexpr unsigned MALLOC_CAP_8BIT=1,MALLOC_CAP_INTERNAL=2;\nsize_t heap_caps_get_free_size(unsigned);size_t heap_caps_get_largest_free_block(unsigned);void* heap_caps_malloc(size_t,unsigned);void heap_caps_free(void*);\n')
             (folder/'esp_crt_bundle.h').write_text('#pragma once\ninline int esp_crt_bundle_attach(void*){return 0;}\n')
-            (folder/'mbedtls/ssl.h').write_text('#pragma once\nstruct mbedtls_ssl_config{};\ninline void mbedtls_ssl_conf_ciphersuites(mbedtls_ssl_config*,const int*){}\n')
+            (folder/'mbedtls/ssl.h').write_text('#pragma once\n#define MBEDTLS_ERR_SSL_ALLOC_FAILED -0x7F00\nstruct mbedtls_ssl_config{};\ninline void mbedtls_ssl_conf_ciphersuites(mbedtls_ssl_config*,const int*){}\n')
             (folder/'mbedtls/ssl_ciphersuites.h').write_text('#pragma once\n#define MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 1\n#define MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 2\n')
             cpp, binary = folder/'test.cpp', folder/'test'
             cpp.write_text(FIXTURE)

@@ -8,9 +8,9 @@
 #include "../LampControl.h"
 #include "../LampSync.h"
 
-bool edison=true,microphone=true,following=false;
-uint8_t lampAvailableEffectCount(){return edison?52:microphone?47:38;}
-bool lampEffectAvailable(uint8_t mode){return mode>=1&&mode<=52&&(mode<=38||(mode<=47&&microphone)||(mode>=48&&edison&&(mode!=52||microphone)));}
+bool edison=true,microphone=true,following=false,sonata=false;
+uint8_t lampAvailableEffectCount(){return LampEffects::catalogCount({microphone,following,edison,uint8_t(following?2:0),microphone,sonata});}
+bool lampEffectAvailable(uint8_t mode){return LampEffects::available(mode,{microphone,following,edison,uint8_t(following?2:0),microphone,sonata});}
 bool lampSyncFollowing(){return following;}
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 LampControlState control{48,100,true};
@@ -22,7 +22,7 @@ bool optionsAre(uint8_t mode,LampEffectOptions expected){const auto o=getLampEff
 void reload(){loadLampColors();loadLampAppearanceV2();}
 
 int main(){
-  static_assert(LAMP_EFFECT_COUNT==47&&LAMP_BASE_EFFECT_COUNT==38&&LAMP_EFFECT_CAPACITY==52);
+  static_assert(LAMP_EFFECT_COUNT==47&&LAMP_BASE_EFFECT_COUNT==38&&LAMP_EFFECT_CAPACITY==55);
   // Opaque existing startup/hardware/ownership bytes may never be rewritten.
   Preferences::storage["settings"]={1,17,33,55,89,144};
   Preferences::storage["geometryV1"]={1,81,0};
@@ -103,6 +103,22 @@ int main(){
   assert(!setLampColor(48,1,2,3)&&!resetLampColor(48)&&!saveLampColors());
   assert(saveLampAppearanceAccepted(48,8100)==LampAppearanceResult::Failed);
   following=false;
+  edison=false;sonata=true;
+  const auto edisonSaved=Preferences::storage["look48"];
+  for(uint8_t mode=53;mode<=55;++mode){
+    assert(colorIs(mode,{1,185,110,255})&&optionsAre(mode,{50,100,1,60,185,255}));
+    assert(setLampColor(mode,mode,77,99));
+  }
+  // ID55 occupies the high bit of the last available appended dirty byte.
+  assert(saveLampColors());reload();
+  for(uint8_t mode=53;mode<=55;++mode){
+    assert(colorIs(mode,{1,mode,77,99}));
+    assert(Preferences::storage["look"+std::to_string(mode)].size()==24);
+  }
+  assert(Preferences::storage["look48"]==edisonSaved);
+  assert(!setLampColor(48,1,2,3)&&!setLampColor(56,1,2,3));
+  assert(resetLampColor(55)&&saveLampColors());reload();
+  assert(colorIs(55,{1,185,110,255}));
   assert(Preferences::storage["settings"]==startup&&Preferences::storage["geometryV1"]==geometry&&Preferences::storage["factoryV2"]==factory);
   std::cout<<"PASS Edison look48..52 roundtrip, first-save failure/retry/reboot, commit/reply-loss reconciliation, capability admission, legacy blob bytes and startup/hardware independence.\n";
 }

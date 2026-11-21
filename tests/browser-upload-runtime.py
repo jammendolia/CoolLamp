@@ -20,7 +20,7 @@ exec(compile(ast.Module(body=nodes, type_ignores=[]), 'verified_source', 'exec')
 source = scope['verified_source'](ROOT / '.build/tls-library')
 network = (ROOT / 'LampNetwork.ino').read_text()
 production = network[network.index('void clearLampBrowserUpload('):network.index('void beginLampNetwork()')]
-context = network[network.index('struct LampBrowserUpload {'):network.index('const char* const effectNames[]')]
+context = network[network.index('struct LampBrowserUpload {'):network.index('static_assert(LampEffects::Count')]
 spec=importlib.util.spec_from_file_location('browser_lifecycle_extract',ROOT/'tests/control-http-adapter.py')
 extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
 updater=(ROOT/'LampUpdate.cpp').read_text()

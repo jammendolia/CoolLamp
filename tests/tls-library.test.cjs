@@ -15,7 +15,7 @@ test('exports select SSL members and reject empty or changed symbol sets', () =>
 });
 test('ABI probes require all structures and exact SDK and reduced buffer sizes', () => {
   const sdk = {probe_context:128,probe_config:256,probe_session:64,probe_input:16384,probe_output:16384};
-  const small = {...sdk,probe_output:4096};
+  const small = {...sdk,probe_output:2048};
   tls.validateLayouts(sdk,small);
   for(const key of Object.keys(sdk)) {
     const missing = {...sdk}; delete missing[key];
@@ -23,7 +23,7 @@ test('ABI probes require all structures and exact SDK and reduced buffer sizes',
     assert.throws(()=>tls.validateLayouts(sdk,{...small,[key]:0}));
   }
   assert.throws(()=>tls.validateLayouts({},{}));
-  assert.deepEqual(tls.layout('00000000 00004000 B probe_input\r\n00004000 00001000 B probe_output\r\n'),{probe_input:16384,probe_output:4096});
+  assert.deepEqual(tls.layout('00000000 00004000 B probe_input\r\n00004000 00000800 B probe_output\r\n'),{probe_input:16384,probe_output:2048});
 });
 
 test('unsupported target, source digest, and corrupt cache fail closed', async () => {
