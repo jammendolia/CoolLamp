@@ -6,6 +6,11 @@ on:
         description: 'Version in LampVersion.h (major.minor.patch)'
         required: true
         type: string
+      create_draft:
+        description: 'Create a GitHub release draft after validation'
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: write
 concurrency:
@@ -114,6 +119,7 @@ jobs:
           python3 tools/test-experience-contracts.py
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
+        if: ${{ inputs.create_draft }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
