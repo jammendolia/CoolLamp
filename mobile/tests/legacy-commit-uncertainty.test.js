@@ -15,7 +15,7 @@ const snapshot=(flag=true)=>({identity,observedAt:Date.now(),firmware:{version,p
  receiver:flag?{phase:5,error:6,committed:false,commitUnconfirmed:true,session:9,size:512,offset:512}:{phase:0,error:0,committed:false,session:0,size:0,offset:0}});
 function context(storage,{flag=true}={}){
  const feedback=new FirmwareFeedback(storage),receipt=feedback.get(identity),entry={id:identity,deviceId:'saved'};let reads=0;
- const ctx={AbortController,document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+ const ctx={AbortController,document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),cardFirmwareMessages:new Map(),cardFirmwareMessageOwners:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   firmwareAttempts:{get:()=>null,pending:()=>[]},legacyFirmwareReceipts:new Map(),firmwareFeedback:feedback,cardFirmwareUnconfirmed:new Map(),store:{items:[entry]},
   mergedLampEntries:()=>[entry],groupRemovedIds:new Set(),pauseFirmwareBackgroundWork(){},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,
   renderLamps(){},renderFirmware(){},validFirmwareVersion:value=>value===version,rememberVerifiedUpdateResult(result){assert.notEqual(result?.outcome,'installed');},

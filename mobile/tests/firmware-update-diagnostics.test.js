@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
 import {FirmwareUpdateDiagnostics,safeFirmwareTransferMetrics,FIRMWARE_UPDATE_DIAGNOSTICS_KEY,FIRMWARE_UPDATE_DIAGNOSTIC_STAGES,FIRMWARE_UPDATE_DIAGNOSTIC_CODES} from '../src/firmware-update-diagnostics.js';
-import {FirmwareAttemptJournal,FIRMWARE_ATTEMPT_KEY} from '../src/firmware-attempt.js';
+import {FirmwareAttemptJournal,FIRMWARE_ATTEMPT_KEY,reconcileFirmwareAttempt} from '../src/firmware-attempt.js';
+import {FirmwareFeedback} from '../src/firmware-feedback.js';
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
+import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation} from '../src/firmware-update-ui.js';
 
 const id='f0b950b2f180',other='74b950b2f180',attempt='a'.repeat(32),nextAttempt='b'.repeat(32);
 function memory(){
@@ -26,6 +30,31 @@ test('safe stage evidence and completion survive reload as immutable copies in a
  assert.equal(report.record.stages[0].workerAdmissionPhase,6);assert.equal(report.record.stages[0].httpStage,2);
  assert(report.record.updatedAt>=report.record.startedAt);assert.equal(report.record.outcome,'transferStopped');
  assert(storage.writes.every(row=>row.key===FIRMWARE_UPDATE_DIAGNOSTICS_KEY));assert.equal(storage.getItem(FIRMWARE_ATTEMPT_KEY),null);
+});
+
+test('production standalone reconciliation replaces an old app-hidden unresolved diagnostic with transferStopped',async()=>{
+ const storage=memory(),journal=new FirmwareAttemptJournal(storage),diagnostics=new FirmwareUpdateDiagnostics(storage),feedback=new FirmwareFeedback(storage);
+ const selected=parsePhoneManifest('COOLLAMP-OTA-1\n1.15.1\nesp32c3\ndual-ota-2031616\n512\n'+'a'.repeat(64)+'\n');
+ let owner=journal.begin(id,selected);owner=journal.beforeWrite(owner,{operation:1,session:9});owner=journal.beforeWrite(owner,{operation:6,session:9});
+ owner=journal.beforeWrite(owner,{operation:3,session:9});journal.noteProgress(owner,{offset:232});owner=journal.get(id);
+ diagnostics.begin(id,owner.attemptId);diagnostics.failure(id,owner.attemptId,{stopReason:'app-hidden',updateDiagnostic:{phase:2,error:0,metadataIssued:true,beginAttempted:true,commitAttempted:false,acknowledgedBytes:232}},
+  {stage:'bluetooth-transfer',safety:owner});diagnostics.complete(id,owner.attemptId,{outcome:'unresolved',offset:232});
+ const entry={id,deviceId:'saved'},snapshot={identity:id,observedAt:Date.now(),firmware:{version:'1.15.0',phase:0},
+  state:{mode:1,effectCount:47,brightness:55,power:true},receiver:{phase:0,error:0,committed:false,session:0,size:0,offset:0}};
+ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8'),start=source.indexOf('async function checkLampUpdateResult('),end=source.indexOf('\nconst firmwareResultCheckAt=',start);
+ const ownedMessage='Checking that your lamp is unchanged…',messageOwners=new Map([[id,Object.freeze({attemptId:owner.attemptId,message:ownedMessage})]]),cardMessages=new Map([[id,ownedMessage]]);
+ const context={AbortController,document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,bluetoothFirmwareTask:null,fleetUpdating:false,
+  firmwareAttempts:journal,legacyFirmwareReceipts:new Map(),firmwareFeedback:feedback,firmwareDiagnostics:diagnostics,cardFirmwareUnconfirmed:new Map([[id,selected.version]]),
+  mergedLampEntries:()=>[entry],groupRemovedIds:new Set(),pauseFirmwareBackgroundWork(){},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,
+  renderLamps(){},renderFirmware(){},rememberVerifiedUpdateResult(){},reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
+  acquireCardFirmwareBluetooth:async()=>({lamp:{identity:id,readFirmwareUpdateSnapshot:async()=>snapshot},release:async()=>{}})};
+ runInNewContext(source.slice(start,end)+';globalThis.check=checkLampUpdateResult;',context);
+ const result=await context.check(entry);assert.equal(result.outcome,'transferStopped');assert.equal(journal.get(id).outcome,'transferStopped');
+ assert.equal(diagnostics.get(id).outcome,'transferStopped');assert.equal(JSON.parse(diagnostics.report(id)).record.outcome,'transferStopped');
+ assert.equal(context.cardFirmwareUnconfirmed.has(id),false);assert.equal(cardMessages.has(id),false);assert.equal(messageOwners.has(id),false);
+ const next=journal.begin(id,selected),unrelated='Fleet authorization could not be refreshed.';
+ messageOwners.set(id,Object.freeze({attemptId:next.attemptId,message:'Owned reconciliation copy.'}));cardMessages.set(id,unrelated);
+ await context.check(entry);assert.equal(cardMessages.get(id),unrelated);assert.equal(messageOwners.has(id),false);
 });
 
 for(const [error,code]of [

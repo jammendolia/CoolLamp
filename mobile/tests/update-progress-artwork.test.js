@@ -127,7 +127,7 @@ test('the production pair adapter retains an immutable connected target rather t
 
 // Run the production card renderer. This small DOM supplies presentation APIs
 // only; no rewritten update logic or connection/firmware handler is substituted.
-function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false,updateSource=null,receiverSnapshot=null,receivedAt=Date.now(),connectionMessage=null}={}){
+function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false,updateSource=null,receiverSnapshot=null,receivedAt=Date.now(),connectionMessage=null,feedbackMessage=null,cardMessage=null,cardMessageOwned=true}={}){
  let document;
  class Element{
   constructor(tag='div'){this.tag=tag;this.dataset={};this.attributes={};this.children=[];this.className='';this.textContent='';this.innerHTML='';this.value=undefined;this.disabled=false;this.open=false;this.parent=null;
@@ -151,7 +151,7 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
  const roots=new Map(['discover','lampList','emptyLamps','v2LampSearch'].map(name=>[name,new Element()]));roots.get('v2LampSearch').value='';
  document={activeElement:null,createElement:tag=>new Element(tag)};
  const entries=[{id,name:'My lamp',phoneLampStyle:style},...(second?[{id:other,name:'Other lamp',phoneLampStyle:'helix'}]:[])];
- const tasks=new Map(task?[[id,{stage,cancelRequested,reconciling,updateSource}]]:[]),feedback=new Map([[id,firmwareUpdatePresentation({stage,progress})]]),statuses=new Map(observation?[[id,observation]]:[]);
+ const tasks=new Map(task?[[id,{stage,cancelRequested,reconciling,updateSource}]]:[]),feedback=new Map([[id,feedbackMessage?{message:feedbackMessage}:firmwareUpdatePresentation({stage,progress})]]),statuses=new Map(observation?[[id,observation]]:[]);
  const cancel=new Element('button');cancel.className='secondary v2-card-update-cancel';cancel.dataset.connection='cancel-update';let cancelClicks=0;cancel.onclick=()=>cancelClicks++;
  if(focusCancel){const old=new Element('article');old.className='lamp-entry';old.dataset.lampId=id;old.append(cancel);document.activeElement=cancel;}
  const control=connection=>{const element=new Element('button');element.dataset.connection=connection;return element;};
@@ -165,7 +165,7 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
   lampFirmwareLabel:()=> 'Firmware 1.15.1',firmware:receiverSnapshot?.firmware??null,firmwareReceivedAt:receiverSnapshot?receivedAt:0,validFirmwareVersion:()=>false,
   publicFirmwareRun:null,publicFirmwareError:'',publicFirmwareFresh:false,updateDiagnosticDetails:()=>null,
   wifiCardIcon:()=>control('wifi'),bluetoothCardIcon:()=>control('bluetooth'),groupCardIcon:()=>control('group'),bluetoothFirmwareOwner:()=>null,
-  removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(connectionMessage?[[id,connectionMessage]]:[]),cardFirmwareMessages:new Map(),meshNetworkMessages:new Map(),
+  removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(connectionMessage?[[id,connectionMessage]]:[]),cardFirmwareMessages:new Map(cardMessage?[[id,cardMessage]]:[]),cardFirmwareMessageOwners:new Map(cardMessage&&cardMessageOwned?[[id,{message:cardMessage}]]:[]),meshNetworkMessages:new Map(),
   fleetCardStatus:()=>null,activeCardBluetooth:()=>false,renderFleetControls(){}};
  runInNewContext(illustration+'\n'+updateView+'\n'+render+'\nthis.render=renderLamps;',context);context.render();
  const card=key=>roots.get('lampList').children.find(value=>value.dataset.lampId===key);
@@ -213,6 +213,18 @@ test('a stale connection timeout is hidden during every active update state and 
  assert(!messages(fixture({task:false,pending:true,connectionMessage:timeout})).includes(timeout));
  const receiverSnapshot={deviceId:id,firmware:{updateContractVersion:2,receiver:true,phase:3,route:1,progress:50,writtenOffset:500,totalBytes:1000}};
  assert(!messages(fixture({task:false,receiverSnapshot,connectionMessage:timeout})).includes(timeout));
+});
+
+test('a fresh retry preflight message replaces stale terminal feedback immediately',()=>{
+ const view=fixture({task:true,stage:undefined,feedbackMessage:'The transfer stopped. Your lamp is still on its previous firmware.',cardMessage:'Checking the current public release…'});
+ const messages=view.card.querySelectorAll('.lamp-update-status').map(value=>value.textContent);
+ assert.deepEqual(messages,['Checking the current public release…']);
+});
+
+test('an unrelated late card message cannot mask active update feedback',()=>{
+ const view=fixture({feedbackMessage:'Sending the update to your lamp…',cardMessage:'Fleet authorization could not be refreshed.',cardMessageOwned:false});
+ const messages=view.card.querySelectorAll('.lamp-update-status').map(value=>value.textContent);
+ assert.deepEqual(messages,['Sending the update to your lamp…']);
 });
 
 test('unknown card designs stay generic and rendering retains the same Cancel control and focus',()=>{

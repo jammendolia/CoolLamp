@@ -25,7 +25,7 @@ function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVers
   showModal(){calls.push(['confirmation',this.children[0].children[0].textContent,this.children[0].children[1].textContent]);onConfirm?.(context);queueMicrotask(()=>{this.returnValue=accept?'update':'cancel';this.close();});}});
  const context={AbortController,Error,Map,parsePhoneManifest,compareFirmwareVersions,validFirmwareVersion,availableCardRelease,updateCardFirmware,FirmwareScreenAwake,
   firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,acknowledgedBluetoothUpdateSource,entry,calls,publicFirmware:publicRelease,publicFirmwareFresh:fresh,publicFirmwareError:'',
-  firmwareAttempts:journal,legacyFirmwareReceipts:new Map(),cardFirmwareTasks:tasks,cardFirmwareUnconfirmed:new Map(),cardFirmwareMessages:new Map(),
+  firmwareAttempts:journal,legacyFirmwareReceipts:new Map(),cardFirmwareTasks:tasks,cardFirmwareUnconfirmed:new Map(),cardFirmwareMessages:new Map(),cardFirmwareMessageOwners:new Map(),
   groupRemovedIds:new Set(),removedAccessoryIds:new Set(),phonePlatform:platform,store:{items:[saved]},mergedLampEntries:()=>context.store.items,
   cardInstalledVersion:()=>installed,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,
   busy:false,connecting:false,bluetoothFirmwareTask:null,fleetUpdating:false,bluetoothFirmwareConnectionSerial:0,

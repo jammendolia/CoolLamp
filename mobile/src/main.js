@@ -89,7 +89,7 @@ let firmwareBackgroundGeneration=0;
 let foregroundConnectionHold=null;
 let publicFirmware=null,publicFirmwareCheckedAt=0,publicFirmwareRun=null,publicFirmwareFresh=false,publicFirmwareError='',publicFirmwareExpiry=null;
 const publicFirmwareCache=new FirmwareReleaseCache(CapacitorHttp);
-const cardFirmwareTasks=new Map(),cardFirmwareMessages=new Map(),cardFirmwareUnconfirmed=new Map();
+const cardFirmwareTasks=new Map(),cardFirmwareMessages=new Map(),cardFirmwareMessageOwners=new Map(),cardFirmwareUnconfirmed=new Map();
 const cardConnectionMessages=new Map();
 const firmwareFeedback=new FirmwareFeedback(localStorage);
 const firmwareAttempts=new FirmwareAttemptJournal(localStorage);
@@ -150,7 +150,7 @@ async function credential(id, value) {
   return {value:sessionPasswords.get(id)||''};
 }
 const firmwareFleetTrust=new FirmwareFleetTrust({credential,getPairedLamps:()=>store.items.filter(entry=>entry.deviceId)});
-function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
+function provisionFirmwareFleet(transport){if(!isNative)return;void firmwareFleetTrust.provision(transport).catch(error=>{cardFirmwareMessageOwners.delete(transport.identity);cardFirmwareMessages.set(transport.identity,error.message);renderLamps();});}
 function focusSettingsSection(section=settingsView){
   const target={lighting:'page-light',overview:'lampSummary',design:'lampStyleForm',hardware:'hardwareForm',network:'networkSettings',updates:'firmwareControls'}[section];
   const panel=target?$(target):null;if(!panel||panel.hidden)return false;
@@ -1289,6 +1289,8 @@ async function checkLampUpdateResult(entry){
  const modern=firmwareAttempts.get(entry.id),legacy=legacyFirmwareReceipts.get(entry.id),attempt=modern||legacy;
  if(!attempt||!legacy&&!firmwareAttempts.pending().some(value=>value.identity===entry.id)||document.hidden||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating)return;
  const task={id:entry.id,entry:{...entry},path:'bluetooth',reconciling:true,abort:new AbortController()};cardFirmwareTasks.set(entry.id,task);pauseFirmwareBackgroundWork();
+ const messageOwner=cardFirmwareMessageOwners.get(entry.id);
+ if(messageOwner&&messageOwner.attemptId===attempt.attemptId){if(cardFirmwareMessages.get(entry.id)===messageOwner.message)cardFirmwareMessages.delete(entry.id);cardFirmwareMessageOwners.delete(entry.id);}
  const current=()=>cardFirmwareTasks.get(entry.id)===task&&!task.abort.signal.aborted&&mergedLampEntries().some(value=>value.id===entry.id&&value.deviceId===entry.deviceId)&&!groupRemovedIds.has(entry.id);
  task.isCurrent=current;task.attempt=attempt;task.feedback=firmwareFeedback.begin(entry.id,{preservePending:Boolean(legacy)});
  const progress=value=>{if(!current())return;firmwareFeedback.update(task.feedback,firmwareUpdatePresentation(value));renderLamps();};
@@ -1300,7 +1302,13 @@ async function checkLampUpdateResult(entry){
    legacy.commitUnconfirmed=true;
    firmwareFeedback.markCommitUnconfirmed(entry.id,{targetVersion:legacy.targetVersion});
   }
-  if(legacy){if(result.outcome==='installed'&&!legacy.commitUnconfirmed&&result.commitUnconfirmed!==true)legacyFirmwareReceipts.delete(entry.id);}else firmwareAttempts.settle(attempt,result);
+  if(legacy){if(result.outcome==='installed'&&!legacy.commitUnconfirmed&&result.commitUnconfirmed!==true)legacyFirmwareReceipts.delete(entry.id);}else{
+   firmwareAttempts.settle(attempt,result);
+   // Diagnostics are explanatory only, but they must follow the authoritative
+   // reconciliation result so an old app-hidden record does not keep claiming
+   // that a safely stopped transfer is unresolved.
+   firmwareDiagnostics.complete(entry.id,attempt.attemptId,result);
+  }
   rememberVerifiedUpdateResult(entry.id,result);
   const pending=legacyFirmwareReceipts.has(entry.id)||firmwareAttempts.pending().some(value=>value.identity===entry.id),version=attempt.version||attempt.targetVersion;
   if(pending)cardFirmwareUnconfirmed.set(entry.id,version);else cardFirmwareUnconfirmed.delete(entry.id);
@@ -1331,22 +1339,47 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePend
 async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,approvedRoute=null,approvedVersion=null}={}){
  if(legacyFirmwareReceipts.has(entry.id)||firmwareAttempts.pending().some(value=>value.identity===entry.id))return checkLampUpdateResult(entry);
  if(connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id))return;
- const displayed=publicFirmwareFresh?availableCardRelease(cardInstalledVersion(entry),publicFirmware):null;if(cardFirmwareUnconfirmed.has(entry.id))return;
+ // This map mirrors a real pending journal/legacy receipt and is not update
+ // authority. If both authoritative stores are already terminal, retire a
+ // stale UI fence instead of silently ignoring Try again.
+ cardFirmwareUnconfirmed.delete(entry.id);
+ cardFirmwareMessageOwners.delete(entry.id);
+ const displayed=publicFirmwareFresh?availableCardRelease(cardInstalledVersion(entry),publicFirmware):null;
  const task={id:entry.id,entry:{...entry},abort:new AbortController()};let routeFollowup,confirmedReleaseVersion=null;cardFirmwareTasks.set(entry.id,task);pauseFirmwareBackgroundWork();renderLamps();
- const current=()=>cardFirmwareTasks.get(entry.id)===task&&mergedLampEntries().some(value=>value.id===entry.id&&value.deviceId===entry.deviceId&&value.address===entry.address)&&!groupRemovedIds.has(entry.id);
+ const setTaskMessage=(message,{reconciliation=false}={})=>{cardFirmwareMessageOwners.set(entry.id,Object.freeze({task,message,...(reconciliation&&task.attempt?{attemptId:task.attempt.attemptId}:{})}));cardFirmwareMessages.set(entry.id,message);};
+ const currentEntry=()=>mergedLampEntries().find(value=>value.id===entry.id&&value.deviceId===entry.deviceId);
+ const current=()=>{
+  const live=currentEntry();
+  return cardFirmwareTasks.get(entry.id)===task&&!task.abort.signal.aborted&&Boolean(live)&&live.address===entry.address&&!groupRemovedIds.has(entry.id);
+ };
+ const explainInactiveTask=()=>{
+  if(cardFirmwareTasks.get(entry.id)!==task)return;
+  // Once an attempt exists, even a read-only reconciliation must own the
+  // outcome copy. Never replace it with a preflight-only no-send claim.
+  if(task.attempt)return;
+  const reason=task.abort.signal.reason;
+  const message=task.abort.signal.aborted?
+   (reason==='app-hidden'?'Update check stopped when CoolLamp left the screen. Nothing was sent. Tap Update to try again.':'Update check stopped. Nothing was sent. Tap Update to try again.'):
+   currentEntry()&&!groupRemovedIds.has(entry.id)?'This lamp’s connection changed while its update was being checked. Tap Update again. Nothing was sent.':'This lamp is no longer available. No update was started.';
+  setTaskMessage(message);status(message);renderLamps();
+ };
  task.isCurrent=current;
  try{
-  cardFirmwareMessages.set(entry.id,'Checking the current public release…');renderLamps();
-  const manifest=await refreshPublicFirmware({force:true});if(!current())return;
+  setTaskMessage('Checking the current public release…');renderLamps();
+  const manifest=await refreshPublicFirmware({force:true});if(!current()){explainInactiveTask();return;}
   if(!manifest)throw Error('Could not verify the current public release. Nothing was sent. '+publicFirmwareError);
   const installed=cardInstalledVersion(entry);if(!validFirmwareVersion(installed))throw Error('Could not verify this lamp’s installed version. Reconnect to the lamp before updating.');
-  if(allowReinstall&&(installed!==manifest.version||!cardReinstallTarget(entry))){cardFirmwareMessages.set(entry.id,'The current software or this lamp’s authorization changed. Check its update before reinstalling. Nothing was sent.');return;}
+  if(allowReinstall&&(installed!==manifest.version||!cardReinstallTarget(entry))){setTaskMessage('The current software or this lamp’s authorization changed. Check its update before reinstalling. Nothing was sent.');return;}
   const release=availableCardRelease(installed,manifest)||(allowReinstall&&installed===manifest.version?manifest:null);
-  if(!release){cardFirmwareMessages.set(entry.id,'Public firmware '+manifest.version+' verified. This lamp is already up to date.');return;}
+  if(!release){setTaskMessage('Public firmware '+manifest.version+' verified. This lamp is already up to date.');return;}
    confirmedReleaseVersion=release.version;const requestedRoute=bluetoothOnly||!entry.address?'phone':'wifi';
    const routeApproved=approvedVersion===release.version&&approvedRoute===requestedRoute;
-   if(!routeApproved&&(!await cardUpdateConfirmation(entry,release,{previousVersion:displayed?.version,bluetoothOnly,reinstall:allowReinstall})||!current())){if(current())cardFirmwareMessages.set(entry.id,'Update cancelled. No update started.');return;}
-  task.feedback=firmwareFeedback.begin(entry.id);cardFirmwareMessages.delete(entry.id);
+   if(!routeApproved){
+    const accepted=await cardUpdateConfirmation(entry,release,{previousVersion:displayed?.version,bluetoothOnly,reinstall:allowReinstall});
+    if(!accepted){if(current())setTaskMessage('Update cancelled. No update started.');else explainInactiveTask();return;}
+    if(!current()){explainInactiveTask();return;}
+   }
+  task.feedback=firmwareFeedback.begin(entry.id);cardFirmwareMessages.delete(entry.id);cardFirmwareMessageOwners.delete(entry.id);
   task.screenAwake??=new FirmwareScreenAwake({native,enabled:isNative});
   await task.screenAwake.acquire({signal:task.abort.signal,isCurrent:current});
   const progress=value=>{if(!current())return;const path=value.stage==='wifi'?'wifi':'bluetooth';if(path==='bluetooth'&&task.path!=='bluetooth')++bluetoothFirmwareConnectionSerial;task.path=path;task.stage=value.stage;task.updateSource=acknowledgedBluetoothUpdateSource(value,release.version);if(document.hidden&&task.path==='bluetooth'&&!task.transport?.bluetoothUpdate?.commitAttempted&&!task.backgroundPaused){const sender=task.transport?.bluetoothUpdate;if(sender)void cancelBluetoothFirmware('app-hidden',entry.id).catch(()=>{});else task.abort.abort('app-hidden');}const presentation=task.cancelRequested&&!['checking-result','reconciling','restarting'].includes(value.stage)?{message:'Stopping the update…'}:firmwareUpdatePresentation(value);task.progress=presentation.progress;const key=value.stage+':'+presentation.progress+':'+presentation.message+':'+task.updateSource;if(task.presentationKey===key)return;task.presentationKey=key;firmwareFeedback.update(task.feedback,presentation);renderLamps();renderFirmware();};
@@ -1375,7 +1408,7 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
     const message=routeFollowup==='cancel'?'The Internet download did not start. Checking that your lamp is unchanged…':'Checking your lamp before continuing…';
     if(task.attempt)firmwareDiagnostics.complete(entry.id,task.attempt.attemptId,{outcome:pending?'unresolved':'installationNotStarted'});
     if(task.feedback)firmwareFeedback.update(task.feedback,{message,terminal:true,...(pending?{outcome:'verification-required',targetVersion:task.attempt?.version}:{})});
-    if(current()){cardFirmwareMessages.set(entry.id,message);status(message);}
+    if(current()){setTaskMessage(message,{reconciliation:true});status(message);}
    }else{
   const pending=firmwareAttempts.pending().some(value=>value.identity===entry.id);
   if(pending)cardFirmwareUnconfirmed.set(entry.id,task.attempt?.version);else cardFirmwareUnconfirmed.delete(entry.id);
@@ -1384,7 +1417,7 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
   if(task.attempt&&!pending&&firmwareDiagnostics.get(entry.id)?.stages.length)message=firmwareUpdateResultPresentation({outcome:'installationNotStarted'},firmwareDiagnostics.get(entry.id));
   if(!pending&&error.staleVersion===true&&error.confirmed===true&&error.installationNotStarted===true&&error.uncertain===false)message=error.message;
   if(task.feedback)firmwareFeedback.update(task.feedback,{message,terminal:true,...(pending?{outcome:'verification-required',targetVersion:task.attempt?.version}:{})});
-  if(current()){cardFirmwareMessages.set(entry.id,message);status(message);}
+  if(current()){setTaskMessage(message,{reconciliation:pending});status(message);}else explainInactiveTask();
    }
  }
  finally{await task.screenAwake?.release();if(cardFirmwareTasks.get(entry.id)===task)cardFirmwareTasks.delete(entry.id);renderLamps();renderPower();renderFirmware();refreshLampFirmware();}
@@ -2154,7 +2187,12 @@ function renderLamps() {
     remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};links.append(remove);
     const feedback=document.createElement('div');feedback.className='v2-card-feedback';
     if(task||pendingUpdate||receiverUpdate)readiness.textContent=task?.reconciling||pendingUpdate&&!task?'Checking your update':'Updating your lamp';
-    const messages=[cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate?null:cardConnectionMessages.get(entry.id),updateFeedback?.message||cardFirmwareMessages.get(entry.id),meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
+    // Only copy owned by this update generation may outrank retained feedback.
+    // Unrelated late card messages (for example fleet provisioning) cannot
+    // hide active or terminal transfer/reconciliation feedback.
+    const cardFirmwareMessage=cardFirmwareMessages.get(entry.id),messageOwner=cardFirmwareMessageOwners.get(entry.id);
+    const firmwareMessage=messageOwner?.message===cardFirmwareMessage?cardFirmwareMessage:updateFeedback?.message||cardFirmwareMessage;
+    const messages=[cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate?null:cardConnectionMessages.get(entry.id),firmwareMessage,meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
     for(const messageText of [...new Set(messages)]){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=messageText;feedback.append(message);}
     if(sourceLabel){const source=document.createElement('small');source.className='v2-card-update-source';source.textContent=sourceLabel;feedback.append(source);}
     const automaticMessage=!task&&!pendingUpdate&&!receiverUpdate?automaticUpdateCardMessage(observation,entry.id):null;
@@ -2845,7 +2883,7 @@ async function removeLampFromPhone(entry,confirmed=false) {
     if(entry.deviceId)removedAccessoryIds.add(entry.deviceId.toLowerCase());
     await credential(entry.id,'');
     store.remove(entry.id);discovered=discovery.forget(entry.id);fleetStatuses.delete(entry.id);
-    firmwareFeedback.remove(entry.id);cardFirmwareMessages.delete(entry.id);cardFirmwareUnconfirmed.delete(entry.id);cardConnectionMessages.delete(entry.id);
+    firmwareFeedback.remove(entry.id);cardFirmwareMessages.delete(entry.id);cardFirmwareMessageOwners.delete(entry.id);cardFirmwareUnconfirmed.delete(entry.id);cardConnectionMessages.delete(entry.id);
     if(localStorage.getItem('coollamp-selected')===entry.id)localStorage.removeItem('coollamp-selected');
     if(savedDevice&&(savedDevice.lampId===entry.id||savedDevice.deviceId===entry.deviceId)){savedDevice=null;localStorage.removeItem('coollamp-device');$('reconnect').hidden=true;}
     if(selected?.id===entry.id)selected=null;
