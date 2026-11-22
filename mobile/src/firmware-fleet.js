@@ -404,8 +404,12 @@ export class FirmwareFleet {
       await this.wait(lamp, run);
       fw = null;
     }
+    // Preserve why the bounded observation window ended. These flags are
+    // diagnostic evidence only: they never authorize a retry or make an
+    // uncertain mutation safe for another transport.
     throw failure(updating ? 'Update not confirmed before the timeout. The install request was not repeated.' :
-      check.uncertain ? 'Update check was not confirmed. The request was not repeated.' : 'Lamp update check timed out.');
+      check.uncertain ? 'Update check was not confirmed. The request was not repeated.' : 'Lamp update check timed out.',
+      {timeout:true,...(check.uncertain?{uncertain:true}:{})});
   }
   async updateLamp(entry,expectedVersion){
     if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update is already running.');

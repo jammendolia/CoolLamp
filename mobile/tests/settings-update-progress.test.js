@@ -193,6 +193,29 @@ test('a complete phone download stays indeterminate and does not borrow a lamp-w
  assertNeutral(f);assert.equal(f.$('settingsUpdateSource').hidden,true);
 });
 
+test('a direct Wi-Fi task surfaces fresh fleet phases and trusted install progress',()=>{
+ const f=fixture({stage:'wifi',path:'wifi'});
+ f.statuses.set(id,{state:'checking',message:'Checking for updates…'});f.render();
+ assert.equal(f.view().stage,'checking');assert.equal(f.$('settingsUpdateMessage').textContent,'Checking for updates…');assertNeutral(f);
+
+ f.statuses.set(id,{state:'updating',message:'Installing firmware…',progress:42,verified:true,fresh:true});f.render();
+ assert.equal(f.view().stage,'transferring');assert.equal(f.$('settingsUpdateMessage').textContent,'Installing firmware…');
+ assert.equal(f.$('settingsUpdateProgress').value,42);assert.equal(f.$('settingsUpdatePercent').textContent,'42%');
+
+ f.statuses.set(id,{state:'restarting',message:'Lamp is restarting…',progress:100,verified:true,fresh:true});f.render();
+ assert.equal(f.view().stage,'restarting');assert.equal(f.$('settingsUpdateMessage').textContent,'Lamp is restarting…');assertNeutral(f);
+});
+
+test('a direct Wi-Fi task never borrows unverified or stale fleet progress',()=>{
+ for(const observation of [
+  {state:'updating',message:'Installing firmware…',progress:70,verified:false,fresh:true},
+  {state:'updating',message:'Installing firmware…',progress:70,verified:true,fresh:false}
+ ]){
+  const f=fixture({stage:'wifi',path:'wifi'});f.statuses.set(id,observation);f.render();
+  assert.equal(f.$('settingsUpdateMessage').textContent,'Installing firmware…');assertNeutral(f);
+ }
+});
+
 test('restart, cancellation and pending final receipts never become a hundred-percent success icon',()=>{
  for(const kind of ['restarting','cancel','pending','reconciling']){
   const f=fixture({percent:100});

@@ -11,8 +11,11 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
  const fleetReceiver=observation?.receiverSnapshot&&!['restarting','failed','offline','unsupported','needs-password','pending'].includes(observation.state)?
   observedReceiverUpdate(observation.receiverSnapshot,target,{...proof,observedAt:observation.receiverSnapshotAt}):null;
  const receiver=!pending&&!task?.cancelRequested&&!task?.reconciling&&(!task||task.stage==='wifi')&&(selectedReceiver||fleetReceiver);
+ const directWifi=Boolean(!pending&&task?.stage==='wifi'&&!task.reconciling&&!task.cancelRequested);
+ const fleetState=directWifi&&['checking','updating','restarting'].includes(observation?.state)?observation.state:null;
+ const fleetProgress=directWifi&&fleetState==='updating'&&observation.verified===true&&observation.fresh===true?percent(observation.progress):undefined;
  const written=!pending&&task&&!task.reconciling&&!task.cancelRequested&&task.stage==='transferring'?percent(feedback?.progress):
-  !task&&!pending&&observation?.state==='updating'&&observation.verified===true&&observation.fresh===true?percent(observation.progress):undefined;
+  fleetProgress??(!task&&!pending&&observation?.state==='updating'&&observation.verified===true&&observation.fresh===true?percent(observation.progress):undefined);
  const progress=written??receiver?.progress;
  const source=task?.stage==='transferring'&&progress!==undefined?task.updateSource:receiver?.source;
  const active=Boolean(task||pending||receiver||['updating','restarting'].includes(observation?.state));
@@ -23,10 +26,11 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
   ['transferStopped','installationNotStarted'].includes(attempt.outcome);
  if(terminal)return {active:false,terminal:true,attemptId:attempt.attemptId,outcome:attempt.outcome,
   percent:undefined,source:undefined,sourceLabel:'',receiver:null,stage:'stopped',message:feedback.message,keepOpen:false};
- const stage=pending||task?.reconciling?'checking-result':task?.cancelRequested?'stopping':observation?.state==='restarting'?'restarting':
-  receiver||progress!==undefined?'transferring':task?task.stage||'preparing':'checking-result';
+ const stage=pending||task?.reconciling?'checking-result':task?.cancelRequested?'stopping':fleetState==='restarting'||observation?.state==='restarting'?'restarting':
+  receiver||progress!==undefined?'transferring':fleetState||(task?task.stage||'preparing':'checking-result');
  const pendingMessage=pending&&feedback?.terminal&&['verification-required','verified-restarting'].includes(feedback.outcome)&&typeof feedback.message==='string'?feedback.message:null;
- const message=pendingMessage||(stage==='stopping'?'Stopping the update. We’ll check your lamp…':firmwareUpdatePresentation({stage,progress}).message);
+ const fleetMessage=fleetState&&typeof observation?.message==='string'&&observation.message.length>0&&observation.message.length<=160?observation.message:null;
+ const message=pendingMessage||(stage==='stopping'?'Stopping the update. We’ll check your lamp…':fleetMessage||firmwareUpdatePresentation({stage,progress}).message);
  return {active,percent:progress,source,sourceLabel:updateSourceLabel(source),receiver:receiver||null,stage,message,
   keepOpen:Boolean(task?.path==='bluetooth'&&!task.reconciling&&!task.cancelRequested)};
 }

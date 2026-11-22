@@ -98,7 +98,22 @@ test('actual card updater forwards its current-owner guard to both new and reuse
  await updateCardFirmware(options);assert.deepEqual(calls,['ble','release','download','ble','transfer','release']);
 });
 test('manifest refresh is GET only, bypasses cached Latest redirects and does not download firmware',async()=>{const calls=[];const http={request:async options=>{calls.push(options);return {status:200,data:new TextEncoder().encode(manifest.text)};}};assert.equal((await fetchPhoneManifest(http)).version,'1.12.0');assert.equal(calls.length,1);assert.equal(calls[0].method,'GET');const url=new URL(calls[0].url);assert(url.pathname.endsWith('latest/download/coollamp-manifest.txt'));assert(url.searchParams.has('check'));assert.equal(calls[0].headers['Cache-Control'],'no-cache, no-store, max-age=0');});
+test('manifest refresh watchdog releases an unresolved native HTTP request',async()=>{let calls=0;await assert.rejects(
+ fetchPhoneManifest({request:()=>{++calls;return new Promise(()=>{});}},{timeoutMs:10}),
+ error=>error.timeout===true&&/took too long/.test(error.message));assert.equal(calls,1);
+});
+test('a synchronous native request failure still removes the watchdog abort listener',async()=>{
+ let added,removed=0;const signal={aborted:false,addEventListener(_type,listener){added=listener;},removeEventListener(_type,listener){if(listener===added)removed++;}};
+ await assert.rejects(fetchPhoneManifest({request:()=>{throw Error('Native request failed.');}},{signal,timeoutMs:10}),/Native request failed/);
+ assert.equal(removed,1);
+});
 test('pinned phone download rejects altered release manifest before fetching image',async()=>{const calls=[];const http={request:async options=>{calls.push(options.url);return {status:200,data:new TextEncoder().encode(manifest.text.replace('288','289'))};}};await assert.rejects(downloadPhoneFirmware(http,{expectedManifest:manifest}),/release changed/);assert.equal(calls.length,1);assert(calls[0].includes('firmware-v1.12.0/coollamp-manifest.txt'));});
+test('image download relies on native idle timing instead of an absolute JavaScript watchdog',async()=>{let calls=0;
+ const image=new Uint8Array(288);image[0]=0xe9;new DataView(image.buffer).setUint16(12,5,true);new DataView(image.buffer).setUint32(32,0xabcd5432,true);
+ const downloaded=await downloadPhoneFirmware({request:()=>++calls===1?Promise.resolve({status:200,data:new TextEncoder().encode(manifest.text)}):new Promise(resolve=>setTimeout(()=>resolve({status:200,data:image}),20))},
+  {expectedManifest:manifest,manifestTimeoutMs:5,digest:async()=>manifest.sha256});
+ assert.equal(downloaded.image,image);assert.equal(calls,2);
+});
 
 test('forced public check replaces stale 1.14 offer with 1.15 independently of lamp diagnostics',async()=>{
  let now=1000;const calls=[],releases=['1.14.0','1.15.0'];

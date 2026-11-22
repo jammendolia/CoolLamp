@@ -66,7 +66,9 @@ test('Wi-Fi firmware failure exposes only bounded updater admission and HTTP sta
 });
 test('single card update does not mark an uncertain update check safe for BLE',async()=>{
  const {fleet,devices,calls,entries}=setup();devices[0].request=async(options,path)=>{if(path==='/api/firmware/check')throw Error('Reply lost.');};
- await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>!error.safeBluetoothFallback);
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>{
+  assert.equal(error.safeBluetoothFallback,undefined);assert.equal(error.uncertain,true);assert.equal(error.timeout,true);return true;
+ });
  assert.equal(writes(calls).length,1);
 });
 test('single card update rejects an available release changing before the install token read',async()=>{

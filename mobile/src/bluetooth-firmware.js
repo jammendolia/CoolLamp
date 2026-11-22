@@ -12,6 +12,7 @@ const notificationWaitMs=160,notificationMissLimit=3,pollInitialDelayMs=40,pollM
 // A replacement connection can poll; it must not race an older listener cleanup.
 const notificationOwners=new WeakMap();
 let downloadRequestSequence=0;
+const manifestWatchdogMs=30000,maximumManifestWatchdogMs=110000;
 async function boundedNotification(operation,milliseconds){
  let timer;
  try{return await Promise.race([operation,new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(error('Bluetooth notification operation timed out.')),milliseconds);})]);}
@@ -38,19 +39,25 @@ function binary(value){
 export function firmwareBase64(bytes){
  let text='';for(let offset=0;offset<bytes.length;offset+=16384)text+=String.fromCharCode(...bytes.subarray(offset,offset+16384));return btoa(text);
 }
-function phoneRequest(http,{isCurrent=()=>true,signal}={}){
+function phoneRequest(http,{isCurrent=()=>true,signal,timeoutMs=manifestWatchdogMs}={}){
  const request=async url=>{
   if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
   if(signal?.aborted)throw error('Firmware download cancelled.',{cancelled:true});
-  let abort;
+  if(timeoutMs!==null&&(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>maximumManifestWatchdogMs))throw error('Invalid firmware request timeout.');
+  let abort,timer;
   const stopped=new Promise((resolve,reject)=>{abort=()=>reject(error('Firmware download cancelled.',{cancelled:true}));signal?.addEventListener('abort',abort,{once:true});});
+  const requests=[stopped];
+  if(timeoutMs!==null)requests.push(new Promise((resolve,reject)=>{timer=setTimeout(()=>reject(error('The firmware request took too long. Check this phone’s internet connection and try again.',{timeout:true})),timeoutMs);}));
   let response;
   // Native URL caches and GitHub's Latest redirect can outlive a new release.
   // Every manifest/image request is uncached; pinned tag + hash still decides
   // which bytes may be sent to the lamp.
   const requestUrl=new URL(url);requestUrl.searchParams.set('check',Date.now().toString(36)+'-'+(++downloadRequestSequence).toString(36));
-  try{response=await Promise.race([http.request({url:requestUrl.href,method:'GET',headers:{'Cache-Control':'no-cache, no-store, max-age=0',Pragma:'no-cache'},responseType:'arraybuffer',connectTimeout:15000,readTimeout:90000}),stopped]);}
-  finally{signal?.removeEventListener('abort',abort);}
+  try{
+   requests.unshift(http.request({url:requestUrl.href,method:'GET',headers:{'Cache-Control':'no-cache, no-store, max-age=0',Pragma:'no-cache'},responseType:'arraybuffer',connectTimeout:15000,readTimeout:90000}));
+   response=await Promise.race(requests);
+  }
+  finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);}
   if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
   if(response.status!==200)throw error('The phone could not download the firmware. Check cellular data or Wi-Fi.');
   if(response.url){const final=new URL(response.url);if(final.protocol!=='https:'||!['github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'].includes(final.hostname))throw error('Unexpected firmware download address.');}
@@ -61,24 +68,28 @@ function phoneRequest(http,{isCurrent=()=>true,signal}={}){
 export async function fetchPhoneManifest(http,options={}){
  return parsePhoneManifest(new TextDecoder().decode(await phoneRequest(http,options)(root+'latest/download/coollamp-manifest.txt')));
 }
-export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()=>true,signal,digest,expectedManifest}={}){
- const request=phoneRequest(http,{isCurrent,signal});
+export async function downloadPhoneFirmware(http,{onProgress=()=>{},isCurrent=()=>true,signal,digest,expectedManifest,manifestTimeoutMs=manifestWatchdogMs}={}){
+ // A manifest is tiny, so silence is bounded here. Firmware images use the
+ // native readTimeout instead: it is an idle timeout that resets as bytes
+ // arrive, whereas an outer wall-clock timer could abort a valid slow image.
+ const manifestRequest=phoneRequest(http,{isCurrent,signal,timeoutMs:manifestTimeoutMs}),imageRequest=phoneRequest(http,{isCurrent,signal,timeoutMs:null});
  onProgress({stage:'downloading',progress:0});
- const manifest=expectedManifest?parsePhoneManifest(new TextDecoder().decode(await request(root+'download/firmware-v'+parsePhoneManifest(expectedManifest.text).version+'/coollamp-manifest.txt'))):await fetchPhoneManifest(http,{isCurrent,signal});
+ const manifest=expectedManifest?parsePhoneManifest(new TextDecoder().decode(await manifestRequest(root+'download/firmware-v'+parsePhoneManifest(expectedManifest.text).version+'/coollamp-manifest.txt'))):await fetchPhoneManifest(http,{isCurrent,signal,timeoutMs:manifestTimeoutMs});
  if(expectedManifest&&manifest.text!==expectedManifest.text)throw error('The selected release changed. Refresh before updating.');
- const image=await request(root+'download/firmware-v'+manifest.version+'/CoolLamp.ino.bin');
+ const image=await imageRequest(root+'download/firmware-v'+manifest.version+'/CoolLamp.ino.bin');
  if(image.length!==manifest.size||image[0]!==0xe9||new DataView(image.buffer,image.byteOffset,image.byteLength).getUint16(12,true)!==5||new DataView(image.buffer,image.byteOffset,image.byteLength).getUint32(32,true)!==0xabcd5432)throw error('Downloaded file is not a compatible ESP32-C3 application.');
  const checksum=digest?await digest(image):[...new Uint8Array(await crypto.subtle.digest('SHA-256',image))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
  if(checksum!==manifest.sha256)throw error('Downloaded firmware failed verification. Nothing was sent to the lamp.');
  if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
  onProgress({stage:'downloaded',progress:100,version:manifest.version});return {manifest,image};
 }
-export async function downloadSignedPhoneFirmware(http,{publisherTrust,onProgress=()=>{},isCurrent=()=>true,signal,expectedManifest}={}){
- const request=phoneRequest(http,{isCurrent,signal});onProgress({stage:'downloading',progress:0});
- const selected=expectedManifest?await verifySignedManifest(expectedManifest.text,publisherTrust):await verifySignedManifest(new TextDecoder().decode(await request(root+'latest/download/coollamp-manifest-v2.txt')),publisherTrust);
- const text=new TextDecoder().decode(await request(root+'download/firmware-v'+selected.version+'/coollamp-manifest-v2.txt'));
+export async function downloadSignedPhoneFirmware(http,{publisherTrust,onProgress=()=>{},isCurrent=()=>true,signal,expectedManifest,manifestTimeoutMs=manifestWatchdogMs}={}){
+ // Keep the signed package path on the same idle-vs-wall-clock contract.
+ const manifestRequest=phoneRequest(http,{isCurrent,signal,timeoutMs:manifestTimeoutMs}),imageRequest=phoneRequest(http,{isCurrent,signal,timeoutMs:null});onProgress({stage:'downloading',progress:0});
+ const selected=expectedManifest?await verifySignedManifest(expectedManifest.text,publisherTrust):await verifySignedManifest(new TextDecoder().decode(await manifestRequest(root+'latest/download/coollamp-manifest-v2.txt')),publisherTrust);
+ const text=new TextDecoder().decode(await manifestRequest(root+'download/firmware-v'+selected.version+'/coollamp-manifest-v2.txt'));
  if(text!==selected.text)throw error('The selected signed release changed. Refresh before updating.');
- const image=await request(root+'download/firmware-v'+selected.version+'/CoolLamp.ino.bin');
+ const image=await imageRequest(root+'download/firmware-v'+selected.version+'/CoolLamp.ino.bin');
  const prepared=await prepareSignedPhoneFirmware(text,image,publisherTrust);
  if(!isCurrent())throw error('Firmware download cancelled.',{cancelled:true});
  onProgress({stage:'downloaded',progress:100,version:selected.version});return prepared;

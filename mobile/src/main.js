@@ -1399,13 +1399,30 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
 }
 function cardFirmwareButton(entry){
  const unresolved=legacyFirmwareReceipts.has(entry.id)||firmwareAttempts.pending().some(value=>value.identity===entry.id);
- const release=publicFirmwareFresh?availableCardRelease(cardInstalledVersion(entry),publicFirmware):null,checking=!release&&Boolean(fleetRefreshRun||publicFirmwareRun);
+ const release=publicFirmwareFresh?availableCardRelease(cardInstalledVersion(entry),publicFirmware):null,checking=!release&&Boolean(publicFirmwareRun);
+ const retryChoice=release?cardFirmwareRetryChoice(entry,release):null;
  const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-firmware-update v2-card-update';button.dataset.connection='update';
  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="'+(release?'M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4':'M20 7v5h-5M20 12a8 8 0 1 0-2.35 5.65')+'"/></svg><span>'+(release?'Update':checking?'Checking…':'Check')+'</span>';
  button.title=release?'Update '+(entry.name||'lamp')+' to firmware '+release.version:'Check firmware updates for '+(entry.name||'lamp');button.setAttribute('aria-label',button.title);
  if(unresolved){button.querySelector('span').textContent='Check update';button.title='Check '+(entry.name||'lamp')+' update';button.setAttribute('aria-label',button.title);}
+ else if(retryChoice){button.querySelector('span').textContent='Update';button.title='Choose how to update '+(entry.name||'this lamp')+' to firmware '+release.version;button.setAttribute('aria-label',button.title);}
  else if(release&&firmwareFeedback.get(entry.id)?.terminal&&firmwareFeedback.get(entry.id)?.outcome!=='installed')button.querySelector('span').textContent='Try again';
- button.disabled=Boolean((!unresolved&&checking)||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id));button.onclick=unresolved?()=>checkLampUpdateResult(entry):release?()=>updateLampCard(entry):()=>{refreshPublicFirmware({force:true});refreshLampFirmware();};return button;
+ button.disabled=Boolean((!unresolved&&checking)||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id));button.onclick=unresolved?()=>checkLampUpdateResult(entry):retryChoice?()=>retryCardFirmware(entry,release,retryChoice):release?()=>updateLampCard(entry):()=>{refreshPublicFirmware({force:true});refreshLampFirmware();};return button;
+}
+function cardFirmwareRetryChoice(entry,release){
+ const attempt=firmwareAttempts.get?.(entry.id);
+ if(!release||attempt?.identity!==entry.id||attempt.version!==release.version||attempt.outcome!=='installationNotStarted'||attempt.reinstall===true||attempt.wifiCheckAttempted!==true||
+  ['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','dataIssued','cancelAttempted','resumeAttempted'].some(field=>attempt[field]===true)||
+  !cardPhoneFirmwareAvailable(entry))return null;
+ return Object.freeze({fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:true,confirmed:true,uncertain:false,
+  installationNotStarted:true,safeBluetoothFallback:false,failedPath:'wifi'});
+}
+async function retryCardFirmware(entry,release,evidence){
+ const route=await cardUpdateRouteChoice(entry,evidence);
+ if(!['wifi','phone'].includes(route))return;
+ const current=mergedLampEntries().find(value=>value.id===entry.id&&value.deviceId===entry.deviceId&&value.address===entry.address);
+ if(!current)return;
+ return updateLampCard(current,{bluetoothOnly:route==='phone',approvedRoute:route,approvedVersion:release.version});
 }
 function cardFirmwareCancelButton(entry){
  const task=cardFirmwareTasks.get(entry.id)||bluetoothFirmwareTask?.id===entry.id&&bluetoothFirmwareTask;
