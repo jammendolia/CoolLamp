@@ -15,6 +15,15 @@ const newer = (a, b) => {
   return false;
 };
 const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
+// A failed GET-only identity read can offer the phone route only when the
+// failure itself proves that no request could have reached an update endpoint.
+// This marker never starts a fallback; callers still require explicit consent
+// and a protected Bluetooth identity/status preflight before sending data.
+const safeReadFallback = (error, run) => Boolean(!run?.cancelled && error &&
+  !error.uncertain && !error.identity && !error.needsPassword && !error.authentication && !error.unauthorized &&
+  !error.stale && !error.cancelled && !error.confirmed && !error.httpStatus && !error.unsupported &&
+  !error.redirect && !error.redirected &&
+  (error.offline || error.invalidRead || error.missingUpdateToken));
 const boundedInteger=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 function firmwareFailureEvidence(value){
   const workerAdmissionPhase=value?.workerAdmission?.phase,httpStage=value?.httpStage,result={};
@@ -121,11 +130,12 @@ export class FirmwareFleet {
         {offline: !mutation, uncertain: mutation, cause: error, attemptedAt});
     } finally { clearTimeout(timer); }
     this.assertCurrent(lamp, run);
-    if (response?.url && response.url !== options.url) throw failure('Lamp redirected the request. Find it on Wi-Fi again.',{attemptedAt});
+    if (response?.url && response.url !== options.url) throw failure('Lamp redirected the request. Find it on Wi-Fi again.',{redirected:true,attemptedAt});
     if (response?.status === 401 || response?.status === 403) throw failure('Check this lamp’s access password.', {needsPassword: true,attemptedAt});
     if (!Number.isInteger(response?.status) || response.status < 200 || response.status >= 300) {
-      throw failure(response?.status >= 300 && response.status < 400 ? 'Lamp redirected the request. Find it on Wi-Fi again.' : 'Lamp rejected the firmware request.',
-        {httpStatus: response?.status, confirmed: true,attemptedAt});
+      const redirected=response?.status >= 300 && response.status < 400;
+      throw failure(redirected ? 'Lamp redirected the request. Find it on Wi-Fi again.' : 'Lamp rejected the firmware request.',
+        {httpStatus: response?.status, confirmed: true,...(redirected?{redirected:true}:{}),attemptedAt});
     }
     return response;
   }
@@ -282,12 +292,11 @@ export class FirmwareFleet {
     let identity;
     try { identity = await this.identify(lamp, run, true); }
     catch(error) {
+      this.assertCurrent(lamp,run);
       // This catch ends before the first check POST. A malformed/token-less
       // read or timeout cannot have started our update. Authentication,
       // identity, lifetime and uncertain execution failures never reroute.
-      if(allowPreflightFallback&&path==='/api/firmware/check'&&!run.cancelled&&
-        !error.uncertain&&!error.identity&&!error.needsPassword&&!error.stale&&!error.cancelled&&
-        (error.offline||error.invalidRead||error.missingUpdateToken))error.safeBluetoothFallback=true;
+      if(allowPreflightFallback&&path==='/api/firmware/check'&&safeReadFallback(error,run))error.safeBluetoothFallback=true;
       throw error;
     }
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
@@ -319,7 +328,13 @@ export class FirmwareFleet {
   }
   async updateOne(lamp, run) {
     this.emit(lamp, run, {state: 'checking', message: 'Checking for updates…', attemptedAt: this.now()});
-    let identity = await this.identify(lamp, run);
+    let identity;
+    try { identity = await this.identify(lamp, run); }
+    catch(error) {
+      this.assertCurrent(lamp, run);
+      if(safeReadFallback(error,run))error.safeBluetoothFallback=true;
+      throw error;
+    }
     this.live(lamp, run, identity, 'checking', 'Checking for updates…');
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if(identity.firmware.wifi===false)throw failure('This lamp is not connected to Wi-Fi.',{safeBluetoothFallback:true});
@@ -416,7 +431,7 @@ export class FirmwareFleet {
     if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))throw failure('Check the selected public release before updating.');
     this.cancelRefresh();const run=this.run();run.expectedVersion=expectedVersion;this.singleRuns.set(entry.id,run);
     try{
-      let lamp;try{lamp=await this.prepare(entry,run);await this.identify(lamp,run);}catch(error){if(error.offline||error.unsupported)error.safeBluetoothFallback=true;throw error;}
+      let lamp;try{lamp=await this.prepare(entry,run);await this.identify(lamp,run);}catch(error){if(safeReadFallback(error,run))error.safeBluetoothFallback=true;throw error;}
       return await this.updateOne(lamp,run);
     }catch(error){this.errorStatus(entry,run,error);throw error;}
     finally{if(this.singleRuns.get(entry.id)===run)this.singleRuns.delete(entry.id);}

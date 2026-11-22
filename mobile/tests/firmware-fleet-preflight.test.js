@@ -11,7 +11,7 @@ const reply=(data,status=200)=>({status,data:typeof data==='string'?data:JSON.st
 const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
 function fixture(count=1){
  let now=1000,entries=ids.slice(0,count).map((id,index)=>({id,address:'192.168.1.'+(20+index)}));
- const calls=[],changes=[],credentials=[],devices=entries.map(entry=>({...entry,firmware:status(),stateReads:0,diagnosticReads:0,handler:null}));
+ const calls=[],changes=[],credentials=[],beforeMutations=[],devices=entries.map(entry=>({...entry,firmware:status(),stateReads:0,diagnosticReads:0,handler:null}));
  const fleet=new FirmwareFleet({getLamps:()=>entries,credential:async id=>{credentials.push(id);return {value:'fixture-password'};},
   http:{request:async options=>{
    calls.push(options);const url=new URL(options.url),device=devices.find(value=>value.address===url.hostname);
@@ -26,9 +26,9 @@ function fixture(count=1){
    if(url.pathname==='/api/firmware/check'){device.firmware=status(1);return reply('Checking',202);}
    if(url.pathname==='/api/firmware/install'){device.firmware=status(3,'1.15.1');return reply('Installing',202);}
    assert.fail('Unexpected request.');
-  }},onStatus:(id,value)=>changes.push({id,...value}),now:()=>now,sleep:async ms=>{now+=ms;},
+  }},onStatus:(id,value)=>changes.push({id,...value}),now:()=>now,sleep:async ms=>{now+=ms;},beforeMutation:value=>beforeMutations.push(value),
   requestTimeout:5,pollInterval:5,checkTimeout:20,updateTimeout:30});
- return {fleet,calls,changes,credentials,devices,entries:()=>entries,setEntries:value=>entries=value,
+ return {fleet,calls,changes,credentials,beforeMutations,devices,entries:()=>entries,setEntries:value=>entries=value,
   update:()=>fleet.updateLamp({...entries[0]},'1.15.1')};
 }
 const posts=f=>f.calls.filter(call=>call.method==='POST').map(call=>new URL(call.url).pathname);
@@ -40,18 +40,56 @@ test('verified diagnostics plus hung initial token snapshot enables BLE fallback
  assert.deepEqual(posts(f),[]);assert.deepEqual(f.calls.map(call=>new URL(call.url).pathname),['/api/diagnostics','/api/diagnostics','/api/state']);
 });
 
+test('first diagnostics succeeds and a real second safe GET failure enables consent with no mutation boundary',async()=>{
+ for(const kind of ['offline','invalid-json']){
+  const f=fixture();f.devices[0].handler=(_options,path)=>{
+   if(path!=='/api/diagnostics'||f.devices[0].diagnosticReads!==2)return undefined;
+   return kind==='offline'?new Promise(()=>{}):reply('{"deviceId":');
+  };
+  await assert.rejects(f.update(),error=>error.safeBluetoothFallback===true&&
+   (kind==='offline'?error.offline===true:error.invalidRead===true));
+  assert.equal(f.devices[0].diagnosticReads,2);assert.equal(f.devices[0].stateReads,0);
+  assert.deepEqual(posts(f),[]);assert.deepEqual(f.beforeMutations,[]);
+ }
+});
+
+test('real second diagnostics exclusions never reroute or cross the mutation boundary',async()=>{
+ const cases=[
+  reply({deviceId:ids[1],firmware:status(),uptimeMs:100000}),
+  reply('Unauthorized',401),
+  reply('Moved',302),
+  {...reply({deviceId:ids[0],firmware:status(),uptimeMs:100000}),url:'https://example.com/api/diagnostics'}
+ ];
+ for(const value of cases){
+  const f=fixture();f.devices[0].handler=(_options,path)=>path==='/api/diagnostics'&&f.devices[0].diagnosticReads===2?value:undefined;
+  await assert.rejects(f.update(),error=>error.safeBluetoothFallback!==true);
+  assert.equal(f.devices[0].diagnosticReads,2);assert.deepEqual(posts(f),[]);assert.deepEqual(f.beforeMutations,[]);
+ }
+});
+
+for(const action of ['cancel','remove','address'])test('late real second diagnostics read after '+action+' cannot reroute or mutate',async()=>{
+ const f=fixture(),gate=deferred(),started=deferred();f.devices[0].handler=(_options,path)=>{
+  if(path==='/api/diagnostics'&&f.devices[0].diagnosticReads===2){started.resolve();return gate.promise;}
+ };
+ const pending=f.update();await started.promise;
+ if(action==='cancel')f.fleet.cancel();else if(action==='remove')f.setEntries([]);else f.setEntries([{...f.entries()[0],address:'192.168.1.29'}]);
+ gate.resolve(reply({deviceId:ids[0],firmware:status(),uptimeMs:100000}));
+ await assert.rejects(pending,error=>error.safeBluetoothFallback!==true&&(error.cancelled||error.stale));
+ assert.deepEqual(posts(f),[]);assert.deepEqual(f.beforeMutations,[]);
+});
+
 test('production card update requires consent after real fleet preflight fails before any POST',async()=>{
  const f=fixture(),events=[],image=new Uint8Array(512),digest=createHash('sha256').update(image).digest('hex');
  const manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.15.1\nesp32c3\ndual-ota-2031616\n512\n'+digest+'\n');
- f.devices[0].handler=(_,path)=>{events.push(path);if(path==='/api/state')return new Promise(()=>{});};
+ f.devices[0].handler=(_,path)=>{events.push(path);if(path==='/api/diagnostics'&&f.devices[0].diagnosticReads===2)return new Promise(()=>{});};
  const entry={...f.entries()[0],deviceId:'saved-authorized-peripheral'};let bluetoothAcquisitions=0,downloads=0;
  await assert.rejects(updateCardFirmware({entry,manifest,wifi:(target,version)=>f.fleet.updateLamp(target,version),
   acquireBluetooth:async()=>{bluetoothAcquisitions++;assert.fail('Phone fallback requires explicit consent.');},
   download:async()=>{downloads++;assert.fail('Phone download requires explicit consent.');}}),error=>error.confirmed===true&&
   error.uncertain===false&&error.installationNotStarted===true&&error.safeBluetoothFallback===false&&
   error.phoneFallbackAvailable===true&&error.directInternetRetryAvailable===true&&error.fallbackRequiresConsent===true&&error.failedPath==='wifi');
- assert.equal(bluetoothAcquisitions,0);assert.equal(downloads,0);assert.deepEqual(posts(f),[]);
- assert.deepEqual(events,['/api/diagnostics','/api/diagnostics','/api/state']);
+ assert.equal(bluetoothAcquisitions,0);assert.equal(downloads,0);assert.deepEqual(posts(f),[]);assert.deepEqual(f.beforeMutations,[]);
+ assert.deepEqual(events,['/api/diagnostics','/api/diagnostics']);
 });
 
 test('malformed initial read and missing boot token remain proven pre-POST failures',async()=>{

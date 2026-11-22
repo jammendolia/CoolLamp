@@ -17,6 +17,23 @@ test('known preflight failure gives one plain action and never asks users to cho
  const value=firmwareUpdateFailurePresentation(Error('Native operation error'));
  assert.match(value,/did not start/);assert.match(value,/Try again/);assert(!/reconnect|Bluetooth|Wi-Fi|Native/.test(value));
 });
+test('enumerated pre-attempt failures keep specific safe guidance without exposing supplied details',()=>{
+ const cases=[
+  ['public-release',/phone’s Internet connection/],
+  ['installed-version',/Connect to the lamp/],
+  ['screen-awake',/screen unlocked/]
+ ];
+ for(const [preflightFailure,expected] of cases){
+  const value=firmwareUpdateFailurePresentation(Object.assign(Error('private native and credential detail'),{preflightFailure}));
+  assert.match(value,expected);assert.match(value,/Nothing was sent/);assert(!value.includes('private'));
+  const pending=firmwareUpdateFailurePresentation(Object.assign(Error('private native and credential detail'),{preflightFailure}),{pending:true});
+  assert.match(pending,/We’ll check your lamp/);assert(!/Nothing was sent/.test(pending));assert(!pending.includes('private'));
+ }
+ for(const preflightFailure of ['native-private','',null]){
+  const value=firmwareUpdateFailurePresentation(Object.assign(Error('private native and credential detail'),{preflightFailure}));
+  assert.match(value,/did not start/);assert(!value.includes('private'));
+ }
+});
 test('a reconciled unsent Wi-Fi failure keeps the next explicit attempt on the Internet path',()=>{
  const value=firmwareUpdateResultPresentation({outcome:'installationNotStarted'},{stages:[{stage:'wifi-preflight',code:'wifi-check-rejected',metadataIssued:false,beginAttempted:false,commitAttempted:false,wifiInstallAttempted:false}]});
  assert.match(value,/retry/i);assert.match(value,/Internet download/);assert(!/phone will send|Bluetooth|reconnect|unchanged/.test(value));

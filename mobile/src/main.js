@@ -1367,8 +1367,8 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
  try{
   setTaskMessage('Checking the current public release…');renderLamps();
   const manifest=await refreshPublicFirmware({force:true});if(!current()){explainInactiveTask();return;}
-  if(!manifest)throw Error('Could not verify the current public release. Nothing was sent. '+publicFirmwareError);
-  const installed=cardInstalledVersion(entry);if(!validFirmwareVersion(installed))throw Error('Could not verify this lamp’s installed version. Reconnect to the lamp before updating.');
+  if(!manifest)throw Object.assign(Error('Could not verify the current public release. Nothing was sent. '+publicFirmwareError),{preflightFailure:'public-release'});
+  const installed=cardInstalledVersion(entry);if(!validFirmwareVersion(installed))throw Object.assign(Error('Could not verify this lamp’s installed version. Reconnect to the lamp before updating.'),{preflightFailure:'installed-version'});
   if(allowReinstall&&(installed!==manifest.version||!cardReinstallTarget(entry))){setTaskMessage('The current software or this lamp’s authorization changed. Check its update before reinstalling. Nothing was sent.');return;}
   const release=availableCardRelease(installed,manifest)||(allowReinstall&&installed===manifest.version?manifest:null);
   if(!release){setTaskMessage('Public firmware '+manifest.version+' verified. This lamp is already up to date.');return;}

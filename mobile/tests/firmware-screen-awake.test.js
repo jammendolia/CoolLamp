@@ -10,7 +10,7 @@ test('one Bluetooth attempt keeps the same lease across work and releases exactl
 test('Wi-Fi/web paths do not call the native screen API',async()=>{const native=receiver(),lease=new FirmwareScreenAwake({native,enabled:false,token});await lease.acquire();await lease.release();assert.deepEqual(native.calls,[]);});
 test('failed screen protection rejects before any transfer can be started and cleans up its token',async()=>{
  const calls=[],native={setFirmwareScreenAwake:async value=>{calls.push(value);if(value.enabled)throw Error('Not foreground.');return {active:false};}},lease=new FirmwareScreenAwake({native,token});
- await assert.rejects(lease.acquire(),/No firmware was sent.*screen unlocked/);assert.deepEqual(calls,[{token,enabled:true},{token,enabled:false}]);
+ await assert.rejects(lease.acquire(),error=>error.preflightFailure==='screen-awake'&&/No firmware was sent.*screen unlocked/.test(error.message));assert.deepEqual(calls,[{token,enabled:true},{token,enabled:false}]);
 });
 test('unconfirmed native protection cannot silently start an update',async()=>{const native={setFirmwareScreenAwake:async()=>({active:false})},lease=new FirmwareScreenAwake({native,token});await assert.rejects(lease.acquire(),/No firmware was sent/);});
 test('cancellation before acquisition performs no native action',async()=>{const native=receiver(),abort=new AbortController();abort.abort('app-hidden');await assert.rejects(new FirmwareScreenAwake({native,token}).acquire({signal:abort.signal}),error=>error.cancelled&&error.stopReason==='app-hidden');assert.deepEqual(native.calls,[]);});

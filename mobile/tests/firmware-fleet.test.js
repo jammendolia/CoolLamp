@@ -11,7 +11,7 @@ function setup(count = 1) {
   let entries = Array.from({length:count},(_,i)=>({id:ids[i]||(i+1).toString(16).padStart(12,'0'),address:`192.168.1.${20+i}`}));
   const devices = entries.map((lamp, i) => ({...lamp, firmware: status(), uptimeMs: 100,
     token: `token-${i}`, password: `password-${i}`, polls: [], diagnosticReads: 0}));
-  const calls = [], changes = [];
+  const calls = [], changes = [], beforeMutations=[];
   const http = {request: async options => {
     calls.push(options);
     const url = new URL(options.url), device = devices.find(lamp => new URL('http://' + lamp.address).hostname === url.hostname);
@@ -38,8 +38,8 @@ function setup(count = 1) {
   }};
   const fleet = new FirmwareFleet({http, credential: async id => ({value: devices.find(lamp => lamp.id === id)?.password || ''}),
     getLamps: () => entries, onStatus: (id, value) => changes.push({id, ...value}), now: () => now,
-    sleep: async ms => {now += ms;}, pollInterval: 5, checkTimeout: 30, updateTimeout: 80, healthyUptime: 35, requestTimeout: 1000});
-  return {fleet, devices, calls, changes, setEntries: values => {entries = values;}, entries: () => entries,
+    sleep: async ms => {now += ms;}, beforeMutation:value=>beforeMutations.push(value), pollInterval: 5, checkTimeout: 30, updateTimeout: 80, healthyUptime: 35, requestTimeout: 1000});
+  return {fleet, devices, calls, changes, beforeMutations, setEntries: values => {entries = values;}, entries: () => entries,
     setNow: value => {now = value;}};
 }
 const writes = calls => calls.filter(call => call.method === 'POST');
@@ -49,6 +49,58 @@ test('single card update marks a confirmed pre-install server failure safe for B
  const {fleet,devices,calls,entries}=setup();devices[0].polls=[{...status(),phase:5,error:3}];
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);
  assert.deepEqual(writes(calls).map(value=>new URL(value.url).pathname),['/api/firmware/check']);
+});
+test('a second GET-only identity failure can offer the explicit phone route without any POST',async()=>{
+ for(const fields of [{offline:true},{invalidRead:true},{missingUpdateToken:true}]){
+  const {fleet,calls,entries,beforeMutations}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+  fleet.identify=async(...args)=>{if(++reads===2)throw Object.assign(Error('private read failure'),fields);return identify(...args);};
+  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);
+  assert.equal(reads,2);assert.equal(writes(calls).length,0);assert.equal(beforeMutations.length,0);
+ }
+});
+test('unsafe second identity failures never authorize a phone-route choice',async()=>{
+ const failures=[{offline:true,uncertain:true},{offline:true,identity:true},{offline:true,needsPassword:true},
+  {offline:true,authentication:true},{offline:true,unauthorized:true},{offline:true,stale:true},{offline:true,cancelled:true},
+  {offline:true,confirmed:true},{offline:true,httpStatus:503},{offline:true,unsupported:true},
+  {offline:true,redirect:true},{offline:true,redirected:true}];
+ for(const fields of failures){
+  const {fleet,calls,entries}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+  fleet.identify=async(...args)=>{if(++reads===2)throw Object.assign(Error('private unsafe failure'),fields);return identify(...args);};
+  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback!==true);
+  assert.equal(reads,2);assert.equal(writes(calls).length,0);
+ }
+});
+test('cancelling during the second identity read never becomes fallback consent',async()=>{
+ const {fleet,calls,entries}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+ fleet.identify=async(...args)=>{if(++reads===2){fleet.cancel();throw Object.assign(Error('late offline read'),{offline:true});}return identify(...args);};
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.cancelled===true&&error.safeBluetoothFallback!==true);
+ assert.equal(writes(calls).length,0);
+});
+test('a safe third token GET failure can offer the explicit phone route without issuing the check POST',async()=>{
+ for(const fields of [{offline:true},{invalidRead:true},{missingUpdateToken:true}]){
+  const {fleet,calls,entries,beforeMutations}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+  fleet.identify=async(...args)=>{if(++reads===3)throw Object.assign(Error('private token read failure'),fields);return identify(...args);};
+  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);
+  assert.equal(reads,3);assert.equal(writes(calls).length,0);assert.equal(beforeMutations.length,0);
+ }
+});
+test('unsafe third token GET failures never authorize a phone route or issue the check POST',async()=>{
+ const failures=[{offline:true,uncertain:true},{offline:true,identity:true},{offline:true,needsPassword:true},
+  {offline:true,authentication:true},{offline:true,unauthorized:true},{offline:true,stale:true},{offline:true,cancelled:true},
+  {offline:true,confirmed:true},{offline:true,httpStatus:302},{offline:true,unsupported:true},
+  {offline:true,redirect:true},{offline:true,redirected:true}];
+ for(const fields of failures){
+  const {fleet,calls,entries}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+  fleet.identify=async(...args)=>{if(++reads===3)throw Object.assign(Error('private unsafe token failure'),fields);return identify(...args);};
+  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback!==true);
+  assert.equal(reads,3);assert.equal(writes(calls).length,0);
+ }
+});
+test('cancelling during the third token GET never becomes fallback consent or sends the check POST',async()=>{
+ const {fleet,calls,entries}=setup(),identify=fleet.identify.bind(fleet);let reads=0;
+ fleet.identify=async(...args)=>{if(++reads===3){fleet.cancel();throw Object.assign(Error('late offline token read'),{offline:true});}return identify(...args);};
+ await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.cancelled===true&&error.safeBluetoothFallback!==true);
+ assert.equal(writes(calls).length,0);
 });
 test('Wi-Fi firmware failure exposes only bounded updater admission and HTTP stage evidence',async()=>{
  for(const [workerAdmission,httpStage,expected]of [

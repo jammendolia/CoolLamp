@@ -60,7 +60,7 @@ test('changed public offer is not installed when its fresh confirmation is cance
  const ui=harness({accept:false});await ui.update();assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert.match(ui.cardMessages.values().next().value,/cancelled/);assert.equal(ui.tasks.size,0);
 });
 test('offline public check cannot install the old global or lamp-cached release',async()=>{
- const ui=harness({available:null});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert(ui.messages.some(message=>/did not start/.test(message)));assert.equal(ui.tasks.size,0);assert.equal(ui.attempts.pending().length,0);
+ const ui=harness({available:null});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert(ui.messages.some(message=>/current public release/.test(message)&&/Nothing was sent/.test(message)));assert.equal(ui.tasks.size,0);assert.equal(ui.attempts.pending().length,0);
 });
 test('a confirmed unstarted Wi-Fi failure transfers from the phone only after explicit consent',async()=>{
  const ui=harness({wifiFailure:Object.assign(Error('Offline'),{safeBluetoothFallback:true})});await ui.update();
@@ -128,7 +128,7 @@ test('a safely stopped app-hidden transfer can begin one fresh confirmed attempt
  assert.equal(ui.attempts.pending().length,0);assert.equal(ui.attempts.get('aabbccddeeff').outcome,'installed');
 });
 test('unknown installed version cannot be called up to date or begin an update',async()=>{
- const ui=harness({installed:null});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert(ui.messages.some(message=>/did not start/.test(message)));
+ const ui=harness({installed:null});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert(ui.messages.some(message=>/installed version/.test(message)&&/Nothing was sent/.test(message)));
 });
 test('lost Wi-Fi install acknowledgment never falls back or installs the confirmed release twice',async()=>{
  const ui=harness({wifiFailure:Object.assign(Error('Unconfirmed request'),{uncertain:true,safeBluetoothFallback:true})});await ui.update();

@@ -20,10 +20,16 @@ export function firmwareUpdateRouteChoicePresentation(error,name='This lamp'){
   retryLabel:'Try Internet again',phoneLabel:'Send from phone',cancelLabel:'Not now'});
 }
 export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
- const route=firmwareUpdateRouteChoicePresentation(error);
- if(route)return route.message;
  if(pending&&error?.stopReason==='app-hidden')return 'Sending stopped when CoolLamp left the screen. We’ll check your lamp when you return. Keep it powered.';
  if(pending)return 'The connection was lost. We’ll check your lamp when it is available. Keep it powered and nearby.';
+ const route=firmwareUpdateRouteChoicePresentation(error);
+ if(route)return route.message;
+ const preflightMessages={
+  'public-release':'Could not verify the current public release. Nothing was sent. Check your phone’s Internet connection, then tap Try again.',
+  'installed-version':'Could not verify this lamp’s installed version. Nothing was sent. Connect to the lamp, then tap Try again.',
+  'screen-awake':'Could not keep the phone’s screen awake. Nothing was sent. Keep CoolLamp open and the screen unlocked, then tap Try again.'
+ };
+ if(Object.hasOwn(preflightMessages,error?.preflightFailure))return preflightMessages[error.preflightFailure];
  if(error?.stopReason==='user')return 'Update cancelled. Nothing more will be sent to your lamp.';
  if(error?.stopReason==='app-hidden'||error?.cancelled)return 'The update stopped when the app closed. Keep CoolLamp open during updates.';
  if(error?.identity)return 'We found a different lamp. Your update was not sent. Check that the intended lamp is nearby.';

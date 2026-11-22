@@ -24,7 +24,9 @@ export class FirmwareScreenAwake {
     if(this.released||signal?.aborted||!isCurrent())throw cancelled(signal?.reason);
     if(value?.active!==true)throw Error('Screen protection was not confirmed.');
     return this;
-   }catch(error){await this.release();if(error.cancelled)throw error;throw Error('Could not keep the phone’s screen awake. No firmware was sent. Keep the app open and the screen unlocked, then try again.');}
+   }catch(error){await this.release();if(error.cancelled)throw error;throw Object.assign(
+    Error('Could not keep the phone’s screen awake. No firmware was sent. Keep the app open and the screen unlocked, then try again.'),
+    {preflightFailure:'screen-awake'});}
   })();return this.acquirePromise;
  }
  release(){
