@@ -164,12 +164,12 @@ test('notification receiver error stops the window and retains its original code
   assert(!receiver.operations.includes(4));
 });
 
-test('cancellation keeps its cause and releases only its current subscription',async()=>{
+test('app-hidden pause keeps its cause, releases its subscription and sends no receiver Cancel',async()=>{
   const receiver=new Receiver(),transfer=receiver.transfer();
   receiver.onWrite=async op=>{if(op===3&&receiver.dataOffsets.length===5)await transfer.cancel('app-hidden');};
   const failure=await failureOf(receiver,transfer);
   assert.equal(failure.stopReason,'app-hidden');assert.equal(failure.updateDiagnostic.acknowledgedBytes,1160);
-  assert.equal(receiver.stopCalls,1);assert.equal(receiver.operations.filter(op=>op===5).length,1);assert(!receiver.operations.includes(4));
+  assert.equal(receiver.stopCalls,1);assert.equal(receiver.operations.filter(op=>op===5).length,0);assert(!receiver.operations.includes(4));
 });
 
 test('user cancellation wakes an outstanding notification wait and captures written bytes before Cancel',async()=>{

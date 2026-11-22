@@ -22,7 +22,7 @@ class Receiver {
     assert.equal(characteristic, OTA_STATUS); ++this.reads; this.clock += 3;
     if (this.onRead) await this.onRead();
     const value = new DataView(new ArrayBuffer(20));
-    value.setUint8(0, 1); value.setUint8(1, this.s.phase); value.setUint8(2, this.s.error); value.setUint8(3, this.s.phase === 4 ? 1 : 0);
+    value.setUint8(0, 1); value.setUint8(1, this.s.phase); value.setUint8(2, this.s.error); value.setUint8(3, (this.s.phase === 4 ? 1 : 0) | (this.resumeSupported ? 4 : 0));
     for (const [at, key] of [[4, 'session'], [8, 'size'], [12, 'offset']]) value.setUint32(at, this.s[key], true);
     value.setUint16(16, this.s.ack, true); value.setUint16(18, 232, true); return value;
   }
@@ -32,7 +32,7 @@ class Receiver {
     if (op === 1) {
       assert.equal(value.getUint16(8, true), this.manifest.length);
       this.manifest.push(...new Uint8Array(value.buffer, value.byteOffset + 10, value.byteLength - 10));
-    } else if (op === 2) {
+    } else if (op === 2 || op === 6) {
       assert.equal(new TextDecoder().decode(new Uint8Array(this.manifest)), this.pkg.manifest.text);
       this.s.phase = 2; this.s.size = this.pkg.image.length;
     } else if (op === 3) {
@@ -56,7 +56,7 @@ async function failedTransfer(receiver, transfer) {
   assert(failure instanceof Error); return failure;
 }
 
-for (const [reason, message] of [['user', /you cancelled/], ['app-hidden', /app moved to the background/], ['transport-disconnect', /connection was closed/], ['target-changed', /selected lamp changed/]]) {
+for (const [reason, message] of [['user', /you cancelled/], ['transport-disconnect', /connection was closed/], ['target-changed', /selected lamp changed/]]) {
   test(`${reason} retains its first cause and acknowledged bytes through cleanup`, async () => {
     const receiver = new Receiver(), transfer = receiver.transfer();
     receiver.onData = async () => { if (receiver.dataOffsets.length === 5) await transfer.cancel(reason); };
@@ -75,6 +75,24 @@ for (const [reason, message] of [['user', /you cancelled/], ['app-hidden', /app 
     assert.equal(transfer.diagnostic().stopReason, reason); assert.equal(transfer.diagnostic().stopElapsedMs, first);
   });
 }
+
+test('app-hidden pauses locally without receiver Cancel or Finish and retains the exact resume lease', async () => {
+  const receiver = new Receiver(); receiver.resumeSupported = true;
+  const transfer = receiver.transfer(); let readsAtPause;
+  receiver.onData = async () => { if (receiver.dataOffsets.length === 5) { await transfer.cancel('app-hidden'); readsAtPause = receiver.reads; } };
+  let failure;
+  try { await transfer.send(receiver.pkg, {enableResume: true}); } catch (error) { failure = error; }
+  assert(failure instanceof Error); assert.equal(failure.stopReason, 'app-hidden');
+  // The fifth Data frame may have reached the receiver, but foreground code
+  // has not read its ACK yet. Report only the last status proved before pause;
+  // the fresh resume lease will adopt the receiver's newer offset later.
+  assert.equal(failure.updateDiagnostic.acknowledgedBytes, 928); assert.equal(failure.updateDiagnostic.progress, 45);
+  assert.equal(receiver.reads, readsAtPause, 'No diagnostic GATT read is queued while iOS is hiding the app.');
+  assert.equal(receiver.operations.filter(op => op === 5).length, 0); assert(!receiver.operations.includes(4));
+  assert.deepEqual(transfer.getResumeLease(), {session: transfer.session, version: receiver.pkg.manifest.version,
+    size: receiver.pkg.manifest.size, sha256: receiver.pkg.manifest.sha256});
+  assert.match(bluetoothFirmwareFailureMessage(failure), /app moved to the background/);
+});
 
 for (const reason of ['native-disconnect', 'connection-changed']) test(`${reason} fences the link without a diagnostic read or abort on its replacement`, async () => {
   const receiver = new Receiver(), transfer = receiver.transfer(); let readsAtStop;

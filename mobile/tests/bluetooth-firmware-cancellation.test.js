@@ -138,10 +138,12 @@ test('owner loss during Cancel fences its late ACK and all follow-up reads',asyn
  assert.equal(result.confirmed,false);assert.equal(result.ownerLost,true);assert.equal(receiver.reads.length,reads);noReplay(receiver);
 });
 
-test('app-hidden cancellation is best effort and does not claim foreground receipt confirmation',async()=>{
+test('app-hidden pauses locally without a receiver Cancel or foreground receipt claim',async()=>{
  const receiver=new Receiver({notifications:true}),{transfer,job}=await active(receiver);
  const result=await transfer.cancel('app-hidden');receiver.dataRelease.resolve();await job;
- assert.equal(result.confirmed,false);assert.equal(result.uncertain,true);assert.equal(result.lifetimeEnded,true);noReplay(receiver);
+ assert.equal(result.confirmed,false);assert.equal(result.uncertain,true);assert.equal(result.lifetimeEnded,true);assert.equal(result.paused,true);
+ assert.equal(receiver.frames.filter(row=>row.op===3).length,1);assert.equal(receiver.frames.filter(row=>row.op===5).length,0);
+ assert(!receiver.frames.some(row=>row.op===4));
 });
 
 test('Cancel before any updater frame proves no installation started without a native command',async()=>{

@@ -32,8 +32,8 @@ test('real native disconnect is recorded before identity and epoch are cleared',
 });
 test('app-hidden AbortSignal keeps its first stop cause and bounded receiver-confirmed offset',async t=>{
  const f=setup(),abort=new AbortController();t.after(()=>clearTimeout(f.lamp.controlTimer));const work=f.lamp.updateOverBluetooth(f.packageValue,()=>{},{signal:abort.signal});await f.paused;abort.abort('app-hidden');
- await f.lamp.bluetoothUpdate.cancel('app-hidden');f.release();await assert.rejects(work,error=>error.updateDiagnostic?.stopReason==='app-hidden'&&error.updateDiagnostic.acknowledgedBytes===1160);
- assert.equal(f.writes.filter(op=>op===5).length,1);assert(!f.writes.includes(4));
+ await f.lamp.bluetoothUpdate.cancel('app-hidden');f.release();await assert.rejects(work,error=>error.updateDiagnostic?.stopReason==='app-hidden'&&error.updateDiagnostic.acknowledgedBytes===928);
+ assert.equal(f.writes.filter(op=>op===5).length,0);assert(!f.writes.includes(4));
 });
 test('a user Cancel keeps that reason if the native disconnect callback follows it',async t=>{
  const f=setup(),abort=new AbortController();t.after(()=>clearTimeout(f.lamp.controlTimer));const work=f.lamp.updateOverBluetooth(f.packageValue,()=>{},{signal:abort.signal});await f.paused;abort.abort('user');await f.lamp.bluetoothUpdate.cancel('user');f.lamp.disconnected('target');f.release();

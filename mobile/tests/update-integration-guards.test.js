@@ -62,3 +62,29 @@ test('automatic recovery rotates between unreachable lamps even when the first 4
  context.resume();context.performance.now=()=>65000;context.resume();context.performance.now=()=>130000;context.resume();context.performance.now=()=>195000;context.resume();
  assert.deepEqual(calls,[...ids,identity]);context.document.hidden=true;context.resume();assert.equal(calls.length,4);
 });
+test('background lifecycle preserves an active sender task but aborts non-resumable preflight work',async()=>{
+ const first=source.indexOf("document.addEventListener('visibilitychange',()=>{if(document.hidden){void cancelBluetoothFirmware('app-hidden')"),last=source.indexOf('\nfunction waitForFirmwareForeground(',first);
+ assert(first>=0&&last>first);const listeners={},calls=[];
+ const sender={commitAttempted:false},active={path:'bluetooth',abort:new AbortController(),transport:{bluetoothUpdate:sender}},preflight={path:'bluetooth',abort:new AbortController(),transport:{}},paused={path:'bluetooth',backgroundPaused:true,abort:new AbortController(),transport:{}},wifi={path:'wifi',abort:new AbortController(),transport:{}};
+ const context={document:{hidden:true,addEventListener:(name,listener)=>listeners[name]=listener},cardFirmwareTasks:new Map([['active',active],['preflight',preflight],['paused',paused],['wifi',wifi]]),cancelBluetoothFirmware:async reason=>calls.push(reason)};
+ runInNewContext(source.slice(first,last),context);listeners.visibilitychange();await Promise.resolve();
+ assert.deepEqual(calls,['app-hidden']);assert.equal(active.abort.signal.aborted,false);assert.equal(paused.abort.signal.aborted,false);assert.equal(wifi.abort.signal.aborted,false);
+ assert.equal(preflight.abort.signal.aborted,true);assert.equal(preflight.abort.signal.reason,'app-hidden');
+});
+test('the foreground resume gate is visibility, ownership and AbortSignal bounded and cleans up its listeners',async()=>{
+ const first=source.indexOf('function waitForFirmwareForeground('),last=source.indexOf("\nfor (const id of ['speed','intensity'])",first);assert(first>=0&&last>first);
+ const listeners=new Set(),document={hidden:true,addEventListener:(name,listener)=>{assert.equal(name,'visibilitychange');listeners.add(listener);},removeEventListener:(name,listener)=>{assert.equal(name,'visibilitychange');listeners.delete(listener);}};
+ const context={Error,Promise,Object,document};runInNewContext(source.slice(first,last)+';globalThis.wait=waitForFirmwareForeground;',context);
+ const controller=new AbortController();let current=true,settled=false;const waiting=context.wait({signal:controller.signal,isCurrent:()=>current}).then(()=>settled=true);
+ await Promise.resolve();assert.equal(settled,false);assert.equal(listeners.size,1);document.hidden=false;for(const listener of [...listeners])listener();await waiting;assert.equal(settled,true);assert.equal(listeners.size,0);
+ document.hidden=true;const aborted=new AbortController(),cancelled=context.wait({signal:aborted.signal,isCurrent:()=>true});aborted.abort('user');await assert.rejects(cancelled,error=>error.cancelled&&error.stopReason==='user');assert.equal(listeners.size,0);
+ const replaced=context.wait({signal:new AbortController().signal,isCurrent:()=>current});current=false;document.hidden=false;for(const listener of [...listeners])listener();await assert.rejects(replaced,error=>error.cancelled);assert.equal(listeners.size,0);
+});
+test('hidden progress asks an active sender to pause without aborting the retained card task',async()=>{
+ const first=source.indexOf('  const progress=value=>',source.indexOf('async function updateLampCard(')),last=source.indexOf('\n  const result=await updateCardFirmware',first);assert(first>=0&&last>first);
+ const sender={commitAttempted:false},task={abort:new AbortController(),transport:{bluetoothUpdate:sender}},calls=[];
+ const context={task,entry:{id:identity},current:()=>true,release:{version:'1.15.1'},bluetoothFirmwareConnectionSerial:0,document:{hidden:true},acknowledgedBluetoothUpdateSource:()=>null,
+  cancelBluetoothFirmware:async(reason,id)=>{calls.push([reason,id]);task.backgroundPaused=true;},firmwareUpdatePresentation:value=>({message:value.stage,progress:value.progress}),firmwareFeedback:{update(){}},renderLamps(){},renderFirmware(){}};
+ runInNewContext(source.slice(first,last)+'\nthis.progress=progress;',context);context.progress({stage:'transferring',progress:42});await Promise.resolve();
+ assert.deepEqual(calls,[['app-hidden',identity]]);assert.equal(task.abort.signal.aborted,false);assert.equal(task.backgroundPaused,true);
+});

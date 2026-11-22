@@ -391,6 +391,13 @@ export class BluetoothFirmwareTransfer {
   if(reason!=='cleanup')this.recordStop(reason);
   this.cancelled=true;
   const result=(fields={})=>Object.freeze({cancelled:true,confirmed:false,uncertain:this.writeCalls>0,cancelSent:Boolean(this.cancelSent),...fields});
+  // Moving the app out of the foreground ends this native connection's
+  // lifetime, but it is not user intent to abandon the receiver's resumable
+  // session. Stop local writes immediately and let the caller reconnect with
+  // a freshly verified lease; never send the receiver's durable Cancel frame.
+  if(reason==='app-hidden'){
+   this.cancelPromise=Promise.resolve(result({lifetimeEnded:true,paused:true}));return this.cancelPromise;
+  }
   if(!this.session||!this.issuedOrder){this.cancelPromise=Promise.resolve(result({confirmed:true,uncertain:false,installationNotStarted:true}));return this.cancelPromise;}
   if(!this.cancellationCurrent()){this.cancelPromise=Promise.resolve(result({ownerLost:true}));return this.cancelPromise;}
   // Publish the shared promise before native reads can synchronously trigger
@@ -488,7 +495,12 @@ export class BluetoothFirmwareTransfer {
     const {session,size,offset,ack,phase,error:receiverError,committed}=state;
     return {committed:true,version:manifest.version,receipt:Object.freeze({session,size,offset,ack,phase,error:receiverError,committed}),transferDiagnostic:this.transferDiagnostic()};}
    catch(failure){if(failure.confirmed||failure.journalFailure||!this.commitAttempted)throw failure;this.recordStop('transfer-failed');return {committed:false,verificationRequired:true,commitUnconfirmed:Boolean(this.receiverCommitUnconfirmed),version:manifest.version,updateDiagnostic:this.diagnostic(),transferDiagnostic:this.transferDiagnostic()};}
-  }catch(failure){this.recordStop('transfer-failed');await this.captureFailureStatus();this.describeFailure(failure);await this.cancel('cleanup');throw failure;}
+  }catch(failure){this.recordStop('transfer-failed');
+   // iOS is already withdrawing this native connection when the app becomes
+   // hidden. Do not enqueue a diagnostic GATT read during suspension; the
+   // foreground resume lease re-reads and verifies the receiver's exact offset.
+   if(this.firstStop?.reason!=='app-hidden')await this.captureFailureStatus();
+   this.describeFailure(failure);await this.cancel('cleanup');throw failure;}
   finally{await this.endNotifications();}
  }
 }

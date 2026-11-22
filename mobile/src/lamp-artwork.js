@@ -2,6 +2,7 @@
 // Artwork names are presentation variants, not firmware style codes or capabilities.
 const variants=new Set(['helix','large-helix','corkscrew','edison','sonata','knot']);
 const labels={helix:'Helix lamp','large-helix':'Large helix lamp',corkscrew:'Corkscrew lamp',edison:'Edison lamp',sonata:'Sonata lamp',knot:'Knot lamp prototype',unspecified:'Lamp'};
+const SONATA_CURVE='M58 39 C57 56 74 65 88 53 C108 35 94 11 75 10 C45 6 25 31 24 58 C23 84 46 94 64 108 C83 124 101 141 88 164 C78 183 49 184 33 169 C19 154 28 130 45 127 C63 123 79 140 70 153 L63 163';
 let sequence=0;
 const escape=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
 export const LAMP_ARTWORK_DARK_PALETTE=Object.freeze({frame:'#93a196',baseStart:'#849187',baseMiddle:'#9daa9f',baseEnd:'#7f8d81',baseTop:'#abb6a9',baseBottom:'#859287'});
@@ -81,10 +82,9 @@ function edison(id,tones){
 function sonata(id,tones){
  // One open S-shaped ribbon, with inward-curling free tips and no crossing.
  // The rectangular base and knob follow the reference; this is not LED order.
- const curve='M58 39 C57 56 74 65 88 53 C108 35 94 11 75 10 C45 6 25 31 24 58 C23 84 46 94 64 108 C83 124 101 141 88 164 C78 183 49 184 33 169 C19 154 28 130 45 127 C63 123 79 140 70 153 L63 163';
  return `<g fill="none" stroke-linecap="round" stroke-linejoin="round">
- <path class="lamp-artwork-frame lamp-artwork-sonata-curve" d="${curve}" stroke="${tones?.frame||'#282d31'}" stroke-width="10"/>
- ${ribbon(curve,id,4.7)}
+ <path class="lamp-artwork-frame lamp-artwork-sonata-curve" d="${SONATA_CURVE}" stroke="${tones?.frame||'#282d31'}" stroke-width="10"/>
+ ${ribbon(SONATA_CURVE,id,4.7)}
  <path class="lamp-artwork-sonata-tip" d="M58 37L58 41M62 164L65 161" stroke="#c9d3d6" stroke-width="6"/>
  </g><g class="lamp-artwork-base" data-base="dark"><ellipse cx="60" cy="196" rx="43" ry="3" fill="#252b291a"/>
  <rect class="lamp-artwork-base-side" x="19" y="181" width="82" height="14" rx="2.5" fill="url(#${id}-base)"/>
@@ -112,11 +112,15 @@ export function lampArtworkSvg(style='helix',{className='lamp-artwork',label,idP
  // complete new body, including that headroom, at one hundred percent.
  const progressSpan=variant==='edison'?210:180;
  const height=updating?progressSpan*updateProgress/100:0;
- const updateClip=updating?`\n <clipPath id="${id}-update-clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="${180-height}" width="120" height="${height}"/></clipPath>`:'';
+ const updateClip=updating&&variant!=='sonata'?`\n <clipPath id="${id}-update-clip" clipPathUnits="userSpaceOnUse"><rect x="0" y="${180-height}" width="120" height="${height}"/></clipPath>`:'';
  // Every trusted drawing ends with its separate base. Its physical light body
  // fills upwards, while the base retains exactly the original artwork/colors.
  const baseStart=body.indexOf('<g class="lamp-artwork-base"');
- const updateBody=updating?`<g class="lamp-artwork-update-fill" clip-path="url(#${id}-update-clip)">${body.slice(0,baseStart)}</g>`:'';
+ // Sonata's physical receiver cue writes from both free tips toward the center.
+ // A normalized dash pattern mirrors that geometry without relying on a
+ // WebKit-sensitive stroked clipPath. Other models retain their bottom-up fill.
+ const sonataEndFill=updating&&variant==='sonata'&&updateProgress>0?updateProgress/2:null;
+ const updateBody=sonataEndFill!==null?`<g class="lamp-artwork-update-fill"><path class="lamp-artwork-sonata-progress" d="${SONATA_CURVE}" pathLength="100" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="10" stroke-dasharray="${sonataEndFill} ${100-updateProgress} ${sonataEndFill} 0"/></g>`:updating&&variant!=='sonata'?`<g class="lamp-artwork-update-fill" clip-path="url(#${id}-update-clip)">${body.slice(0,baseStart)}</g>`:'';
  const rest=updating?`<g class="lamp-artwork-update-rest">${body.slice(0,baseStart)}</g>${body.slice(baseStart)}`:body;
  const semantics=decorative?'aria-hidden="true"':`role="img" aria-label="${escape(label||labels[variant])}"`;
  return `<svg xmlns="http://www.w3.org/2000/svg" class="${escape(className)}" data-lamp-artwork="${variant}"${updating?` data-update-progress="${updateProgress}"`:''}${source?` data-update-source="${source}"`:''} viewBox="${variant==='edison'?'0 -30 120 230':'0 0 120 200'}"${variant==='edison'?' preserveAspectRatio="xMidYMax meet"':''} ${semantics} focusable="false">

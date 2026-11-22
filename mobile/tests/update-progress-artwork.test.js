@@ -23,8 +23,8 @@ test('ordinary model artwork remains byte identical to its existing public outpu
  assert.equal(lampArtworkSvg('future-model',{idPrefix:'test-normal'}),lampArtworkSvg('unspecified',{idPrefix:'test-normal'}));
 });
 
-test('actual model drawings fill from bottom to top at zero, half and full written progress',()=>{
- for(const style of [...Object.keys(normalDigests),'edison','sonata'])for(const progress of [0,50,100]){
+test('non-Sonata model drawings fill from bottom to top at zero, half and full written progress',()=>{
+ for(const style of [...Object.keys(normalDigests),'edison'])for(const progress of [0,50,100]){
   const value=lampArtworkSvg(style,{idPrefix:'test-update',updateProgress:progress});
   assert.match(value,new RegExp(`data-update-progress="${progress}"`));
   const clip=value.match(/<clipPath[^>]+><rect x="0" y="(-?[\d.]+)" width="120" height="([\d.]+)"\/><\/clipPath>/);
@@ -32,6 +32,21 @@ test('actual model drawings fill from bottom to top at zero, half and full writt
   assert(clip);assert.equal(Number(clip[1]),180-span*progress/100);assert.equal(Number(clip[2]),span*progress/100);
   assert.equal((value.match(/class="lamp-artwork-base"/g)||[]).length,1,'The base is not copied into the colored fill.');
   assert.match(value,/<g class="lamp-artwork-update-fill" clip-path="url\(#test-update-update-clip\)">/);
+ }
+});
+
+test('Sonata receiver progress fills equally from both free tips toward its center',()=>{
+ for(const [progress,dashes] of [[0,null],[42,'21 58 21 0'],[50,'25 50 25 0'],[100,'50 0 50 0']]){
+  const value=lampArtworkSvg('sonata',{idPrefix:'test-sonata-update',updateProgress:progress});
+  assert.match(value,new RegExp(`data-update-progress="${progress}"`));
+  assert.equal((value.match(/class="lamp-artwork-base"/g)||[]).length,1,'The base stays neutral and is not copied into the colored fill.');
+  assert(!value.includes('test-sonata-update-update-clip'),'Sonata does not use the bottom-up clip.');
+  if(dashes===null){
+   assert(!value.includes('lamp-artwork-sonata-progress'),'Zero progress has no rounded endpoint dots.');
+  }else{
+   assert.match(value,/class="lamp-artwork-update-fill"><path class="lamp-artwork-sonata-progress"/);
+   assert.match(value,/pathLength="100"/);assert.match(value,new RegExp(`stroke-dasharray="${dashes}"`));
+  }
  }
 });
 
@@ -112,7 +127,7 @@ test('the production pair adapter retains an immutable connected target rather t
 
 // Run the production card renderer. This small DOM supplies presentation APIs
 // only; no rewritten update logic or connection/firmware handler is substituted.
-function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false,updateSource=null,receiverSnapshot=null,receivedAt=Date.now()}={}){
+function fixture({stage='transferring',progress=65,pending=false,task=true,observation=null,style='corkscrew',second=true,cancelRequested=false,reconciling=false,focusCancel=false,updateSource=null,receiverSnapshot=null,receivedAt=Date.now(),connectionMessage=null}={}){
  let document;
  class Element{
   constructor(tag='div'){this.tag=tag;this.dataset={};this.attributes={};this.children=[];this.className='';this.textContent='';this.innerHTML='';this.value=undefined;this.disabled=false;this.open=false;this.parent=null;
@@ -150,7 +165,7 @@ function fixture({stage='transferring',progress=65,pending=false,task=true,obser
   lampFirmwareLabel:()=> 'Firmware 1.15.1',firmware:receiverSnapshot?.firmware??null,firmwareReceivedAt:receiverSnapshot?receivedAt:0,validFirmwareVersion:()=>false,
   publicFirmwareRun:null,publicFirmwareError:'',publicFirmwareFresh:false,updateDiagnosticDetails:()=>null,
   wifiCardIcon:()=>control('wifi'),bluetoothCardIcon:()=>control('bluetooth'),groupCardIcon:()=>control('group'),bluetoothFirmwareOwner:()=>null,
-  removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(),cardFirmwareMessages:new Map(),meshNetworkMessages:new Map(),
+  removeLampFromPhone:async()=>{},cardPowerMessages:new Map(),cardConnectionMessages:new Map(connectionMessage?[[id,connectionMessage]]:[]),cardFirmwareMessages:new Map(),meshNetworkMessages:new Map(),
   fleetCardStatus:()=>null,activeCardBluetooth:()=>false,renderFleetControls(){}};
  runInNewContext(illustration+'\n'+updateView+'\n'+render+'\nthis.render=renderLamps;',context);context.render();
  const card=key=>roots.get('lampList').children.find(value=>value.dataset.lampId===key);
@@ -190,6 +205,16 @@ test('fleet percentages require both fresh target verification and an updating p
  assert.match(ready.card.querySelector('.v2-card-art').innerHTML,/data-update-progress="65"/);assert.equal(ready.card.querySelector('.lamp-update-progress').value,65);
 });
 
+test('a stale connection timeout is hidden during every active update state and returns on an ordinary card',()=>{
+ const timeout='The lamp did not respond in time.';
+ const messages=view=>view.card.querySelectorAll('.lamp-update-status').map(value=>value.textContent);
+ assert(messages(fixture({task:false,connectionMessage:timeout})).includes(timeout));
+ assert(!messages(fixture({task:true,connectionMessage:timeout})).includes(timeout));
+ assert(!messages(fixture({task:false,pending:true,connectionMessage:timeout})).includes(timeout));
+ const receiverSnapshot={deviceId:id,firmware:{updateContractVersion:2,receiver:true,phase:3,route:1,progress:50,writtenOffset:500,totalBytes:1000}};
+ assert(!messages(fixture({task:false,receiverSnapshot,connectionMessage:timeout})).includes(timeout));
+});
+
 test('unknown card designs stay generic and rendering retains the same Cancel control and focus',()=>{
  const view=fixture({style:'future-design',focusCancel:true});assert.match(view.card.querySelector('.v2-card-art').innerHTML,/data-lamp-artwork="unspecified"/);
  assert.equal(view.card.querySelector('.v2-card-update-cancel'),view.cancel);assert.equal(view.document.activeElement,view.cancel);view.cancel.onclick();assert.equal(view.cancelClicks(),1);
@@ -197,6 +222,8 @@ test('unknown card designs stay generic and rendering retains the same Cancel co
 
 test('theme, clipping, numeric legibility and reduced motion are covered by the production stylesheet',()=>{
  const css=readFileSync(new URL('../src/app-v2.css',import.meta.url),'utf8');
+ assert.match(css,/\.lamp-design\.v2-card-update-art\{[^}]*height:auto[^}]*min-height:134px[^}]*overflow:visible/);
+ assert.match(css,/\.lamp-design\.v2-card-update-art\[data-style=edison\]\{[^}]*height:auto[^}]*min-height:150px/);
  assert.match(css,/\.v2-card-update-art>svg\{[^}]*overflow:hidden/);
  assert.match(css,/\.v2-card-update-art>\.v2-card-update-percent\{[^}]*font-size:1rem[^}]*color:var\(--ink\)/);
  assert.match(css,/\.lamp-artwork-update-fill path\{stroke:var\(--lamp-update-fill,#686868\)/);

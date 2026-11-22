@@ -254,11 +254,19 @@ test('receiver rejection retains its code and written bytes before response Canc
  assert(receiver.writes.filter(row=>row.op!==3).every(row=>row.kind==='response'));assert(!receiver.writes.some(row=>row.op===4));
 });
 
-for(const reason of ['user','app-hidden'])test(`${reason} while an NR operation is pending sends no next Data or Finish`,async()=>{
+test('user cancellation while an NR operation is pending sends no next Data or Finish',async()=>{
  const receiver=new Receiver(),gate=deferred(),entered=deferred();receiver.beforeBulk=()=>{entered.resolve();return gate.promise;};
- const transfer=receiver.transfer(),work=transfer.send(receiver.pkg);await entered.promise;await transfer.cancel(reason);gate.reject(Error('Pending native write cancelled.'));
- await assert.rejects(work);assert.equal(transfer.diagnostic().stopReason,reason);assert.equal(receiver.writes.filter(row=>row.op===3).length,0);
+ const transfer=receiver.transfer(),work=transfer.send(receiver.pkg);await entered.promise;await transfer.cancel('user');gate.reject(Error('Pending native write cancelled.'));
+ await assert.rejects(work);assert.equal(transfer.diagnostic().stopReason,'user');assert.equal(receiver.writes.filter(row=>row.op===3).length,0);
  assert.equal(receiver.writes.filter(row=>row.op===5).length,1);assert(!receiver.writes.some(row=>row.op===4));
+});
+
+test('app-hidden while an NR operation is pending sends no receiver Cancel, next Data or Finish',async()=>{
+ const receiver=new Receiver(),gate=deferred(),entered=deferred();receiver.beforeBulk=()=>{entered.resolve();return gate.promise;};
+ const transfer=receiver.transfer(),work=transfer.send(receiver.pkg);await entered.promise;const result=await transfer.cancel('app-hidden');
+ gate.reject(Error('Pending native write cancelled.'));await assert.rejects(work);assert.equal(result.paused,true);
+ assert.equal(transfer.diagnostic().stopReason,'app-hidden');assert.equal(receiver.writes.filter(row=>row.op===3).length,0);
+ assert.equal(receiver.writes.filter(row=>row.op===5).length,0);assert(!receiver.writes.some(row=>row.op===4));
 });
 
 test('a native Data queue success arriving after Cancel allows no subsequent Data or Finish',async()=>{

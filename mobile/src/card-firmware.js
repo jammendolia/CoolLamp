@@ -25,7 +25,8 @@ export function availableCardRelease(installed,manifest){
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
- attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable}){
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable,
+ waitForForeground}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
  if(exactReinstall&&!allowReinstall)throw Object.assign(Error('Confirm a reinstall before sending firmware.'),{confirmed:true,installationNotStarted:true,uncertain:false});
@@ -171,16 +172,22 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   // Manifest, Begin, update route or repeated Finish is permitted here.
   const original=latest(),offered=Object.getOwnPropertyDescriptor(failure||{},'firmwareResumeLease')?.value;
   const reason=failure?.stopReason??failure?.updateDiagnostic?.stopReason;
-  const eligible=!resumeUsed&&attemptJournal&&failure&&reason==='native-disconnect'&&!failure.identity&&!failure.stale&&
+  const resumeAfterForeground=reason==='app-hidden'&&typeof waitForForeground==='function';
+  const eligible=!resumeUsed&&attemptJournal&&failure&&(reason==='native-disconnect'||resumeAfterForeground)&&!failure.identity&&!failure.stale&&
    !failure.journalFailure&&!failure.commitUnconfirmed&&original?.outcome==='pending'&&original.beginAttempted===true&&
    original.commitAttempted===false&&original.commitUnconfirmed===false&&original.cancelAttempted===false&&original.resumeAttempted===false&&
    original.wifiInstallAttempted===false&&original.text===release.text&&offered?.identity===entry.id&&
    Number.isInteger(offered.session)&&offered.session>0&&offered.session===original.session&&
    offered.version===release.version&&offered.size===release.size&&offered.sha256===release.sha256;
   if(eligible){
-   resumeUsed=true;onProgress({stage:'recovering-connection'});
+   resumeUsed=true;
    let recoveredLease;
    try{
+    // iOS may suspend JavaScript as soon as the app is hidden. Retain the
+    // already verified package in this task, perform no radio work while it is
+    // hidden, and resume only after the owner confirms foreground admission.
+    if(resumeAfterForeground)await waitForForeground(Object.freeze({entry,attempt:original,resumeLease:offered,signal,isCurrent}));
+    current();onProgress({stage:'recovering-connection'});
     recoveredLease=await acquireFirmwareResumeLease({attempt:original,resumeLease:offered,installedVersion:installedBeforeTransfer,
      acquire:(_attempt,options)=>acquireBluetooth(entry,options),signal,isCurrent});current();
     const same=latest();
@@ -195,6 +202,15 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    }catch(error){reportTransfer(error);reportFailure(error,'bluetooth-transfer');failure=error;}
    finally{await recoveredLease?.release();}
    current();
+  }
+  // A resumed sender can itself be suspended, and an app-hidden failure with
+  // no usable resume proof still needs foreground admission before its
+  // read-only reconciliation. Never perform a protected GATT check while the
+  // app is hidden, but keep the one-Resume fence above intact.
+  const finalReason=failure?.stopReason??failure?.updateDiagnostic?.stopReason;
+  if(!result&&failure&&finalReason==='app-hidden'&&typeof waitForForeground==='function'){
+   try{await waitForForeground(Object.freeze({entry,attempt:latest(),resumeLease:Object.getOwnPropertyDescriptor(failure,'firmwareResumeLease')?.value??null,signal,isCurrent,reconciliationOnly:true}));current();}
+   catch(error){reportFailure(error,'bluetooth-transfer');failure=error;}
   }
   if(result?.commitUnconfirmed){if(attemptJournal&&attempt)attemptJournal.noteCommitUnconfirmed(latest());return checkResult(unconfirmedCommit());}
   if(result){

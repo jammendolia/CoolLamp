@@ -1132,13 +1132,14 @@ $('connectBluetoothFirmware').onclick=async()=>{
 function firmwareCancelBlocked(task){
  if(!task)return true;
  const sender=(task.transport||bleLamp).bluetoothUpdate,attempt=firmwareAttempts.get(task.id);
- return Boolean(task.reconciling||['verifying','restarting','checking-result','reconciling'].includes(task.stage)||sender?.commitAttempted||attempt?.commitAttempted||attempt?.wifiInstallAttempted);
+ return Boolean(task.backgroundPaused||task.reconciling||['recovering-connection','verifying','restarting','checking-result','reconciling'].includes(task.stage)||sender?.commitAttempted||attempt?.commitAttempted||attempt?.wifiInstallAttempted);
 }
 async function cancelBluetoothFirmware(reason='user',identity=null){
  const task=identity?cardFirmwareTasks.get(identity)||bluetoothFirmwareTask?.id===identity&&bluetoothFirmwareTask:bluetoothFirmwareOwner();if(!task)return;
  const sender=(task.transport||bleLamp).bluetoothUpdate;
  if(reason!=='user'){
   if(sender?.commitAttempted)return;
+   if(reason==='app-hidden'&&sender){task.backgroundPaused=true;await sender.cancel(reason);return;}
   task.cancelRequested=true;task.cancelled=true;task.abort.abort(reason);await sender?.cancel(reason);return;
  }
  if(firmwareCancelBlocked(task)){status('Your lamp is finishing the update. We’ll check it automatically.');return;}
@@ -1164,9 +1165,24 @@ $('installBluetoothFirmware').onclick=async()=>{
   if(bluetoothFirmwareOwner()||fleetUpdating||updatingLamp()||!verifiedSelectedLamp()||lamp!==bleLamp)return;
   return updateLampCard(entry,{bluetoothOnly:true,allowReinstall:$('reinstallBluetoothFirmware').checked});
 };
-// iOS may suspend Bluetooth operations in the background. Abort an incomplete
-// image rather than leave a phone pretending its transfer is still progressing.
-document.addEventListener('visibilitychange',()=>{if(document.hidden){void cancelBluetoothFirmware('app-hidden');for(const task of cardFirmwareTasks.values())if(task.path!=='wifi'&&!task.transport?.bluetoothUpdate?.commitAttempted)task.abort.abort('app-hidden');}});
+// iOS may suspend Bluetooth operations in the background. A live sender is
+// detached without cancelling the receiver so this exact in-memory package can
+// prove and resume its session on foreground. Preflight work has no resumable
+// receiver lease, so it remains bounded by the task lifetime.
+document.addEventListener('visibilitychange',()=>{if(document.hidden){void cancelBluetoothFirmware('app-hidden').catch(()=>{});for(const task of cardFirmwareTasks.values()){const sender=task.transport?.bluetoothUpdate;if(task.path!=='wifi'&&!sender?.commitAttempted&&!sender&&!task.backgroundPaused)task.abort.abort('app-hidden');}}});
+function waitForFirmwareForeground({signal,isCurrent=()=>true}={}){
+ const current=()=>!signal?.aborted&&isCurrent();
+ const cancelled=()=>Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true,stopReason:typeof signal?.reason==='string'?signal.reason:undefined});
+ if(!current())return Promise.reject(cancelled());
+ if(!document.hidden)return Promise.resolve();
+ return new Promise((resolve,reject)=>{
+  let settled=false;
+  const done=error=>{if(settled)return;settled=true;document.removeEventListener('visibilitychange',visible);signal?.removeEventListener('abort',aborted);error?reject(error):resolve();};
+  const visible=()=>{if(!document.hidden)done(current()?null:cancelled());};
+  const aborted=()=>done(cancelled());
+  document.addEventListener('visibilitychange',visible);signal?.addEventListener('abort',aborted,{once:true});
+ });
+}
 for (const id of ['speed','intensity']) $(id).oninput = () => { editingOptions=true; $(id+'Value').value = $(id).value + '%';paintRanges();const value=currentOptionChange(id);if(value)scheduleLiveLight('effectOptions',value,id); };
 for (const id of ['speed','intensity','dual','secondaryColor']) $(id).onchange = async () => {
   if (!state || effectOptions?.mode !== state.mode) return;
@@ -1260,7 +1276,7 @@ async function acquireCardFirmwareBluetooth(entry,options={}){
  // or a separate persistent fleet-enrollment mutation on older firmware.
  const transport=new LampTransport(BleClient,{firmwareBulkWrites:isNative&&phonePlatform==='ios',sharedInitialization:bleLamp.initialization,expectedDeviceIdentity:entry.id,firmwareOnly:true});
  owner.transport=transport;
- try{await transport.connect({...entry,lampId:entry.id},true,{signal,isCurrent});current();renderLamps();
+ try{await transport.connect({...entry,lampId:entry.id},true,{signal,isCurrent});current();cardConnectionMessages.delete(entry.id);renderLamps();
   return {lamp:transport,release:async()=>{await transport.disconnect();if(owner.transport===transport)owner.transport=null;renderLamps();}};
  }catch(error){await transport.disconnect();if(owner.transport===transport)owner.transport=null;throw error;}
 }
@@ -1333,8 +1349,8 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
   task.feedback=firmwareFeedback.begin(entry.id);cardFirmwareMessages.delete(entry.id);
   task.screenAwake??=new FirmwareScreenAwake({native,enabled:isNative});
   await task.screenAwake.acquire({signal:task.abort.signal,isCurrent:current});
-  const progress=value=>{if(!current())return;const path=value.stage==='wifi'?'wifi':'bluetooth';if(path==='bluetooth'&&task.path!=='bluetooth')++bluetoothFirmwareConnectionSerial;task.path=path;task.stage=value.stage;task.updateSource=acknowledgedBluetoothUpdateSource(value,release.version);if(document.hidden&&task.path==='bluetooth'&&!task.transport?.bluetoothUpdate?.commitAttempted)task.abort.abort('app-hidden');const presentation=task.cancelRequested&&!['checking-result','reconciling','restarting'].includes(value.stage)?{message:'Stopping the update…'}:firmwareUpdatePresentation(value);task.progress=presentation.progress;const key=value.stage+':'+presentation.progress+':'+presentation.message+':'+task.updateSource;if(task.presentationKey===key)return;task.presentationKey=key;firmwareFeedback.update(task.feedback,presentation);renderLamps();renderFirmware();};
-  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version),acquireBluetooth:(_entry,options)=>acquireCardFirmwareBluetooth(task.entry,options),isCurrent:current,signal:task.abort.signal,onProgress:progress,allowReinstall,exactReinstall:allowReinstall,phoneFallbackAvailable:cardPhoneFirmwareAvailable(task.entry),
+  const progress=value=>{if(!current())return;const path=value.stage==='wifi'?'wifi':'bluetooth';if(path==='bluetooth'&&task.path!=='bluetooth')++bluetoothFirmwareConnectionSerial;task.path=path;task.stage=value.stage;task.updateSource=acknowledgedBluetoothUpdateSource(value,release.version);if(document.hidden&&task.path==='bluetooth'&&!task.transport?.bluetoothUpdate?.commitAttempted&&!task.backgroundPaused){const sender=task.transport?.bluetoothUpdate;if(sender)void cancelBluetoothFirmware('app-hidden',entry.id).catch(()=>{});else task.abort.abort('app-hidden');}const presentation=task.cancelRequested&&!['checking-result','reconciling','restarting'].includes(value.stage)?{message:'Stopping the update…'}:firmwareUpdatePresentation(value);task.progress=presentation.progress;const key=value.stage+':'+presentation.progress+':'+presentation.message+':'+task.updateSource;if(task.presentationKey===key)return;task.presentationKey=key;firmwareFeedback.update(task.feedback,presentation);renderLamps();renderFirmware();};
+  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version),acquireBluetooth:(_entry,options)=>acquireCardFirmwareBluetooth(task.entry,options),isCurrent:current,signal:task.abort.signal,onProgress:progress,waitForForeground:async()=>{await waitForFirmwareForeground({signal:task.abort.signal,isCurrent:current});task.backgroundPaused=false;},allowReinstall,exactReinstall:allowReinstall,phoneFallbackAvailable:cardPhoneFirmwareAvailable(task.entry),
    attemptJournal:firmwareAttempts,onAttempt:attempt=>{task.attempt=attempt;firmwareDiagnostics.begin(entry.id,attempt.attemptId);},
    onFailure:(error,context)=>{if(current()&&task.attempt)firmwareDiagnostics.failure(entry.id,task.attempt.attemptId,error,{...context,safety:firmwareAttempts.get(entry.id)});},
    onTransferDiagnostic:value=>{if(current()&&task.attempt)firmwareDiagnostics.transfer(entry.id,task.attempt.attemptId,value);},
@@ -2121,7 +2137,7 @@ function renderLamps() {
     remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};links.append(remove);
     const feedback=document.createElement('div');feedback.className='v2-card-feedback';
     if(task||pendingUpdate||receiverUpdate)readiness.textContent=task?.reconciling||pendingUpdate&&!task?'Checking your update':'Updating your lamp';
-    const messages=[cardPowerMessages.get(entry.id),cardConnectionMessages.get(entry.id),updateFeedback?.message||cardFirmwareMessages.get(entry.id),meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
+    const messages=[cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate?null:cardConnectionMessages.get(entry.id),updateFeedback?.message||cardFirmwareMessages.get(entry.id),meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
     for(const messageText of [...new Set(messages)]){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=messageText;feedback.append(message);}
     if(sourceLabel){const source=document.createElement('small');source.className='v2-card-update-source';source.textContent=sourceLabel;feedback.append(source);}
     const automaticMessage=!task&&!pendingUpdate&&!receiverUpdate?automaticUpdateCardMessage(observation,entry.id):null;

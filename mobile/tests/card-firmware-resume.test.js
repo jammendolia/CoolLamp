@@ -55,6 +55,24 @@ test('one native-disconnect resumes the same durable attempt after old lease rel
  assert.deepEqual(f.counts(),{acquireCount:3,resumeCount:1,releaseCount:3});
 });
 
+test('app-hidden performs no radio work until foreground, then resumes the retained attempt once',async()=>{
+ const f=fixture(),foreground=defer();let gateCalls=0,settled=false;
+ f.setFailure({stopReason:'app-hidden'});
+ f.options.waitForForeground=async context=>{
+  ++gateCalls;f.events.push('wait-foreground');assert.equal(context.entry.id,id);assert.equal(context.attempt.attemptId,f.journal.get(id).attemptId);
+  assert.equal(context.resumeLease.session,99);await foreground.promise;f.events.push('foreground');
+ };
+ const work=updateCardFirmware(f.options).then(value=>(settled=true,value));
+ for(let index=0;index<8&&!f.events.includes('wait-foreground');index++)await tick();
+ assert.equal(gateCalls,1);assert.equal(settled,false);assert.deepEqual(f.counts(),{acquireCount:2,resumeCount:0,releaseCount:2});
+ assert.deepEqual(f.ops,[1,6,3]);
+ foreground.resolve();const result=await work;
+ assert.equal(result.outcome,'installed');assert.deepEqual(f.ops,[1,6,3,7,3,4]);
+ assert.equal(f.counts().resumeCount,1);assert.equal(f.journal.get(id).resumeAttempted,true);
+ assert(f.events.indexOf('release:2')<f.events.indexOf('wait-foreground'));
+ assert(f.events.indexOf('foreground')<f.events.indexOf('acquire:3'));
+});
+
 for(const reason of ['app-hidden','user','cancelled','native-write-failure','connection-changed','transport-disconnect'])
  test(reason+' cannot start resume recovery',async()=>{
   const f=fixture();f.setFailure({stopReason:reason});const result=await updateCardFirmware(f.options);
@@ -114,6 +132,20 @@ test('a second disconnect after Resume never reacquires, restarts Begin or repea
   version:manifest.version,size:512,sha256:manifest.sha256}});
  const result=await updateCardFirmware(f.options);assert.equal(result.outcome,'transferStopped');
  assert.deepEqual(f.ops,[1,6,3,7]);assert.equal(f.counts().acquireCount,3);assert.equal(f.counts().resumeCount,1);
+});
+
+test('a second app-hidden stop waits for foreground before read-only reconciliation and never repeats Resume',async()=>{
+ const f=fixture(),foreground=defer();let gateCalls=0,settled=false;
+ f.setFailure({stopReason:'app-hidden'});f.setResumedFailure({stopReason:'app-hidden',firmwareResumeLease:{identity:id,session:99,
+  version:manifest.version,size:512,sha256:manifest.sha256}});
+ f.options.waitForForeground=async context=>{if(++gateCalls===2){assert.equal(context.reconciliationOnly,true);await foreground.promise;}};
+ const work=updateCardFirmware(f.options).then(value=>(settled=true,value));
+ for(let index=0;index<12&&gateCalls<2;index++)await tick();
+ assert.equal(gateCalls,2);assert.equal(settled,false);assert.deepEqual(f.ops,[1,6,3,7]);
+ assert.equal(f.counts().acquireCount,3);assert.equal(f.counts().resumeCount,1);assert(!f.events.includes('reconcile'));
+ foreground.resolve();const result=await work;assert.equal(result.outcome,'transferStopped');
+ assert.deepEqual(f.ops,[1,6,3,7]);assert.equal(f.counts().acquireCount,3);assert.equal(f.counts().resumeCount,1);
+ assert(f.events.includes('reconcile'));
 });
 
 test('without a durable journal the card does not enable receiver leases or automatic resume',async()=>{

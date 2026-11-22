@@ -12,6 +12,7 @@ assert(start>=0&&end>start);
 const handler=source.slice(start,end),id='f0b950b2f180';
 function fixture({authorized=true,active=false}={}){
  const calls=[],entry={id,deviceId:'authorized-peripheral',accessoryManaged:authorized};
+ const messages=new Map([[id,'The lamp did not respond in time.']]);
  let current=true,inspectionHook=async()=>{},radioHook=async()=>{},connectHook=async()=>{};
  const owner={abort:new AbortController(),isCurrent:()=>current},tasks=new Map([[id,owner]]),instances=[];
  const bleLamp={identity:id,initialization:Promise.resolve(),disconnect:async()=>calls.push('active-disconnect')};
@@ -24,6 +25,7 @@ function fixture({authorized=true,active=false}={}){
   cardFirmwareTasks:tasks,isNative:true,phonePlatform:'ios',native:{setFirmwareScreenAwake:async value=>{calls.push(value.enabled?'awake-on':'awake-off');return {active:value.enabled};}},
   stopGroupInspection:async()=>{calls.push('stop-inspection');await inspectionHook();},
   initializeGroupRadio:async()=>{calls.push('initialize-radio');await radioHook();},bleLamp,
+  cardConnectionMessages:messages,
   verifiedSelectedLamp:()=>active,selected:entry,lamp:bleLamp,bluetoothFirmwareTask:null,
   pairing:{},accessoryNative:{},store:{items:[entry]},savedDevice:null,removedAccessoryIds:new Set(),
   rememberAccessories(){throw Error('Unexpected authorization mutation');},renderLamps:()=>calls.push('render'),
@@ -31,7 +33,7 @@ function fixture({authorized=true,active=false}={}){
   liveGroupBluetooth:{set(){throw Error('Restricted update lease exposed as group control');},delete(){throw Error('Unexpected group lease deletion');}}
  };
  runInNewContext(handler+';globalThis.acquire=acquireCardFirmwareBluetooth;',context);
- return {calls,entry,owner,tasks,instances,context,acquire:()=>context.acquire(entry),
+ return {calls,entry,owner,tasks,instances,messages,context,acquire:()=>context.acquire(entry),
   stale:()=>current=false,inspection:fn=>inspectionHook=fn,radio:fn=>radioHook=fn,connect:fn=>connectHook=fn,
   cleanup:()=>owner.screenAwake?.release()};
 }
@@ -41,6 +43,7 @@ test('actual card updater acquires a restricted firmware connection without flee
  assert.equal(transport.options.expectedDeviceIdentity,id);assert.equal(transport.options.firmwareBulkWrites,true);
  assert.equal(transport.saved.lampId,id);assert.equal(transport.connectOptions.signal,f.owner.abort.signal);
  assert.equal(transport.connectOptions.isCurrent,f.owner.isCurrent);assert.equal(f.owner.transport,transport);
+ assert.equal(f.messages.has(id),false,'A verified firmware-only connection clears stale ordinary connection feedback.');
  assert.equal(lease.lamp,transport);await lease.release();assert.equal(f.owner.transport,null);
  assert.equal(f.calls.filter(x=>x==='disconnect').length,1);
 });

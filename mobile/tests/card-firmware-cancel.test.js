@@ -10,8 +10,8 @@ const handlers=[extract('function bluetoothFirmwareOwner(','\nfunction firmwareB
  extract('function cardFirmwareCancelButton(','\nfunction updateDiagnosticDetails('),
  extract('function renderBluetoothFirmwareControls(','\nfunction renderFirmware(')].join('\n');
 const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};};
-function fixture({stage='transferring',path='bluetooth',attempt={},sender,feedback=true,reconciling=false}={}){
- const calls=[],elements=new Map(),entry={id,name:'Reading lamp'},task={id,path,stage,reconciling,abort:new AbortController(),...(feedback?{feedback:{id}}:{}),transport:{bluetoothUpdate:sender}};
+function fixture({stage='transferring',path='bluetooth',attempt={},sender,feedback=true,reconciling=false,backgroundPaused=false}={}){
+ const calls=[],elements=new Map(),entry={id,name:'Reading lamp'},task={id,path,stage,reconciling,backgroundPaused,abort:new AbortController(),...(feedback?{feedback:{id}}:{}),transport:{bluetoothUpdate:sender}};
  const context={Error,Promise,Map,cardFirmwareTasks:new Map([[id,task]]),bluetoothFirmwareTask:null,bleLamp:{},firmwareAttempts:{get:()=>attempt},
   firmwareFeedback:{update:(_token,value)=>calls.push(['feedback',value.message])},renderLamps:()=>calls.push('render-lamps'),renderFirmware:()=>calls.push('render-firmware'),status:message=>calls.push(['status',message]),
   document:{createElement:()=>({style:{},dataset:{},attributes:{},setAttribute(key,value){this.attributes[key]=value;}})},
@@ -24,7 +24,7 @@ for(const stage of ['connecting','downloading','downloaded','preparing','transfe
  const f=fixture({stage}),button=f.button();assert.equal(button.textContent,'Cancel');assert.equal(button.disabled,false);assert.equal(button.dataset.connection,'cancel-update');
  assert.equal(button.attributes['aria-label'],'Cancel update for Reading lamp');assert.match(button.className,/v2-card-update/);
 });
-for(const fields of [{path:'wifi'},{feedback:false},{reconciling:true},{stage:'verifying'},{stage:'restarting'},{stage:'checking-result'},{stage:'reconciling'},
+for(const fields of [{path:'wifi'},{feedback:false},{backgroundPaused:true},{reconciling:true},{stage:'recovering-connection'},{stage:'verifying'},{stage:'restarting'},{stage:'checking-result'},{stage:'reconciling'},
  {attempt:{commitAttempted:true}},{attempt:{wifiInstallAttempted:true}},{sender:{commitAttempted:true}}])test('Cancel is absent at unsafe or unsupported boundary '+JSON.stringify(fields),async()=>{
  const f=fixture(fields);assert.equal(f.button(),null);
  if(fields.path!=='wifi'&&fields.feedback!==false){await f.cancel();assert.equal(f.task.abort.signal.aborted,false);assert.equal(f.task.cancelRequested,undefined);}
@@ -51,9 +51,13 @@ test('a missing Cancel ACK remains unconfirmed without aborting the owner or aut
  assert.equal(await f.cancel(),result);assert.equal(f.task.abort.signal.aborted,false);assert.equal(f.task.cancelRequested,true);assert.equal(f.context.cardFirmwareTasks.get(id),f.task);
  assert(!f.calls.some(value=>Array.isArray(value)&&/cancelled|unchanged|installed/i.test(value[1])));
 });
-test('native background lifetime cancellation still aborts immediately and makes no promise of a foreground receipt',async()=>{
- let f,called=false;f=fixture({sender:{cancel(reason){called=true;assert.equal(reason,'app-hidden');assert.equal(f.task.abort.signal.aborted,true);return {cancelled:true,uncertain:true};}}});
- await f.cancel('app-hidden');assert.equal(called,true);assert.equal(f.task.abort.signal.reason,'app-hidden');
+test('native backgrounding detaches an active precommit sender without cancelling its resumable task',async()=>{
+ let f,called=false;f=fixture({sender:{commitAttempted:false,cancel(reason){called=true;assert.equal(reason,'app-hidden');assert.equal(f.task.abort.signal.aborted,false);assert.equal(f.task.backgroundPaused,true);return {cancelled:true,localPause:true};}}});
+ await f.cancel('app-hidden');assert.equal(called,true);assert.equal(f.task.abort.signal.aborted,false);assert.equal(f.task.cancelRequested,undefined);assert.equal(f.task.backgroundPaused,true);
+});
+test('native backgrounding still bounds preflight work that has no receiver lease',async()=>{
+ const f=fixture({stage:'downloading'});await f.cancel('app-hidden');
+ assert.equal(f.task.abort.signal.aborted,true);assert.equal(f.task.abort.signal.reason,'app-hidden');assert.equal(f.task.cancelRequested,true);assert.equal(f.task.cancelled,true);
 });
 test('a foreign card cannot cancel an existing update owner',async()=>{
  const f=fixture({sender:{cancel:()=>assert.fail('A different card cancelled this sender.')}});
