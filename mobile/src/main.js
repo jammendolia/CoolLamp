@@ -1239,7 +1239,8 @@ function cardUpdateConfirmation(entry,release,{previousVersion=null,bluetoothOnl
  actions.className='dialog-actions';
  for(const [value,label] of [['cancel','Cancel'],['update','Continue']]){const button=document.createElement('button');button.value=value;button.textContent=label;if(value==='cancel'){button.className='secondary';button.autofocus=true;}actions.append(button);}
  form.append(title,body,actions);dialog.append(form);document.body.append(dialog);
- const choice=new Promise(resolve=>dialog.addEventListener('close',()=>{const accepted=dialog.returnValue==='update';dialog.remove();resolve(accepted);},{once:true}));dialog.showModal();return choice;
+ const choice=new Promise(resolve=>dialog.addEventListener('close',()=>{const accepted=dialog.returnValue==='update';dialog.remove();resolve(accepted);},{once:true}));
+ try{dialog.showModal();}catch(error){dialog.remove();throw error;}return choice;
 }
 function cardPhoneFirmwareAvailable(entry){
  const saved=typeof entry.deviceId==='string'&&entry.deviceId.length>0;
@@ -1249,9 +1250,12 @@ function cardUpdateRouteChoice(entry,error){
  const copy=firmwareUpdateRouteChoicePresentation(error,entry.name||'This lamp');if(!copy)return Promise.resolve('cancel');
  const dialog=document.createElement('dialog'),form=document.createElement('form'),title=document.createElement('h2'),body=document.createElement('p'),actions=document.createElement('div');
  form.method='dialog';title.id='cardFirmwareRouteTitle';title.textContent=copy.title;dialog.setAttribute('aria-labelledby',title.id);body.textContent=copy.message;actions.className='dialog-actions';
- for(const [value,label]of [['cancel',copy.cancelLabel],['wifi',copy.retryLabel],['phone',copy.phoneLabel]]){const button=document.createElement('button');button.value=value;button.textContent=label;if(value==='cancel'){button.className='secondary';button.autofocus=true;}actions.append(button);}
+ const choices=[['cancel',copy.cancelLabel]];if(copy.retryLabel)choices.push(['wifi',copy.retryLabel]);if(copy.phoneLabel)choices.push(['phone',copy.phoneLabel]);
+ for(const [value,label]of choices){const button=document.createElement('button');button.value=value;button.textContent=label;if(value==='cancel'){button.className='secondary';button.autofocus=true;}actions.append(button);}
  form.append(title,body,actions);dialog.append(form);document.body.append(dialog);
- const choice=new Promise(resolve=>dialog.addEventListener('close',()=>{const selected=['wifi','phone'].includes(dialog.returnValue)?dialog.returnValue:'cancel';dialog.remove();resolve(selected);},{once:true}));dialog.showModal();return choice;
+ const allowed=new Set(choices.map(([value])=>value));
+ const choice=new Promise(resolve=>dialog.addEventListener('close',()=>{const selected=allowed.has(dialog.returnValue)&&dialog.returnValue!=='cancel'?dialog.returnValue:'cancel';dialog.remove();resolve(selected);},{once:true}));
+ try{dialog.showModal();}catch(error){dialog.remove();throw error;}return choice;
 }
 async function acquireCardFirmwareBluetooth(entry,options={}){
  const owner=cardFirmwareTasks.get(entry.id);if(!owner)throw Error('This lamp’s update changed.');
@@ -1375,7 +1379,9 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
    confirmedReleaseVersion=release.version;const requestedRoute=bluetoothOnly||!entry.address?'phone':'wifi';
    const routeApproved=approvedVersion===release.version&&approvedRoute===requestedRoute;
    if(!routeApproved){
-    const accepted=await cardUpdateConfirmation(entry,release,{previousVersion:displayed?.version,bluetoothOnly,reinstall:allowReinstall});
+     let confirmation;try{confirmation=cardUpdateConfirmation(entry,release,{previousVersion:displayed?.version,bluetoothOnly,reinstall:allowReinstall});}
+     catch(cause){throw Object.assign(Error('Could not open the update choices.'),{preflightFailure:'confirmation-dialog',cause});}
+     const accepted=await confirmation;
     if(!accepted){if(current())setTaskMessage('Update cancelled. No update started.');else explainInactiveTask();return;}
     if(!current()){explainInactiveTask();return;}
    }
@@ -1399,13 +1405,14 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
   if(current()&&settled?.attemptId===task.attempt?.attemptId&&['transferStopped','installationNotStarted'].includes(settled.outcome))status((entry.name||'Your lamp')+': '+message);
   }catch(error){
   if(task.abort.signal.aborted)error.stopReason??=task.abort.signal.reason;
-   const routeChoice=error.fallbackRequiresConsent===true&&error.phoneFallbackAvailable===true&&error.directInternetRetryAvailable===true&&
-    error.confirmed===true&&error.uncertain===false&&error.installationNotStarted===true&&error.safeBluetoothFallback===false&&error.failedPath==='wifi'&&current();
+    const routeChoice=Boolean(firmwareUpdateRouteChoicePresentation(error,entry.name||'This lamp'))&&current();
    if(routeChoice){
-    routeFollowup=await cardUpdateRouteChoice(entry,error);
+     let dialogFailure;try{routeFollowup=await cardUpdateRouteChoice(entry,error);}
+     catch(cause){dialogFailure=Object.assign(Error('Could not open the update choices.'),{preflightFailure:'confirmation-dialog',cause});routeFollowup='cancel';}
     const pending=firmwareAttempts.pending().some(value=>value.identity===entry.id);
     if(pending)cardFirmwareUnconfirmed.set(entry.id,task.attempt?.version);else cardFirmwareUnconfirmed.delete(entry.id);
-    const message=routeFollowup==='cancel'?'The Internet download did not start. Checking that your lamp is unchanged…':'Checking your lamp before continuing…';
+     const message=dialogFailure?'Could not open the update choices. No new firmware was installed. Checking that your lamp is unchanged…':
+      routeFollowup==='cancel'?'The Internet download did not start. Checking that your lamp is unchanged…':'Checking your lamp before continuing…';
     if(task.attempt)firmwareDiagnostics.complete(entry.id,task.attempt.attemptId,{outcome:pending?'unresolved':'installationNotStarted'});
     if(task.feedback)firmwareFeedback.update(task.feedback,{message,terminal:true,...(pending?{outcome:'verification-required',targetVersion:task.attempt?.version}:{})});
     if(current()){setTaskMessage(message,{reconciliation:true});status(message);}
@@ -1438,20 +1445,34 @@ function cardFirmwareButton(entry){
  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="'+(release?'M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4':'M20 7v5h-5M20 12a8 8 0 1 0-2.35 5.65')+'"/></svg><span>'+(release?'Update':checking?'Checking…':'Check')+'</span>';
  button.title=release?'Update '+(entry.name||'lamp')+' to firmware '+release.version:'Check firmware updates for '+(entry.name||'lamp');button.setAttribute('aria-label',button.title);
  if(unresolved){button.querySelector('span').textContent='Check update';button.title='Check '+(entry.name||'lamp')+' update';button.setAttribute('aria-label',button.title);}
- else if(retryChoice){button.querySelector('span').textContent='Update';button.title='Choose how to update '+(entry.name||'this lamp')+' to firmware '+release.version;button.setAttribute('aria-label',button.title);}
+ else if(retryChoice){button.querySelector('span').textContent='Try again';button.title='Choose how to retry '+(entry.name||'this lamp')+' firmware '+release.version;button.setAttribute('aria-label',button.title);}
  else if(release&&firmwareFeedback.get(entry.id)?.terminal&&firmwareFeedback.get(entry.id)?.outcome!=='installed')button.querySelector('span').textContent='Try again';
  button.disabled=Boolean((!unresolved&&checking)||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id));button.onclick=unresolved?()=>checkLampUpdateResult(entry):retryChoice?()=>retryCardFirmware(entry,release,retryChoice):release?()=>updateLampCard(entry):()=>{refreshPublicFirmware({force:true});refreshLampFirmware();};return button;
 }
 function cardFirmwareRetryChoice(entry,release){
  const attempt=firmwareAttempts.get?.(entry.id);
- if(!release||attempt?.identity!==entry.id||attempt.version!==release.version||attempt.outcome!=='installationNotStarted'||attempt.reinstall===true||attempt.wifiCheckAttempted!==true||
-  ['wifiInstallAttempted','metadataIssued','beginAttempted','commitAttempted','commitUnconfirmed','dataIssued','cancelAttempted','resumeAttempted'].some(field=>attempt[field]===true)||
-  !cardPhoneFirmwareAvailable(entry))return null;
- return Object.freeze({fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:true,confirmed:true,uncertain:false,
-  installationNotStarted:true,safeBluetoothFallback:false,failedPath:'wifi'});
+ if(!release||attempt?.identity!==entry.id||attempt.version!==release.version||attempt.reinstall===true||attempt.commitAttempted===true||
+  attempt.commitUnconfirmed===true||attempt.wifiInstallAttempted===true)return null;
+ const unstartedInternet=attempt.outcome==='installationNotStarted'&&attempt.wifiCheckAttempted===true&&
+  !['metadataIssued','beginAttempted','dataIssued','cancelAttempted','resumeAttempted'].some(field=>attempt[field]===true);
+ // `transferStopped` is written only after a protected snapshot proves the
+ // receiver inactive. Keep this recovery admission exact to the interrupted
+ // pre-commit phone transfer whose artifact still matches the fresh release.
+ const stoppedTransfer=attempt.outcome==='transferStopped'&&attempt.text===release.text&&attempt.size===release.size&&attempt.sha256===release.sha256&&
+  attempt.metadataIssued===true&&attempt.beginAttempted===true&&attempt.dataIssued===true&&attempt.wifiCheckAttempted===false&&
+  attempt.wifiInstallAttempted===false&&attempt.commitAttempted===false&&attempt.commitUnconfirmed===false&&attempt.commitAcknowledged===false&&
+  attempt.cancelAttempted===false&&attempt.resumeAttempted===false;
+ if(!unstartedInternet&&!stoppedTransfer)return null;
+ const phoneFallbackAvailable=cardPhoneFirmwareAvailable(entry),directInternetRetryAvailable=typeof entry.address==='string'&&entry.address.length>0;
+ if(!phoneFallbackAvailable&&!directInternetRetryAvailable)return null;
+ return Object.freeze({fallbackRequiresConsent:true,phoneFallbackAvailable,directInternetRetryAvailable,
+  confirmed:true,uncertain:false,installationNotStarted:unstartedInternet,safeBluetoothFallback:false,failedPath:unstartedInternet?'wifi':'bluetooth',
+  settledTerminalRetry:true,settledOutcome:attempt.outcome,commitUnconfirmed:false});
 }
 async function retryCardFirmware(entry,release,evidence){
- const route=await cardUpdateRouteChoice(entry,evidence);
+ let route;try{route=await cardUpdateRouteChoice(entry,evidence);}
+ catch(cause){const error=Object.assign(Error('Could not open the update choices.'),{preflightFailure:'confirmation-dialog',cause}),message=firmwareUpdateFailurePresentation(error);
+  cardFirmwareMessageOwners.delete(entry.id);cardFirmwareMessages.set(entry.id,message);status(message);renderLamps();return;}
  if(!['wifi','phone'].includes(route))return;
  const current=mergedLampEntries().find(value=>value.id===entry.id&&value.deviceId===entry.deviceId&&value.address===entry.address);
  if(!current)return;
@@ -1546,7 +1567,10 @@ async function updateAllLamps() {
   try {
     const release=await refreshPublicFirmware({force:true});
     if(!release)throw Error('Could not verify the current public release. No updates started. '+publicFirmwareError);
-    if(!await cardUpdateConfirmation({name:'all lamps'},release,{previousVersion:displayed?.version,wifiOnly:true})){fleetSummary='Updates cancelled. No updates started.';return;}
+    let confirmation;
+    try{confirmation=cardUpdateConfirmation({name:'all lamps'},release,{previousVersion:displayed?.version,wifiOnly:true});}
+    catch(cause){throw Object.assign(Error('Could not open the update choices. No updates started. Return to CoolLamp and tap Update all lamps again.'),{preflightFailure:'confirmation-dialog',cause});}
+    if(!await confirmation){fleetSummary='Updates cancelled. No updates started.';return;}
     fleetApprovedRelease=release;fleetUpdateAttempts.clear();
     fleetSummary='Updating to firmware '+release.version+' one lamp at a time.';renderFleetControls();
     const result=await fleet.updateAll(release.version,{excludeIds:[...firmwareAttempts.pending().map(value=>value.identity),...legacyFirmwareReceipts.keys()]});

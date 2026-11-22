@@ -48,6 +48,31 @@ test('a confirmed memory rejection offers explicit Internet and phone choices wi
  const fallback=firmwareUpdateFailurePresentation(error);assert.match(fallback,/This lamp/);assert.match(fallback,/No new firmware was installed/);assert(!fallback.includes('private allocator'));
  for(const unsafe of [{...error,uncertain:true},{...error,uncertain:undefined},{...error,confirmed:false},{...error,installationNotStarted:false},{...error,safeBluetoothFallback:true},{...error,failedPath:'bluetooth'}])assert.equal(firmwareUpdateRouteChoicePresentation(unsafe),null);
 });
+test('a safely settled stopped transfer offers Internet alone when phone authorization is unavailable',()=>{
+ const evidence={fallbackRequiresConsent:true,phoneFallbackAvailable:false,directInternetRetryAvailable:true,confirmed:true,uncertain:false,
+  installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,settledOutcome:'transferStopped',commitUnconfirmed:false};
+ const value=firmwareUpdateRouteChoicePresentation(evidence,'Sonata Left');
+ assert.equal(value.title,'Choose how to try again');assert.equal(value.retryLabel,'Try Internet again');assert.equal(value.phoneLabel,null);
+ assert.match(value.message,/previous phone transfer/i);assert.match(value.message,/previous firmware/i);assert.match(value.message,/Bluetooth icon/i);
+ for(const unsafe of [{...evidence,settledTerminalRetry:false},{...evidence,settledOutcome:'unresolved'},{...evidence,commitUnconfirmed:true},
+  {...evidence,uncertain:true},{...evidence,confirmed:false},{...evidence,directInternetRetryAvailable:false}])
+  assert.equal(firmwareUpdateRouteChoicePresentation(unsafe),null);
+});
+test('a settled Internet attempt can retry Internet alone without widening the live fallback',()=>{
+ const settled={fallbackRequiresConsent:true,phoneFallbackAvailable:false,directInternetRetryAvailable:true,confirmed:true,uncertain:false,
+  installationNotStarted:true,safeBluetoothFallback:false,failedPath:'wifi',settledTerminalRetry:true,settledOutcome:'installationNotStarted',commitUnconfirmed:false};
+ const value=firmwareUpdateRouteChoicePresentation(settled,'Reading lamp');
+ assert.equal(value.title,'Internet download couldn’t start');assert.equal(value.retryLabel,'Try Internet again');assert.equal(value.phoneLabel,null);
+ assert.match(value.message,/Reading lamp/);assert.match(value.message,/Bluetooth icon/);
+ assert.equal(firmwareUpdateRouteChoicePresentation({...settled,settledTerminalRetry:false}),null);
+});
+test('a settled transfer without an Internet address can offer only an authorized phone route',()=>{
+ const phoneOnly={fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:false,confirmed:true,uncertain:false,
+  installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,settledOutcome:'transferStopped',commitUnconfirmed:false};
+ const value=firmwareUpdateRouteChoicePresentation(phoneOnly,'Reading lamp');
+ assert.equal(value.retryLabel,null);assert.equal(value.phoneLabel,'Send from phone');assert.match(value.message,/keep CoolLamp open/i);
+ assert.equal(firmwareUpdateRouteChoicePresentation({...phoneOnly,phoneFallbackAvailable:false}),null);
+});
 test('an uncertain installation never offers the next transfer regardless of an earlier failure',()=>{
  const value=firmwareUpdateResultPresentation({outcome:'unresolved',message:'We’ll check your lamp.'},{stages:[{stage:'wifi-preflight',code:'wifi-check-rejected'}]});
  assert.equal(value,'We’ll check your lamp.');assert(!/Try again/.test(value));

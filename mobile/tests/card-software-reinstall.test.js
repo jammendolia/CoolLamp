@@ -6,7 +6,7 @@ import {updateCardFirmware,availableCardRelease} from '../src/card-firmware.js';
 import {parsePhoneManifest,compareFirmwareVersions} from '../src/bluetooth-firmware.js';
 import {FirmwareAttemptJournal,reconcileFirmwareAttempt} from '../src/firmware-attempt.js';
 import {FirmwareScreenAwake} from '../src/firmware-screen-awake.js';
-import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
+import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation} from '../src/firmware-update-ui.js';
 import {validFirmwareVersion} from '../src/lamps.js';
 import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
 
@@ -17,14 +17,14 @@ const handlers=[extract('function cardUpdateConfirmation(','\nasync function acq
  extract('function cardReinstallTarget(','\nfunction updateDiagnosticDetails(')].join('\n');
 const id='f0b950b2f180',other='aabbccddeeff';
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n512\n${'a'.repeat(64)}\n`);
-function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVersion,publicRelease=release('1.15.1'),fresh=true,authorized=true,platform='ios',accept=true,scenario='success',onConfirm,onRefresh}={}){
+function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVersion,publicRelease=release('1.15.1'),fresh=true,authorized=true,platform='ios',accept=true,scenario='success',onConfirm,onRefresh,showModalFailure=false,dialogReturnValue=null}={}){
  const calls=[],data=new Map(),messages=[],entry={id,name:'Desk lamp',address:'http://desk.local',deviceId:'AAAAAAAA-0000-0000-0000-000000000001',accessoryManaged:authorized,firmwareVersion:installed};
  let receiverInstalled=receiverVersion;
  const journal=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),tasks=new Map(),saved={...entry};
- const element=tag=>({tag,dataset:{},attributes:{},children:[],setAttribute(key,value){this.attributes[key]=value;},append(...children){this.children.push(...children);},addEventListener(_event,callback){this.close=callback;},remove(){},
-  showModal(){calls.push(['confirmation',this.children[0].children[0].textContent,this.children[0].children[1].textContent]);onConfirm?.(context);queueMicrotask(()=>{this.returnValue=accept?'update':'cancel';this.close();});}});
+ const element=tag=>({tag,dataset:{},attributes:{},children:[],setAttribute(key,value){this.attributes[key]=value;},append(...children){this.children.push(...children);},addEventListener(_event,callback){this.close=callback;},remove(){if(showModalFailure)calls.push('dialog-removed');},
+  showModal(){calls.push(['confirmation',this.children[0].children[0].textContent,this.children[0].children[1].textContent]);if(showModalFailure)throw Error('private modal implementation detail');onConfirm?.(context);queueMicrotask(()=>{this.returnValue=dialogReturnValue??(accept?'update':'cancel');this.close();});}});
  const context={AbortController,Error,Map,parsePhoneManifest,compareFirmwareVersions,validFirmwareVersion,availableCardRelease,updateCardFirmware,FirmwareScreenAwake,
-  firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,acknowledgedBluetoothUpdateSource,entry,calls,publicFirmware:publicRelease,publicFirmwareFresh:fresh,publicFirmwareError:'',
+  firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,entry,calls,publicFirmware:publicRelease,publicFirmwareFresh:fresh,publicFirmwareError:'',
   firmwareAttempts:journal,legacyFirmwareReceipts:new Map(),cardFirmwareTasks:tasks,cardFirmwareUnconfirmed:new Map(),cardFirmwareMessages:new Map(),cardFirmwareMessageOwners:new Map(),
   groupRemovedIds:new Set(),removedAccessoryIds:new Set(),phonePlatform:platform,store:{items:[saved]},mergedLampEntries:()=>context.store.items,
   cardInstalledVersion:()=>installed,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,
@@ -49,8 +49,8 @@ function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVers
      return {committed:true,version:pkg.manifest.version,receipt:{session:9,size:512,offset:512,ack:44,phase:4,error:0,committed:true}};
     }},release:async()=>calls.push('lease-release')};}
  };
- runInNewContext(handlers+';globalThis.make=()=>cardFirmwareReinstallButton(entry);globalThis.direct=()=>updateLampCard(entry,{bluetoothOnly:true,allowReinstall:true});',context);
- return {context,entry,calls,messages,journal,tasks,button:context.make,direct:context.direct};
+ runInNewContext(handlers+';globalThis.make=()=>cardFirmwareReinstallButton(entry);globalThis.direct=()=>updateLampCard(entry,{bluetoothOnly:true,allowReinstall:true});globalThis.route=e=>cardUpdateRouteChoice(entry,e);',context);
+ return {context,entry,calls,messages,journal,tasks,button:context.make,direct:context.direct,route:context.route};
 }
 
 test('the production care button confirms an exact-current reinstall through only protected update reads',async()=>{
@@ -82,6 +82,38 @@ for(const owner of ['busy','connecting','card','legacy-task','bulk','power','ins
 test('declining the actual reinstall dialog performs no intent write, transfer or target query',async()=>{
  const f=fixture({accept:false});await f.button().onclick();assert.deepEqual(f.calls.map(row=>Array.isArray(row)?row[0]:row),['public-check','confirmation']);
  assert.equal(f.journal.get(id),null);assert.equal(f.tasks.size,0);
+});
+
+test('a synchronous confirmation-dialog failure is removed and reports fixed copy before any intent',async()=>{
+ const f=fixture({showModalFailure:true});await f.button().onclick();
+ assert.deepEqual(f.calls.map(row=>Array.isArray(row)?row[0]:row),['public-check','confirmation','dialog-removed']);
+ assert.equal(f.journal.get(id),null);assert.equal(f.tasks.size,0);assert(!f.calls.some(row=>['private-lease','download'].includes(Array.isArray(row)?row[0]:row)));
+ assert(f.messages.some(value=>/Could not open the update choices/.test(value.message||'')&&/Nothing was sent/.test(value.message||'')&&/Return to CoolLamp/.test(value.message||'')));
+ assert(!f.messages.some(value=>JSON.stringify(value).includes('private modal')));
+});
+
+test('a synchronous route-dialog failure removes the dialog and exposes no phone or Internet action',async()=>{
+ const f=fixture({showModalFailure:true}),evidence={fallbackRequiresConsent:true,phoneFallbackAvailable:false,directInternetRetryAvailable:true,
+  confirmed:true,uncertain:false,installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,
+  settledOutcome:'transferStopped',commitUnconfirmed:false};
+ assert.throws(()=>f.route(evidence),/private modal implementation detail/);
+ assert.deepEqual(f.calls.map(row=>Array.isArray(row)?row[0]:row),['confirmation','dialog-removed']);
+ assert.equal(f.journal.get(id),null);
+});
+
+test('an omitted phone route cannot be selected through a stale dialog return value',async()=>{
+ const f=fixture({dialogReturnValue:'phone'}),evidence={fallbackRequiresConsent:true,phoneFallbackAvailable:false,directInternetRetryAvailable:true,
+  confirmed:true,uncertain:false,installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,
+  settledOutcome:'transferStopped',commitUnconfirmed:false};
+ assert.equal(await f.route(evidence),'cancel');assert.equal(f.journal.get(id),null);
+});
+
+test('a phone-only route omits Internet and accepts only its rendered phone action',async()=>{
+ const evidence={fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:false,
+  confirmed:true,uncertain:false,installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,
+  settledOutcome:'transferStopped',commitUnconfirmed:false};
+ assert.equal(await fixture({dialogReturnValue:'wifi'}).route(evidence),'cancel');
+ assert.equal(await fixture({dialogReturnValue:'phone'}).route(evidence),'phone');
 });
 
 test('foreground ownership canceled during confirmation cannot acquire a target or create an update intent',async()=>{

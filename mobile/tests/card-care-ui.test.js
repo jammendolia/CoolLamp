@@ -8,16 +8,16 @@ import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const helper=source.slice(source.indexOf('function cardFirmwareButton('),source.indexOf('function fleetSeenTime('));
 const release=parsePhoneManifest('COOLLAMP-OTA-1\n1.14.0\nesp32c3\ndual-ota-2031616\n288\n'+'a'.repeat(64)+'\n');
-const entry={id:'aabbccddeeff',name:'Reading corner'};
-function fixture(overrides={}){
+const entry={id:'aabbccddeeff',name:'Reading corner',address:'192.168.1.20'};
+function fixture(overrides={},target=entry){
  const calls=[],context={availableCardRelease,publicFirmware:release,publicFirmwareFresh:true,cardInstalledVersion:()=> '1.13.0',fleetRefreshRun:null,publicFirmwareRun:null,
   firmwareAttempts:{pending:()=>[],get:()=>null},legacyFirmwareReceipts:new Map(),firmwareFeedback:{get:()=>null},checkLampUpdateResult:value=>calls.push(['check-update',value.id]),
   connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardFirmwareUnconfirmed:new Map(),
   updateLampCard:(value,options)=>calls.push(['update',value.id,options]),cardPhoneFirmwareAvailable:()=>true,
-  cardUpdateRouteChoice:async(_value,_evidence)=>'phone',mergedLampEntries:()=>[entry],refreshPublicFirmware:options=>calls.push(['release-check',options.force]),refreshLampFirmware:()=>calls.push(['version-check']),
+  cardUpdateRouteChoice:async(_value,_evidence)=>'phone',mergedLampEntries:()=>[target],refreshPublicFirmware:options=>calls.push(['release-check',options.force]),refreshLampFirmware:()=>calls.push(['version-check']),
   document:{createElement:()=>({dataset:{},attributes:{},label:{textContent:''},querySelector(){return this.label;},setAttribute(name,value){this.attributes[name]=value;}})},...overrides};
  runInNewContext(helper+'\nglobalThis.makeButton=cardFirmwareButton;',context);
- return {button:context.makeButton(entry),calls};
+ return {button:context.makeButton(target),calls};
 }
 
 test('a known newer release has a visible accessible update action for its lamp',()=>{
@@ -49,9 +49,50 @@ test('a reconciled unstarted Internet check offers an explicit phone route inste
  const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',reinstall:false,wifiCheckAttempted:true,wifiInstallAttempted:false,
   metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false,dataIssued:false,cancelAttempted:false,resumeAttempted:false};
  const {button,calls}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})}});
- assert.equal(button.label.textContent,'Update');assert.match(button.attributes['aria-label'],/Choose how to update/);
+ assert.equal(button.label.textContent,'Try again');assert.match(button.attributes['aria-label'],/Choose how to retry/);
  await button.onclick();assert.equal(calls.length,1);assert.equal(calls[0][0],'update');assert.equal(calls[0][1],entry.id);
  assert.deepEqual({...calls[0][2]},{bluetoothOnly:true,approvedRoute:'phone',approvedVersion:'1.14.0'});
+});
+test('the exact reconciled app-hidden transfer opens a fresh route choice before any new attempt',async()=>{
+ const attempt={identity:entry.id,version:'1.14.0',text:release.text,size:release.size,sha256:release.sha256,outcome:'transferStopped',reinstall:false,
+  wifiCheckAttempted:false,wifiInstallAttempted:false,metadataIssued:true,beginAttempted:true,dataIssued:true,commitAttempted:false,
+  commitUnconfirmed:false,commitAcknowledged:false,cancelAttempted:false,resumeAttempted:false};
+ let choose;const gate=new Promise(resolve=>choose=resolve),calls=[];
+ const {button}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'transferStopped'})},
+  cardPhoneFirmwareAvailable:()=>false,cardUpdateRouteChoice:async(_value,evidence)=>{calls.push(['route',evidence.settledOutcome,evidence.phoneFallbackAvailable]);return gate;},
+  updateLampCard:(value,options)=>calls.push(['update',value.id,{...options}])});
+ assert.equal(button.label.textContent,'Try again');const work=button.onclick();await Promise.resolve();
+ assert.deepEqual(calls,[['route','transferStopped',false]]);choose('wifi');await work;
+ assert.deepEqual(calls,[['route','transferStopped',false],['update',entry.id,{bluetoothOnly:false,approvedRoute:'wifi',approvedVersion:'1.14.0'}]]);
+});
+test('an addressless stopped transfer never offers a nonexistent Internet route',async()=>{
+ const target={...entry,address:undefined},attempt={identity:target.id,version:'1.14.0',text:release.text,size:release.size,sha256:release.sha256,outcome:'transferStopped',reinstall:false,
+  wifiCheckAttempted:false,wifiInstallAttempted:false,metadataIssued:true,beginAttempted:true,dataIssued:true,commitAttempted:false,
+  commitUnconfirmed:false,commitAcknowledged:false,cancelAttempted:false,resumeAttempted:false};
+ const {button,calls}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'transferStopped'})},
+  cardPhoneFirmwareAvailable:()=>false,cardUpdateRouteChoice:async()=>{calls.push(['route']);return 'wifi';}},target);
+ assert.match(button.attributes['aria-label'],/^Update Reading corner/);await button.onclick();
+ assert.deepEqual(calls,[['update',target.id,undefined]]);
+});
+test('an addressless stopped transfer offers only its authorized phone route',async()=>{
+ const target={...entry,address:undefined},attempt={identity:target.id,version:'1.14.0',text:release.text,size:release.size,sha256:release.sha256,outcome:'transferStopped',reinstall:false,
+  wifiCheckAttempted:false,wifiInstallAttempted:false,metadataIssued:true,beginAttempted:true,dataIssued:true,commitAttempted:false,
+  commitUnconfirmed:false,commitAcknowledged:false,cancelAttempted:false,resumeAttempted:false};
+ const {button,calls}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'transferStopped'})},
+  cardPhoneFirmwareAvailable:()=>true,cardUpdateRouteChoice:async(_value,evidence)=>{calls.push(['route',evidence.directInternetRetryAvailable,evidence.phoneFallbackAvailable]);return 'phone';}},target);
+ await button.onclick();assert.deepEqual(calls[0],['route',false,true]);assert.equal(calls[1][0],'update');assert.equal(calls[1][1],target.id);
+ assert.deepEqual({...calls[1][2]},{bluetoothOnly:true,approvedRoute:'phone',approvedVersion:'1.14.0'});
+});
+test('stopped-transfer recovery rejects any broadened or changed safety record',()=>{
+ const base={identity:entry.id,version:'1.14.0',text:release.text,size:release.size,sha256:release.sha256,outcome:'transferStopped',reinstall:false,
+  wifiCheckAttempted:false,wifiInstallAttempted:false,metadataIssued:true,beginAttempted:true,dataIssued:true,commitAttempted:false,
+  commitUnconfirmed:false,commitAcknowledged:false,cancelAttempted:false,resumeAttempted:false};
+ for(const patch of [{text:release.text+'x'},{size:289},{sha256:'b'.repeat(64)},{reinstall:true},{wifiCheckAttempted:true},{wifiInstallAttempted:true},
+  {metadataIssued:false},{beginAttempted:false},{dataIssued:false},{commitAttempted:true},{commitUnconfirmed:true},{commitAcknowledged:true},
+  {cancelAttempted:true},{resumeAttempted:true},{outcome:'unresolved'}]){
+  const {button}=fixture({firmwareAttempts:{pending:()=>[],get:()=>({...base,...patch})},firmwareFeedback:{get:()=>({terminal:true,outcome:'transferStopped'})}});
+  assert.equal(button.label.textContent,'Try again');assert.match(button.attributes['aria-label'],/^Update Reading corner/);
+ }
 });
 test('the reconciled recovery choice can explicitly retry Internet without a second confirmation',async()=>{
  const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,

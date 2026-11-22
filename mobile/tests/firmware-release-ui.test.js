@@ -6,7 +6,7 @@ import {availableCardRelease,updateCardFirmware} from '../src/card-firmware.js';
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 import {FirmwareScreenAwake} from '../src/firmware-screen-awake.js';
 import {FirmwareAttemptJournal,reconcileFirmwareAttempt} from '../src/firmware-attempt.js';
-import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
+import {firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation} from '../src/firmware-update-ui.js';
 import {FirmwareUpdateDiagnostics} from '../src/firmware-update-diagnostics.js';
 import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
 
@@ -14,13 +14,13 @@ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
 const resultCheckHandler=source.slice(source.indexOf('async function checkLampUpdateResult('),source.indexOf('\nconst firmwareResultCheckAt='));
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
-function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0}={}){
+function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0}={}){
  const entry={id:'aabbccddeeff',name:'Reading corner',address:addressless?undefined:'192.168.1.20',deviceId:'paired'},calls=[],messages=[];
  let inventory=[entry],running=installed,remainingWifiFailures=wifiFailure?1:0,remainingSettleWriteFailures=settleWriteFailures,journalWriteFailures=0;
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}});
  const tasks=new Map(),cardMessages=new Map(),messageOwners=new Map();
  const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
-  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
+  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
   cardFirmwareUnconfirmed:new Map(staleUnconfirmed?[[entry.id,'1.15.0']]:[]),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
   powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>installed,
@@ -28,7 +28,7 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
   refreshPublicFirmware:async options=>{calls.push(['check',options.force]);await onCheck?.({remove:()=>{inventory=[];},changeAddress:()=>{inventory=[{...entry,address:'192.168.1.21'}];},hide:()=>tasks.get(entry.id).abort.abort('app-hidden')});return available;},
   cardUpdateConfirmation:async(_entry,manifest,options)=>{calls.push(['confirm',manifest.version,options.previousVersion]);await onConfirm?.({hide:()=>tasks.get(entry.id).abort.abort('app-hidden')});return accept;},
    cardPhoneFirmwareAvailable:()=>true,
-  cardUpdateRouteChoice:async(_entry,error)=>{calls.push(['route',routeChoice,error.firmwareError??null]);return routeChoice;},
+  cardUpdateRouteChoice:async(_entry,error)=>{calls.push(['route',routeChoice,error.firmwareError??null]);if(routeChoiceFailure)throw Error('private route dialog detail');return routeChoice;},
   checkLampUpdateResult:async()=>{
    calls.push(['reconcile']);const attempt=firmwareAttempts.get(entry.id);
    const result={identity:attempt.identity,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,outcome:'installationNotStarted',
@@ -77,6 +77,14 @@ test('declining the route choice reconciles the lamp but starts no second update
  const ui=harness({wifiFailure:Object.assign(Error('No free memory'),{safeBluetoothFallback:true,firmwarePhase:5,firmwareError:8}),routeChoice:'cancel'});await ui.update();
  assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0'],['route','cancel',8],['reconcile']]);
  assert(!ui.calls.some(call=>['ble','download','transfer'].includes(call[0])));
+});
+test('a route-dialog failure fails closed, reconciles the journal, and never starts another route',async()=>{
+ const ui=harness({wifiFailure:Object.assign(Error('Offline'),{safeBluetoothFallback:true}),routeChoiceFailure:true,productionReconcile:true});await ui.update();
+ assert(ui.calls.some(call=>call[0]==='route'));assert(ui.calls.some(call=>call[0]==='ble'));assert(ui.calls.some(call=>call[0]==='release'));
+ assert(!ui.calls.some(call=>['download','transfer'].includes(call[0])));assert.equal(ui.attempts.pending().length,0);
+ assert.equal(ui.attempts.get('aabbccddeeff').outcome,'installationNotStarted');
+ assert(ui.messages.some(message=>/Could not open the update choices/.test(message)&&/No new firmware was installed/.test(message)));
+ assert(!ui.messages.some(message=>message.includes('private route dialog detail')));
 });
 test('production reconciliation retires only its owned Wi-Fi fallback message after success or a failed check',async()=>{
  for(const reconcileFailure of [null,Error('Protected check unavailable.')]){

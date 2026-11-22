@@ -11,13 +11,24 @@ export function firmwareUpdatePresentation(value={}){
  return {message:messages[value.stage]||'Checking your lamp…'};
 }
 export function firmwareUpdateRouteChoicePresentation(error,name='This lamp'){
- if(error?.fallbackRequiresConsent!==true||error?.phoneFallbackAvailable!==true||error?.directInternetRetryAvailable!==true||
-  error?.confirmed!==true||error?.uncertain!==false||error?.installationNotStarted!==true||error?.safeBluetoothFallback!==false||error?.failedPath!=='wifi')return null;
+ const unstartedInternet=error?.installationNotStarted===true&&error?.failedPath==='wifi';
+ const settledRetry=error?.settledTerminalRetry===true&&['installationNotStarted','transferStopped'].includes(error?.settledOutcome);
+ const liveUnstartedInternet=unstartedInternet&&!settledRetry;
+ const internet=error?.directInternetRetryAvailable===true,phone=error?.phoneFallbackAvailable===true;
+ if(error?.fallbackRequiresConsent!==true||typeof error?.phoneFallbackAvailable!=='boolean'||typeof error?.directInternetRetryAvailable!=='boolean'||!internet&&!phone||
+  error?.confirmed!==true||error?.uncertain!==false||error?.safeBluetoothFallback!==false||!unstartedInternet&&!settledRetry)return null;
+ if(liveUnstartedInternet&&(!internet||!phone))return null;
+ if(settledRetry&&error.commitUnconfirmed!==false)return null;
  const subject=typeof name==='string'&&name.trim()?name.trim():'This lamp';
  const reason=error.firmwareError===8?' because it did not have enough free memory':'';
- return Object.freeze({title:'Internet download couldn’t start',
-  message:subject+' could not start its Internet download'+reason+'. No new firmware was installed. Try the Internet download again, send the update from this phone, or stop for now. If you send it from this phone, keep CoolLamp open and keep the phone near the lamp until it finishes.',
-  retryLabel:'Try Internet again',phoneLabel:'Send from phone',cancelLabel:'Not now'});
+ const transferStopped=error.settledOutcome==='transferStopped';
+ const opening=transferStopped?'The previous phone transfer to '+subject+' stopped before installation. '+subject+' is still on its previous firmware.':
+  subject+' could not start its Internet download'+reason+'. No new firmware was installed.';
+ return Object.freeze({title:transferStopped?'Choose how to try again':'Internet download couldn’t start',
+  message:opening+(internet?' Try the Internet download again'+(phone?', send the update from this phone, or stop for now.':', or stop for now.'):
+   ' Send the update from this phone, or stop for now.')+(phone?' If you send it from this phone, keep CoolLamp open and keep the phone near the lamp until it finishes.':
+   ' To send it from this phone, first connect to and approve the lamp using its Bluetooth icon.'),
+  retryLabel:internet?'Try Internet again':null,phoneLabel:phone?'Send from phone':null,cancelLabel:'Not now'});
 }
 export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
  if(pending&&error?.stopReason==='app-hidden')return 'Sending stopped when CoolLamp left the screen. We’ll check your lamp when you return. Keep it powered.';
@@ -27,7 +38,8 @@ export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
  const preflightMessages={
   'public-release':'Could not verify the current public release. Nothing was sent. Check your phone’s Internet connection, then tap Try again.',
   'installed-version':'Could not verify this lamp’s installed version. Nothing was sent. Connect to the lamp, then tap Try again.',
-  'screen-awake':'Could not keep the phone’s screen awake. Nothing was sent. Keep CoolLamp open and the screen unlocked, then tap Try again.'
+  'screen-awake':'Could not keep the phone’s screen awake. Nothing was sent. Keep CoolLamp open and the screen unlocked, then tap Try again.',
+  'confirmation-dialog':'Could not open the update choices. Nothing was sent. Return to CoolLamp and tap Try again.'
  };
  if(Object.hasOwn(preflightMessages,error?.preflightFailure))return preflightMessages[error.preflightFailure];
  if(error?.stopReason==='user')return 'Update cancelled. Nothing more will be sent to your lamp.';
