@@ -68,6 +68,8 @@ int esp_ota_set_boot_partition(const esp_partition_t* p){assert(p==&target&&ends
 FirmwareManifest installed{};
 namespace LampFirmwareRelay{bool runningManifest(FirmwareManifest& out){out=installed;return known;}}
 namespace LampUpdateAttempt{bool prepare(const FirmwareManifest& p,bool repair){assert(ends==1&&!boots&&repair&&p.size==512);++attempts;return storage;}}
+namespace LampUpdateJob {SubmitResult submit(const char*,const char*,const char*){return Invalid;}Snapshot capture(){return {};}}
+String lampUpdateJson(){return "{}";}
 namespace UpdatePublisher{
  bool enforced(){return publisher;}
  bool verifyProvisioned(const char* text,size_t size,Manifest& out){assert(size==strlen(text)&&!strcmp(text,signedManifestText));if(!publisher||!validSignature)return false;char copy[288];strlcpy(copy,manifestText,sizeof(copy));assert(parseFirmwareManifest(copy,out.image));if(signedWrongArtifact)out.image.sha256[0]^=1;out.epoch=7;return true;}
@@ -84,6 +86,7 @@ struct Server{
  std::map<String,String> fields;Upload part;bool accepted=false,decoded=false;int code=0;String response;
  bool authenticate(const char*,const char*){return auth;}String header(const String&){return fields["token"];}
  String arg(const String& key){return decoded?formDecoder.arg(key):fields[key];}
+ HTTPMethod method(){return HTTP_GET;}const char* argView(const char* key){return fields[key].c_str();}
  bool fieldsAllowed(const char* const* names,size_t count){return decoded?formDecoder.fieldsAllowed(names,count):!fields.count("unexpected");}
  void send(int c,const char*,const String& text){code=c;response=text;}
  Upload& upload(){return part;}void acceptUpload(bool value){accepted=value;}

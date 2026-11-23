@@ -80,7 +80,7 @@ bool describe(){
 }
 bool startReceiver(){
  if(!lampAutomaticUpdateAllowed()||!beginLampRadioFirmwareReceiver(uint32_t(session)))return false;
- char digest[65],manifest[UpdatePublisher::ManifestCapacity];for(unsigned i=0;i<32;++i)snprintf(digest+i*2,3,"%02x",offeredHash[i]);
+ char digest[65],manifest[UpdatePublisher::ManifestCapacity];formatFirmwareHex(offeredHash,32,digest);
  size_t length=0;
  if(offeredSigned){if(!UpdatePublisher::format(offeredPublisher,manifest,sizeof(manifest),length)){abortLampRadioFirmwareReceiver();return false;}}
  else{const int used=snprintf(manifest,sizeof(manifest),"COOLLAMP-OTA-1\n%u.%u.%u\nesp32c3\ndual-ota-2031616\n%lu\n%s\n",offeredVersion[0],offeredVersion[1],offeredVersion[2],static_cast<unsigned long>(offeredSize),digest);if(used<=0||used>=192){abortLampRadioFirmwareReceiver();return false;}length=size_t(used);}

@@ -5,6 +5,7 @@
 #include "UpdateManifest.h"
 #include "LampUpdateAutomatic.h"
 #include "LampUpdateAttempt.h"
+#include "LampUpdateJob.h"
 #include "UpdateHttpDiagnostics.h"
 class LampJsonSink;
 
@@ -61,6 +62,7 @@ void appendLampUpdatePolicyJson(LampJsonSink& out,const LampUpdatePolicyJsonSnap
 struct LampUpdateJsonSnapshot {
   LampUpdateStatus status{};
   LampUpdateAttempt::StatusSnapshot attempt{};
+  LampUpdateJob::Snapshot job{};
   LampUpdatePolicyJsonSnapshot policy{};
   UpdateHttpDiagnosticsSnapshot http{};
   LampUpdateAutomatic::Snapshot automaticService{};
@@ -69,7 +71,7 @@ struct LampUpdateJsonSnapshot {
   uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
   bool wifi=false,healthy=false,publisher=false;
 };
-static_assert(sizeof(LampUpdateJsonSnapshot)<=256,"Update read snapshot must stay bounded");
+static_assert(sizeof(LampUpdateJsonSnapshot)<=352,"Update read snapshot must stay bounded");
 LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic=false);
 void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic=false);
 // Loop-owned durable policy. Automatic and donation admission share this gate;

@@ -1,10 +1,10 @@
 #include "LampUpdateAttempt.h"
 #include "LampJsonSink.h"
-#include <nvs.h>
+#include "LampTrustStorage.h"
 
 namespace LampUpdateAttempt {
 namespace {
-constexpr char Name[]="lamptrust",Key[]="otaAttemptV1";
+constexpr char Key[]="otaAttemptV1";
 FirmwareManifest entries[Capacity]{};
 uint8_t count=0;
 bool readable=false;
@@ -33,21 +33,14 @@ bool decode(const uint8_t in[RecordSize]){
 }
 // NVS error codes retain absence versus read/type/length failure. Never use a
 // default value to interpret a failed read as an empty quarantine.
-bool read(uint8_t out[RecordSize],bool& absent){
- nvs_handle_t handle=0;const esp_err_t opened=nvs_open(Name,NVS_READONLY,&handle);
- absent=opened==ESP_ERR_NVS_NOT_FOUND;if(absent)return true;if(opened!=ESP_OK)return false;
- size_t size=RecordSize;const auto result=nvs_get_blob(handle,Key,out,&size);nvs_close(handle);
- absent=result==ESP_ERR_NVS_NOT_FOUND;return absent||(result==ESP_OK&&size==RecordSize);
-}
 bool save(const FirmwareManifest* next,uint8_t used){
  uint8_t encoded[RecordSize];encode(encoded,next,used);
- nvs_handle_t handle=0;if(nvs_open(Name,NVS_READWRITE,&handle)!=ESP_OK)return false;
- const bool saved=nvs_set_blob(handle,Key,encoded,sizeof(encoded))==ESP_OK&&nvs_commit(handle)==ESP_OK;nvs_close(handle);
- if(!saved){uint8_t observed[RecordSize]{};bool absent=false;
-  if(!read(observed,absent)){unreadable();return false;}
-  if(absent||memcmp(observed,encoded,sizeof(encoded))){
+ const auto written=LampTrustStorage::write(Key,encoded,sizeof(encoded));if(written==LampTrustStorage::NotOpened)return false;
+ if(written==LampTrustStorage::Uncertain){uint8_t observed[RecordSize]{};const auto read=LampTrustStorage::read(Key,observed,sizeof(observed));
+  if(read==LampTrustStorage::Error){unreadable();return false;}
+  if(read==LampTrustStorage::Absent||memcmp(observed,encoded,sizeof(encoded))){
    uint8_t prior[RecordSize];portENTER_CRITICAL(&mux);encode(prior,entries,count);const bool empty=!count;portEXIT_CRITICAL(&mux);
-   if(!(absent?empty:!memcmp(observed,prior,sizeof(prior))))unreadable();
+   if(!((read==LampTrustStorage::Absent)?empty:!memcmp(observed,prior,sizeof(prior))))unreadable();
    return false;
   }
  }
@@ -55,7 +48,7 @@ bool save(const FirmwareManifest* next,uint8_t used){
 }
 int find(const FirmwareManifest& image){for(unsigned i=0;i<count;++i)if(sameFirmwareManifest(entries[i],image))return int(i);return -1;}
 }
-void begin(){uint8_t bytes[RecordSize]{};bool absent=false;count=0;memset(entries,0,sizeof(entries));readable=read(bytes,absent)&&(absent||decode(bytes));}
+void begin(){uint8_t bytes[RecordSize]{};count=0;memset(entries,0,sizeof(entries));const auto read=LampTrustStorage::read(Key,bytes,sizeof(bytes));readable=read!=LampTrustStorage::Error&&(read==LampTrustStorage::Absent||decode(bytes));}
 AdmissionReason automaticAdmissionReason(const FirmwareManifest& image){
  portENTER_CRITICAL(&mux);const auto reason=!readable?Unavailable:!valid(image)?InvalidArtifact:find(image)>=0?Unconfirmed:count==Capacity?Full:Eligible;portEXIT_CRITICAL(&mux);return reason;
 }

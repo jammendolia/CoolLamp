@@ -113,6 +113,7 @@ public:
   virtual bool hasArg(const String&)const{return false;}
   virtual size_t args()const{return 0;}
   virtual String argName(size_t)const{return String();}
+  HTTPMethod method()const{const auto* request=currentRequest();return request&&request->method==LampHttpParser::Method::Get?HTTP_GET:HTTP_POST;}
   String uri()const{const auto* request=currentRequest();return request?String(request->path):String();}
   String header(const String& name)const{
     const auto* current=currentRequest();if(!current)return String();const auto& request=*current;

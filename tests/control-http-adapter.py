@@ -192,6 +192,10 @@ std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tl
 namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
 }
+namespace LampUpdateJob {
+Snapshot capture(){Snapshot value{};value.storageReady=true;return value;}
+void appendJson(LampJsonSink& out,const Snapshot&){out.concat("{\"version\":1,\"storageReady\":true,\"jobId\":\"\",\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"terminal\":false}");}
+}
 constexpr int WL_CONNECTED=3;
 enum wifi_ps_type_t {WIFI_PS_NONE=0};
 int esp_wifi_get_ps(wifi_ps_type_t* mode){*mode=WIFI_PS_NONE;return ESP_OK;}

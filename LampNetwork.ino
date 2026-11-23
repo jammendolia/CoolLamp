@@ -559,7 +559,7 @@ void sendLampBrowserUploadStatus()
   if(!authorizedLampRequest(false))return;
   FirmwareManifest installed{};const bool known=LampFirmwareRelay::runningManifest(installed);
   char digest[65]{};
-  if(known)for(unsigned i=0;i<32;++i)snprintf(digest+2*i,3,"%02x",installed.sha256[i]);
+  if(known)formatFirmwareHex(installed.sha256,32,digest);
   char boot[17];snprintf(boot,sizeof(boot),"%016llx",(unsigned long long)browserUploadBootSession);
   const auto update=getLampUpdateStatus();
   lampServer.send(200,"application/json",String("{\"deviceId\":")+jsonText(lampIdentity())+",\"boot\":\""+boot+"\",\"version\":\""+LAMP_FIRMWARE_VERSION+"\",\"healthy\":"+(lampBootHealthy()?"true":"false")+",\"receiving\":"+(update.receiving?"true":"false")+",\"installedKnown\":"+(known?"true":"false")+",\"size\":"+String(known?installed.size:0)+",\"sha256\":\""+digest+"\"}");
@@ -694,6 +694,24 @@ void receiveLampUpdate()
   } else if (upload.status == UPLOAD_FILE_ABORTED && otaAccepted) {
     failLampUpdate("Upload interrupted. Existing firmware remains selected.");
   }
+}
+
+__attribute__((noinline,optimize("Oz"))) void serveLampUpdateJob()
+{
+  const bool post=lampServer.method()==HTTP_POST;if(!authorizedLampRequest(post))return;
+  int status=0;
+  if(post){
+    const auto result=LampUpdateJob::submit(lampServer.argView("jobId"),lampServer.argView("version"),lampServer.argView("sha256"));
+    if(result==LampUpdateJob::Invalid)status=400;
+    else status=result==LampUpdateJob::Conflict?409:result==LampUpdateJob::StorageUnavailable?503:202;
+  }else{
+    const char* requested=lampServer.argView("jobId");const auto snapshot=LampUpdateJob::capture();
+    if(!snapshot.storageReady)status=503;
+    else if(!*requested)status=400;
+    else status=snapshot.state==LampUpdateJob::None||strcmp(snapshot.jobId,requested)?404:200;
+  }
+  if(status==400||status==404)lampServer.send(status,"text/plain","Update job unavailable.");
+  else lampServer.send(status,"application/json",lampUpdateJson());
 }
 
 void beginLampNetwork()
@@ -1009,6 +1027,7 @@ void beginLampNetwork()
     if (!authorizedLampRequest(false)) return;
     lampServer.send(200, "application/json", lampUpdateJson());
   });
+  lampServer.on("/api/firmware/job", HTTP_ANY, serveLampUpdateJob);
   lampServer.on("/api/firmware/check", HTTP_POST, +[]() {
     if (!authorizedLampRequest(true)) return;
     const bool ok = requestLampUpdateCheck();

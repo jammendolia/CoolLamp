@@ -31,6 +31,19 @@ inline bool firmwareIsNewer(const uint16_t next[3], const uint16_t current[3]) {
   for (unsigned i = 0; i < 3; ++i) if (next[i] != current[i]) return next[i] > current[i];
   return false;
 }
+__attribute__((noinline)) inline bool parseFirmwareSha256(const char* text, uint8_t out[32]) {
+  if (!text) return false;
+  for (unsigned i = 0; i < 64; ++i) {
+    const char c=text[i];if(!((c>='0'&&c<='9')||(c>='a'&&c<='f')))return false;
+    const uint8_t nibble=c<='9'?c-'0':c-'a'+10;
+    if(i&1)out[i/2]|=nibble;else out[i/2]=nibble<<4;
+  }
+  return !text[64];
+}
+__attribute__((noinline)) inline void formatFirmwareHex(const uint8_t* bytes,size_t size,char* out) {
+  static constexpr char digits[]="0123456789abcdef";
+  for(size_t i=0;i<size;++i){out[i*2]=digits[bytes[i]>>4];out[i*2+1]=digits[bytes[i]&15];}out[size*2]=0;
+}
 inline bool parseFirmwareManifest(char* text, FirmwareManifest& out) {
   // Six LF-terminated lines, no optional or unbounded fields.
   char* lines[6]; char* p = text;
@@ -43,15 +56,5 @@ inline bool parseFirmwareManifest(char* text, FirmwareManifest& out) {
   if (!*lines[4] || strlen(lines[4]) > 7) return false;
   out.size = 0;
   for (p = lines[4]; *p; ++p) { if (*p < '0' || *p > '9') return false; out.size = out.size * 10 + *p - '0'; }
-  if (out.size < 288 || out.size > 2031616 || strlen(lines[5]) != 64) return false;
-  for (unsigned i = 0; i < 32; ++i) {
-    unsigned value = 0;
-    for (unsigned j = 0; j < 2; ++j) {
-      const char c = lines[5][i * 2 + j];
-      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-      value = value * 16 + (c <= '9' ? c - '0' : c - 'a' + 10);
-    }
-    out.sha256[i] = value;
-  }
-  return true;
+  return out.size >= 288 && out.size <= 2031616 && parseFirmwareSha256(lines[5], out.sha256);
 }

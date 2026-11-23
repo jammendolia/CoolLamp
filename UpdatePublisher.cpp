@@ -82,7 +82,7 @@ bool copyRetainedManifest(char* out,size_t capacity,size_t& length){
 }
 bool format(const Manifest& m,char* out,size_t capacity,size_t& length){
  length=0;if(!out||capacity<ManifestCapacity||!m.epoch||m.epoch==UINT32_MAX||!m.keyId||m.image.size<288||m.image.size>2031616)return false;
- char digest[65],signature[129];for(unsigned i=0;i<32;++i)snprintf(digest+2*i,3,"%02x",m.image.sha256[i]);for(unsigned i=0;i<64;++i)snprintf(signature+2*i,3,"%02x",m.signature[i]);
+ char digest[65],signature[129];formatFirmwareHex(m.image.sha256,32,digest);formatFirmwareHex(m.signature,64,signature);
  const int used=snprintf(out,capacity,"COOLLAMP-OTA-2\n%u.%u.%u\nesp32c3\ndual-ota-2031616\n%lu\n%s\n%lu\n%08lx\n%s\n",m.image.version[0],m.image.version[1],m.image.version[2],static_cast<unsigned long>(m.image.size),digest,static_cast<unsigned long>(m.epoch),static_cast<unsigned long>(m.keyId),signature);
  if(used<=0||size_t(used)>=capacity)return false;
  length=size_t(used);return true;

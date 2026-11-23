@@ -6,6 +6,7 @@
 #include "LampUpdateHandoff.h"
 #include "LampUpdateHealth.h"
 #include "LampUpdateAttempt.h"
+#include "LampUpdateJob.h"
 #include "LampCommission.h"
 #include "LampRollout.h"
 #include "LampFirmwareRelay.h"
@@ -72,6 +73,7 @@ LampUpdateAutomatic::Service automaticService;
 LampUpdateAutomatic::Snapshot automaticView;
 bool automaticJob=false,automaticCommitHeld=false;
 bool manualCommitHeld=false;
+bool updateJobRunning=false,updateJobReconciled=false;
 uint8_t automaticJobOperation=0;
 // The worker publishes only bounded evidence after destroying its TLS owner.
 // 1 safe precommit error,2 commit fence entered,3 discovery success,4 deferred.
@@ -91,7 +93,14 @@ void startReceiverCue(){
   const auto light=getLampControlState();
   portENTER_CRITICAL(&mux);status.receiving=true;status.cueOn=light.power;status.cueBrightness=light.brightness;status.writtenOffset=0;status.totalBytes=0;if(!++status.cueGeneration)++status.cueGeneration;portEXIT_CRITICAL(&mux);
 }
-void fail(uint8_t error) { phase(UPDATE_ERROR, error); }
+void fail(uint8_t error) {
+  if(updateJobRunning){
+    const auto durable=LampUpdateJob::capture();
+    if(durable.state==LampUpdateJob::Committing){if(!LampUpdateJob::markUncertain())error=UPDATE_STORAGE;}
+    else if(durable.state!=LampUpdateJob::Uncertain&&!LampUpdateJob::markFailed(error))error=UPDATE_STORAGE;
+  }
+  phase(UPDATE_ERROR, error);
+}
 String versionText(const uint16_t v[3]) {
   String out;
   if(!out.concat(v[0])||!out.concat('.')||!out.concat(v[1])||!out.concat('.')||!out.concat(v[2]))return String();
@@ -132,11 +141,15 @@ __attribute__((noinline)) bool finishReleaseCheck(UpdateHttp& http,int code,int6
   if (code != 200 || !complete || !textComplete || !validManifest) {
     fail(code == 200 ? UPDATE_MANIFEST : UPDATE_NETWORK); return false;
   }
-  if (installing && (!sameFirmwareManifest(next, candidate)||nextEpoch!=candidateEpoch||(nextEpoch&&strcmp(text,signedCandidate)))) { fail(UPDATE_MANIFEST); return false; }
+  const bool newer=firmwareIsNewer(next.version,CURRENT);
+  if(updateJobRunning){
+    const auto exactJob=LampUpdateJob::capture();
+    if(!LampUpdateJob::matches(exactJob,next)||!newer){fail(UPDATE_MANIFEST);return false;}
+  }else if (installing && (!sameFirmwareManifest(next, candidate)||nextEpoch!=candidateEpoch||(nextEpoch&&strcmp(text,signedCandidate)))) { fail(UPDATE_MANIFEST); return false; }
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   if (!target || target->size < 2031616 || next.size > target->size) { fail(UPDATE_PARTITION); return false; }
-  const bool newer = firmwareIsNewer(next.version, CURRENT);
   if(background&&cancelBackground.load()){backgroundReadDeferred=true;return false;}
+  if(updateJobRunning&&!installing&&!LampUpdateJob::markDownloading(next)){fail(UPDATE_STORAGE);return false;}
   portENTER_CRITICAL(&mux);
   candidate = next; candidateEpoch=nextEpoch;if(nextEpoch)strlcpy(signedCandidate,text,sizeof(signedCandidate));else signedCandidate[0]=0;memcpy(status.latest, next.version, sizeof(status.latest));status.checkedAt=millis();
   status.available = newer; status.progress = 0;
@@ -208,6 +221,7 @@ __attribute__((noinline)) void receiveRelease(UpdateHttp& http,const FirmwareMan
   // Retain the legacy version guard for supported old rollback images, but do
   // not quarantine a version merely because its network download was tried.
   // A failure anywhere inside the durable fence is never an automatic replay.
+  if(updateJobRunning&&!LampUpdateJob::markCommitting()){fail(UPDATE_STORAGE);return;}
   workerCommitFence=true;
   if(!LampUpdateAttempt::prepare(selected,explicitRepair)||!recordAttempt(version)){fail(UPDATE_STORAGE);return;}
   if(esp_ota_set_boot_partition(target)!=ESP_OK){fail(UPDATE_IMAGE);return;}
@@ -254,10 +268,12 @@ void updateTask(void*) {
     const uint32_t elapsed=uint32_t(millis()-started);
     const uint32_t left=background&&elapsed<LampUpdateControlPolicy::BackgroundBudgetMs?LampUpdateControlPolicy::BackgroundBudgetMs-elapsed:0;
     if(background&&!left){fail(UPDATE_CLOCK);finishBackground();return;}
-    if (operation == 2) installRelease(); else completed=checkRelease(false,background,left);
+    if (operation == 2) installRelease();
+    else completed=checkRelease(false,background,left);
     finishBackground();
   };
   run();
+  updateJobRunning=false;
   // Every HTTPS origin publishes the durable fence, including Update now.
   // A failed boot-selection reply is uncertain, not permission to try BLE.
   const auto completed=getLampUpdateStatus();
@@ -295,7 +311,7 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
     backgroundActive=false;
     automaticJob=false;
     handoff.cancel();
-    fail(UPDATE_MEMORY); return false;
+    fail(UPDATE_MEMORY);updateJobRunning=false; return false;
   }
   if(operation==2&&!lampRolloutAutomaticUpdateStarted(offered)){
     portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);automaticJob=false;handoff.cancel();fail(UPDATE_STORAGE);return false;
@@ -312,6 +328,7 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
 
 void beginLampUpdater() {
   LampUpdateAttempt::begin();
+  LampUpdateJob::begin();
   bootHealth.begin(millis());
   Preferences prefs;
   if (prefs.begin("coollamp", true)) {
@@ -461,6 +478,7 @@ void serviceLampUpdater() {
     dispatchReady=false;backgroundActive=false;automaticJob=false;handoff.cancel();
     if(jobBackground)phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);
     else fail(UPDATE_MEMORY);
+    updateJobRunning=false;
   };
   if(worker&&workerFinished.load(std::memory_order_acquire)){
     // No TLS, NVS or candidate access remains in the completed task. Remove
@@ -507,7 +525,10 @@ void serviceLampUpdater() {
     healthAttempted=true;nextHealthAttempt=now+60000;
     FirmwareManifest measured{};esp_ota_img_states_t imageState;
     const auto* running=esp_ota_get_running_partition();
-    if(running&&esp_ota_get_state_partition(running,&imageState)==ESP_OK&&imageState==ESP_OTA_IMG_VALID&&LampFirmwareRelay::runningManifest(measured))LampUpdateAttempt::confirmHealthy(measured);
+    if(running&&esp_ota_get_state_partition(running,&imageState)==ESP_OK&&imageState==ESP_OTA_IMG_VALID&&LampFirmwareRelay::runningManifest(measured)){
+      LampUpdateAttempt::confirmHealthy(measured);
+      updateJobReconciled=LampUpdateJob::reconcileRunning(measured);
+    }
   }
   // CoolLamp's loop services Network and Bluetooth before this point. Crossing
   // a full subsequent pass covers HTTP, BLE, USB and automatic request origins,
@@ -559,6 +580,19 @@ void serviceLampUpdater() {
   static uint8_t previousPhase = UPDATE_IDLE;
   if (current.phase == UPDATE_ERROR && previousPhase != UPDATE_ERROR) nextCheck = now + 15UL * 60 * 1000 + esp_random() % 60000;
   previousPhase = current.phase;
+  const auto durable=LampUpdateJob::capture();
+  const bool pending=durable.storageReady&&(durable.state==LampUpdateJob::Accepted||durable.state==LampUpdateJob::Checking||durable.state==LampUpdateJob::Downloading);
+  if(updateJobReconciled&&pending&&WiFi.status()==WL_CONNECTED&&!manual&&!busy(current.phase)&&!worker&&!job){
+    if(durable.state==LampUpdateJob::Downloading&&current.phase==UPDATE_AVAILABLE){
+      FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
+      if(!LampUpdateJob::matches(durable,offered)){
+        updateJobRunning=true;fail(UPDATE_MANIFEST);updateJobRunning=false;return;
+      }
+      updateJobRunning=true;if(!request(2,true))updateJobRunning=false;return;
+    }
+    if(durable.state!=LampUpdateJob::Downloading&&!LampUpdateJob::markChecking())return;
+    updateJobRunning=true;if(!request(1)){fail(UPDATE_MEMORY);updateJobRunning=false;}return;
+  }
   serviceAutomaticUpdates(now,current);
   if (current.phase == UPDATE_RESTARTING) {
     if(manual)return; // Browser upload retains Network's existing reply/restart owner.
@@ -594,6 +628,7 @@ LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
   snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):lastWorkerStackFree;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
   snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
   if(includeAutomatic){
+    snapshot.job=LampUpdateJob::capture();
     snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
     snapshot.automaticService.retryInMs=timing.retryInMs;snapshot.automaticService.donorWaitMs=timing.donorWaitMs;
     // Same immutable 48-bit hardware identity as lampIdentity(), without a
@@ -621,12 +656,14 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
   add(",\"freeHeap\":");add(snapshot.heap);add(",\"largestBlock\":");add(snapshot.largest);
   add(",\"workerStackFree\":");add(snapshot.workerStack);add(",\"loopStackFree\":");add(snapshot.loopStack);
   add(",\"bootHealthy\":");add((snapshot.healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
-  add(",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
+  if(includeAutomatic)add(",\"publisherDonation\":true");
+  add(",\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
   LampUpdateAttempt::appendStatus(out,snapshot.attempt);
   add(",\"policy\":");
   appendLampUpdatePolicyJson(out,snapshot.policy);
   appendUpdateHttpDiagnostics(out,snapshot.http);
   if(includeAutomatic){
+    add(",\"updateJobContractVersion\":1,\"updateJob\":");LampUpdateJob::appendJson(out,snapshot.job);
     if(strlen(snapshot.deviceId)!=12){out.fail();return;}
     const auto& a=snapshot.automaticService;
     const auto& w=snapshot.workerAdmission;

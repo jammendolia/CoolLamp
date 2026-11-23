@@ -26,7 +26,7 @@ CASES = [
         'ble-control-runtime', 'ble-update-runtime', 'ble-update-radio-runtime',
         'update-policy-runtime', 'update-cue-runtime', 'rollout-recovery-preflight',
         'update-handoff-runtime', 'update-publisher-runtime',
-        'update-attempt-runtime', 'update-http-runtime', 'update-automatic-download-runtime',
+        'update-attempt-runtime', 'update-job-runtime', 'update-http-runtime', 'update-automatic-download-runtime',
         'browser-upload-runtime',
         'update-publisher-receiver-runtime', 'firmware-relay-runtime',
         'bridge-group-donation-runtime',

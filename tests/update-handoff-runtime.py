@@ -60,6 +60,7 @@ unsigned workerStackReads=0;
 bool taskCreateWorks=true,tlsLive=false;unsigned taskCreations=0,taskDeletes=0,tlsDestructs=0;
 bool manual=false;
 bool explicitRepair=false,attemptAllowed=true,measuredReady=false,attemptConfirmWorks=true;unsigned attemptConfirmCalls=0;
+bool updateJobRunning=false,updateJobReconciled=false;
 bool jobBackground=false,backgroundPriorAvailable=false,backgroundReadDeferred=false;
 std::atomic<bool> backgroundActive{false},cancelBackground{false},backgroundDeferred{false};
 bool controlIdle=true;size_t freeHeap=65536,largestHeap=65536;
@@ -87,6 +88,15 @@ uint32_t uxTaskGetStackHighWaterMark(void* target){
 bool lampControlTrafficIdle(uint32_t){return controlIdle;}
 namespace LampUpdateAttempt {bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}bool confirmHealthy(const FirmwareManifest&){++attemptConfirmCalls;return attemptConfirmWorks;}}
 namespace LampUpdateAttempt {AdmissionReason automaticAdmissionReason(const FirmwareManifest&){return attemptAllowed?Eligible:Unconfirmed;}}
+namespace LampUpdateJob {
+ Snapshot fixture{};
+ unsigned advances=0,reconciles=0;bool reconcileWorks=true;
+ Snapshot capture(){return fixture;}
+ bool advance(uint8_t state,uint8_t,const FirmwareManifest*){++advances;fixture.state=state;return true;}
+ bool matches(const Snapshot&,const FirmwareManifest&){return true;}
+ bool reconcileRunning(const FirmwareManifest&){++reconciles;return reconcileWorks;}
+ SubmitResult submit(const char*,const char*,const char*){return Submitted;}
+}
 namespace LampFirmwareRelay {bool runningManifest(FirmwareManifest& out){out.size=512;return measuredReady;}}
 bool automaticAdmission=true;
 bool lampAutomaticUpdateAllowed(){return status.automatic&&automaticAdmission;}
@@ -407,6 +417,14 @@ int main(int argc,char** argv){
   commissionBusy=false;nextCheck=clockMs+60000;status.automatic=false;
   assert(reserveLampManualUpdate()&&manual&&audioStops==1);releaseLampManualUpdate();
   assert(requestLampUpdateCheck()&&job==1);tick();tick();assert(notifications==1);
+ }else if(origin=="job-downloading-resume"){
+  trigger=false;nextCheck=clockMs+1000000;updateJobReconciled=true;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Downloading;LampUpdateJob::fixture.target.size=512;
+  tick();assert(job==1&&updateJobRunning&&LampUpdateJob::fixture.state==LampUpdateJob::Downloading&&!LampUpdateJob::advances);
+ }else if(origin=="job-reconcile-storage-failure"){
+  trigger=false;nextCheck=clockMs+1000000;measuredReady=true;LampUpdateJob::reconcileWorks=false;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Accepted;
+  tick();assert(LampUpdateJob::reconciles==1&&!updateJobReconciled&&!job&&!notifications);
  }else if(origin=="health"){
   trigger=false;nextCheck=clockMs+60000;healthy=false;clockMs=0;bootHealth.begin(clockMs);imageState=ESP_OTA_IMG_PENDING_VERIFY;
   for(clockMs=0;clockMs<30000;clockMs+=100){serviceLampUpdater();}assert(!healthy&&!confirmations&&!notifications);
@@ -512,6 +530,8 @@ class UpdateHandoffTests(unittest.TestCase):
         public = source[source.index('LampUpdateStatus getLampUpdateStatus()'):source.index('bool setLampAutoUpdate')]
         ownership = source[source.index('bool lampRemoteUpdateBusy()'):source.index('static void serviceAutomaticUpdates(')]
         service = source[source.index('static void serviceAutomaticUpdates('):source.index('void getLampUpdatePacket(')]
+        self.assertIn('updateJobReconciled=LampUpdateJob::reconcileRunning(measured);',service)
+        self.assertIn('durable.state!=LampUpdateJob::Downloading&&!LampUpdateJob::markChecking()',service)
         worker = source[source.index('void updateTask(void*)'):source.index('bool request(uint8_t operation')]
         initialization=source[source.index('void beginLampUpdater()'):source.index('LampUpdateStatus getLampUpdateStatus()')]
         self.assertNotIn('xTaskCreate', initialization)
@@ -551,7 +571,7 @@ class UpdateHandoffTests(unittest.TestCase):
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             for scenario in ('http','ble','automatic','install','guards','audio-failure',
-                             'manual-exclusion','commission-exclusion','health','automatic-install','attempt-quarantine','attempt-health','group-unassigned','group-legacy','rollout-denied','rollout-storage','same-version-no-retry',
+                             'manual-exclusion','commission-exclusion','job-downloading-resume','job-reconcile-storage-failure','health','automatic-install','attempt-quarantine','attempt-health','group-unassigned','group-legacy','rollout-denied','rollout-storage','same-version-no-retry',
                              'error-backoff','restart','background-defer','background-cancel','background-memory','manual-noncancel','install-noncancel',
                              'background-offline','background-clock','background-clock-cancel','automatic-install-control',
                              'http-owned','ble-owned','automatic-owned',

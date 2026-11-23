@@ -125,6 +125,10 @@ std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tl
 namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
 }
+namespace LampUpdateJob {
+Snapshot capture(){Snapshot value{};value.storageReady=true;return value;}
+void appendJson(LampJsonSink& out,const Snapshot&){out.concat("{\"version\":1,\"storageReady\":true,\"jobId\":\"\",\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"terminal\":false}");}
+}
 constexpr int WL_CONNECTED=3;
 using namespace LampSyncWire;
 struct {uint8_t role=1;char leader[13]="aabbccddeeff",key[33]="0123456789abcdef0123456789abcdef";} config;
@@ -509,12 +513,12 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
         snapshot_sizes=next(row['snapshotSizes'] for row in rows if 'snapshotSizes' in row)
         results = [row for row in rows if 'name' in row]
         self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','connected47StateHttp','connected47StateBle','compactUpdate','currentViewHttp','currentViewBle'])
-        compact=next(row for row in results if row['name']=='compactUpdate');self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
+        compact=next(row for row in results if row['name']=='compactUpdate');self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff');self.assertIs(compact['value']['publisherDonation'],True)
         self.assertEqual(compact['value']['automaticService'],dict(version=1,state=6,reason=24,retryInMs=21600000,donorWaitMs=30000,internetAttempts=65535,donorOffers=65535,attention=False,phoneFallback=False,newerSeen=False))
         for result in results:
             nested=result['value'].get('firmware') if isinstance(result['value'],dict) else None
             if isinstance(nested,dict):
-                self.assertNotIn('automaticService',nested,result['name']);self.assertNotIn('deviceId',nested,result['name'])
+                self.assertNotIn('automaticService',nested,result['name']);self.assertNotIn('deviceId',nested,result['name']);self.assertNotIn('publisherDonation',nested,result['name'])
             firmware=result['value'] if result['name'] in ('update','compactUpdate') else nested
             if isinstance(firmware,dict):
                 self.assertEqual(firmware['version'],current_version,result['name']+' reports the wrong release version')
@@ -551,6 +555,14 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             value=json.loads(json.dumps(result['value']))
             firmware=value if result['name']=='update' else value.get('firmware') if isinstance(value,dict) else None
             if isinstance(firmware,dict):
+                if 'publisherDonation' not in firmware:
+                    restored={}
+                    for key,item in firmware.items():
+                        if key=='bleResumeLifetimeMs':restored['publisherDonation']=True
+                        restored[key]=item
+                    if result['name']=='update':value=restored
+                    else:value['firmware']=restored
+                    firmware=restored
                 firmware['version']=LEGACY_FIXTURE_VERSION
                 firmware['build']='COOLLAMP-LOCAL-'+LEGACY_FIXTURE_VERSION
             audio=value if result['name']=='audio' else value.get('audio') if isinstance(value,dict) else None
@@ -605,7 +617,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       allSingleAllocationFailureBoundariesReturnEmpty=True,
                       fullHandlerForcedMovingRealloc=True,fullHandlerNewAppendFailureBoundariesReturnFailedRead=True,
                       catalogHandlerSingleAllocationFailuresReturn503=True,
-                      exactLegacyPayloadProjectionDigests=True,additiveNegotiationFieldsOnly=['audio.captureVersion','audio.enabled','audio.captureStatus','motionPath','motionVersion'],checkedCountWriteBoundaryCases=True,
+                      exactLegacyPayloadProjectionDigests=True,authorizedUpdateOnlyRelocations=['publisherDonation'],additiveNegotiationFieldsOnly=['audio.captureVersion','audio.enabled','audio.captureStatus','motionPath','motionVersion'],checkedCountWriteBoundaryCases=True,
                       reportedReleaseVersionVerified=current_version,legacyFixtureVersion=LEGACY_FIXTURE_VERSION,
                       releaseVersionNormalizationOnly=['firmware.version','firmware.build'],
                       catalogUnusualCanonicalNamesRoundTrip=True,catalogUint8MaximumLoopTerminates=True,

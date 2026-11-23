@@ -79,7 +79,7 @@ int main(){using namespace LampUpdateAttempt;const auto a=artifact(15),b=artifac
  for(size_t i=0;i<valid.size();++i){durable=valid;durable[i]^=1;begin();assert(!automaticAllowed(a)&&!prepare(a,true));}
  durable=valid;failRead=true;begin();assert(!automaticAllowed(a)&&!prepare(a,true));failRead=false;begin();
  failRead=true;begin();assert(automaticAdmissionReason(a)==Unavailable);status(a,false,0,3);failRead=false;begin();
- failOpen=true;assert(!prepare(a,false));failOpen=false;
+ failOpen=true;assert(!prepare(a,false)&&automaticAllowed(a));failOpen=false;
  // A committed record with unreadable acknowledgement is uncertain and blocks
  // all automatic admission until reload/service; never overwrite a hidden tuple.
  commitThenFail=true;failRead=true;assert(!prepare(a,false)&&!automaticAllowed(b));commitThenFail=false;failRead=false;begin();assert(!automaticAllowed(a));
