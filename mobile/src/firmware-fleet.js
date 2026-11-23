@@ -25,7 +25,7 @@ const safeReadFallback = (error, run) => Boolean(!run?.cancelled && error &&
   !error.redirect && !error.redirected &&
   (error.offline || error.invalidRead || error.missingUpdateToken));
 const boundedInteger=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
-const firmwareJobId=value=>typeof value==='string'&&/^[A-Za-z0-9._-]{8,36}$/.test(value);
+const firmwareJobId=value=>typeof value==='string'&&/^[0-9a-f]{32}$/.test(value);
 const firmwareSha=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 function firmwareFailureEvidence(value){
   const workerAdmissionPhase=value?.workerAdmission?.phase,httpStage=value?.httpStage,result={};
@@ -409,6 +409,7 @@ export class FirmwareFleet {
       if(safeReadFallback(error,run))error.safeBluetoothFallback=true;
       throw error;
     }
+    identity=await this.jobCapability(lamp,run,identity);
     this.live(lamp, run, identity, 'checking', 'Checking for updates…');
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if(identity.firmware.wifi===false)throw failure('This lamp is not connected to Wi-Fi.',{safeBluetoothFallback:true});
@@ -422,6 +423,13 @@ export class FirmwareFleet {
       return this.observe(lamp, run, originalVersion, null, {uncertain: check.uncertain, conflict: check.conflict});
     }
     return this.observe(lamp, run, originalVersion, identity.firmware);
+  }
+  async jobCapability(lamp,run,identity){
+    if(!run.job||identity.jobCapabilityChecked)return identity;
+    let compact;try{compact=await this.compact(lamp,run);}
+    catch(error){this.assertCurrent(lamp,run);if(safeReadFallback(error,run))error.safeBluetoothFallback=true;throw error;}
+    this.assertCurrent(lamp,run);
+    return {...identity,firmware:compact.compactTargetVerified?compact:identity.firmware,jobCapabilityChecked:true};
   }
   async observe(lamp, run, originalVersion, initial = null, check = {}) {
     const started = this.now();
@@ -506,6 +514,7 @@ export class FirmwareFleet {
       const handoff=await this.aroundJobStart({identity:entry.id,job:run.job},async()=>{
         const lamp=await this.prepare(entry,run);
         let identity;try{identity=await this.identify(lamp,run);}catch(error){if(safeReadFallback(error,run))error.safeBluetoothFallback=true;throw error;}
+        identity=await this.jobCapability(lamp,run,identity);
         if(identity.firmware.updateJobContractVersion!==1)return {handled:false,lamp,identity};
         return {handled:true,result:await this.updateOne(lamp,run,identity)};
       });
@@ -533,7 +542,7 @@ export class FirmwareFleet {
       throw failure('This saved firmware update job is invalid.',{requiresReconciliation:true});
     this.cancelRefresh();const run=this.run();run.expectedVersion=attempt.version;run.job=Object.freeze({jobId:attempt.attemptId,version:attempt.version,sha256:attempt.sha256});this.singleRuns.set(entry.id,run);
     try{
-      const lamp=await this.prepare(entry,run),identity=await this.identify(lamp,run);
+      const lamp=await this.prepare(entry,run);let identity=await this.identify(lamp,run);identity=await this.jobCapability(lamp,run,identity);
       if(identity.firmware.updateJobContractVersion!==1)throw failure('This lamp cannot report its saved update job.',{unsupported:true});
       let response;
       try{response=await this.request(lamp,run,'/api/firmware/job?jobId='+encodeURIComponent(attempt.attemptId));}

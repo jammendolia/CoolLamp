@@ -42,8 +42,9 @@ version 1. Its numeric state/reason enums are defined in
 `LampUpdateAutomatic.h`; the app parser is `mobile/src/update-source.js`.
 The extension is excluded from nested full state/diagnostics to preserve the
 8192-byte control bound. Passive inventory refresh may read this optional
-snapshot; mutation preflight does not add a new inventory query. The card offers
-an explicit phone update only for fresh verified path failure, never quiet,
+snapshot; ordinary legacy mutation preflight does not add an automatic-service
+query. Durable job capability uses the separate bounded read described below.
+The card offers an explicit phone update only for fresh verified path failure, never quiet,
 group, busy or unconfirmed commit holds. Stale/unreachable results cannot claim
 that automatic updating has recovered. Phone updating requires user initiation
 and the existing native foreground/lifetime requirements.
@@ -53,6 +54,24 @@ groups are explicitly held. Automatic radio ticket distribution is not completed
 by this retry scheduler. A card cannot promise that a nearby lamp can donate:
 both lamps need matching protected household firmware-fleet trust, a compatible
 channel/overlap, a validated donor artifact, receiver opt-in/policy and resources.
+
+## Durable lamp-owned manual jobs
+
+The durable update-job capability is also exposed only by authenticated GET
+`/api/firmware`; the bounded aggregate state and diagnostics documents omit it
+to retain the 8192-byte control limit. Before mutating a saved manual job, the
+app performs one bounded compact read and verifies its canonical `deviceId`.
+`updateJobContractVersion:1` is usable only with a strict `updateJob` snapshot.
+Job identifiers are exactly 32 lowercase hexadecimal characters, matching the
+app's 16-byte random attempt identifier. A missing, malformed or wrong-target
+compact response cannot authorize the job POST.
+
+Firmware that does not advertise this contract after the verified compact read
+keeps the existing legacy update-check path. A capable lamp receives exactly one
+job POST; a lost acceptance reply is reconciled by exact job ID rather than
+replayed or sent over Bluetooth. Once accepted, the lamp owns the Internet
+download and installation, so app backgrounding does not interrupt it. This does
+not change the foreground requirement for a phone-sent Bluetooth transfer.
 
 ## Browser/computer service upload
 

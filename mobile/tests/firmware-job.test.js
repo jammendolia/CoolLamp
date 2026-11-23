@@ -6,21 +6,25 @@ import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 import {updateCardFirmware} from '../src/card-firmware.js';
 
 const id='aabbccddeeff',entry={id,address:'192.168.1.20',deviceId:'paired'};
+const foreignJobId='b'.repeat(32);
+const requestedJobId='c'.repeat(32);
 const manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.16.0\nesp32c3\ndual-ota-2031616\n512\n'+'a'.repeat(64)+'\n');
+const jobRequest=()=>({jobId:requestedJobId,version:manifest.version,sha256:manifest.sha256});
 const emptyJob=()=>({version:1,storageReady:true,jobId:'',target:'0.0.0',sha256:'',size:0,state:0,error:0,revision:0,terminal:false});
 const reply=(data,status=200)=>({status,data:typeof data==='string'?data:JSON.stringify(data)});
 const memory=()=>{const rows=new Map();return {getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value)};};
 
 function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutation,aroundJobStart,credential,jobContract=1,
- includeJobSnapshot=jobContract===1,legacyCheckResponse,onJobRejected}={}){
+ includeJobSnapshot=jobContract===1,legacyCheckResponse,onJobRejected,automatic=false}={}){
  let installed='1.15.9',installedSize=512,installedSha='b'.repeat(64),installedHealthy=true,installedReceiving=false,job=emptyJob(),posts=0;
  const requests=[],journal=new FirmwareAttemptJournal(memory());
- const firmware=()=>({version:installed,phase:[1,2,3,4].includes(job.state)?3:0,latest:'1.16.0',available:true,automatic:false,wifi:true,
-  progress:job?.state===3?35:0,error:0,...(jobContract===1?{updateJobContractVersion:1}:{}),...(includeJobSnapshot?{updateJob:job}:{})});
+ const firmware=(compact=false)=>({version:installed,phase:[1,2,3,4].includes(job.state)?3:0,latest:'1.16.0',available:true,automatic,wifi:true,
+  progress:job?.state===3?35:0,error:0,...(compact&&jobContract===1?{updateJobContractVersion:1}:{}),...(compact&&includeJobSnapshot?{updateJob:job}:{})});
  const http={request:async options=>{
   requests.push(options);const url=new URL(options.url);
   if(url.pathname==='/api/diagnostics')return reply({deviceId:id,firmware:firmware(),uptimeMs:100000});
   if(url.pathname==='/api/state')return reply({deviceId:id,firmware:firmware(),token:'fixture-token',uptimeMs:100000});
+  if(url.pathname==='/api/firmware'&&options.method==='GET')return reply({deviceId:id,...firmware(true)});
   if(url.pathname==='/api/firmware/job'&&options.method==='GET'){
    if(url.searchParams.get('jobId')!==job.jobId)return reply('Missing',404);
    return reply(job);
@@ -55,6 +59,7 @@ test('a capable lamp accepts one durable exact update job without a phone downlo
   acquireBluetooth:()=>assert.fail('A lamp-owned job must not acquire Bluetooth.'),download:()=>assert.fail('A lamp-owned job must not download to the phone.')});
  assert.equal(result.outcome,'accepted');assert.equal(result.jobId,attempt.attemptId);assert.equal(result.durable,true);assert.equal(f.posts,1);
  const saved=f.journal.get(id);assert.equal(saved.wifiJobAttempted,true);assert.equal(saved.wifiInstallAttempted,true);assert.equal(f.journal.pending().length,1);
+ assert.equal(f.requests.filter(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware').length,1);
  assert.deepEqual(f.requests.filter(value=>value.method==='POST').map(value=>new URL(value.url).pathname),['/api/firmware/job']);
 });
 
@@ -129,7 +134,7 @@ test('the job handoff starts before credential access and releases before a lega
  const f=fixture({aroundJobStart,credential:async()=>{assert.equal(active,true);events.push('credential');credentialStarted();await credentialGate;return {value:'fixture-password'};}});
  const attempt=f.journal.begin(id,manifest),pending=f.fleet.updateLamp(entry,manifest.version,{jobId:attempt.attemptId,version:manifest.version,sha256:manifest.sha256});
  await started;assert.deepEqual(events,['begin','credential']);releaseCredential();await pending;assert.deepEqual(events.slice(-1),['end']);
- assert.deepEqual(f.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/state']);
+ assert.deepEqual(f.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/firmware','/api/state']);
 
  const legacyEvents=[];active=false;
  const legacy=fixture({jobContract:0,legacyCheckResponse:reply('Rejected',500),aroundJobStart:async(_context,operation)=>{
@@ -141,7 +146,7 @@ test('the job handoff starts before credential access and releases before a lega
  }return request(options);};
  await assert.rejects(legacy.fleet.updateLamp(entry,manifest.version,{jobId:legacyAttempt.attemptId,version:manifest.version,sha256:manifest.sha256}));
  assert(legacyEvents.indexOf('end')>=0);assert(legacyEvents.indexOf('end')<legacyEvents.indexOf('check-post'));
- assert.deepEqual(legacy.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/state']);
+ assert.deepEqual(legacy.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/firmware','/api/state']);
 });
 
 test('bulk updates hand capable lamps off as independent durable jobs',async()=>{
@@ -159,49 +164,57 @@ test('bulk updates hand capable lamps off as independent durable jobs',async()=>
 });
 
 test('empty and storage-unavailable sentinels are accepted only with exact state invariants',async()=>{
- const f=fixture();
+ const f=fixture({automatic:true});
  let refreshed=await f.fleet.refresh();assert.equal(refreshed.results[0].state,'ready');
  f.replaceJob({version:1,storageReady:false,jobId:'',target:'0.0.0',sha256:'',size:0,state:7,error:0,revision:0,terminal:true});
  refreshed=await f.fleet.refresh();assert.equal(refreshed.results[0].state,'ready');
- f.replaceJob({version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:0,revision:1,terminal:true});
- refreshed=await f.fleet.refresh();assert.equal(refreshed.results[0].state,'failed');assert.match(refreshed.results[0].message,/state/i);
+ f.replaceJob({version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:0,revision:1,terminal:true});
+ await assert.rejects(f.fleet.updateLamp(entry,manifest.version,jobRequest()),/state/i);assert.equal(f.posts,0);
 });
 
 test('the advertised job contract rejects missing, legacy-only and contradictory snapshots',async()=>{
  for(const f of [
-  fixture({jobContract:1,includeJobSnapshot:false}),
-  fixture({jobContract:0,includeJobSnapshot:true})
+  fixture({jobContract:1,includeJobSnapshot:false,automatic:true}),
+  fixture({jobContract:0,includeJobSnapshot:true,automatic:true})
  ]){
-  const refreshed=await f.fleet.refresh();assert.equal(refreshed.results[0].state,'failed');assert.match(refreshed.results[0].message,/capability/i);
+  await assert.rejects(f.fleet.updateLamp(entry,manifest.version,jobRequest()),/capability/i);assert.equal(f.posts,0);
  }
  for(const value of [
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:0,revision:0,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:1,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:2,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:3,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:4,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:5,error:0,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:1,state:1,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:3,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:5,error:3,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:6,error:0,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:7,error:3,revision:1,terminal:true}
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:0,revision:0,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:1,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:2,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:3,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:4,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:5,error:0,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:1,state:1,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:1,error:3,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:5,error:3,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:6,error:0,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:7,error:3,revision:1,terminal:true}
  ]){
-  const f=fixture();f.replaceJob(value);const refreshed=await f.fleet.refresh();
-  assert.equal(refreshed.results[0].state,'failed');assert.match(refreshed.results[0].message,/state/i);
+   const f=fixture({automatic:true});f.replaceJob(value);
+   await assert.rejects(f.fleet.updateLamp(entry,manifest.version,jobRequest()),/state/i);assert.equal(f.posts,0);
  }
- const high=fixture();high.replaceJob({version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,
+ const high=fixture({automatic:true});high.replaceJob({version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,
   size:0,state:1,error:0,revision:0xffffffff,terminal:false});
  const refreshed=await high.fleet.refresh();assert.notEqual(refreshed.results[0].state,'failed');
  for(const value of [
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:0,state:6,error:3,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:6,error:3,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:3,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:4,error:0,revision:1,terminal:false},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:5,error:0,revision:1,terminal:true},
-  {version:1,storageReady:true,jobId:'abcdefgh',target:manifest.version,sha256:manifest.sha256,size:288,state:7,error:0,revision:1,terminal:true}
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:0,state:6,error:3,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:6,error:3,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:3,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:4,error:0,revision:1,terminal:false},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:5,error:0,revision:1,terminal:true},
+  {version:1,storageReady:true,jobId:foreignJobId,target:manifest.version,sha256:manifest.sha256,size:288,state:7,error:0,revision:1,terminal:true}
  ]){
-  const f=fixture();f.replaceJob(value);const accepted=await f.fleet.refresh();assert.notEqual(accepted.results[0].state,'failed');
+   const f=fixture({automatic:true});f.replaceJob(value);const accepted=await f.fleet.refresh();assert.notEqual(accepted.results[0].state,'failed');
+ }
+});
+
+test('durable firmware jobs require exactly 32 lowercase hexadecimal characters before any request',async()=>{
+ for(const jobId of ['abcdefgh','A'.repeat(32),'a'.repeat(31),'a'.repeat(33),'g'.repeat(32)]){
+  const f=fixture();
+  await assert.rejects(f.fleet.updateLamp(entry,manifest.version,{jobId,version:manifest.version,sha256:manifest.sha256}),/invalid/i);
+  assert.equal(f.requests.length,0);
  }
 });
 
