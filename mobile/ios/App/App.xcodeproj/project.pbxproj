@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
         A14600000000000000000001 /* LampFirmwareScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14600000000000000000002; };
+        A14700000000000000000001 /* LampFirmwareBackgroundJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14700000000000000000002; };
+        A14800000000000000000001 /* LampFirmwareBackgroundCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14800000000000000000002; };
+        A14900000000000000000001 /* LampFirmwareHandoffLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14900000000000000000002; };
         A11100000000000000000001 /* LampFirmwareDigest.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11100000000000000000002; };
         A19400000000000000000001 /* LampNetworkAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19400000000000000000002; };
         A19300000000000000000001 /* LampAccessorySelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A19300000000000000000002; };
@@ -26,6 +29,9 @@
 
 /* Begin PBXFileReference section */
         A14600000000000000000002 /* LampFirmwareScreenAwake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampFirmwareScreenAwake.swift; sourceTree = "<group>"; };
+        A14700000000000000000002 /* LampFirmwareBackgroundJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampFirmwareBackgroundJournal.swift; sourceTree = "<group>"; };
+        A14800000000000000000002 /* LampFirmwareBackgroundCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampFirmwareBackgroundCoordinator.swift; sourceTree = "<group>"; };
+        A14900000000000000000002 /* LampFirmwareHandoffLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampFirmwareHandoffLease.swift; sourceTree = "<group>"; };
         A11100000000000000000002 /* LampFirmwareDigest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampFirmwareDigest.swift; sourceTree = "<group>"; };
         A19400000000000000000002 /* LampNetworkAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampNetworkAddress.swift; sourceTree = "<group>"; };
         A19300000000000000000002 /* LampAccessorySelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LampAccessorySelection.swift; sourceTree = "<group>"; };
@@ -82,6 +88,9 @@
                 A14000000000000000000002 /* LampNetworkPlugin.swift */,
                 A11100000000000000000002 /* LampFirmwareDigest.swift */,
                 A14600000000000000000002 /* LampFirmwareScreenAwake.swift */,
+                A14700000000000000000002 /* LampFirmwareBackgroundJournal.swift */,
+                A14800000000000000000002 /* LampFirmwareBackgroundCoordinator.swift */,
+                A14900000000000000000002 /* LampFirmwareHandoffLease.swift */,
                 A19400000000000000000002 /* LampNetworkAddress.swift */,
                 A19200000000000000000002 /* LampAccessoryPlugin.swift */,
                 A19300000000000000000002 /* LampAccessorySelection.swift */,
@@ -180,6 +189,9 @@
                 A14000000000000000000001 /* LampNetworkPlugin.swift in Sources */,
                 A11100000000000000000001 /* LampFirmwareDigest.swift in Sources */,
                 A14600000000000000000001 /* LampFirmwareScreenAwake.swift in Sources */,
+                A14700000000000000000001 /* LampFirmwareBackgroundJournal.swift in Sources */,
+                A14800000000000000000001 /* LampFirmwareBackgroundCoordinator.swift in Sources */,
+                A14900000000000000000001 /* LampFirmwareHandoffLease.swift in Sources */,
                 A19400000000000000000001 /* LampNetworkAddress.swift in Sources */,
                 A19200000000000000000001 /* LampAccessoryPlugin.swift in Sources */,
                 A19300000000000000000001 /* LampAccessorySelection.swift in Sources */,

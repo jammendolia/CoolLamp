@@ -20,6 +20,14 @@
     <array><string>CoolLamp</string></array>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>CoolLamp uses Bluetooth to find, pair with, and control your lamp.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>bluetooth-central</string>
+    </array>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.coollamp.controller.firmware-transfer</string>
+    </array>
   <key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>

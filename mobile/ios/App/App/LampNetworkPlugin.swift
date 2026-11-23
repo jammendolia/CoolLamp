@@ -36,7 +36,15 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
         CAPPluginMethod(name: "credential", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "homeInstallationIdentity", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "firmwareDigest", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setFirmwareScreenAwake", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "setFirmwareScreenAwake", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "firmwareBackgroundCapability", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "firmwareBackgroundState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stageFirmwareBackgroundUpdate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "startFirmwareBackgroundUpdate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resumeFirmwareBackgroundUpdate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "cancelFirmwareBackgroundUpdate", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "beginFirmwareHandoff", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "endFirmwareHandoff", returnType: CAPPluginReturnPromise)
     ]
     private var browser: NetServiceBrowser?
     private var services: [NetService] = []
@@ -46,6 +54,15 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
     private static let firmwareScreenAwake = LampFirmwareScreenAwake(
         readFlag: { UIApplication.shared.isIdleTimerDisabled },
         writeFlag: { UIApplication.shared.isIdleTimerDisabled = $0 })
+    private static let firmwareHandoff = LampFirmwareHandoffLease(
+        invalidTask: UIBackgroundTaskIdentifier.invalid.rawValue,
+        beginTask: { expiration in
+            UIApplication.shared.beginBackgroundTask(
+                withName: "CoolLamp firmware handoff", expirationHandler: expiration).rawValue
+        },
+        endTask: { rawValue in
+            UIApplication.shared.endBackgroundTask(UIBackgroundTaskIdentifier(rawValue: rawValue))
+        })
     private let homeIdentityQueue = DispatchQueue(label: "com.coollamp.controller.home-installation-identity")
     private static let homeIdentityFreshInstallMarker = "coollamp.home-installation-identity.initialized.v1"
     private static let homeIdentityKeyTag = Data("com.coollamp.controller.home-installation-key.v1".utf8)
@@ -116,6 +133,134 @@ public class LampNetworkPlugin: CAPPlugin, CAPBridgedPlugin, NetServiceBrowserDe
                 call.reject("Invalid firmware image."); return
             }
             call.resolve(["sha256": digest])
+        }
+    }
+
+    @objc func firmwareBackgroundCapability(_ call: CAPPluginCall) {
+        LampFirmwareBackgroundCoordinator.shared.capability { call.resolve($0) }
+    }
+
+    @objc func firmwareBackgroundState(_ call: CAPPluginCall) {
+        LampFirmwareBackgroundCoordinator.shared.state { result in
+            switch result {
+            case .success(let value): call.resolve(value)
+            case .failure(let error): self.rejectFirmwareBackground(call, error)
+            }
+        }
+    }
+
+    @objc func stageFirmwareBackgroundUpdate(_ call: CAPPluginCall) {
+        guard let sessionId = call.getString("sessionId"),
+              let lampId = call.getString("lampId"),
+              let peripheralId = call.getString("peripheralId"),
+              let targetVersion = call.getString("targetVersion"),
+              let sha256 = call.getString("sha256"),
+              let totalBytes = call.getInt("totalBytes"),
+              let artifactFileName = call.getString("artifactFileName") else {
+            call.reject("Invalid background firmware session.", "invalid-background-firmware-session")
+            return
+        }
+        let input = LampFirmwareBackgroundStageInput(
+            sessionId: sessionId, lampId: lampId, peripheralId: peripheralId,
+            targetVersion: targetVersion, sha256: sha256, totalBytes: Int64(totalBytes),
+            artifactFileName: artifactFileName,
+            artifactReady: call.getBool("artifactReady") ?? false)
+        LampFirmwareBackgroundCoordinator.shared.stage(input) { result in
+            switch result {
+            case .success(let record): call.resolve(["record": record.capacitorValue])
+            case .failure(let error): self.rejectFirmwareBackground(call, error)
+            }
+        }
+    }
+
+    @objc func startFirmwareBackgroundUpdate(_ call: CAPPluginCall) {
+        runFirmwareBackgroundUpdate(call, resume: false)
+    }
+
+    @objc func resumeFirmwareBackgroundUpdate(_ call: CAPPluginCall) {
+        runFirmwareBackgroundUpdate(call, resume: true)
+    }
+
+    private func runFirmwareBackgroundUpdate(_ call: CAPPluginCall, resume: Bool) {
+        guard let sessionId = call.getString("sessionId") else {
+            call.reject("Invalid background firmware session.", "invalid-background-firmware-session")
+            return
+        }
+        LampFirmwareBackgroundCoordinator.shared.start(sessionId: sessionId, resume: resume) { result in
+            switch result {
+            case .success(let record): call.resolve(["record": record.capacitorValue])
+            case .failure(let error): self.rejectFirmwareBackground(call, error)
+            }
+        }
+    }
+
+    @objc func cancelFirmwareBackgroundUpdate(_ call: CAPPluginCall) {
+        guard let sessionId = call.getString("sessionId") else {
+            call.reject("Invalid background firmware session.", "invalid-background-firmware-session")
+            return
+        }
+        LampFirmwareBackgroundCoordinator.shared.cancel(sessionId: sessionId) { result in
+            switch result {
+            case .success(let record): call.resolve(["record": record.capacitorValue])
+            case .failure(let error): self.rejectFirmwareBackground(call, error)
+            }
+        }
+    }
+
+    @objc func beginFirmwareHandoff(_ call: CAPPluginCall) {
+        guard let sessionId = call.getString("sessionId") else {
+            call.reject("Invalid firmware handoff session.", "invalid-firmware-handoff")
+            return
+        }
+        DispatchQueue.main.async {
+            do {
+                call.resolve(["active": try Self.firmwareHandoff.begin(session: sessionId)])
+            } catch LampFirmwareHandoffLease.Failure.alreadyOwned {
+                call.reject("Another firmware handoff is already active.", "firmware-handoff-owned")
+            } catch LampFirmwareHandoffLease.Failure.unavailable {
+                call.reject("The firmware handoff could not continue in the background.",
+                            "firmware-handoff-unavailable")
+            } catch {
+                call.reject("Invalid firmware handoff session.", "invalid-firmware-handoff")
+            }
+        }
+    }
+
+    @objc func endFirmwareHandoff(_ call: CAPPluginCall) {
+        guard let sessionId = call.getString("sessionId") else {
+            call.reject("Invalid firmware handoff session.", "invalid-firmware-handoff")
+            return
+        }
+        DispatchQueue.main.async {
+            do {
+                call.resolve(["active": try Self.firmwareHandoff.end(session: sessionId)])
+            } catch {
+                call.reject("Invalid firmware handoff session.", "invalid-firmware-handoff")
+            }
+        }
+    }
+
+    private func rejectFirmwareBackground(_ call: CAPPluginCall,
+                                          _ error: LampFirmwareBackgroundCoordinatorError) {
+        switch error {
+        case .nativeDriverUnavailable:
+            call.reject("Native background Bluetooth transfer is not available in this build.",
+                        "native-firmware-driver-unavailable")
+        case .sessionNotFound:
+            call.reject("The background firmware session was not found.",
+                        "background-firmware-session-not-found")
+        case .artifactUnavailable:
+            call.reject("The firmware artifact has not been staged on this device.",
+                        "background-firmware-artifact-unavailable")
+        case .unsafeToCancel:
+            call.reject("The firmware update is already verifying or committing.",
+                        "background-firmware-cancel-unsafe")
+        case .invalidSession:
+            call.reject("The background firmware session conflicts with active work.",
+                        "background-firmware-session-conflict")
+        case .journal(let code):
+            call.reject("The protected firmware session could not be read or saved.",
+                        "background-firmware-journal-\(code)")
         }
     }
 

@@ -7,7 +7,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Register restoration and continued-processing handlers before launch
+        // completes. The actual native transfer remains capability-gated.
+        LampFirmwareBackgroundCoordinator.shared.prepareForLaunch()
         return true
     }
 
