@@ -44,6 +44,22 @@ test('a fresh pre-attempt action replaces stale transfer evidence and explicitly
  diagnostics.begin(id,nextAttempt);assert.equal(diagnostics.get(id).preflight,undefined);assert.equal(diagnostics.get(id).attemptId,nextAttempt);
 });
 
+test('an action can begin before release verification, adopt the verified target, and retire on cancellation',()=>{
+ const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage),action=diagnostics.beginPreflight(id,{route:'wifi'});
+ assert(action?.preflight);assert.equal(action.targetVersion,undefined);assert.deepEqual(new FirmwareUpdateDiagnostics(storage).get(id),action);
+ const targeted=diagnostics.retargetPreflight(id,action.actionId,'1.15.10');assert.equal(targeted.targetVersion,'1.15.10');
+ assert.equal(diagnostics.retargetPreflight(id,'b'.repeat(32),'1.15.11'),null);assert.equal(diagnostics.retargetPreflight(id,action.actionId,'private'),null);
+ assert.equal(diagnostics.retirePreflight(id,'b'.repeat(32)),false);assert.equal(diagnostics.retirePreflight(id,action.actionId),true);
+ assert.equal(diagnostics.get(id),null);assert.equal(new FirmwareUpdateDiagnostics(storage).get(id),null);assert.equal(diagnostics.retirePreflight(id,action.actionId),false);
+});
+
+test('copied evidence names the current build without storing it as update authority',()=>{
+ const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage,{appBuild:'101.1'});diagnostics.begin(id,attempt);
+ diagnostics.failure(id,attempt,{offline:true},{stage:'wifi-preflight'});const report=JSON.parse(diagnostics.report(id));
+ assert.equal(report.appBuild,'101.1');assert.equal(JSON.parse(storage.getItem(FIRMWARE_UPDATE_DIAGNOSTICS_KEY)).appBuild,undefined);
+ assert.equal(new FirmwareUpdateDiagnostics(storage,{appBuild:'private'}).report(id).includes('appBuild'),false);
+});
+
 test('pre-attempt diagnostics are best effort, owner-fenced and classify safe journal boundaries',()=>{
  const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage);storage.failSet(true);
  const action=diagnostics.beginPreflight(id,{version:'1.15.10',route:'bluetooth'});assert(action);

@@ -14,20 +14,20 @@ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
 const resultCheckHandler=source.slice(source.indexOf('async function checkLampUpdateResult('),source.indexOf('\nconst firmwareResultCheckAt='));
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
-function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false,busyAtStart=false,priorTerminalVersion=null,journalBeginFailure=null,oldDiagnostic=false}={}){
+function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',installedReadFailure=null,refreshFailure=null,confirmationReject=null,startPauseFailure=null,startRenderFailure=null,onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false,busyAtStart=false,priorTerminalVersion=null,journalBeginFailure=null,oldDiagnostic=false,optionalDiagnosticsFailure=false}={}){
  const entry={id:'aabbccddeeff',name:'Reading corner',address:addressless?undefined:'192.168.1.20',deviceId:'paired'},calls=[],messages=[];
  let inventory=[entry],running=installed,remainingWifiFailures=wifiFailure?1:0,remainingSettleWriteFailures=settleWriteFailures,journalWriteFailures=0;
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}}),firmwareDiagnostics=new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)});
- const tasks=new Map(),cardMessages=new Map(),messageOwners=new Map();
- const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
+ const tasks=new Map(),cardMessages=new Map(),messageOwners=new Map();let renderFailures=startRenderFailure?1:0;
+ const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);if(startPauseFailure)throw startPauseFailure;},
   firmwareAttempts,firmwareDiagnostics,FirmwareScreenAwake,
   native:{setFirmwareScreenAwake:async value=>{calls.push(['awake',value.enabled]);return {active:value.enabled};}},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
   cardFirmwareUnconfirmed:new Map(staleUnconfirmed?[[entry.id,'1.15.0']]:[]),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
-  powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>installed,
-  mergedLampEntries:()=>inventory,renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},refreshLampFirmware:()=>{},resumeCompletedCardFirmwareTask:()=>{},
-  refreshPublicFirmware:async options=>{calls.push(['check',options.force]);await onCheck?.({remove:()=>{inventory=[];},changeAddress:()=>{inventory=[{...entry,address:'192.168.1.21'}];},hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return available;},
-  cardUpdateConfirmation:async(_entry,manifest,options)=>{calls.push(['confirm',manifest.version,options.previousVersion]);await onConfirm?.({hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return accept;},
+  powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>{if(installedReadFailure)throw installedReadFailure;return installed;},
+  mergedLampEntries:()=>inventory,renderLamps:()=>{if(renderFailures-- >0)throw startRenderFailure;},renderPower:()=>{},renderFirmware:()=>{},refreshLampFirmware:()=>{},resumeCompletedCardFirmwareTask:()=>{},
+  refreshPublicFirmware:async options=>{calls.push(['check',options.force]);if(refreshFailure)throw refreshFailure;await onCheck?.({remove:()=>{inventory=[];},changeAddress:()=>{inventory=[{...entry,address:'192.168.1.21'}];},hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return available;},
+  cardUpdateConfirmation:async(_entry,manifest,options)=>{calls.push(['confirm',manifest.version,options.previousVersion]);if(confirmationReject)throw confirmationReject;await onConfirm?.({hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return accept;},
    cardPhoneFirmwareAvailable:()=>true,
   cardUpdateRouteChoice:async(_entry,error)=>{calls.push(['route',routeChoice,error.firmwareError??null]);if(routeChoiceFailure)throw Error('private route dialog detail');return routeChoice;},
   checkLampUpdateResult:async()=>{
@@ -52,6 +52,7 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
   CapacitorHttp:{},document:{hidden:false},isNative:nativeMode};
  if(priorTerminalVersion){const prior=firmwareAttempts.begin(entry.id,release(priorTerminalVersion));firmwareAttempts.abandonUnstarted(prior);}
  if(oldDiagnostic){firmwareDiagnostics.begin(entry.id,'c'.repeat(32));firmwareDiagnostics.failure(entry.id,'c'.repeat(32),{stopReason:'app-hidden'},{stage:'bluetooth-transfer'});firmwareDiagnostics.complete(entry.id,'c'.repeat(32),{outcome:'unresolved'});}
+ if(optionalDiagnosticsFailure)for(const method of ['beginPreflight','retargetPreflight','retirePreflight','begin','failure','transfer','complete'])firmwareDiagnostics[method]=()=>{throw Error('private optional diagnostic failure');};
  if(journalBeginFailure){firmwareAttempts.begin=()=>{throw journalBeginFailure;};}
  runInNewContext(`let publicFirmware=${JSON.stringify(release('1.14.0'))},publicFirmwareFresh=true,publicFirmwareError='Phone offline';
  let connecting=${busyAtStart?'true':'false'},bluetoothFirmwareTask=null,fleetUpdating=false,bluetoothFirmwareConnectionSerial=0;
@@ -68,12 +69,63 @@ test('a prior terminal attempt for an older release is explained by the fresh co
  const ui=harness({priorTerminalVersion:'1.14.9'});await ui.update();
  assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.9'],['wifi','1.15.0']]);assert.equal(ui.attempts.get('aabbccddeeff').version,'1.15.0');
 });
+test('a background-work pause failure is owned, recorded, and cleaned before any update mutation',async()=>{
+ const ui=harness({oldDiagnostic:true,startPauseFailure:Error('private pause failure')});await ui.update();
+ assert.deepEqual(ui.calls,[]);assert.equal(ui.tasks.size,0);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>/could not start this update check/i.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);
+ assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-start');assert.equal(record.stages[0].code,'start-unavailable');
+ assert(!ui.diagnostics.report('aabbccddeeff').includes('private pause failure'));
+});
+test('an initial render failure is owned, recorded, and cleaned before any update mutation',async()=>{
+ const ui=harness({oldDiagnostic:true,startRenderFailure:Error('private render failure')});await ui.update();
+ assert.deepEqual(ui.calls,[]);assert.equal(ui.tasks.size,0);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>/could not start this update check/i.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);
+ assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-start');assert.equal(record.stages[0].code,'start-unavailable');
+ assert(!ui.diagnostics.report('aabbccddeeff').includes('private render failure'));
+});
 test('a pre-journal failure replaces stale details with this action and proves that no mutation started',async()=>{
  const ui=harness({oldDiagnostic:true,journalBeginFailure:Error('private random-source detail')});await ui.update();
  assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert(!ui.calls.some(call=>call[0]==='wifi'));
  assert(ui.messages.some(message=>/safe update record/.test(message)&&/Nothing was sent/.test(message)));const record=ui.diagnostics.get('aabbccddeeff');
  assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-journal');
  const report=ui.diagnostics.report('aabbccddeeff');assert(!report.includes('app-hidden'));assert(!report.includes('private random-source detail'));
+});
+test('an installed-version read failure replaces stale details before confirmation or journal mutation',async()=>{
+ const ui=harness({oldDiagnostic:true,installedReadFailure:Error('private installed-version detail')});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>/installed version/.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);
+ assert.equal(record.targetVersion,'1.15.0');assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-installed');
+ assert.equal(record.stages[0].code,'installed-version-unavailable');assert(!ui.diagnostics.report('aabbccddeeff').includes('private'));
+});
+test('a rejected release refresh replaces stale details before confirmation or journal mutation',async()=>{
+ const ui=harness({oldDiagnostic:true,refreshFailure:Error('private release transport detail')});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>/current public release/.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);
+ assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-release');assert.equal(record.stages[0].code,'release-invalid');
+ assert(!ui.diagnostics.report('aabbccddeeff').includes('private'));
+});
+test('an asynchronous confirmation failure replaces stale details with a specific no-send outcome',async()=>{
+ const ui=harness({oldDiagnostic:true,confirmationReject:Error('private modal rejection')});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>/Could not open the update choices/.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.outcome,'preflightFailed');
+ assert.equal(record.stages[0].stage,'action-confirmation');assert.equal(record.stages[0].code,'confirmation-unavailable');
+ assert(!ui.diagnostics.report('aabbccddeeff').includes('private'));
+});
+test('optional diagnostic failures cannot block a confirmed successful update',async()=>{
+ const ui=harness({optionalDiagnosticsFailure:true});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0']]);
+ assert.equal(ui.attempts.get('aabbccddeeff').outcome,'installed');assert.equal(ui.attempts.get('aabbccddeeff').version,'1.15.0');
+ assert(!ui.messages.some(message=>/diagnostic|record this update check/i.test(message)));
+});
+for(const [flag,copy] of [['unauthorized',/First approve this lamp/],['identity',/different lamp/]])test('a diagnostic admission failure cannot mask '+flag+' journal evidence',async()=>{
+ const failure=Object.assign(Error('private structured failure'),{[flag]:true}),ui=harness({optionalDiagnosticsFailure:true,journalBeginFailure:failure});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert(ui.messages.some(message=>copy.test(message)));assert(!ui.messages.some(message=>/record this update check/i.test(message)));
 });
 test('hostile journal error getters cannot suppress safe failure UI or task cleanup',async()=>{
  const failure=Error('private native detail');Object.defineProperty(failure,'journalFull',{get(){throw Error('hostile getter');}});
@@ -101,6 +153,7 @@ test('a newly busy preflight reports an actionable no-send result instead of ret
 });
 test('changed public offer is not installed when its fresh confirmation is cancelled',async()=>{
  const ui=harness({accept:false});await ui.update();assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert.match(ui.cardMessages.values().next().value,/cancelled/);assert.equal(ui.tasks.size,0);
+ assert.equal(ui.diagnostics.get('aabbccddeeff'),null);
 });
 test('offline public check cannot install the old global or lamp-cached release',async()=>{
  const ui=harness({available:null});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert(ui.messages.some(message=>/current public release/.test(message)&&/Nothing was sent/.test(message)));assert.equal(ui.tasks.size,0);assert.equal(ui.attempts.pending().length,0);
@@ -148,6 +201,8 @@ test('production reconciliation retires an owned pending general-failure message
 test('removed target during public release check cannot show confirmation or start an update',async()=>{
  const ui=harness({onCheck:actions=>actions.remove()});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.tasks.size,0);
  assert(ui.messages.some(message=>/no longer available/i.test(message)&&/No update was started/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);
+ assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-current');assert.equal(record.stages[0].code,'target-changed');
 });
 test('removed addressless target cannot pass the live-entry check through undefined addresses',async()=>{
  const ui=harness({addressless:true,onCheck:actions=>actions.remove()});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.tasks.size,0);

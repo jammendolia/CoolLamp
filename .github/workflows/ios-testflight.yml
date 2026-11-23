@@ -47,6 +47,7 @@ jobs:
       - name: Test and prepare app
         env:
           VITE_COOLLAMP_HOME_V1: '1'
+          VITE_COOLLAMP_BUILD: ${{ github.run_number }}.${{ github.run_attempt }}
         run: |
           pnpm install --frozen-lockfile
           pnpm test

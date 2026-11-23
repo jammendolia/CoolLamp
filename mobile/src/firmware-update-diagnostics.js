@@ -1,13 +1,13 @@
 // Optional evidence only. This store never authorizes, retries, or blocks an
 // update, and shares neither its key nor its records with the safety journal.
 export const FIRMWARE_UPDATE_DIAGNOSTICS_KEY='coollamp-firmware-update-diagnostics-v1';
-export const FIRMWARE_UPDATE_DIAGNOSTIC_STAGES=Object.freeze(['action-feedback','action-release','action-screen-awake','action-journal','wifi-preflight','bluetooth-preflight','phone-download','bluetooth-transfer']);
+export const FIRMWARE_UPDATE_DIAGNOSTIC_STAGES=Object.freeze(['action-start','action-release','action-installed','action-confirmation','action-current','action-feedback','action-screen-awake','action-journal','wifi-preflight','bluetooth-preflight','phone-download','bluetooth-transfer']);
 export const FIRMWARE_UPDATE_DIAGNOSTIC_CODES=Object.freeze(['unknown','identity-mismatch','wifi-password-required','authorization-required',
  'target-changed','cancelled','recovery-storage-failure','bootstrap-required','update-busy','invalid-status','missing-update-token',
  'unsupported','wifi-unreachable','mutation-uncertain','timeout','native-not-connected','wifi-check-rejected','firmware-rejected',
  'http-error','receiver-rejected','ack-timeout','native-read-failure','native-write-failure','connection-changed','native-disconnect',
  'transport-disconnect','app-hidden','user','transfer-failed','feedback-unavailable','release-invalid','screen-awake-unavailable',
- 'journal-invalid','journal-capacity','update-needs-check']);
+ 'journal-invalid','journal-capacity','update-needs-check','installed-version-unavailable','confirmation-unavailable','diagnostics-unavailable','start-unavailable']);
 const RECORD_LIMIT=32,STORAGE_LIMIT=32768,REPORT_LIMIT=4096,IMAGE_LIMIT=2031616;
 const stages=new Set(FIRMWARE_UPDATE_DIAGNOSTIC_STAGES),codes=new Set(FIRMWARE_UPDATE_DIAGNOSTIC_CODES);
 const stops=new Set(['user','app-hidden','transport-disconnect','native-disconnect','target-changed','cancelled','connection-changed',
@@ -98,10 +98,11 @@ function immutable(value){
 }
 function restore(value){
  const preflight=field(value,'preflight')===true;
- if(!identity(field(value,'identity'))||!(preflight?token(field(value,'actionId'))&&version(field(value,'targetVersion'))&&['wifi','bluetooth'].includes(field(value,'route'))&&field(value,'mutationStarted')===false:token(field(value,'attemptId')))||!integer(field(value,'startedAt'),0,Number.MAX_SAFE_INTEGER)||
+  const targetVersion=field(value,'targetVersion');
+  if(!identity(field(value,'identity'))||!(preflight?token(field(value,'actionId'))&&(targetVersion===undefined||version(targetVersion))&&['wifi','bluetooth'].includes(field(value,'route'))&&field(value,'mutationStarted')===false:token(field(value,'attemptId')))||!integer(field(value,'startedAt'),0,Number.MAX_SAFE_INTEGER)||
   !integer(field(value,'updatedAt'),field(value,'startedAt'),Number.MAX_SAFE_INTEGER)||!Array.isArray(field(value,'stages'))||field(value,'stages').length>4)
   throw Error('Invalid diagnostic record.');
- const result={identity:value.identity,...(preflight?{preflight:true,actionId:value.actionId,targetVersion:value.targetVersion,route:value.route,mutationStarted:false}:{attemptId:value.attemptId}),startedAt:value.startedAt,updatedAt:value.updatedAt,stages:[]},seen=new Set();
+  const result={identity:value.identity,...(preflight?{preflight:true,actionId:value.actionId,...(targetVersion===undefined?{}:{targetVersion}),route:value.route,mutationStarted:false}:{attemptId:value.attemptId}),startedAt:value.startedAt,updatedAt:value.updatedAt,stages:[]},seen=new Set();
  for(const row of value.stages){
   if(!stages.has(field(row,'stage'))||seen.has(row.stage)||!codes.has(field(row,'code'))||!integer(field(row,'at'),result.startedAt,result.updatedAt))throw Error('Invalid diagnostic stage.');
   seen.add(row.stage);const safe=safeMetrics(row);
@@ -115,8 +116,8 @@ function restore(value){
  return result;
 }
 export class FirmwareUpdateDiagnostics {
- constructor(storage){
-  this.storage=storage;this.records=new Map();this.canPersist=false;
+ constructor(storage,{appBuild=''}={}){
+  this.storage=storage;this.records=new Map();this.canPersist=false;this.appBuild=typeof appBuild==='string'&&/^\d+(?:\.\d+)*$/.test(appBuild)?appBuild:'';
   try{
    if(typeof storage?.getItem!=='function'||typeof storage?.setItem!=='function')return;
    const text=storage.getItem(FIRMWARE_UPDATE_DIAGNOSTICS_KEY);
@@ -140,12 +141,24 @@ export class FirmwareUpdateDiagnostics {
   const at=clock();return this.save({identity:id,attemptId,startedAt:at,updatedAt:at,stages:[]});
  }
  beginPreflight(id,{version:targetVersion,route}={}){
-  if(!identity(id)||!version(targetVersion)||!['wifi','bluetooth'].includes(route))return null;
-  const at=clock();return this.save({identity:id,preflight:true,actionId:actionToken(),targetVersion,route,mutationStarted:false,startedAt:at,updatedAt:at,stages:[]});
+   if(!identity(id)||targetVersion!==undefined&&!version(targetVersion)||!['wifi','bluetooth'].includes(route))return null;
+   const at=clock();return this.save({identity:id,preflight:true,actionId:actionToken(),...(targetVersion===undefined?{}:{targetVersion}),route,mutationStarted:false,startedAt:at,updatedAt:at,stages:[]});
+  }
+  retargetPreflight(id,actionId,targetVersion){
+   const previous=this.records.get(id);
+   if(!previous?.preflight||previous.actionId!==actionId||terminal.has(previous.outcome)||!version(targetVersion))return null;
+   return this.save({...previous,targetVersion,updatedAt:Math.max(previous.updatedAt,clock())});
+  }
+  retirePreflight(id,actionId){
+   const previous=this.records.get(id);
+   if(!previous?.preflight||previous.actionId!==actionId||terminal.has(previous.outcome))return false;
+   this.records.delete(id);const text=JSON.stringify({version:1,records:[...this.records.values()]});
+   if(this.canPersist)try{this.storage.setItem(FIRMWARE_UPDATE_DIAGNOSTICS_KEY,text);}catch{ /* Best effort; cancellation never affects update safety. */ }
+   return true;
  }
  failurePreflight(id,actionId,error,{stage}={}){
-  const previous=this.records.get(id),fallbackCodes={'action-feedback':'feedback-unavailable','action-release':'release-invalid','action-screen-awake':'screen-awake-unavailable','action-journal':'journal-invalid'};
-  const errorStages={feedback:'action-feedback',release:'action-release','screen-awake':'action-screen-awake',journal:'action-journal'},recordedStage=errorStages[field(error,'preflightFailure')]||stage;
+   const previous=this.records.get(id),fallbackCodes={'action-start':'start-unavailable','action-release':'release-invalid','action-installed':'installed-version-unavailable','action-confirmation':'confirmation-unavailable','action-current':'target-changed','action-feedback':'feedback-unavailable','action-screen-awake':'screen-awake-unavailable','action-journal':'journal-invalid'};
+   const errorStages={'action-start':'action-start','public-release':'action-release',release:'action-release','installed-version':'action-installed','confirmation-dialog':'action-confirmation','current-entry':'action-current',feedback:'action-feedback','screen-awake':'action-screen-awake',journal:'action-journal'},recordedStage=errorStages[field(error,'preflightFailure')]||stage;
   if(!previous?.preflight||previous.actionId!==actionId||terminal.has(previous.outcome)||!Object.hasOwn(fallbackCodes,recordedStage))return null;
   const {detail,transfer}=inspect(error);if(detail.code==='unknown')detail.code=field(error,'journalFull')===true?'journal-capacity':field(error,'requiresReconciliation')===true?'update-needs-check':fallbackCodes[recordedStage];
   const at=Math.max(previous.updatedAt,clock()),nextStages=previous.stages.filter(row=>row.stage!==recordedStage);
@@ -174,5 +187,5 @@ export class FirmwareUpdateDiagnostics {
   if(version(installed))next.installedVersion=installed;if(integer(offset,0,IMAGE_LIMIT))next.offset=offset;return this.save(next);
  }
  get(id){const value=this.records.get(id);return value?immutable(value):null;}
- report(id){const value=this.get(id);if(!value)return null;const {identity,attemptId,actionId,...record}=value;const text=JSON.stringify({version:1,record});return text.length<=REPORT_LIMIT?text:null;}
+ report(id){const value=this.get(id);if(!value)return null;const {identity,attemptId,actionId,...record}=value;const text=JSON.stringify({version:1,...(this.appBuild?{appBuild:this.appBuild}:{}),record});return text.length<=REPORT_LIMIT?text:null;}
 }
