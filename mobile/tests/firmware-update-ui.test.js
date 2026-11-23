@@ -21,7 +21,9 @@ test('enumerated pre-attempt failures keep specific safe guidance without exposi
  const cases=[
   ['public-release',/phone’s Internet connection/],
   ['installed-version',/Connect to the lamp/],
-  ['screen-awake',/screen unlocked/]
+  ['release',/selected public release/],
+  ['screen-awake',/screen unlocked/],
+  ['journal',/safe update record/]
  ];
  for(const [preflightFailure,expected] of cases){
   const value=firmwareUpdateFailurePresentation(Object.assign(Error('private native and credential detail'),{preflightFailure}));

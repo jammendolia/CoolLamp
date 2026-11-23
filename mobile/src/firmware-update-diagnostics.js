@@ -1,18 +1,19 @@
 // Optional evidence only. This store never authorizes, retries, or blocks an
 // update, and shares neither its key nor its records with the safety journal.
 export const FIRMWARE_UPDATE_DIAGNOSTICS_KEY='coollamp-firmware-update-diagnostics-v1';
-export const FIRMWARE_UPDATE_DIAGNOSTIC_STAGES=Object.freeze(['wifi-preflight','bluetooth-preflight','phone-download','bluetooth-transfer']);
+export const FIRMWARE_UPDATE_DIAGNOSTIC_STAGES=Object.freeze(['action-feedback','action-release','action-screen-awake','action-journal','wifi-preflight','bluetooth-preflight','phone-download','bluetooth-transfer']);
 export const FIRMWARE_UPDATE_DIAGNOSTIC_CODES=Object.freeze(['unknown','identity-mismatch','wifi-password-required','authorization-required',
  'target-changed','cancelled','recovery-storage-failure','bootstrap-required','update-busy','invalid-status','missing-update-token',
  'unsupported','wifi-unreachable','mutation-uncertain','timeout','native-not-connected','wifi-check-rejected','firmware-rejected',
  'http-error','receiver-rejected','ack-timeout','native-read-failure','native-write-failure','connection-changed','native-disconnect',
- 'transport-disconnect','app-hidden','user','transfer-failed']);
+ 'transport-disconnect','app-hidden','user','transfer-failed','feedback-unavailable','release-invalid','screen-awake-unavailable',
+ 'journal-invalid','journal-capacity','update-needs-check']);
 const RECORD_LIMIT=32,STORAGE_LIMIT=32768,REPORT_LIMIT=4096,IMAGE_LIMIT=2031616;
 const stages=new Set(FIRMWARE_UPDATE_DIAGNOSTIC_STAGES),codes=new Set(FIRMWARE_UPDATE_DIAGNOSTIC_CODES);
 const stops=new Set(['user','app-hidden','transport-disconnect','native-disconnect','target-changed','cancelled','connection-changed',
  'receiver-rejected','ack-timeout','native-read-failure','native-write-failure','journal-write-failure','transfer-failed']);
-const outcomes=new Set(['installed','installationNotStarted','transferStopped','pending','unresolved','active','differentVersion']);
-const terminal=new Set(['installed','installationNotStarted','transferStopped']);
+const outcomes=new Set(['installed','installationNotStarted','transferStopped','pending','unresolved','active','differentVersion','preflightFailed']);
+const terminal=new Set(['installed','installationNotStarted','transferStopped','preflightFailed']);
 const integer=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 const identity=value=>typeof value==='string'&&/^[0-9a-f]{12}$/.test(value);
 const token=value=>typeof value==='string'&&/^[0-9a-f]{32}$/.test(value);
@@ -20,6 +21,11 @@ const version=value=>typeof value==='string'&&/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[
 // Read data properties only. Never call supplied accessors, toJSON, or methods.
 const field=(value,key)=>{try{return Object.getOwnPropertyDescriptor(value,key)?.value;}catch{return undefined;}};
 const clock=()=>{const value=Date.now();return integer(value,0,Number.MAX_SAFE_INTEGER)?value:0;};
+let actionSequence=0;
+function actionToken(){
+ try{return Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');}
+ catch{actionSequence=(actionSequence+1)%0x100000000;return clock().toString(16).padStart(16,'0')+actionSequence.toString(16).padStart(16,'0');}
+}
 const booleanFields=['metadataIssued','beginAttempted','commitAttempted','wifiCheckAttempted','wifiInstallAttempted'];
 const limits={firmwarePhase:[0,5],workerAdmissionPhase:[0,7],httpStage:[0,7],error:[0,9],firmwareError:[1,8],httpStatus:[100,599],acknowledgedBytes:[0,IMAGE_LIMIT],writesAttempted:[0,1048576],offset:[0,IMAGE_LIMIT]};
 // One optional final snapshot, never a per-frame log or update authority. Values
@@ -91,10 +97,11 @@ function immutable(value){
  return Object.freeze({...value,...(value.transfer?{transfer:Object.freeze({...value.transfer})}:{}),stages:Object.freeze(value.stages.map(stage=>Object.freeze({...stage})))});
 }
 function restore(value){
- if(!identity(field(value,'identity'))||!token(field(value,'attemptId'))||!integer(field(value,'startedAt'),0,Number.MAX_SAFE_INTEGER)||
+ const preflight=field(value,'preflight')===true;
+ if(!identity(field(value,'identity'))||!(preflight?token(field(value,'actionId'))&&version(field(value,'targetVersion'))&&['wifi','bluetooth'].includes(field(value,'route'))&&field(value,'mutationStarted')===false:token(field(value,'attemptId')))||!integer(field(value,'startedAt'),0,Number.MAX_SAFE_INTEGER)||
   !integer(field(value,'updatedAt'),field(value,'startedAt'),Number.MAX_SAFE_INTEGER)||!Array.isArray(field(value,'stages'))||field(value,'stages').length>4)
   throw Error('Invalid diagnostic record.');
- const result={identity:value.identity,attemptId:value.attemptId,startedAt:value.startedAt,updatedAt:value.updatedAt,stages:[]},seen=new Set();
+ const result={identity:value.identity,...(preflight?{preflight:true,actionId:value.actionId,targetVersion:value.targetVersion,route:value.route,mutationStarted:false}:{attemptId:value.attemptId}),startedAt:value.startedAt,updatedAt:value.updatedAt,stages:[]},seen=new Set();
  for(const row of value.stages){
   if(!stages.has(field(row,'stage'))||seen.has(row.stage)||!codes.has(field(row,'code'))||!integer(field(row,'at'),result.startedAt,result.updatedAt))throw Error('Invalid diagnostic stage.');
   seen.add(row.stage);const safe=safeMetrics(row);
@@ -132,6 +139,18 @@ export class FirmwareUpdateDiagnostics {
   const previous=this.records.get(id);if(previous?.attemptId===attemptId)return immutable(previous);
   const at=clock();return this.save({identity:id,attemptId,startedAt:at,updatedAt:at,stages:[]});
  }
+ beginPreflight(id,{version:targetVersion,route}={}){
+  if(!identity(id)||!version(targetVersion)||!['wifi','bluetooth'].includes(route))return null;
+  const at=clock();return this.save({identity:id,preflight:true,actionId:actionToken(),targetVersion,route,mutationStarted:false,startedAt:at,updatedAt:at,stages:[]});
+ }
+ failurePreflight(id,actionId,error,{stage}={}){
+  const previous=this.records.get(id),fallbackCodes={'action-feedback':'feedback-unavailable','action-release':'release-invalid','action-screen-awake':'screen-awake-unavailable','action-journal':'journal-invalid'};
+  const errorStages={feedback:'action-feedback',release:'action-release','screen-awake':'action-screen-awake',journal:'action-journal'},recordedStage=errorStages[field(error,'preflightFailure')]||stage;
+  if(!previous?.preflight||previous.actionId!==actionId||terminal.has(previous.outcome)||!Object.hasOwn(fallbackCodes,recordedStage))return null;
+  const {detail,transfer}=inspect(error);if(detail.code==='unknown')detail.code=field(error,'journalFull')===true?'journal-capacity':field(error,'requiresReconciliation')===true?'update-needs-check':fallbackCodes[recordedStage];
+  const at=Math.max(previous.updatedAt,clock()),nextStages=previous.stages.filter(row=>row.stage!==recordedStage);
+  nextStages.push({stage:recordedStage,at,...detail});return this.save({...previous,...(transfer?{transfer}:{}),updatedAt:at,stages:nextStages.slice(-4),outcome:'preflightFailed'});
+ }
  failure(id,attemptId,error,context={}){
   const previous=this.records.get(id),stage=field(context,'stage');
   if(!previous||previous.attemptId!==attemptId||terminal.has(previous.outcome)||!stages.has(stage))return null;
@@ -155,5 +174,5 @@ export class FirmwareUpdateDiagnostics {
   if(version(installed))next.installedVersion=installed;if(integer(offset,0,IMAGE_LIMIT))next.offset=offset;return this.save(next);
  }
  get(id){const value=this.records.get(id);return value?immutable(value):null;}
- report(id){const value=this.get(id);if(!value)return null;const {identity,attemptId,...record}=value;const text=JSON.stringify({version:1,record});return text.length<=REPORT_LIMIT?text:null;}
+ report(id){const value=this.get(id);if(!value)return null;const {identity,attemptId,actionId,...record}=value;const text=JSON.stringify({version:1,record});return text.length<=REPORT_LIMIT?text:null;}
 }

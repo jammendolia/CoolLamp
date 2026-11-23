@@ -32,6 +32,38 @@ test('safe stage evidence and completion survive reload as immutable copies in a
  assert(storage.writes.every(row=>row.key===FIRMWARE_UPDATE_DIAGNOSTICS_KEY));assert.equal(storage.getItem(FIRMWARE_ATTEMPT_KEY),null);
 });
 
+test('a fresh pre-attempt action replaces stale transfer evidence and explicitly records that no attempt was created',()=>{
+ const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage);diagnostics.begin(id,attempt);
+ diagnostics.failure(id,attempt,{stopReason:'app-hidden'},{stage:'bluetooth-transfer'});diagnostics.complete(id,attempt,{outcome:'unresolved'});
+ const action=diagnostics.beginPreflight(id,{version:'1.15.10',route:'wifi'});assert(action?.preflight);assert.equal(action.stages.length,0);
+ const failed=diagnostics.failurePreflight(id,action.actionId,Error('private journal detail'),{stage:'action-journal'});
+ assert.equal(failed.outcome,'preflightFailed');assert.equal(failed.stages[0].code,'journal-invalid');assert.equal(failed.targetVersion,'1.15.10');
+ const report=JSON.parse(diagnostics.report(id));assert.equal(report.record.preflight,true);assert.equal(report.record.mutationStarted,false);assert.equal(report.record.outcome,'preflightFailed');
+ assert.equal(report.record.actionId,undefined);assert.equal(report.record.attemptId,undefined);assert(!JSON.stringify(report).includes('private'));
+ assert.deepEqual(new FirmwareUpdateDiagnostics(storage).get(id),failed);
+ diagnostics.begin(id,nextAttempt);assert.equal(diagnostics.get(id).preflight,undefined);assert.equal(diagnostics.get(id).attemptId,nextAttempt);
+});
+
+test('pre-attempt diagnostics are best effort, owner-fenced and classify safe journal boundaries',()=>{
+ const storage=memory(),diagnostics=new FirmwareUpdateDiagnostics(storage);storage.failSet(true);
+ const action=diagnostics.beginPreflight(id,{version:'1.15.10',route:'bluetooth'});assert(action);
+ assert.equal(diagnostics.failurePreflight(id,'b'.repeat(32),Error('stale'),{stage:'action-journal'}),null);
+ assert.equal(diagnostics.failurePreflight(other,action.actionId,Error('foreign'),{stage:'action-journal'}),null);
+ assert.equal(diagnostics.failurePreflight(id,action.actionId,Error('invalid'),{stage:'private'}),null);
+ const failed=diagnostics.failurePreflight(id,action.actionId,{journalFull:true},{stage:'action-journal'});assert.equal(failed.stages[0].code,'journal-capacity');
+ assert.equal(diagnostics.failurePreflight(id,action.actionId,Error('late'),{stage:'action-journal'}),null);
+ assert.equal(diagnostics.beginPreflight('INVALID',{version:'1.15.10',route:'wifi'}),null);
+ assert.equal(diagnostics.beginPreflight(id,{version:'bad',route:'wifi'}),null);assert.equal(diagnostics.beginPreflight(id,{version:'1.15.10',route:'private'}),null);
+});
+
+test('explicit pre-attempt failure ownership selects the truthful recorded stage',()=>{
+ for(const [preflightFailure,stage,code]of [['release','action-release','release-invalid'],['screen-awake','action-screen-awake','screen-awake-unavailable'],['journal','action-journal','journal-invalid']]){
+  const diagnostics=new FirmwareUpdateDiagnostics(memory()),action=diagnostics.beginPreflight(id,{version:'1.15.10',route:'wifi'});
+  const row=diagnostics.failurePreflight(id,action.actionId,Object.assign(Error('private'),{preflightFailure}),{stage:'action-journal'});
+  assert.equal(row.stages[0].stage,stage);assert.equal(row.stages[0].code,code);assert.equal(row.mutationStarted,false);
+ }
+});
+
 test('production standalone reconciliation replaces an old app-hidden unresolved diagnostic with transferStopped',async()=>{
  const storage=memory(),journal=new FirmwareAttemptJournal(storage),diagnostics=new FirmwareUpdateDiagnostics(storage),feedback=new FirmwareFeedback(storage);
  const selected=parsePhoneManifest('COOLLAMP-OTA-1\n1.15.1\nesp32c3\ndual-ota-2031616\n512\n'+'a'.repeat(64)+'\n');

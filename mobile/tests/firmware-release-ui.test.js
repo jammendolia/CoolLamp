@@ -14,13 +14,13 @@ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
 const resultCheckHandler=source.slice(source.indexOf('async function checkLampUpdateResult('),source.indexOf('\nconst firmwareResultCheckAt='));
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
-function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false,busyAtStart=false,priorTerminalVersion=null}={}){
+function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false,busyAtStart=false,priorTerminalVersion=null,journalBeginFailure=null,oldDiagnostic=false}={}){
  const entry={id:'aabbccddeeff',name:'Reading corner',address:addressless?undefined:'192.168.1.20',deviceId:'paired'},calls=[],messages=[];
  let inventory=[entry],running=installed,remainingWifiFailures=wifiFailure?1:0,remainingSettleWriteFailures=settleWriteFailures,journalWriteFailures=0;
- const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}});
+ const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}}),firmwareDiagnostics=new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)});
  const tasks=new Map(),cardMessages=new Map(),messageOwners=new Map();
  const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
-  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,
+  firmwareAttempts,firmwareDiagnostics,FirmwareScreenAwake,
   native:{setFirmwareScreenAwake:async value=>{calls.push(['awake',value.enabled]);return {active:value.enabled};}},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
   cardFirmwareUnconfirmed:new Map(staleUnconfirmed?[[entry.id,'1.15.0']]:[]),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
@@ -51,12 +51,14 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
   downloadPhoneFirmware:async(_http,options)=>{calls.push(['download',options.expectedManifest.version]);return {manifest:options.expectedManifest,image:new Uint8Array(288)};},
   CapacitorHttp:{},document:{hidden:false},isNative:nativeMode};
  if(priorTerminalVersion){const prior=firmwareAttempts.begin(entry.id,release(priorTerminalVersion));firmwareAttempts.abandonUnstarted(prior);}
+ if(oldDiagnostic){firmwareDiagnostics.begin(entry.id,'c'.repeat(32));firmwareDiagnostics.failure(entry.id,'c'.repeat(32),{stopReason:'app-hidden'},{stage:'bluetooth-transfer'});firmwareDiagnostics.complete(entry.id,'c'.repeat(32),{outcome:'unresolved'});}
+ if(journalBeginFailure){firmwareAttempts.begin=()=>{throw journalBeginFailure;};}
  runInNewContext(`let publicFirmware=${JSON.stringify(release('1.14.0'))},publicFirmwareFresh=true,publicFirmwareError='Phone offline';
  let connecting=${busyAtStart?'true':'false'},bluetoothFirmwareTask=null,fleetUpdating=false,bluetoothFirmwareConnectionSerial=0;
  ${productionReconcile?resultCheckHandler:''}
  ${cardHandler}
  globalThis.update=()=>updateLampCard(entry);globalThis.check=()=>checkLampUpdateResult(entry);`,context);
- return {update:context.update,check:context.check,calls,messages,tasks,cardMessages,messageOwners,attempts:firmwareAttempts};
+ return {update:context.update,check:context.check,calls,messages,tasks,cardMessages,messageOwners,attempts:firmwareAttempts,diagnostics:firmwareDiagnostics};
 }
 
 test('stale 1.14 label gets a fresh 1.15 confirmation and only installs the confirmed release',async()=>{
@@ -65,6 +67,33 @@ test('stale 1.14 label gets a fresh 1.15 confirmation and only installs the conf
 test('a prior terminal attempt for an older release is explained by the fresh confirmation',async()=>{
  const ui=harness({priorTerminalVersion:'1.14.9'});await ui.update();
  assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.9'],['wifi','1.15.0']]);assert.equal(ui.attempts.get('aabbccddeeff').version,'1.15.0');
+});
+test('a pre-journal failure replaces stale details with this action and proves that no mutation started',async()=>{
+ const ui=harness({oldDiagnostic:true,journalBeginFailure:Error('private random-source detail')});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert(!ui.calls.some(call=>call[0]==='wifi'));
+ assert(ui.messages.some(message=>/safe update record/.test(message)&&/Nothing was sent/.test(message)));const record=ui.diagnostics.get('aabbccddeeff');
+ assert.equal(record.preflight,true);assert.equal(record.mutationStarted,false);assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-journal');
+ const report=ui.diagnostics.report('aabbccddeeff');assert(!report.includes('app-hidden'));assert(!report.includes('private random-source detail'));
+});
+test('hostile journal error getters cannot suppress safe failure UI or task cleanup',async()=>{
+ const failure=Error('private native detail');Object.defineProperty(failure,'journalFull',{get(){throw Error('hostile getter');}});
+ const ui=harness({journalBeginFailure:failure});await ui.update();
+ assert.equal(ui.tasks.size,0);assert(ui.messages.some(message=>/safe update record/.test(message)&&/Nothing was sent/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-journal');
+});
+test('a frozen journal storage failure keeps its specific copy without mutating the cause',async()=>{
+ const failure=Object.freeze(Object.assign(Error('private storage detail'),{confirmed:true,beforeMutation:true,journalFailure:true}));
+ const ui=harness({journalBeginFailure:failure});await ui.update();
+ assert.equal(ui.tasks.size,0);assert(ui.messages.some(message=>/could not save the update status/.test(message)&&/Free some phone storage/.test(message)));
+ const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.outcome,'preflightFailed');assert.equal(record.stages[0].stage,'action-journal');assert.equal(record.stages[0].code,'recovery-storage-failure');
+});
+test('journal capacity and reconciliation failures never fall back to generic retry copy',async()=>{
+ for(const [fields,code]of [[{journalFull:true},'journal-capacity'],[{requiresReconciliation:true},'update-needs-check']]){
+  const ui=harness({journalBeginFailure:Object.assign(Error('private journal detail'),{confirmed:true,beforeMutation:true,...fields})});await ui.update();
+  assert.equal(ui.tasks.size,0);assert(ui.messages.some(message=>/safe update record/.test(message)&&/Nothing was sent/.test(message)));
+  assert(!ui.messages.some(message=>/^The update did not start\. Keep your lamp powered/.test(message)));
+  const record=ui.diagnostics.get('aabbccddeeff');assert.equal(record.stages[0].stage,'action-journal');assert.equal(record.stages[0].code,code);
+ }
 });
 test('a newly busy preflight reports an actionable no-send result instead of returning silently',async()=>{
  const ui=harness({busyAtStart:true});await ui.update();assert.deepEqual(ui.calls,[]);assert.equal(ui.attempts.get('aabbccddeeff'),null);

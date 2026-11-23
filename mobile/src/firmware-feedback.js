@@ -26,8 +26,6 @@ export class FirmwareFeedback {
  get(id){return this.records.get(id);}
  begin(id,{preservePending=false}={}){
   if(!identity(id))throw Error('Invalid lamp identity for update feedback.');
-  const unresolved=new Set([...this.records].filter(([,value])=>value.terminal&&pending.has(value.outcome)).map(([id])=>id));for(const[id,token]of this.attempts)if(token.pendingReceipt)unresolved.add(id);
-  if(!unresolved.has(id)&&unresolved.size>=32)throw Object.assign(Error('Previous lamp updates need confirmation before another update can start.'),{requiresReconciliation:true});
   const current=this.records.get(id),original=current?.terminal&&pending.has(current.outcome)?current:this.attempts.get(id)?.pendingReceipt;
   const pendingReceipt=(preservePending||original?.commitUnconfirmed===true)&&original?Object.freeze({...original}):null;
   const token=Object.freeze({id,...(pendingReceipt?{pendingReceipt}:{})});this.attempts.set(id,token);

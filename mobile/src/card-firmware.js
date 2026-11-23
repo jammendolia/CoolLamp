@@ -2,6 +2,22 @@ import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './b
 import {classifyFirmwareSnapshot,firmwareMayInstall,acquireFirmwareResumeLease,confirmedFirmwareJobRejection} from './firmware-attempt.js';
 import {safeFirmwareTransferMetrics} from './firmware-update-diagnostics.js';
 
+// Journal implementations may surface frozen native errors or objects with
+// hostile accessors. Copy only inert own boolean evidence onto a fresh Error;
+// never mutate or enumerate the thrown value.
+const ownField=(value,key)=>{try{return Object.getOwnPropertyDescriptor(value,key)?.value;}catch{return undefined;}};
+function journalBeginError(cause){
+ const fields={};for(const key of ['confirmed','beforeMutation','journalFailure','requiresReconciliation','journalFull','storageFailure','uncertain','commitUnconfirmed','installationNotStarted','identity','stale','unauthorized','authentication']){
+  const value=ownField(cause,key);if(typeof value==='boolean')fields[key]=value;
+ }
+ const error=Object.assign(Error('The safe update record could not be created.'),fields,{cause});
+ // Keep only cases with an existing specific public remedy out of the general
+ // journal copy. Capacity/reconciliation/stale failures otherwise fall through
+ // to the misleading generic "update did not start" message.
+ if(!['journalFailure','storageFailure','identity','unauthorized','authentication'].some(key=>fields[key]===true))error.preflightFailure='journal';
+ return error;
+}
+
 // The lamp's installed-version observation is separate from a public release
 // check. A failed or expired release check must never make an old offer fresh.
 export class FirmwareReleaseCache {
@@ -27,7 +43,7 @@ export function availableCardRelease(installed,manifest){
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
  attemptJournal,attempt,onAttempt=()=>{},reconcile,reconcileWifiJob,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable,
  waitForForeground}){
- const release=parsePhoneManifest(manifest.text);
+ let release;try{release=parsePhoneManifest(manifest.text);}catch(cause){throw Object.assign(Error('The selected public release could not be prepared. Nothing was sent.'),{preflightFailure:'release',cause});}
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
  if(exactReinstall&&!allowReinstall)throw Object.assign(Error('Confirm a reinstall before sending firmware.'),{confirmed:true,installationNotStarted:true,uncertain:false});
  const verifyReinstallVersion=installed=>{
@@ -39,7 +55,11 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
  // successful installation into a retry. This callback is never awaited.
  const reportTransfer=result=>{try{const value=safeFirmwareTransferMetrics(Object.getOwnPropertyDescriptor(result,'transferDiagnostic')?.value);if(value)Promise.resolve(onTransferDiagnostic(value)).catch(()=>{});}catch{}};
  current();
- if(attemptJournal){attempt??=attemptJournal.begin(entry.id,release,{reinstall:allowReinstall});onAttempt(attempt);}
+ if(attemptJournal){
+  try{attempt??=attemptJournal.begin(entry.id,release,{reinstall:allowReinstall});}
+  catch(cause){throw journalBeginError(cause);}
+  onAttempt(attempt);
+ }
  const latest=()=>attemptJournal?.get(entry.id)||attempt;
  const finish=result=>{if(attemptJournal&&attempt)attemptJournal.settle(latest(),result);return result;};
  const unconfirmedCommit=()=>Object.assign(Error('The final installation is not confirmed. Keep your lamp powered while we check which software is installed.'),

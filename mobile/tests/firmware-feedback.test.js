@@ -99,10 +99,12 @@ test('pending legacy receipts survive more than 32 unrelated terminal saves',()=
  for(let i=1;i<=40;i++)feedback.update(feedback.begin(i.toString(16).padStart(12,'0')),{message:'Updated.',terminal:true,outcome:'installed',targetVersion:'1.15.1'});
  const restored=new FirmwareFeedback(storage);assert.equal(restored.get(id).outcome,'verification-required');assert.equal(restored.get(id).targetVersion,'1.15.1');assert.equal(JSON.parse(storage.getItem('coollamp-firmware-feedback-v1')).length,32);
 });
-test('32 pending receipts stop a new attempt before any history can evict them',()=>{
+test('32 pending receipts remain durable but optional feedback cannot block a new safety-journal attempt',()=>{
  const storage=memory(),feedback=new FirmwareFeedback(storage);
  for(let i=1;i<=32;i++)feedback.update(feedback.begin(i.toString(16).padStart(12,'0')),{message:'Waiting.',terminal:true,outcome:'verification-required',targetVersion:'1.15.1'});
- assert.throws(()=>feedback.begin(id),error=>error.requiresReconciliation);assert.equal(new FirmwareFeedback(storage).records.size,32);
+ const fresh=feedback.begin(id);assert(fresh);feedback.update(fresh,{message:'Preparing a new update.'});
+ const restored=new FirmwareFeedback(storage);assert.equal(restored.records.size,32);assert.equal(restored.get('000000000001').outcome,'verification-required');
+ assert.equal(feedback.get(id).message,'Preparing a new update.');
 });
 test('a second interrupted legacy check inherits its original pending receipt',()=>{
  const storage=memory(),feedback=new FirmwareFeedback(storage);

@@ -38,7 +38,9 @@ export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
  const preflightMessages={
   'public-release':'Could not verify the current public release. Nothing was sent. Check your phone’s Internet connection, then tap Try again.',
   'installed-version':'Could not verify this lamp’s installed version. Nothing was sent. Connect to the lamp, then tap Try again.',
+  'release':'The selected public release could not be prepared. Nothing was sent. Check for updates again, then tap Update.',
   'screen-awake':'Could not keep the phone’s screen awake. Nothing was sent. Keep CoolLamp open and the screen unlocked, then tap Try again.',
+  'journal':'CoolLamp could not create a safe update record. Nothing was sent. Open Update details for the current reason, then try again.',
   'confirmation-dialog':'Could not open the update choices. Nothing was sent. Return to CoolLamp and tap Try again.'
  };
  if(Object.hasOwn(preflightMessages,error?.preflightFailure))return preflightMessages[error.preflightFailure];
