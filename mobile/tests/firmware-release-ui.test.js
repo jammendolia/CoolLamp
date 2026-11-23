@@ -14,7 +14,7 @@ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
 const resultCheckHandler=source.slice(source.indexOf('async function checkLampUpdateResult('),source.indexOf('\nconst firmwareResultCheckAt='));
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
-function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false}={}){
+function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false,busyAtStart=false,priorTerminalVersion=null}={}){
  const entry={id:'aabbccddeeff',name:'Reading corner',address:addressless?undefined:'192.168.1.20',deviceId:'paired'},calls=[],messages=[];
  let inventory=[entry],running=installed,remainingWifiFailures=wifiFailure?1:0,remainingSettleWriteFailures=settleWriteFailures,journalWriteFailures=0;
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}});
@@ -50,8 +50,9 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
    updateOverBluetooth:async(pkg,notify,options)=>{calls.push(['transfer',pkg.manifest.version]);await onTransfer?.({pkg,notify,options,remove:()=>{inventory=[];}});running=pkg.manifest.version;return {version:pkg.manifest.version,committed:true};}},release:async()=>calls.push(['release'])};},
   downloadPhoneFirmware:async(_http,options)=>{calls.push(['download',options.expectedManifest.version]);return {manifest:options.expectedManifest,image:new Uint8Array(288)};},
   CapacitorHttp:{},document:{hidden:false},isNative:nativeMode};
+ if(priorTerminalVersion){const prior=firmwareAttempts.begin(entry.id,release(priorTerminalVersion));firmwareAttempts.abandonUnstarted(prior);}
  runInNewContext(`let publicFirmware=${JSON.stringify(release('1.14.0'))},publicFirmwareFresh=true,publicFirmwareError='Phone offline';
- let connecting=false,bluetoothFirmwareTask=null,fleetUpdating=false,bluetoothFirmwareConnectionSerial=0;
+ let connecting=${busyAtStart?'true':'false'},bluetoothFirmwareTask=null,fleetUpdating=false,bluetoothFirmwareConnectionSerial=0;
  ${productionReconcile?resultCheckHandler:''}
  ${cardHandler}
  globalThis.update=()=>updateLampCard(entry);globalThis.check=()=>checkLampUpdateResult(entry);`,context);
@@ -60,6 +61,14 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
 
 test('stale 1.14 label gets a fresh 1.15 confirmation and only installs the confirmed release',async()=>{
  const ui=harness();await ui.update();assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0']]);assert.equal(ui.tasks.size,0);
+});
+test('a prior terminal attempt for an older release is explained by the fresh confirmation',async()=>{
+ const ui=harness({priorTerminalVersion:'1.14.9'});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.9'],['wifi','1.15.0']]);assert.equal(ui.attempts.get('aabbccddeeff').version,'1.15.0');
+});
+test('a newly busy preflight reports an actionable no-send result instead of returning silently',async()=>{
+ const ui=harness({busyAtStart:true});await ui.update();assert.deepEqual(ui.calls,[]);assert.equal(ui.attempts.get('aabbccddeeff'),null);
+ assert.match(ui.cardMessages.get('aabbccddeeff'),/Another lamp action is still finishing/);assert.match(ui.messages.at(-1),/Nothing was sent/);
 });
 test('changed public offer is not installed when its fresh confirmation is cancelled',async()=>{
  const ui=harness({accept:false});await ui.update();assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);assert.match(ui.cardMessages.values().next().value,/cancelled/);assert.equal(ui.tasks.size,0);

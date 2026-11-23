@@ -10,14 +10,15 @@ const helper=source.slice(source.indexOf('function cardFirmwareButton('),source.
 const release=parsePhoneManifest('COOLLAMP-OTA-1\n1.14.0\nesp32c3\ndual-ota-2031616\n288\n'+'a'.repeat(64)+'\n');
 const entry={id:'aabbccddeeff',name:'Reading corner',address:'192.168.1.20'};
 function fixture(overrides={},target=entry){
- const calls=[],context={availableCardRelease,publicFirmware:release,publicFirmwareFresh:true,cardInstalledVersion:()=> '1.13.0',fleetRefreshRun:null,publicFirmwareRun:null,
+ const calls=[],messages=[],cardFirmwareMessages=new Map(),cardFirmwareMessageOwners=new Map(),context={availableCardRelease,publicFirmware:release,publicFirmwareFresh:true,cardInstalledVersion:()=> '1.13.0',fleetRefreshRun:null,publicFirmwareRun:null,
   firmwareAttempts:{pending:()=>[],get:()=>null},legacyFirmwareReceipts:new Map(),firmwareFeedback:{get:()=>null},checkLampUpdateResult:value=>calls.push(['check-update',value.id]),
   connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardFirmwareUnconfirmed:new Map(),
+  cardFirmwareMessages,cardFirmwareMessageOwners,status:message=>messages.push(message),renderLamps:()=>{},
   updateLampCard:(value,options)=>calls.push(['update',value.id,options]),cardPhoneFirmwareAvailable:()=>true,
   cardUpdateRouteChoice:async(_value,_evidence)=>'phone',mergedLampEntries:()=>[target],refreshPublicFirmware:options=>calls.push(['release-check',options.force]),refreshLampFirmware:()=>calls.push(['version-check']),
   document:{createElement:()=>({dataset:{},attributes:{},label:{textContent:''},querySelector(){return this.label;},setAttribute(name,value){this.attributes[name]=value;}})},...overrides};
  runInNewContext(helper+'\nglobalThis.makeButton=cardFirmwareButton;',context);
- return {button:context.makeButton(target),calls};
+ return {button:context.makeButton(target),calls,messages,cardFirmwareMessages,cardFirmwareMessageOwners};
 }
 
 test('a known newer release has a visible accessible update action for its lamp',()=>{
@@ -101,19 +102,40 @@ test('the reconciled recovery choice can explicitly retry Internet without a sec
   cardUpdateRouteChoice:async()=> 'wifi'});
  await button.onclick();assert.equal(calls.length,1);assert.deepEqual({...calls[0][2]},{bluetoothOnly:false,approvedRoute:'wifi',approvedVersion:'1.14.0'});
 });
-test('declining or retiring a reconciled recovery target starts no update',async()=>{
+test('declining or retiring a reconciled recovery target starts no update and explains a retired target',async()=>{
  const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,
   metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false};
- for(const overrides of [{cardUpdateRouteChoice:async()=> 'cancel'},{mergedLampEntries:()=>[]}]){
-  const {button,calls}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},...overrides});
-  await button.onclick();assert.deepEqual(calls,[]);
- }
+ const declined=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},cardUpdateRouteChoice:async()=> 'cancel'});
+ await declined.button.onclick();assert.deepEqual(declined.calls,[]);assert.deepEqual(declined.messages,[]);
+ const retired=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},mergedLampEntries:()=>[]});
+ await retired.button.onclick();assert.deepEqual(retired.calls,[]);assert.match(retired.messages.at(-1),/no longer available/i);assert.match(retired.messages.at(-1),/Nothing was sent/);
+});
+test('a changed locator for the exact lamp is adopted only after the recovery choice',async()=>{
+ const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,
+  metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false},moved={...entry,address:'192.168.1.42'},calls=[];
+ const {button}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},
+  cardUpdateRouteChoice:async()=> 'wifi',mergedLampEntries:()=>[moved],updateLampCard:(value,options)=>calls.push([value.id,value.deviceId,value.address,{...options}])});
+ await button.onclick();assert.deepEqual(calls,[[entry.id,entry.deviceId,'192.168.1.42',{bluetoothOnly:false,approvedRoute:'wifi',approvedVersion:'1.14.0'}]]);
+});
+test('an Internet recovery with no current Wi-Fi locator explains how to continue',async()=>{
+ const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,
+  metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false},target={...entry,address:undefined};
+ const {button,calls,messages}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},
+  cardPhoneFirmwareAvailable:()=>false,cardUpdateRouteChoice:async()=> 'wifi',mergedLampEntries:()=>[target]});
+ await button.onclick();assert.deepEqual(calls,[]);assert.match(messages.at(-1),/Reconnect this lamp to home Wi-Fi/);assert.match(messages.at(-1),/Nothing was sent/);
+});
+test('an older terminal attempt cannot mislabel a newer release as Try again',async()=>{
+ const attempt={identity:entry.id,version:'1.13.9',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,
+  metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false};
+ const {button,calls}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})}});
+ assert.match(button.innerHTML,/<span>Update<\/span>/);assert.match(button.attributes['aria-label'],/^Update Reading corner/);await button.onclick();
+ assert.deepEqual(calls,[['update',entry.id,undefined]]);
 });
 test('unsafe or unverified attempts never offer the phone route',()=>{
  for(const patch of [{wifiInstallAttempted:true},{commitAttempted:true},{commitUnconfirmed:true},{outcome:'unresolved'},{version:'1.13.9'}]){
   const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false,metadataIssued:false,beginAttempted:false,commitAttempted:false,commitUnconfirmed:false,...patch};
   const {button}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})}});
-  assert.equal(button.label.textContent,'Try again');
+  if(patch.version==='1.13.9')assert.match(button.innerHTML,/<span>Update<\/span>/);else assert.equal(button.label.textContent,'Try again');
  }
  const attempt={identity:entry.id,version:'1.14.0',outcome:'installationNotStarted',wifiCheckAttempted:true,wifiInstallAttempted:false};
  const {button}=fixture({firmwareAttempts:{pending:()=>[],get:()=>attempt},firmwareFeedback:{get:()=>({terminal:true,outcome:'installationNotStarted'})},cardPhoneFirmwareAvailable:()=>false});
