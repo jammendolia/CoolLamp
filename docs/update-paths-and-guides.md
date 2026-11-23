@@ -57,21 +57,35 @@ channel/overlap, a validated donor artifact, receiver opt-in/policy and resource
 
 ## Durable lamp-owned manual jobs
 
-The durable update-job capability is also exposed only by authenticated GET
+The durable update-job capability is exposed only by authenticated GET
 `/api/firmware`; the bounded aggregate state and diagnostics documents omit it
-to retain the 8192-byte control limit. Before mutating a saved manual job, the
-app performs one bounded compact read and verifies its canonical `deviceId`.
-`updateJobContractVersion:1` is usable only with a strict `updateJob` snapshot.
-Job identifiers are exactly 32 lowercase hexadecimal characters, matching the
-app's 16-byte random attempt identifier. A missing, malformed or wrong-target
-compact response cannot authorize the job POST.
+to retain the 8192-byte control limit. The default response remains the
+version-1 compatibility projection. Before mutating a saved manual job, the app
+performs the bounded compact read `GET /api/firmware?updateJobContract=2`,
+verifies its canonical `deviceId`, and requires `updateJobContractVersion:2`
+with a strict version-2 `updateJob` snapshot. Firmware that ignores the query
+continues returning version 1 and is never mistaken for version 2.
 
-Firmware that does not advertise this contract after the verified compact read
-keeps the existing legacy update-check path. A capable lamp receives exactly one
-job POST; a lost acceptance reply is reconciled by exact job ID rather than
-replayed or sent over Bluetooth. Once accepted, the lamp owns the Internet
-download and installation, so app backgrounding does not interrupt it. This does
-not change the foreground requirement for a phone-sent Bluetooth transfer.
+The one version-2 POST carries the exact immutable tuple
+`jobId,targetId,ownerId,route,version,sha256,size`. Job identifiers are exactly
+32 lowercase hexadecimal characters, target and owner are canonical 12-character
+lamp identities, the Internet route is numeric `1`, and the exact image size is
+288–2,031,616 bytes. The direct lamp endpoint requires
+`targetId == ownerId == deviceId`; a bridge-owned tuple belongs at the selected
+bridge endpoint. A missing, malformed or wrong-target compact response cannot
+authorize this POST.
+
+A lost acceptance reply is reconciled rather than replayed or sent over
+Bluetooth. The app reads
+`GET /api/firmware/job?jobId=<32hex>&updateJobContract=2` and accepts only a
+version-2 snapshot containing the same job, target, owner, route, version,
+digest and size. That snapshot exposes `version`, `storageReady`, `jobId`,
+`targetId`, `ownerId`, `route`, `target`, `sha256`, `size`, `state`, `error`,
+`revision`, `confirmedBytes`, `totalBytes` and `terminal`. Firmware that does
+not advertise version 2 after the verified compact read keeps the existing
+legacy update-check path. Once accepted, the lamp owns the Internet download
+and installation, so app backgrounding does not interrupt it. This does not
+change the foreground requirement for a phone-sent Bluetooth transfer.
 
 ## Browser/computer service upload
 

@@ -28,11 +28,6 @@ for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
   const target = path.join(sketch, entry.name);
   if (!fs.existsSync(target) || !source.equals(fs.readFileSync(target))) fs.writeFileSync(target, source);
 }
-// Store the immutable setup page compressed in flash. HTTP sends these exact
-// bytes incrementally; browsers decompress them, with no lamp heap workspace.
-const page=require('./compress-lamp-page.cjs').compressedPage(fs.readFileSync(path.join(root,'LampPage.h'),'utf8'));
-fs.writeFileSync(path.join(sketch,'LampPageGzip.generated.h'),page.header);
-fs.writeFileSync(path.join(stageRoot,'page-compression.json'),JSON.stringify(page.report,null,2)+'\n');
 if(publisherTrust){
   fs.writeFileSync(path.join(sketch,'LampPublisherTrust.generated.h'),publisherTrust.header);
   console.log('Publisher public trust configuration SHA-256: '+publisherTrust.provenance.sha256);
@@ -53,6 +48,12 @@ if(stackUsage)args.push('--build-property','compiler.c.extra_flags=-fstack-usage
 if(publisherTrust)fs.writeFileSync(path.join(root,'.build','publisher-trust-'+flavor+'.json'),JSON.stringify(publisherTrust.provenance,null,2)+'\n');
 args.push(sketch);
 (async()=>{
+  // Store the immutable setup page minified and compressed in flash. HTTP sends
+  // these exact bytes incrementally; browsers decompress them, with no lamp heap
+  // workspace. The build helper verifies the final bytes before staging them.
+  const page=await require('./compress-lamp-page.cjs').optimizedPage(fs.readFileSync(path.join(root,'LampPage.h'),'utf8'));
+  fs.writeFileSync(path.join(sketch,'LampPageGzip.generated.h'),page.header);
+  fs.writeFileSync(path.join(stageRoot,'page-compression.json'),JSON.stringify(page.report,null,2)+'\n');
   const library=await require('./build-tls-library.cjs').ensureTlsLibrary({cli,board,sketch,root});
   const quoted='"'+library.replace(/\\/g,'/').replace(/"/g,'\\"')+'"';
   args.push('--build-property','compiler.c.elf.extra_flags=-Wl,--wrap=esp_wifi_init,--wrap=esp_bt_controller_init -Wl,--whole-archive '+quoted+' -Wl,--no-whole-archive');

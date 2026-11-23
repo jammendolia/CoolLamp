@@ -1,3 +1,6 @@
+#include "LampEffectFrame.h"
+#include "LampEffectPackageBuild.h"
+
 // Animation time is independent of networking, button holds and update timers.
 uint32_t lampEffectMillis() { return effectClockMs; }
 uint16_t lampBeat16(uint16_t bpm, uint32_t base) { return beat16(bpm, millis()-effectClockMs+base); }
@@ -18,13 +21,18 @@ void effectGlowAt(uint16_t position, uint16_t width, CRGB color, uint8_t strengt
 void effectGlow(uint16_t position, uint16_t width, CRGB color, uint8_t strength) {
   effectGlowAt(position, width, color, strength, false);
 }
-void renderNewEffect(uint8_t mode, uint32_t t) {
+void renderSpatialEffect(uint8_t mode, const LampEffectFrame::Context& context) {
+  const uint32_t t=context.clock;
   const auto c=getLampColor(mode); const auto o=getLampEffectOptions(mode);
   const CRGB a(c.r,c.g,c.b), b=o.dual ? CRGB(o.r,o.g,o.b) : a;
-  fill_solid(leds,NUM_LEDS,CRGB::Black);
+  // Stars can activate two emitters across uint32 rollover, at most 18 tails.
+  // Other recipes peak at 14 glows. Keep exact scaling and contribution order.
+  LampEffectFrame::Glows<CRGB,18> frame;
+  frame.background=CRGB::Black;
   switch(mode) {
     case MODE_DROPLETS:
     case MODE_DROPLETS_OUTWARD: {
+      frame.space=LampEffectFrame::Space::Motion;
       const unsigned count=1+o.intensity/25;
       for(unsigned k=0;k<count;++k) {
         const uint32_t phase=(t+k*1103)%6200;
@@ -34,28 +42,30 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         travel=min(travel,uint32_t(32767));
         // Keep the calibrated split bounce; whole strip traverses both endpoints.
         const uint32_t distance=mode==MODE_DROPLETS_OUTWARD ? 32767-travel : travel;
-        const uint16_t position=lampMotionPath==1?
+        const uint16_t position=context.motionPath==1?
           (mode==MODE_DROPLETS_OUTWARD?65535-uint32_t(travel)*65535/32767:uint32_t(travel)*65535/32767):
           (k%2?65535-distance:distance);
-        effectGlowAt(position,4500,k%2?b:a,255,true);
-        effectGlowAt(position,10000,k%2?b:a,55,true);
+        frame.add(position,4500,k%2?b:a,255);
+        frame.add(position,10000,k%2?b:a,55);
       } break;
     }
     case MODE_LIGHTNING: {
-      CRGB background=b; background.nscale8(8); fill_solid(leds,NUM_LEDS,background);
+      frame.background=b; frame.background.nscale8(8);
       // One soft-edged strike per 6–10 seconds at normal speed; no rapid full-strip strobe.
       const uint32_t period=10000-o.intensity*40, phase=t%period, seed=effectHash(t/period);
       if(phase<650) {
         const uint8_t pulse=sin8(phase*256/650+192);
-        for(unsigned k=0;k<5;++k) effectGlow(effectHash(seed+k)%65536,2500+effectHash(seed+k+9)%6000,a,pulse);
+        for(unsigned k=0;k<5;++k) frame.add(effectHash(seed+k)%65536,2500+effectHash(seed+k+9)%6000,a,pulse);
       } break;
     }
+#if !COOLLAMP_EFFECT_PACK_REPLACE_NATIVE
     case MODE_TIDE: {
       const uint8_t wave=sin8(t/35);
       const uint16_t reach=19000+uint32_t(wave)*180;
-      effectGlow(0,reach,a,120+wave/2); effectGlow(65535,reach,b,247-wave/2);
+      frame.add(0,reach,a,120+wave/2); frame.add(65535,reach,b,247-wave/2);
       break;
     }
+#endif
     case MODE_FIREFLIES: {
       const unsigned count=3+o.intensity/9;
       for(unsigned k=0;k<count;++k) {
@@ -63,25 +73,26 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         const uint8_t wave=sin8(uint64_t(t%period)*256/period+(seed>>24));
         const uint8_t glow=uint16_t(wave)*wave/255;
         const uint16_t position=(seed%58000)+uint32_t(sin8(t/90+k*39))*29;
-        effectGlow(position,2200+(seed%2500),k%2?b:a,glow);
+        frame.add(position,2200+(seed%2500),k%2?b:a,glow);
       } break;
     }
     case MODE_HEARTBEAT: {
+      frame.space=LampEffectFrame::Space::Motion;
       const uint32_t phase=t%4200;
       for(unsigned k=0;k<2;++k) {
         if(phase<k*600 || phase>k*600+1700) continue;
         const uint32_t age=phase-k*600;
         const uint16_t distance=age*32767/1700;
         const uint8_t strength=(1700-age)*255/1700;
-        if(lampMotionPath==1)effectGlowAt(uint32_t(distance)*65535/32767,6500,k?b:a,strength,true);
+        if(context.motionPath==1)frame.add(uint32_t(distance)*65535/32767,6500,k?b:a,strength);
         else{
-          effectGlowAt(32767-distance,6500,k?b:a,strength,true);
-          effectGlowAt(32768+distance,6500,k?b:a,strength,true);
+          frame.add(32767-distance,6500,k?b:a,strength);
+          frame.add(32768+distance,6500,k?b:a,strength);
         }
       } break;
     }
     case MODE_STARS: {
-      CRGB background=b; background.nscale8(5); fill_solid(leds,NUM_LEDS,background);
+      frame.background=b; frame.background.nscale8(5);
       for(unsigned k=0;k<1U+o.intensity/40;++k) {
         const uint32_t phase=(t+k*1801)%5600;
         if(phase>1800) continue;
@@ -89,20 +100,27 @@ void renderNewEffect(uint8_t mode, uint32_t t) {
         const int32_t head=int32_t(phase)*80000/1800-7000;
         for(unsigned tail=0;tail<9;++tail) {
           const int32_t p=head-int32_t(tail)*1800;
-          if(p>=0 && p<=65535) effectGlow(reverse?65535-p:p,2400,k%2?b:a,255/(tail+1));
+          if(p>=0 && p<=65535) frame.add(reverse?65535-p:p,2400,k%2?b:a,255/(tail+1));
         }
       } break;
     }
+#if !COOLLAMP_EFFECT_PACK_REPLACE_NATIVE
     case MODE_BREATHING: {
       const uint8_t breath=sin8(t/28); CRGB color=blend(a,b,breath);
-      color.nscale8(12+uint16_t(breath)*243/255); fill_solid(leds,NUM_LEDS,color); break;
+      color.nscale8(12+uint16_t(breath)*243/255); frame.background=color; break;
     }
+#endif
     case MODE_BLOBS: {
       for(unsigned k=0;k<5;++k) {
         const uint16_t center=uint16_t(sin8(t/(45+k*11)+k*51))*257;
         const uint16_t width=9000+uint16_t(sin8(t/60+k*73))*45;
-        effectGlow(center,width,blend(a,b,k*63),110);
+        frame.add(center,width,blend(a,b,k*63),110);
       } break;
     }
   }
+  frame.render(context,leds);
+}
+void renderNewEffect(uint8_t mode, uint32_t t) {
+  const LampEffectFrame::Context frame{t,uint16_t(NUM_LEDS),lampMidpoint,lampEffectiveMotionPath()};
+  renderSpatialEffect(mode,frame);
 }

@@ -6,6 +6,7 @@
 #include "LampUpdateHandoff.h"
 #include "LampUpdateHealth.h"
 #include "LampUpdateAttempt.h"
+#include "LampUpdateJob.h"
 #include "LampCommission.h"
 #include "LampRollout.h"
 #include "LampFirmwareRelay.h"
@@ -46,7 +47,12 @@ TaskHandle_t worker = nullptr;
 std::atomic<bool> workerFinished{false};
 bool manual = false;
 uint8_t job = 0;
+uint8_t durableJobOwner=0; // 1 persisted active/uncertain job, 2 admission in progress.
 LampUpdateHandoff handoff;
+bool dispatchReady=false;
+uint32_t dispatchReadyAt=0;
+uint32_t lastWorkerStackFree=0; // Loop-owned, current boot only; no persistence.
+LampUpdateWorkerAdmission workerAdmission;
 std::atomic<bool> healthy{false};
 LampUpdateHealth bootHealth;
 uint32_t nextCheck = 0, restartAt = 0;
@@ -68,6 +74,7 @@ LampUpdateAutomatic::Service automaticService;
 LampUpdateAutomatic::Snapshot automaticView;
 bool automaticJob=false,automaticCommitHeld=false;
 bool manualCommitHeld=false;
+bool updateJobRunning=false,updateJobReconciled=false;
 uint8_t automaticJobOperation=0;
 // The worker publishes only bounded evidence after destroying its TLS owner.
 // 1 safe precommit error,2 commit fence entered,3 discovery success,4 deferred.
@@ -78,6 +85,11 @@ bool donorWakeSeen=false,donorNewerSeen=false;
 uint32_t donorWakeAt=0;
 
 bool busy(uint8_t phase) { return phase == UPDATE_CHECKING || phase == UPDATE_DOWNLOADING || phase == UPDATE_RESTARTING; }
+void refreshDurableJobOwner(){
+  const auto durable=LampUpdateJob::capture();
+  const bool held=durable.state==LampUpdateJob::Uncertain||(durable.storageReady&&durable.state>=LampUpdateJob::Accepted&&durable.state<=LampUpdateJob::Committing);
+  portENTER_CRITICAL(&mux);if(durableJobOwner!=2)durableJobOwner=held;portEXIT_CRITICAL(&mux);
+}
 void phase(uint8_t value, uint8_t error = UPDATE_OK) {
   portENTER_CRITICAL(&mux); status.phase = value; status.error = error;
   if(value==UPDATE_IDLE||value==UPDATE_AVAILABLE||value==UPDATE_ERROR)status.receiving=false;
@@ -87,7 +99,17 @@ void startReceiverCue(){
   const auto light=getLampControlState();
   portENTER_CRITICAL(&mux);status.receiving=true;status.cueOn=light.power;status.cueBrightness=light.brightness;status.writtenOffset=0;status.totalBytes=0;if(!++status.cueGeneration)++status.cueGeneration;portEXIT_CRITICAL(&mux);
 }
-void fail(uint8_t error) { phase(UPDATE_ERROR, error); }
+void fail(uint8_t error) {
+  if(updateJobRunning){
+    const auto durable=LampUpdateJob::capture();
+    if(durable.state==LampUpdateJob::Committing){if(!LampUpdateJob::markUncertain())error=UPDATE_STORAGE;}
+    else if(durable.state!=LampUpdateJob::Uncertain){
+      if(LampUpdateJob::markFailed(error)){portENTER_CRITICAL(&mux);durableJobOwner=0;portEXIT_CRITICAL(&mux);}
+      else error=UPDATE_STORAGE;
+    }
+  }
+  phase(UPDATE_ERROR, error);
+}
 String versionText(const uint16_t v[3]) {
   String out;
   if(!out.concat(v[0])||!out.concat('.')||!out.concat(v[1])||!out.concat('.')||!out.concat(v[2]))return String();
@@ -98,18 +120,8 @@ bool legacyAttemptMatches(const FirmwareManifest& artifact){
   return !strcmp(version,attemptedVersion);
 }
 
-bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
-  UpdateHttp http; int code = 0; int64_t length = 0;
-  // Discovery must bypass a cached Latest redirect. Installation rechecks the
-  // exact offered release, never a second Latest lookup that could go backward.
-  const char* manifestName=UpdatePublisher::enforced()?"coollamp-manifest-v2.txt":"coollamp-manifest.txt";
-  const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/" + manifestName :
-    String("latest/download/") + manifestName + "?check=" + String(esp_random(), HEX);
-  if (!http.open(String(ROOT) + path, code, length,background?&cancelBackground:nullptr,
-                 background?backgroundBudget:LampUpdateControlPolicy::ExplicitBudgetMs)) {
-    if(background&&(http.cancelled()||http.memoryFailure())){backgroundReadDeferred=true;return false;}
-    fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK);return false;
-  }
+// Keep manifest text/signature work out of the connection/header caller frame.
+__attribute__((noinline)) bool finishReleaseCheck(UpdateHttp& http,int code,int64_t length,bool installing,bool background) {
   char text[UpdatePublisher::ManifestCapacity] = {}; size_t used = 0;
   if (code == 200 && (length < 0 || length < sizeof(text))) {
     while (used < sizeof(text) - 1) {
@@ -138,32 +150,45 @@ bool checkRelease(bool installing = false,bool background = false,uint32_t backg
   if (code != 200 || !complete || !textComplete || !validManifest) {
     fail(code == 200 ? UPDATE_MANIFEST : UPDATE_NETWORK); return false;
   }
-  if (installing && (!sameFirmwareManifest(next, candidate)||nextEpoch!=candidateEpoch||(nextEpoch&&strcmp(text,signedCandidate)))) { fail(UPDATE_MANIFEST); return false; }
+  const bool newer=firmwareIsNewer(next.version,CURRENT);
+  if(updateJobRunning){
+    const auto exactJob=LampUpdateJob::capture();
+    if(!LampUpdateJob::matches(exactJob,next)||!newer){fail(UPDATE_MANIFEST);return false;}
+  }else if (installing && (!sameFirmwareManifest(next, candidate)||nextEpoch!=candidateEpoch||(nextEpoch&&strcmp(text,signedCandidate)))) { fail(UPDATE_MANIFEST); return false; }
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   if (!target || target->size < 2031616 || next.size > target->size) { fail(UPDATE_PARTITION); return false; }
-  const bool newer = firmwareIsNewer(next.version, CURRENT);
   if(background&&cancelBackground.load()){backgroundReadDeferred=true;return false;}
+  if(updateJobRunning&&!installing&&!LampUpdateJob::markDownloading(next)){fail(UPDATE_STORAGE);return false;}
   portENTER_CRITICAL(&mux);
   candidate = next; candidateEpoch=nextEpoch;if(nextEpoch)strlcpy(signedCandidate,text,sizeof(signedCandidate));else signedCandidate[0]=0;memcpy(status.latest, next.version, sizeof(status.latest));status.checkedAt=millis();
   status.available = newer; status.progress = 0;
   portEXIT_CRITICAL(&mux);
   phase(newer ? (installing ? UPDATE_CHECKING : UPDATE_AVAILABLE) : UPDATE_IDLE); return true;
 }
-bool recordAttempt(const String& version) {
+bool checkRelease(bool installing = false,bool background = false,uint32_t backgroundBudget=LampUpdateControlPolicy::BackgroundBudgetMs) {
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  // Discovery must bypass a cached Latest redirect. Installation rechecks the
+  // exact offered release, never a second Latest lookup that could go backward.
+  const char* manifestName=UpdatePublisher::enforced()?"coollamp-manifest-v2.txt":"coollamp-manifest.txt";
+  const String path = installing ? String("download/firmware-v") + versionText(candidate.version) + "/" + manifestName :
+    String("latest/download/") + manifestName + "?check=" + String(esp_random(), HEX);
+  if (!http.open(String(ROOT) + path, code, length,background?&cancelBackground:nullptr,
+                 background?backgroundBudget:LampUpdateControlPolicy::ExplicitBudgetMs)) {
+    if(background&&(http.cancelled()||http.memoryFailure())){backgroundReadDeferred=true;return false;}
+    fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK);return false;
+  }
+  return finishReleaseCheck(http,code,length,installing,background);
+}
+inline __attribute__((always_inline)) bool recordAttempt(const String& version) {
   Preferences prefs;
   if (!prefs.begin("coollamp", false)) return false;
   const bool ok = prefs.putString("otaAttempt", version) == version.length(); prefs.end();
   if (ok) strlcpy(attemptedVersion, version.c_str(), sizeof(attemptedVersion));
   return ok;
 }
-void downloadRelease() {
-  phase(UPDATE_DOWNLOADING);
-  const FirmwareManifest selected = candidate;
-  portENTER_CRITICAL(&mux);status.totalBytes=selected.size;portEXIT_CRITICAL(&mux);
-  const String version = versionText(selected.version);
-  UpdateHttp http; int code = 0; int64_t length = 0;
-  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
-  if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
+// Keep transfer buffers out of the TLS handshake's caller stack. In particular,
+// do not reserve the image prefix/read buffers while esp_tls connects.
+__attribute__((noinline)) void receiveRelease(UpdateHttp& http,const FirmwareManifest& selected,const String& version) {
   const auto* target = esp_ota_get_next_update_partition(nullptr);
   esp_ota_handle_t ota = 0;
   uint8_t buffer[1024], digest[32]; size_t received = 0,written=0;
@@ -194,6 +219,7 @@ void downloadRelease() {
     if (ok && headerValid && offset < size_t(n)){ok = esp_ota_write(ota, buffer + offset, n - offset) == ESP_OK;if(ok)written+=n-offset;}
     received += n;
     portENTER_CRITICAL(&mux);status.writtenOffset=written;status.progress=written*100ULL/selected.size;portEXIT_CRITICAL(&mux);
+    if(updateJobRunning&&!LampUpdateJob::noteProgress(written)){ok=false;break;}
     vTaskDelay(1);
   }
   const bool hashed=!mbedtls_sha256_finish(&hash,digest);mbedtls_sha256_free(&hash);
@@ -205,10 +231,21 @@ void downloadRelease() {
   // Retain the legacy version guard for supported old rollback images, but do
   // not quarantine a version merely because its network download was tried.
   // A failure anywhere inside the durable fence is never an automatic replay.
+  if(updateJobRunning&&!LampUpdateJob::markCommitting()){fail(UPDATE_STORAGE);return;}
   workerCommitFence=true;
   if(!LampUpdateAttempt::prepare(selected,explicitRepair)||!recordAttempt(version)){fail(UPDATE_STORAGE);return;}
   if(esp_ota_set_boot_partition(target)!=ESP_OK){fail(UPDATE_IMAGE);return;}
   phase(UPDATE_RESTARTING);
+}
+void downloadRelease() {
+  phase(UPDATE_DOWNLOADING);
+  const FirmwareManifest selected = candidate;
+  portENTER_CRITICAL(&mux);status.totalBytes=selected.size;portEXIT_CRITICAL(&mux);
+  const String version = versionText(selected.version);
+  UpdateHttp http; int code = 0; int64_t length = 0;
+  if (!http.open(String(ROOT) + "download/firmware-v" + version + "/CoolLamp.ino.bin", code, length)) { fail(http.memoryFailure()?UPDATE_MEMORY:UPDATE_NETWORK); return; }
+  if (code != 200 || length != selected.size) { http.close(); fail(UPDATE_IMAGE); return; }
+  receiveRelease(http,selected,version);
 }
 void installRelease() {
   // Keep the manifest and download stack frames separate on this small device.
@@ -241,10 +278,12 @@ void updateTask(void*) {
     const uint32_t elapsed=uint32_t(millis()-started);
     const uint32_t left=background&&elapsed<LampUpdateControlPolicy::BackgroundBudgetMs?LampUpdateControlPolicy::BackgroundBudgetMs-elapsed:0;
     if(background&&!left){fail(UPDATE_CLOCK);finishBackground();return;}
-    if (operation == 2) installRelease(); else completed=checkRelease(false,background,left);
+    if (operation == 2) installRelease();
+    else completed=checkRelease(false,background,left);
     finishBackground();
   };
   run();
+  updateJobRunning=false;
   // Every HTTPS origin publishes the durable fence, including Update now.
   // A failed boot-selection reply is uncertain, not permission to try BLE.
   const auto completed=getLampUpdateStatus();
@@ -263,14 +302,11 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
   const bool automaticInstall=operation==2&&!manualRepair&&getLampUpdateStatus().automatic;
   if((background||automaticInstall)&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(millis()),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t)))return false;
   FirmwareManifest offered;
-  portENTER_CRITICAL(&mux);
-  if(manual||busy(status.phase)||job||(operation==2&&!status.available)){portEXIT_CRITICAL(&mux);return false;}
-  offered=candidate;portEXIT_CRITICAL(&mux);
+  portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
   if(operation==2&&!lampRolloutAllowsAutomaticUpdate(offered))return false;
   if(operation==2&&!manualRepair&&!lampAutomaticUpdateArtifactAllowed(offered))return false;
   portENTER_CRITICAL(&mux);
-  if (manual || busy(status.phase) || job) { portEXIT_CRITICAL(&mux); return false; }
-  if (operation == 2 && !status.available) { portEXIT_CRITICAL(&mux); return false; }
+  if((durableJobOwner&&!updateJobRunning)||manual||busy(status.phase)||job||(operation==2&&!status.available)){portEXIT_CRITICAL(&mux);return false;}
   job = operation;jobBackground=background;backgroundPriorAvailable=status.available;
   cancelBackground=false;backgroundActive=background;
   status.phase = UPDATE_CHECKING; status.error = 0;explicitRepair=manualRepair;
@@ -282,7 +318,7 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
     backgroundActive=false;
     automaticJob=false;
     handoff.cancel();
-    fail(UPDATE_MEMORY); return false;
+    fail(UPDATE_MEMORY);updateJobRunning=false; return false;
   }
   if(operation==2&&!lampRolloutAutomaticUpdateStarted(offered)){
     portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);automaticJob=false;handoff.cancel();fail(UPDATE_STORAGE);return false;
@@ -292,12 +328,15 @@ bool request(uint8_t operation,bool manualRepair=false,bool background=false) {
   // loop. serviceLampUpdater() dispatches after the resource owners have run.
   if(operation==2){startReceiverCue();setLampUpdateRoute(UPDATE_ROUTE_INTERNET);}
   if(automaticJob){automaticService.enable();automaticService.internetStarted();}
-  handoff.queue();return true;
+  workerAdmission={};workerAdmission.phase=1;workerAdmission.taskControlBytes=sizeof(StaticTask_t);
+  dispatchReady=false;handoff.queue();return true;
 }
 } // namespace
 
 void beginLampUpdater() {
   LampUpdateAttempt::begin();
+  LampUpdateJob::begin();
+  refreshDurableJobOwner();
   bootHealth.begin(millis());
   Preferences prefs;
   if (prefs.begin("coollamp", true)) {
@@ -328,6 +367,17 @@ LampUpdateStatus getLampUpdateStatus() {
 }
 bool requestLampUpdateCheck() { return request(1); }
 bool requestLampUpdateInstall() { return request(2,true); }
+LampUpdateJob::SubmitResult submitLampUpdateJob(const LampUpdateJob::Submission& submission){
+  portENTER_CRITICAL(&mux);
+  if(durableJobOwner==2){portEXIT_CRITICAL(&mux);return LampUpdateJob::Conflict;}
+  const bool durable=durableJobOwner;
+  if(!durable&&(manual||worker||job||busy(status.phase))){portEXIT_CRITICAL(&mux);return LampUpdateJob::Conflict;}
+  if(!durable)durableJobOwner=2;
+  portEXIT_CRITICAL(&mux);
+  const auto result=LampUpdateJob::submitBound(submission);
+  if(!durable){portENTER_CRITICAL(&mux);durableJobOwner=result==LampUpdateJob::Submitted||result==LampUpdateJob::StorageUnavailable;portEXIT_CRITICAL(&mux);}
+  return result;
+}
 bool setLampAutoUpdate(bool enabled) {
   if (lampRemoteUpdateBusy()) return false;
   Preferences prefs;
@@ -346,7 +396,7 @@ bool lampUpdateOwnsResources() {
 bool reserveLampManualUpdate() {
   if (!healthy || LampCommission::working() || lampWifiSetupBusy() || lampFactoryResetPending() || lampFactoryResetArmed()) return false;
   portENTER_CRITICAL(&mux);
-  const bool ok = !manual && !worker && !busy(status.phase) && !job;
+  const bool ok = !durableJobOwner && !manual && !worker && !busy(status.phase) && !job;
   if (ok) manual = true;
   portEXIT_CRITICAL(&mux);
   if (ok && !stopLampAudio()) { releaseLampManualUpdate(); return false; }
@@ -381,7 +431,7 @@ void holdLampUpdateCommitUnconfirmed(){
   portEXIT_CRITICAL(&mux);
   finishLampBluetoothUpdateRadio(false);
 }
-static void serviceAutomaticUpdates(uint32_t now,const LampUpdateStatus& current){
+static inline __attribute__((always_inline)) void serviceAutomaticUpdates(uint32_t now,const LampUpdateStatus& current){
   using namespace LampUpdateAutomatic;
   if(manualCommitHeld){automaticView=automaticService.snapshot(now);automaticView.state=Waiting;automaticView.reason=CommitUnconfirmed;automaticView.attention=true;automaticView.phoneFallback=false;return;}
   if(!current.automatic){automaticService.disable();automaticView={};donorWakeSeen=donorNewerSeen=false;lastDonorWake={};return;}
@@ -430,10 +480,32 @@ static void serviceAutomaticUpdates(uint32_t now,const LampUpdateStatus& current
 }
 void serviceLampUpdater() {
   const uint32_t now = millis();
+  const auto refuseDispatch=[&](uint8_t reason){
+    // No worker has been notified and no image bytes have been written. Arm
+    // the retry before relinquishing this accepted automatic request; otherwise
+    // its still-due scheduler immediately repeats the same failed allocation.
+    const uint32_t jitter=(automaticJob||jobBackground)?esp_random():0;
+    if(automaticJob){
+      automaticService.fallback(now,reason,jitter);
+      automaticView=automaticService.snapshot(now);
+    }
+    if(jobBackground){
+      nextCheck=now+LampUpdateAutomatic::RetryMs+jitter%(LampUpdateAutomatic::RetryJitterMs+1);
+      backgroundDeferred=false;
+    }
+    portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
+    dispatchReady=false;backgroundActive=false;automaticJob=false;handoff.cancel();
+    if(jobBackground)phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);
+    else fail(UPDATE_MEMORY);
+    updateJobRunning=false;
+  };
   if(worker&&workerFinished.load(std::memory_order_acquire)){
     // No TLS, NVS or candidate access remains in the completed task. Remove
     // the handle before any later request/status builder can observe it.
-    const TaskHandle_t completed=worker;worker=nullptr;
+    const TaskHandle_t completed=worker;
+    lastWorkerStackFree=uxTaskGetStackHighWaterMark(completed);
+    workerAdmission.phase=6;
+    worker=nullptr;
     vTaskDelete(completed);workerFinished=false;
     const uint8_t outcome=automaticOutcome.exchange(0);
     const auto finished=getLampUpdateStatus();
@@ -472,30 +544,75 @@ void serviceLampUpdater() {
     healthAttempted=true;nextHealthAttempt=now+60000;
     FirmwareManifest measured{};esp_ota_img_states_t imageState;
     const auto* running=esp_ota_get_running_partition();
-    if(running&&esp_ota_get_state_partition(running,&imageState)==ESP_OK&&imageState==ESP_OTA_IMG_VALID&&LampFirmwareRelay::runningManifest(measured))LampUpdateAttempt::confirmHealthy(measured);
+    if(running&&esp_ota_get_state_partition(running,&imageState)==ESP_OK&&imageState==ESP_OTA_IMG_VALID&&LampFirmwareRelay::runningManifest(measured)){
+      LampUpdateAttempt::confirmHealthy(measured);
+      updateJobReconciled=LampUpdateJob::reconcileRunning(measured);refreshDurableJobOwner();
+    }
   }
   // CoolLamp's loop services Network and Bluetooth before this point. Crossing
   // a full subsequent pass covers HTTP, BLE, USB and automatic request origins,
   // including a BLE request made after the current loop's group service pass.
-  if(handoff.service()){
+  if(handoff.service()){dispatchReady=true;dispatchReadyAt=now;}
+  if(dispatchReady){
+    workerAdmission.beforeFree=heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    workerAdmission.beforeLargest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     // An accepted request has crossed the existing full-loop ownership
     // barrier. Only now allocate its stack; idle lamps retain no HTTPS task.
     if(jobBackground&&!LampUpdateControlPolicy::backgroundStartReady(lampControlTrafficIdle(now),heap_caps_get_free_size(MALLOC_CAP_8BIT),heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),sizeof(StaticTask_t))){
-      portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
-      backgroundActive=false;backgroundDeferred=true;
-      phase(backgroundPriorAvailable?UPDATE_AVAILABLE:UPDATE_IDLE);handoff.cancel();return;
+      workerAdmission.phase=2;
+      refuseDispatch(lampControlTrafficIdle(now)?LampUpdateAutomatic::Memory:LampUpdateAutomatic::ControlBusy);return;
     }
+    if(!jobBackground&&!LampUpdateControlPolicy::manualStartReady(workerAdmission.beforeFree,workerAdmission.beforeLargest,sizeof(StaticTask_t))){
+      // A response can outlive the originating handler. Give its bounded send
+      // owner time to release it without sleeping or repeatedly creating tasks.
+      if(LampUpdateControlPolicy::withinBudget(now,dispatchReadyAt,LampUpdateControlPolicy::DispatchSettleMs))return;
+      workerAdmission.phase=2;refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    dispatchReady=false;
     workerFinished=false;
-    if(xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)!=pdPASS){
-      worker=nullptr;portENTER_CRITICAL(&mux);job=0;portEXIT_CRITICAL(&mux);
-      backgroundActive=false;automaticJob=false;handoff.cancel();fail(UPDATE_MEMORY);return;
+    // Temporarily occupy the contiguous TLS block so FreeRTOS places its
+    // smaller stack in another fragment. Release it before the actual heap
+    // check/start; it is neither retained idle nor used as an SDK TLS buffer.
+    void* tlsHeadroom=heap_caps_malloc(LampUpdateControlPolicy::MinLargest,MALLOC_CAP_8BIT);
+    if(!tlsHeadroom){
+      workerAdmission.phase=7;
+      refuseDispatch(LampUpdateAutomatic::Memory);return;
     }
-    xTaskNotifyGive(worker);return;
+    const bool taskCreated=xTaskCreate(updateTask,"lamp-update",LampUpdateControlPolicy::WorkerStackBytes,nullptr,1,&worker)==pdPASS;
+    heap_caps_free(tlsHeadroom);
+    if(!taskCreated){
+      workerAdmission.phase=3;
+      worker=nullptr;refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    // The allocator may consume the only large TLS block even if the totals
+    // fitted. The worker is still waiting for its sole start notification.
+    workerAdmission.afterFree=heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    workerAdmission.afterLargest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if(!LampUpdateControlPolicy::memoryReady(workerAdmission.afterFree,workerAdmission.afterLargest)){
+      workerAdmission.phase=4;
+      const auto unstarted=worker;worker=nullptr;vTaskDelete(unstarted);
+      refuseDispatch(LampUpdateAutomatic::Memory);return;
+    }
+    workerAdmission.phase=5;xTaskNotifyGive(worker);return;
   }
   const auto current = getLampUpdateStatus();
   static uint8_t previousPhase = UPDATE_IDLE;
   if (current.phase == UPDATE_ERROR && previousPhase != UPDATE_ERROR) nextCheck = now + 15UL * 60 * 1000 + esp_random() % 60000;
   previousPhase = current.phase;
+  const auto durable=LampUpdateJob::capture();
+  const bool pending=durable.storageReady&&durable.route==LampUpdateJob::Internet&&
+    (durable.state==LampUpdateJob::Accepted||durable.state==LampUpdateJob::Checking||durable.state==LampUpdateJob::Downloading);
+  if(updateJobReconciled&&pending&&WiFi.status()==WL_CONNECTED&&!manual&&!busy(current.phase)&&!worker&&!job){
+    if(durable.state==LampUpdateJob::Downloading&&current.phase==UPDATE_AVAILABLE){
+      FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
+      if(!LampUpdateJob::matches(durable,offered)){
+        updateJobRunning=true;fail(UPDATE_MANIFEST);updateJobRunning=false;return;
+      }
+      updateJobRunning=true;if(!request(2,true))updateJobRunning=false;return;
+    }
+    if(durable.state!=LampUpdateJob::Downloading&&!LampUpdateJob::markChecking())return;
+    updateJobRunning=true;if(!request(1))updateJobRunning=false;return;
+  }
   serviceAutomaticUpdates(now,current);
   if (current.phase == UPDATE_RESTARTING) {
     if(manual)return; // Browser upload retains Network's existing reply/restart owner.
@@ -524,20 +641,21 @@ LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
   FirmwareManifest offered;portENTER_CRITICAL(&mux);offered=candidate;portEXIT_CRITICAL(&mux);
   snapshot.attempt=LampUpdateAttempt::captureStatus(offered);
   snapshot.policy=captureLampUpdatePolicyJson();snapshot.http=captureUpdateHttpDiagnostics();
+  snapshot.workerAdmission=workerAdmission;
   snapshot.heap=ESP.getFreeHeap();snapshot.largest=heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-  snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):0;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
+  // Retain the completed worker's lifetime watermark so a short HTTPS check
+  // can be measured after cleanup, without retaining its handle or stack.
+  snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):lastWorkerStackFree;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
   snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
   if(includeAutomatic){
+    snapshot.job=LampUpdateJob::capture();
     snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
     snapshot.automaticService.retryInMs=timing.retryInMs;snapshot.automaticService.donorWaitMs=timing.donorWaitMs;
-    // Same immutable 48-bit hardware identity as lampIdentity(), without a
-    // String allocation retained while the complete reply is reserved.
-    const uint64_t mac=ESP.getEfuseMac();const char hex[]="0123456789abcdef";
-    for(unsigned i=0;i<12;++i)snapshot.deviceId[i]=hex[(mac>>(44-i*4))&15];
+    memcpy(snapshot.deviceId,lampIdentityText(),sizeof(snapshot.deviceId));
   }
   return snapshot;
 }
-void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic) {
+void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic,bool updateJobContractV2) {
   const auto& s=snapshot.status;const auto add=[&](const auto& value){out.concat(value);};
   add("{\"version\":\"");
   add(LAMP_FIRMWARE_VERSION);add("\",\"build\":\"");
@@ -555,14 +673,22 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
   add(",\"freeHeap\":");add(snapshot.heap);add(",\"largestBlock\":");add(snapshot.largest);
   add(",\"workerStackFree\":");add(snapshot.workerStack);add(",\"loopStackFree\":");add(snapshot.loopStack);
   add(",\"bootHealthy\":");add((snapshot.healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
-  add(",\"publisherDonation\":true,\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
+  if(includeAutomatic)add(",\"publisherDonation\":true");
+  add(",\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
   LampUpdateAttempt::appendStatus(out,snapshot.attempt);
   add(",\"policy\":");
   appendLampUpdatePolicyJson(out,snapshot.policy);
   appendUpdateHttpDiagnostics(out,snapshot.http);
   if(includeAutomatic){
+    add(",\"updateJobContractVersion\":");add(updateJobContractV2?2:1);add(",\"updateJob\":");
+    LampUpdateJob::appendJson(out,snapshot.job,updateJobContractV2);
     if(strlen(snapshot.deviceId)!=12){out.fail();return;}
     const auto& a=snapshot.automaticService;
+    const auto& w=snapshot.workerAdmission;
+    add(",\"workerAdmission\":{\"version\":1,\"phase\":");add(w.phase);
+    add(",\"stackBytes\":");add(LampUpdateControlPolicy::WorkerStackBytes);add(",\"taskControlBytes\":");add(w.taskControlBytes);
+    add(",\"beforeFree\":");add(w.beforeFree);add(",\"beforeLargest\":");add(w.beforeLargest);
+    add(",\"afterFree\":");add(w.afterFree);add(",\"afterLargest\":");add(w.afterLargest);add('}');
     add(",\"deviceId\":\"");add(snapshot.deviceId);add("\",\"automaticService\":{\"version\":1,\"state\":");add(a.state);
     add(",\"reason\":");add(a.reason);add(",\"retryInMs\":");add(a.retryInMs);add(",\"donorWaitMs\":");add(a.donorWaitMs);
     add(",\"internetAttempts\":");add(a.internetAttempts);add(",\"donorOffers\":");add(a.donorOffers);
@@ -571,13 +697,14 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
   }
   add('}');
 }
-String lampUpdateJson() {
+String lampUpdateJson(bool updateJobContractV2) {
   const auto snapshot=captureLampUpdateJson(true);
-  String out=lampJsonReply([&](LampJsonSink& reply){appendLampUpdateJson(reply,snapshot,true);});
+  String out=lampJsonReply([&](LampJsonSink& reply){appendLampUpdateJson(reply,snapshot,true,updateJobContractV2);});
   const char* const httpKeys[]={"httpStage","httpCode","httpHost","tlsError","tlsFlags","transportError"};
   if(!LampHttpJson::requiredKeys(out.c_str(),out.length(),httpKeys,sizeof(httpKeys)/sizeof(httpKeys[0])))return String();
   return out;
 }
+String lampUpdateJson(){return lampUpdateJson(false);}
 
 void noteLampUpdateUse(){lastUserUse=millis();userUseObserved=true;}
 void beginLampManualUpdateCue(){

@@ -1,0 +1,11 @@
+{
+  "name": "coollamp-firmware-build-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned, deterministic build-time dependencies for CoolLamp firmware assets.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@gfx/zopfli": "1.0.15",
+    "terser": "5.51.4"
+  }
+}

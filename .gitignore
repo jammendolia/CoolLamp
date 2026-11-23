@@ -2,6 +2,9 @@ LampSecrets.h
 firmware/
 *.log
 mobile/node_modules/
+tools/node_modules/
+__pycache__/
+*.pyc
 mobile/dist/
 mobile/android/.gradle/
 mobile/android/local.properties

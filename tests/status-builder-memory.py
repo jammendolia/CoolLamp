@@ -78,6 +78,7 @@ PLATFORM = r'''
 #include "Arduino.h"
 #include "LampAudio.h"
 #include "LampUpdate.h"
+#include "LampUpdateControlPolicy.h"
 #include "LampSyncProtocol.h"
 #include "LampEspNow.h"
 #include "LampHttpJson.h"
@@ -113,7 +114,7 @@ LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.phase=UPDATE_ERROR
 FirmwareManifest candidate{};unsigned mux=0;
 LampUpdateAutomatic::Snapshot automaticView;
 struct {LampUpdateAutomatic::Snapshot snapshot(uint32_t){LampUpdateAutomatic::Snapshot out;out.retryInMs=21600000;out.donorWaitMs=30000;return out;}} automaticService;
-void* worker=reinterpret_cast<void*>(1);bool healthy=false;
+void* worker=reinterpret_cast<void*>(1);bool healthy=false;uint32_t lastWorkerStackFree=0;LampUpdateWorkerAdmission workerAdmission;
 constexpr int MALLOC_CAP_8BIT=1;unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
 namespace UpdatePublisher {bool enforced(){return false;}}
@@ -123,6 +124,10 @@ uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){return 4;}
 std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tlsError{INT32_MIN},tlsFlags{INT32_MIN},transportError{INT32_MIN};
 namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
+}
+namespace LampUpdateJob {
+Snapshot capture(){Snapshot value{};value.storageReady=true;return value;}
+void appendJson(LampJsonSink& out,const Snapshot&,bool contractV2){out.concat(contractV2?"{\"version\":2,\"storageReady\":true,\"jobId\":\"\",\"targetId\":\"\",\"ownerId\":\"\",\"route\":0,\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"confirmedBytes\":0,\"totalBytes\":0,\"terminal\":false}":"{\"version\":1,\"storageReady\":true,\"jobId\":\"\",\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"terminal\":false}");}
 }
 constexpr int WL_CONNECTED=3;
 using namespace LampSyncWire;
@@ -153,6 +158,7 @@ HANDLER_PLATFORM = r'''
 #define COOL_LAMP_AUDIO_EFFECTS 1
 constexpr unsigned LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47,LAMP_EFFECT_CAPACITY=52,MODE_FIRE=4;
 LampSettings lampSettings{};
+const char* lampIdentityText(){return "aabbccddeeff";}
 // Fixture globals are already resident in the observed free-heap baseline.
 // Avoid counting their persistent storage again; any SDK text conversion is
 // still an observed pinned String temporary, including allocation failures.
@@ -340,7 +346,7 @@ void checkSinkBounds(){
   // before any output allocation, including a fragmented largest block.
   constexpr size_t bytes=102,rounded=(bytes+16)&~size_t(15);
   auto encode=[](LampJsonSink& s){s.quote(std::string(100,'x').c_str());};
-  for(const auto budget:{std::pair<size_t,size_t>{rounded+8703,rounded},{rounded+8704,rounded-1}}){
+  for(const auto& budget:{std::pair<size_t,size_t>{rounded+8703,rounded},{rounded+8704,rounded-1}}){
     heapBudget=budget.first;largestBudget=budget.second;stats={};
     {String denied=lampJsonReply(encode);assert(denied.isEmpty()&&stats.calls==0);}assert(stats.live==0);
   }
@@ -411,7 +417,7 @@ class StatusBuilderMemoryTests(unittest.TestCase):
             ('UpdateHttp.cpp', 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()'),
             ('UpdateHttpDiagnostics.cpp', 'void appendUpdateHttpDiagnostics('),
             ('LampUpdate.cpp', 'LampUpdateJsonSnapshot captureLampUpdateJson('),
-            ('LampUpdate.cpp', 'void appendLampUpdateJson('), ('LampUpdate.cpp', 'String lampUpdateJson()'),
+            ('LampUpdate.cpp', 'void appendLampUpdateJson('), ('LampUpdate.cpp', 'String lampUpdateJson(bool'), ('LampUpdate.cpp', 'String lampUpdateJson()'),
             ('LampAudio.cpp', 'LampAudioJsonSnapshot captureLampAudioJson()'),
             ('LampAudio.cpp', 'void appendLampAudioJson('), ('LampAudio.cpp', 'String lampAudioJson()'),
             ('LampSync.cpp', 'LampSyncJsonSnapshot captureLampSyncJson('),
@@ -424,10 +430,19 @@ class StatusBuilderMemoryTests(unittest.TestCase):
         timing='template<class HttpMetrics>\n'+extract.function(network,'void appendLampRuntimeTimingJson(')
         bodies+='\n'+extract.function(network,'String jsonText(')+'\n'+timing+'\n'+extract.function(network,'String lampRuntimeTimingJson()')+'\n'+diagnostic+'\n'+extract.function(network,'bool captureLampNetworkText(')+'\n'+extract.function(network,'struct LampNetworkAddressWriter ')+ ';\n'+extract.function(network,'bool captureLampNetworkAddress(')+'\n'+state
         bodies+='\n'+extract.function(network,'String lampEffectCatalogEntry(')
-        catalog_registration=extract.registration(network,'/api/effects','GET')
+        catalog_registration=extract.registration(network,'/api/effects','GET').replace('LampEffects::name(', 'fixtureEffectName(')
         server=(ROOT/'LampHttpServer.h').read_text()
         metrics=extract.function(server,'struct Metrics ')
-        names=network[network.index('const char* const effectNames[]'):network.index('static_assert(sizeof(effectNames)')]
+        registry=(ROOT/'LampEffectRegistry.h').read_text()
+        sources['LampEffectRegistry.h']=registry
+        ordinary_names=re.findall(r'^\s*X\(\d+, "([^"\n]*)",',registry,re.MULTILINE)
+        capacity=re.search(r'\bCount=(\d+)',registry)
+        self.assertIsNotNone(capacity)
+        self.assertEqual(len(ordinary_names),int(capacity[1]))
+        names='#include "LampEffectRegistry.h"\nconst char* fixtureEffectName(uint8_t mode){return LampEffects::name(mode);}\n'
+        # Keep the future-name escaping/255-slot test at the name-provider seam;
+        # normal fixtures still read the production registry and handlers.
+        bodies=bodies.replace('LampEffects::name(', 'fixtureEffectName(')
         platform = PLATFORM.replace('ATTEMPT_JSON','\n'.join(extract.function(sources['LampUpdateAttempt.cpp'],signature) for signature in ['StatusSnapshot captureStatus(', 'void appendStatus(', 'String statusJson(const FirmwareManifest& image)']))
         platform=platform.replace('SYNC_JSON_SNAPSHOT',extract.function((ROOT/'LampSync.h').read_text(),'struct LampSyncJsonSnapshot '))
         colors=(ROOT/'LampColors.ino').read_text();sources['LampColors.ino']=colors
@@ -476,10 +491,10 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             # actual read handler's escaping and integer iteration. This is
             # handler completeness only; the real transport's unchanged8KiB
             # response cap separately rejects an oversized future v1 catalog.
-            ordinary_names=re.findall(r'"([^"\n]*)"',names)
-            unusual_names=ordinary_names+['Future '+str(i) for i in range(48,256)]
+            unusual_names=ordinary_names+['Future '+str(i) for i in range(len(ordinary_names)+1,256)]
+            self.assertEqual(len(unusual_names),255)
             unusual_names[:4]=['Quote" and backslash\\','LF\nCR\rTAB\t','Control\x01\x1f','Future café']
-            future_names='const char* const effectNames[]={'+','.join(json.dumps(value,ensure_ascii=False).replace('\\u0001','\\001').replace('\\u001f','\\037') for value in unusual_names)+'};'
+            future_names='const char* const effectNames[]={'+','.join(json.dumps(value,ensure_ascii=False).replace('\\u0001','\\001').replace('\\u001f','\\037') for value in unusual_names)+'};\nconst char* fixtureEffectName(uint8_t mode){return effectNames[mode-1];}\n'
             future=combined.replace(names,future_names).replace('availableEffects=47;measureCatalog("catalog47");','availableEffects=47;measureCatalog("catalog47");measureCatalogLoop255();').replace('int main(){','int main(){useCanonicalNames=false;')
             cpp.write_text(future)
             subprocess.run(['c++','-std=c++17','-fno-elide-constructors','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-Wno-sign-compare','-I'+str(directory),'-I'+str(ROOT),*SANITIZERS,str(cpp),str(directory/'WString.cpp'),'-o',str(binary)],check=True)
@@ -499,17 +514,17 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
         snapshot_sizes=next(row['snapshotSizes'] for row in rows if 'snapshotSizes' in row)
         results = [row for row in rows if 'name' in row]
         self.assertEqual([r['name'] for r in results], ['update','policy','audio','sync','stateSync','fullState','fullDiagnostics','catalog38','catalog47','fourMemberState','fourMemberDiagnostics','lowMemoryCatalog47','cool2Profile47State','cool2Profile47Diagnostics','cool2Profile38State','cool2Profile38Diagnostics','connected47StateHttp','connected47StateBle','compactUpdate','currentViewHttp','currentViewBle'])
-        compact=next(row for row in results if row['name']=='compactUpdate');self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff')
+        compact=next(row for row in results if row['name']=='compactUpdate');self.assertLess(compact['bytes'],2048);self.assertEqual(compact['value']['deviceId'],'aabbccddeeff');self.assertIs(compact['value']['publisherDonation'],True)
         self.assertEqual(compact['value']['automaticService'],dict(version=1,state=6,reason=24,retryInMs=21600000,donorWaitMs=30000,internetAttempts=65535,donorOffers=65535,attention=False,phoneFallback=False,newerSeen=False))
         for result in results:
             nested=result['value'].get('firmware') if isinstance(result['value'],dict) else None
             if isinstance(nested,dict):
-                self.assertNotIn('automaticService',nested,result['name']);self.assertNotIn('deviceId',nested,result['name'])
+                self.assertNotIn('automaticService',nested,result['name']);self.assertNotIn('deviceId',nested,result['name']);self.assertNotIn('publisherDonation',nested,result['name'])
             firmware=result['value'] if result['name'] in ('update','compactUpdate') else nested
             if isinstance(firmware,dict):
                 self.assertEqual(firmware['version'],current_version,result['name']+' reports the wrong release version')
                 self.assertEqual(firmware['build'],'COOLLAMP-LOCAL-'+current_version,result['name']+' reports the wrong build identity')
-        names=re.findall(r'"([^"\n]*)"',names)
+        names=ordinary_names
         for result in results[7:9]+results[11:12]:
             value=result['value'];self.assertEqual(len(value),38 if result['name']=='catalog38' else 47)
             self.assertEqual([entry['id'] for entry in value],list(range(1,len(value)+1)))
@@ -541,6 +556,14 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
             value=json.loads(json.dumps(result['value']))
             firmware=value if result['name']=='update' else value.get('firmware') if isinstance(value,dict) else None
             if isinstance(firmware,dict):
+                if 'publisherDonation' not in firmware:
+                    restored={}
+                    for key,item in firmware.items():
+                        if key=='bleResumeLifetimeMs':restored['publisherDonation']=True
+                        restored[key]=item
+                    if result['name']=='update':value=restored
+                    else:value['firmware']=restored
+                    firmware=restored
                 firmware['version']=LEGACY_FIXTURE_VERSION
                 firmware['build']='COOLLAMP-LOCAL-'+LEGACY_FIXTURE_VERSION
             audio=value if result['name']=='audio' else value.get('audio') if isinstance(value,dict) else None
@@ -595,7 +618,7 @@ inline char* dtostrf(double v,signed int w,unsigned int p,char* s){std::sprintf(
                       allSingleAllocationFailureBoundariesReturnEmpty=True,
                       fullHandlerForcedMovingRealloc=True,fullHandlerNewAppendFailureBoundariesReturnFailedRead=True,
                       catalogHandlerSingleAllocationFailuresReturn503=True,
-                      exactLegacyPayloadProjectionDigests=True,additiveNegotiationFieldsOnly=['audio.captureVersion','audio.enabled','audio.captureStatus','motionPath','motionVersion'],checkedCountWriteBoundaryCases=True,
+                      exactLegacyPayloadProjectionDigests=True,authorizedUpdateOnlyRelocations=['publisherDonation'],additiveNegotiationFieldsOnly=['audio.captureVersion','audio.enabled','audio.captureStatus','motionPath','motionVersion'],checkedCountWriteBoundaryCases=True,
                       reportedReleaseVersionVerified=current_version,legacyFixtureVersion=LEGACY_FIXTURE_VERSION,
                       releaseVersionNormalizationOnly=['firmware.version','firmware.build'],
                       catalogUnusualCanonicalNamesRoundTrip=True,catalogUint8MaximumLoopTerminates=True,

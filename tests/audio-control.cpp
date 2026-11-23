@@ -18,7 +18,7 @@ bool syncPaused=false;
 bool lampSyncFollowing(){return following;}
 bool leaveLampSceneForEffect(){return true;}
 void pauseLampSync(){if(syncRole==2){following=false;syncPaused=true;}}
-constexpr uint8_t MODE_MAX=52;
+constexpr uint8_t MODE_MAX=55;
 uint8_t Mode=4,Brightness=100;
 bool PowerOn=true;
 struct CRGB { static constexpr int Black=0; };
@@ -57,7 +57,7 @@ int main(){
   assert(setLampControl(4,100,false) && !syncPaused);
   // Appended IDs are inaccessible on all legacy/unmatched constructions.
   const auto unchanged=getLampControlState();
-  for(uint32_t id:{48u,49u,50u,51u,52u,53u,255u,UINT32_MAX}){
+  for(uint32_t id:{48u,49u,50u,51u,52u,53u,54u,55u,255u,UINT32_MAX}){
     assert(!setLampControl(id,200,true));
     const auto state=getLampControlState();
     assert(state.mode==unchanged.mode&&state.brightness==unchanged.brightness&&state.power==unchanged.power);
@@ -80,6 +80,10 @@ int main(){
   assert(lampNextAvailableEffect(51,1)==52&&lampNextAvailableEffect(52,1)==1&&lampNextAvailableEffect(1,-1)==52);
   microphoneEnabled=false;assert(setLampControl(52,80,false)&&!PowerOn);
   microphoneEnabled=true;assert(setLampControl(52,80,true));
+  edison=false;lampWholeStripStyle=true;
+  assert(lampAvailableEffectCount()==55);
+  for(uint8_t id=53;id<=55;++id)assert(lampEffectAvailable(id)&&setLampControl(id,80,true));
+  lampWholeStripStyle=false;
   // Region effects cannot travel in legacy Mirror/group packets. A rejected
   // selection must not pause a follower or apply power/brightness changes.
   for(uint8_t role:{uint8_t(1),uint8_t(2)}){

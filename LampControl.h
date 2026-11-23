@@ -1,15 +1,16 @@
 #pragma once
 #include <stdint.h>
+#include "LampEffectRegistry.h"
 
 constexpr uint8_t LAMP_PROTOCOL_VERSION = 1;
-constexpr uint8_t LAMP_BASE_EFFECT_COUNT = 38;
-constexpr uint8_t LAMP_EFFECT_COUNT = 47;
+constexpr uint8_t LAMP_BASE_EFFECT_COUNT = LampEffects::BaseCount;
+constexpr uint8_t LAMP_EFFECT_COUNT = LampEffects::LegacyCount;
 // Legacy slots 1..47 and their NVS records never move. Extensions append IDs.
-constexpr uint8_t LAMP_EFFECT_CAPACITY = 52;
+constexpr uint8_t LAMP_EFFECT_CAPACITY = LampEffects::Count;
 uint8_t lampAvailableEffectCount();
 bool lampEdisonProfileMatches();
 bool lampEffectAvailable(uint8_t mode);
-inline bool lampEffectNeedsAudio(uint8_t mode){return (mode>=39&&mode<=47)||mode==52;}
+inline constexpr bool lampEffectNeedsAudio(uint8_t mode){return LampEffects::needsAudio(mode);}
 uint8_t lampNextAvailableEffect(uint8_t current,int delta);
 constexpr uint8_t LAMP_CUSTOM_SOLID = 29;
 struct LampEffectOptions { uint8_t speed, intensity, dual, r, g, b; };

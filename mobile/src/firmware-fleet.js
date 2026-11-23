@@ -3,6 +3,7 @@ import { wifiObservation,groupObservation,lightingObservation } from './lamp-con
 import {normalizeLampStyle} from './lamp-style.js';
 import {validateCatalog} from './catalog.js';
 import {automaticUpdateEvidence,observedReceiverUpdate} from './update-source.js';
+import {lampUpdateJobV2Body,parseLampUpdateJobV2} from './update-job-wire.js';
 
 const busyPhases = [1, 3, 4];
 const updateErrors = ['','Lamp is offline.','Lamp could not set its clock.','Lamp cannot reach the update server.',
@@ -27,6 +28,14 @@ const safeReadFallback = (error, run) => Boolean(!run?.cancelled && error &&
 const boundedInteger=(value,min,max)=>Number.isInteger(value)&&value>=min&&value<=max;
 const firmwareJobId=value=>typeof value==='string'&&/^[0-9a-f]{32}$/.test(value);
 const firmwareSha=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
+const firmwareParticipantId=value=>typeof value==='string'&&/^[0-9a-f]{12}$/.test(value);
+const savedJobContract=value=>value===1||value===2;
+const firmwareJobRequest=(value,expectedVersion)=>{
+ if(!firmwareJobId(value?.jobId)||value.version!==expectedVersion||!firmwareSha(value?.sha256))return false;
+ const exact=['targetId','ownerId','route','size'].some(key=>Object.hasOwn(value,key));
+ return !exact||firmwareParticipantId(value.targetId)&&value.ownerId===value.targetId&&(value.route==='internet'||value.route===1)&&
+  boundedInteger(value.size,288,2031616);
+};
 function firmwareFailureEvidence(value){
   const workerAdmissionPhase=value?.workerAdmission?.phase,httpStage=value?.httpStage,result={};
   if(boundedInteger(workerAdmissionPhase,0,7))result.workerAdmissionPhase=workerAdmissionPhase;
@@ -49,10 +58,11 @@ function firmwareStatus(value) {
     throw failure('Invalid firmware status from lamp.', {invalidRead: true});
   }
   const updateJobContractVersion=value.updateJobContractVersion??0;
-  if(!boundedInteger(updateJobContractVersion,0,1))throw failure('Invalid firmware update-job contract.',{invalidRead:true});
-  if(updateJobContractVersion===1&&value.updateJob===undefined||updateJobContractVersion===0&&value.updateJob!==undefined)
+  if(!boundedInteger(updateJobContractVersion,0,2))throw failure('Invalid firmware update-job contract.',{invalidRead:true});
+  if(savedJobContract(updateJobContractVersion)&&value.updateJob===undefined||updateJobContractVersion===0&&value.updateJob!==undefined)
     throw failure('Invalid firmware update-job capability.',{invalidRead:true});
-  const updateJob=value.updateJob===undefined?null:firmwareJobSnapshot(value.updateJob,{allowEmpty:true});
+  const updateJob=value.updateJob===undefined?null:updateJobContractVersion===2?
+    parseLampUpdateJobV2(value.updateJob,{allowEmpty:true}):firmwareJobSnapshot(value.updateJob,{allowEmpty:true});
   return {...value, supported, latest: validFirmwareVersion(value.latest),updateJobContractVersion,updateJob};
 }
 function firmwareJobSnapshot(value,{jobId,target,sha256,allowEmpty=false}={}){
@@ -78,13 +88,20 @@ function firmwareJobSnapshot(value,{jobId,target,sha256,allowEmpty=false}={}){
 }
 function firmwareJobResponse(value,deviceId,expected){
   const wrapped=['deviceId','updateJobContractVersion','updateJob'].some(key=>Object.hasOwn(value??{},key));
+  let contractVersion=value?.version;
   if(wrapped){
     if(value?.deviceId!==deviceId)throw failure('This address belongs to a different lamp. Refresh the Wi-Fi list.',{identity:true});
-    if(value.updateJobContractVersion!==1||value.updateJob===undefined)
+    if(!savedJobContract(value.updateJobContractVersion)||value.updateJob===undefined)
       throw failure('Invalid firmware update-job capability.',{invalidRead:true});
+    contractVersion=value.updateJobContractVersion;
     value=value.updateJob;
   }
-  return firmwareJobSnapshot(value,expected);
+  if(expected?.contractVersion!==undefined&&contractVersion!==expected.contractVersion)
+    throw failure('The firmware update-job contract changed.',{identity:true,confirmed:true});
+  if(contractVersion===2)return parseLampUpdateJobV2(value,{jobId:expected?.jobId,targetId:expected?.targetId,
+    ownerId:expected?.ownerId,route:expected?.route,version:expected?.target,sha256:expected?.sha256,size:expected?.size});
+  if(contractVersion===1)return firmwareJobSnapshot(value,expected);
+  throw failure('Invalid firmware update-job capability.',{invalidRead:true});
 }
 function installedFirmwareSnapshot(value,deviceId){
   if(value?.deviceId!==deviceId||typeof value.boot!=='string'||!/^[0-9a-f]{16}$/.test(value.boot)||
@@ -96,7 +113,8 @@ function installedFirmwareSnapshot(value,deviceId){
   return Object.freeze({version:value.version,healthy:value.healthy,receiving:value.receiving,installedKnown:value.installedKnown,
     size:value.size,sha256:value.sha256,boot:value.boot});
 }
-const firmwareJobBody=job=>'jobId='+encodeURIComponent(job.jobId)+'&version='+encodeURIComponent(job.version)+'&sha256='+encodeURIComponent(job.sha256);
+const firmwareJobBody=(job,contractVersion)=>contractVersion===2?lampUpdateJobV2Body(job):
+  'jobId='+encodeURIComponent(job.jobId)+'&version='+encodeURIComponent(job.version)+'&sha256='+encodeURIComponent(job.sha256);
 function target(entry) {
   if (typeof entry?.id !== 'string' || !entry.id || entry.id.length > 128) throw failure('Lamp identity is unavailable.');
   if (!entry.address) throw failure('Find this lamp on Wi-Fi to check its firmware.', {unsupported: true});
@@ -335,7 +353,7 @@ export class FirmwareFleet {
         if(excluded.has(entry.id)){results.push({id:entry.id,state:'pending',verified:false,fresh:false,message:'The previous update needs confirmation.'});continue;}
         try {
           const job=jobFor===null?null:await jobFor(entry,expectedVersion);
-          if(job!==null&&(!firmwareJobId(job?.jobId)||job.version!==expectedVersion||!firmwareSha(job?.sha256)))
+          if(job!==null&&!firmwareJobRequest(job,expectedVersion))
             throw failure('The selected firmware update job is invalid. Nothing was sent.');
           run.job=job?Object.freeze({...job}):null;
           results.push(await this.updateEntry(entry,run));
@@ -373,8 +391,12 @@ export class FirmwareFleet {
   }
   async startUpdateJob(lamp,run,identity){
     const job=run.job;
-    if(identity.firmware.updateJobContractVersion!==1)return null;
-    const started=await this.post(lamp,run,'/api/firmware/job',{data:firmwareJobBody(job)});
+    const contractVersion=identity.firmware.updateJobContractVersion;
+    if(!savedJobContract(contractVersion))return null;
+    if(contractVersion===2&&(job.targetId!==lamp.id||job.ownerId!==lamp.id||!['internet',1].includes(job.route)||
+      !boundedInteger(job.size,288,2031616)))
+      throw failure('The exact lamp-owned update job is invalid. Nothing was sent.',{beforeMutation:true,confirmed:true});
+    const started=await this.post(lamp,run,'/api/firmware/job',{data:firmwareJobBody(job,contractVersion)});
     if(started.uncertain)throw failure('The lamp did not confirm the saved update job. Its status must be checked without sending it again.',{uncertain:true,requiresReconciliation:true});
     if(started.conflict){
       const evidence={httpStatus:409,confirmed:true,uncertain:false,installationNotStarted:true,wifiJobRejected:true,wifiJobStatus:409,
@@ -388,15 +410,17 @@ export class FirmwareFleet {
       return this.emit(lamp,run,{...settled,state:'rejected',verified:true,fresh:true,durable:true,message:evidence.message});
     }
     if(started.busy)throw failure('The lamp is already handling another update.',{httpStatus:409,confirmed:true});
-    const snapshot=firmwareJobResponse(parse(started.response),lamp.id,{jobId:job.jobId,target:job.version,sha256:job.sha256});
+    const snapshot=firmwareJobResponse(parse(started.response),lamp.id,{contractVersion,jobId:job.jobId,targetId:job.targetId,
+      ownerId:job.ownerId,route:job.route,target:job.version,sha256:job.sha256,size:job.size});
     if(!snapshot.storageReady)throw failure('The lamp could not save the update job.',{confirmed:true,uncertain:true});
     if(snapshot.terminal||![1,2,3,4].includes(snapshot.state))
       throw failure('The lamp returned a terminal result instead of accepting this update job.',{confirmed:true,requiresReconciliation:true});
     return this.emit(lamp,run,{state:'accepted',attemptedAt:this.now(),jobId:job.jobId,targetVersion:job.version,
       sha256:job.sha256,updateJob:snapshot,durable:true,message:'Update accepted by the lamp. You can leave CoolLamp while it downloads and installs.'});
   }
-  async compact(lamp, run) {
-    const raw=parse(await this.request(lamp,run,'/api/firmware'));
+  async compact(lamp, run,{updateJobContract=null}={}) {
+    const path=updateJobContract===2?'/api/firmware?updateJobContract=2':'/api/firmware';
+    const raw=parse(await this.request(lamp,run,path));
     if(Object.hasOwn(raw??{},'deviceId'))this.verifyIdentity(lamp,raw);
     const value=firmwareStatus(raw);
     value.compactTargetVerified=raw.deviceId===lamp.id;
@@ -428,10 +452,10 @@ export class FirmwareFleet {
     // mutation can leave the phone. Legacy firmware cannot identify or recover
     // an uncertain /api/firmware/check request, so keep that endpoint available
     // only to callers that did not request the durable job contract.
-    if(run.job&&identity.firmware.updateJobContractVersion!==1)
+    if(run.job&&!savedJobContract(identity.firmware.updateJobContractVersion))
       throw failure('CoolLamp cannot safely start a manual Internet update on this lamp’s current software. To update now, send it from your phone.',
        {safeBluetoothFallback:true,phoneTransferRequired:true});
-    if(run.job&&identity.firmware.updateJobContractVersion===1)return this.startUpdateJob(lamp,run,identity);
+    if(run.job&&savedJobContract(identity.firmware.updateJobContractVersion))return this.startUpdateJob(lamp,run,identity);
     const originalVersion = identity.firmware.version;
     if (!busyPhases.includes(identity.firmware.phase)) {
       const check = await this.post(lamp, run, '/api/firmware/check', {allowPreflightFallback:true});
@@ -443,7 +467,9 @@ export class FirmwareFleet {
   }
   async jobCapability(lamp,run,identity){
     if(!run.job||identity.jobCapabilityChecked)return identity;
-    let compact;try{compact=await this.compact(lamp,run);}
+    // V2 is explicitly negotiated on this read. Firmware that predates the
+    // query ignores it and keeps returning its compatible V1 projection.
+    let compact;try{compact=await this.compact(lamp,run,{updateJobContract:2});}
     catch(error){this.assertCurrent(lamp,run);if(safeReadFallback(error,run))error.safeBluetoothFallback=true;throw error;}
     this.assertCurrent(lamp,run);
     return {...identity,firmware:compact.compactTargetVerified?compact:identity.firmware,jobCapabilityChecked:true};
@@ -532,7 +558,7 @@ export class FirmwareFleet {
         const lamp=await this.prepare(entry,run);
         let identity;try{identity=await this.identify(lamp,run);}catch(error){if(safeReadFallback(error,run))error.safeBluetoothFallback=true;throw error;}
         identity=await this.jobCapability(lamp,run,identity);
-        if(identity.firmware.updateJobContractVersion!==1)return {handled:false,lamp,identity};
+        if(!savedJobContract(identity.firmware.updateJobContractVersion))return {handled:false,lamp,identity};
         return {handled:true,result:await this.updateOne(lamp,run,identity)};
       });
       if(handoff.handled)return handoff.result;
@@ -545,7 +571,7 @@ export class FirmwareFleet {
   async updateLamp(entry,expectedVersion,job=null){
     if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update is already running.');
     if(expectedVersion!==undefined&&!validFirmwareVersion(expectedVersion))throw failure('Check the selected public release before updating.');
-    if(job!==null&&(!firmwareJobId(job?.jobId)||job.version!==expectedVersion||!firmwareSha(job?.sha256)))
+    if(job!==null&&!firmwareJobRequest(job,expectedVersion))
       throw failure('The selected firmware update job is invalid. Nothing was sent.');
     this.cancelRefresh();const run=this.run();run.expectedVersion=expectedVersion;run.job=job?Object.freeze({...job}):null;this.singleRuns.set(entry.id,run);
     try{
@@ -557,12 +583,16 @@ export class FirmwareFleet {
     if(this.bulkRun||this.singleRuns.has(entry.id))throw failure('An update check is already running.');
     if(!attempt?.wifiJobAttempted||!firmwareJobId(attempt.attemptId)||!validFirmwareVersion(attempt.version)||!firmwareSha(attempt.sha256))
       throw failure('This saved firmware update job is invalid.',{requiresReconciliation:true});
-    this.cancelRefresh();const run=this.run();run.expectedVersion=attempt.version;run.job=Object.freeze({jobId:attempt.attemptId,version:attempt.version,sha256:attempt.sha256});this.singleRuns.set(entry.id,run);
+    this.cancelRefresh();const run=this.run();run.expectedVersion=attempt.version;run.job=Object.freeze({jobId:attempt.attemptId,
+      targetId:entry.id,ownerId:entry.id,route:'internet',version:attempt.version,size:attempt.size,sha256:attempt.sha256});this.singleRuns.set(entry.id,run);
     try{
       const lamp=await this.prepare(entry,run);let identity=await this.identify(lamp,run);identity=await this.jobCapability(lamp,run,identity);
-      if(identity.firmware.updateJobContractVersion!==1)throw failure('This lamp cannot report its saved update job.',{unsupported:true});
+      const contractVersion=identity.firmware.updateJobContractVersion;
+      if(!savedJobContract(contractVersion))throw failure('This lamp cannot report its saved update job.',{unsupported:true});
       let response;
-      try{response=await this.request(lamp,run,'/api/firmware/job?jobId='+encodeURIComponent(attempt.attemptId));}
+      const jobPath='/api/firmware/job?jobId='+encodeURIComponent(attempt.attemptId)+
+        (contractVersion===2?'&updateJobContract=2':'');
+      try{response=await this.request(lamp,run,jobPath);}
       catch(error){
         if(error.httpStatus!==404||error.confirmed!==true)throw error;
         const installed=installedFirmwareSnapshot(parse(await this.request(lamp,run,'/api/firmware/upload/status')),entry.id),
@@ -573,7 +603,8 @@ export class FirmwareFleet {
         throw failure(exact?'The installed update is still completing its health check.':'The saved update job is no longer available, and this exact installed firmware could not be verified.',
           {confirmed:true,requiresReconciliation:true,jobMissing:true,installedManifestVerified:exact});
       }
-      const job=firmwareJobResponse(parse(response),lamp.id,{jobId:attempt.attemptId,target:attempt.version,sha256:attempt.sha256});
+      const job=firmwareJobResponse(parse(response),lamp.id,{contractVersion,jobId:attempt.attemptId,targetId:entry.id,
+        ownerId:entry.id,route:'internet',target:attempt.version,sha256:attempt.sha256,size:attempt.size});
       const base={identity:entry.id,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,installedVersion:identity.firmware.version,
         controlResponsive:true,receiverInactive:true,firmwareMayInstall:[1,2,3,4,7].includes(job.state),commitUnconfirmed:false,
         wifiJobId:job.jobId,wifiJobTarget:job.target,wifiJobSha256:job.sha256,wifiJobState:job.state,wifiJobTerminal:job.terminal,updateJob:job};

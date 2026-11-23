@@ -4,49 +4,60 @@ uint16_t effectPosition(int index, int count)
   return count > 1 ? static_cast<uint32_t>(index) * 65535UL / (count - 1) : 32768;
 }
 
-void Aurora()
-{
-  const uint32_t t = lampEffectMillis();
-  for (int i = 0; i < NUM_LEDS; i++) {
-    const uint16_t x = effectPosition(i, NUM_LEDS);
-    const uint8_t ribbon = inoise8(x / 24, t / 70);
-    const uint8_t fold = sin8(static_cast<uint8_t>(x / 240 + t / 95));
-    const uint8_t hue = 95 + scale8(inoise8(x / 40, t / 110), 105);
-    leds[i] = CHSV(hue, 220, scale8(ribbon, fold));
-  }
+uint32_t atmosphereHSV(uint8_t hue, uint8_t saturation, uint8_t value) {
+  return uint32_t(hue) | (uint32_t(saturation) << 8) | (uint32_t(value) << 16);
 }
 
-void Embers()
-{
-  const uint32_t t = lampEffectMillis();
-  for (int i = 0; i < NUM_LEDS; i++) {
-    const uint16_t x = effectPosition(i, NUM_LEDS);
-    const uint8_t glow = inoise8(x / 10, t / 30);
-    const uint8_t hot = qsub8(glow, 125);
-    leds[i] = CHSV(5 + scale8(hot, 25), 245, qadd8(12, scale8(hot, 180)));
-  }
+uint32_t atmosphereAuroraPixel(uint16_t x, const uint16_t* clock) {
+  const uint8_t ribbon = inoise8(x / 24, clock[0]);
+  const uint8_t fold = sin8(static_cast<uint8_t>(x / 240 + clock[1]));
+  const uint8_t hue = 95 + scale8(inoise8(x / 40, clock[2]), 105);
+  return atmosphereHSV(hue, 220, scale8(ribbon, fold));
 }
 
-void Lava()
-{
-  const uint32_t t = lampEffectMillis();
-  for (int i = 0; i < NUM_LEDS; i++) {
-    const uint16_t x = effectPosition(i, NUM_LEDS);
-    const uint8_t blob = inoise8(static_cast<uint16_t>(x / 40 - t / 32), t / 100);
-    const uint8_t intensity = qadd8(qsub8(blob, 95), qsub8(blob, 95));
-    leds[i] = CHSV(2 + scale8(intensity, 28), 250, intensity);
-  }
+uint32_t atmosphereEmbersPixel(uint16_t x, const uint16_t* clock) {
+  const uint8_t glow = inoise8(x / 10, clock[0]);
+  const uint8_t hot = qsub8(glow, 125);
+  return atmosphereHSV(5 + scale8(hot, 25), 245, qadd8(12, scale8(hot, 180)));
 }
 
-void Plasma()
-{
+uint32_t atmosphereLavaPixel(uint16_t x, const uint16_t* clock) {
+  const uint8_t blob = inoise8(static_cast<uint16_t>(x / 40 - clock[0]), clock[1]);
+  const uint8_t intensity = qadd8(qsub8(blob, 95), qsub8(blob, 95));
+  return atmosphereHSV(2 + scale8(intensity, 28), 250, intensity);
+}
+
+uint32_t atmospherePlasmaPixel(uint16_t x, const uint16_t* clock) {
+  const uint8_t a = sin8(static_cast<uint8_t>(x / 140 + clock[0]));
+  const uint8_t b = sin8(static_cast<uint8_t>(x / 230 - clock[1]));
+  const uint8_t mix = (static_cast<uint16_t>(a) + b) / 2;
+  return atmosphereHSV(145 + scale8(mix, 85), 230, 60 + scale8(mix, 195));
+}
+
+void renderAtmosphereHSV(uint8_t mode) {
+  if (mode != 2 && (mode < 11 || mode > 13)) return;
+  using Pixel = uint32_t (*)(uint16_t, const uint16_t*);
+  struct Recipe { Pixel pixel; uint8_t timeDivisors[3]; };
+  static constexpr Recipe recipes[] = {
+    {atmosphereAuroraPixel, {70,95,110}},
+    {atmosphereEmbersPixel, {30,0,0}},
+    {atmosphereLavaPixel, {32,100,0}},
+    {atmospherePlasmaPixel, {24,33,0}}
+  };
+  const auto& recipe = recipes[mode == 2 ? 0 : mode - 10];
   const uint32_t t = lampEffectMillis();
-  for (int i = 0; i < NUM_LEDS; i++) {
-    const uint16_t x = effectPosition(i, NUM_LEDS);
-    const uint8_t a = sin8(static_cast<uint8_t>(x / 140 + t / 24));
-    const uint8_t b = sin8(static_cast<uint8_t>(x / 230 - t / 33));
-    const uint8_t mix = (static_cast<uint16_t>(a) + b) / 2;
-    leds[i] = CHSV(145 + scale8(mix, 85), 230, 60 + scale8(mix, 195));
+  uint16_t clock[3];
+  // Divide the full animation clock before narrowing. Each original formula
+  // ultimately consumes only its low 16 (noise) or low 8 (sine) bits.
+  for (unsigned i = 0; i < 3; ++i) {
+    const uint8_t divisor = recipe.timeDivisors[i];
+    clock[i] = divisor ? uint16_t(t / divisor) : 0;
+  }
+  const uint16_t count = NUM_LEDS;
+  for (uint16_t i = 0; i < count; ++i) {
+    const uint32_t hsv = recipe.pixel(effectPosition(i, count), clock);
+    const CRGB color = CHSV(uint8_t(hsv), uint8_t(hsv >> 8), uint8_t(hsv >> 16));
+    leds[i].r = color.r; leds[i].g = color.g; leds[i].b = color.b;
   }
 }
 
@@ -92,4 +103,10 @@ void Rain()
     }
     leds[i] = CHSV(150, 100, glow);
   }
+}
+
+void renderAtmosphereEffect(uint8_t mode) {
+  if (mode == 3) { Rain(); return; }
+  if (mode == 17) { CometCollision(); return; }
+  renderAtmosphereHSV(mode);
 }

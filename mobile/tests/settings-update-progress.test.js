@@ -274,8 +274,13 @@ test('a retained app-hidden precommit outcome explains the stop without erasing 
   {stages:[{code:'app-hidden',commitAttempted:false}]});
  f.feedback.update(token,{message,terminal:true,outcome:'verification-required',targetVersion:'1.15.2'});f.render();
  assert.equal(f.$('settingsUpdate').hidden,false);assert.equal(f.$('settingsUpdateMessage').textContent,message);
+ assert.equal(f.$('page-settings').dataset.updateActive,'false');assert.equal(f.$('settingsUpdateTitle').textContent,'Update needs attention');
  assert.match(message,/Sending stopped when CoolLamp left the screen/);
- assertNeutral(f);assert(!/unchanged|installed|try again/i.test(f.$('settingsUpdateMessage').textContent));
+ assertNeutral(f);assert.equal(f.$('settingsUpdateProgress').hidden,true);
+ assert.match(f.$('settingsUpdateHint').textContent,/No check is running/i);
+ const action=f.$('settingsUpdate').querySelector('[data-update-result-action]');assert(action&&!action.hidden);
+ action.onclick();assert.deepEqual(f.pages,['lamps']);
+ assert(!/unchanged|installed|try again/i.test(f.$('settingsUpdateMessage').textContent));
 });
 
 test('successful fresh completion hides update presentation and restores verified Settings',()=>{
@@ -307,9 +312,11 @@ test('a saved result survives a render but another target, pending commit, or ne
  const switched=fixture();switched.stopped();const oldAction=switched.$('settingsUpdate').querySelector('[data-update-result-action]');
  switched.selectOther();assert.equal(switched.$('settingsUpdate').hidden,true);oldAction.onclick();assert.deepEqual(switched.pages,[]);
  const uncertain=fixture();uncertain.stopped({commit:true});assert.equal(uncertain.journal.get(id).outcome,'pending');
- assert.equal(uncertain.$('settingsUpdate').hidden,false);assert.match(uncertain.$('settingsUpdateTitle').textContent,/Checking/);
- assert.equal(uncertain.$('settingsUpdateProgress').hidden,false);assertNeutral(uncertain);
- assert.equal(uncertain.$('settingsUpdate').querySelector('[data-update-result-action]'),null);
+ assert.equal(uncertain.$('settingsUpdate').hidden,false);assert.equal(uncertain.$('settingsUpdateTitle').textContent,'Update needs attention');
+ assert.equal(uncertain.$('page-settings').dataset.updateActive,'false');assert.equal(uncertain.$('settingsUpdateProgress').hidden,true);assertNeutral(uncertain);
+ assert.match(uncertain.$('settingsUpdateHint').textContent,/No check is running/i);
+ const pendingAction=uncertain.$('settingsUpdate').querySelector('[data-update-result-action]');assert(pendingAction&&!pendingAction.hidden);
+ pendingAction.onclick();assert.deepEqual(uncertain.pages,['lamps']);
 });
 
 test('Settings progress stays accessible above hidden controls and decorative artwork does not announce twice',()=>{

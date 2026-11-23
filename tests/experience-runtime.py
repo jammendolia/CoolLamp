@@ -82,7 +82,7 @@ bool following=false,updating=false,calibrating=false,resetting=false;uint8_t sc
 const LampSyncWire::Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return following;}bool lampUpdateOwnsResources(){return updating;}bool lampCalibrationActive(){return calibrating;}bool lampFactoryResetPending(){return resetting;}
 bool lampHasMicrophone(){return true;}bool lampMicrophoneEnabled(){return true;}
-bool lampEdisonProfileMatches(){return false;}constexpr uint8_t MODE_MAX=52;
+bool lampEdisonProfileMatches(){return false;}constexpr uint8_t MODE_MAX=LAMP_EFFECT_CAPACITY;
 uint8_t lampGroupScene(){return scene;}String lampStyleJson(){return "{\"id\":\"corkscrew\"}";}
 void appendLampStyleJson(LampJsonSink& out){out.concat(lampStyleJson());}
 void noteLampUpdateUse(){++uses;}bool leaveLampSceneForEffect(){return true;}void syncLampKnob(){}
@@ -124,7 +124,7 @@ template<typename F>void checkReplyFailures(F build){
 int main(int argc,char** argv){
  lampServer.on("/api/state/patch",HTTP_POST,handleLampStatePatch);lampServer.on("/api/appearance/save",HTTP_POST,handleLampAppearanceSave);lampServer.on("/api/receipt",HTTP_POST,handleLampReceipt);lampServer.on("/api/firmware/policy",HTTP_POST,handleLampUpdatePolicy);
  lampSettings.brightness=77;lampSettings.startupMode=8;lampSettings.ledCount=205;lampSettings.milliAmps=500;
- loadLampColors();loadLampAppearanceV2();beginLampExperience();const auto boot=lightCommands.boot();
+ LampModel::begin();loadLampColors();loadLampAppearanceV2();beginLampExperience();const auto boot=lightCommands.boot();
  auto result=patch(1,1,"&brightness=33");assert(result.status==200&&Mode==4&&Brightness==33);assert(result.body.find("executed")!=String::npos);
  result=patch(1,1,"&brightness=33");assert(result.status==200&&Brightness==33); // route-independent duplicate
  result=patch(1,1,"&brightness=34");assert(result.status==409&&Brightness==33);
@@ -228,12 +228,12 @@ int main(int argc,char** argv){
  // followers retain their local volatile controls without another NVS write.
  const auto membershipWrites=Preferences::writes;const auto membershipStorage=Preferences::storage;
  const auto beforeFollowerBrightness=Brightness;const auto beforeFollowerPower=PowerOn;
- config.role=2;wireVersion=ExpandedVersion;paused=false;following=false;
+ config.role=2;wireVersion=ExpandedVersion;paused=false;following=false;observeLampAppearance();
  command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
  result=lampServer.executeControl(42,true,command);assert(result.status==409&&result.body.find("\"outcome\":\"rejected\"")!=String::npos);
  assert(!paused&&Brightness==beforeFollowerBrightness&&PowerOn==beforeFollowerPower&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
  const auto rejectionReceipt=result.body;result=lampServer.executeControl(42,true,command);assert(result.status==409&&result.body==rejectionReceipt&&!paused&&Preferences::writes==membershipWrites);
- paused=true;command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
+ paused=true;observeLampAppearance();command=envelope(lightCommands.nextId(),lightCommands.currentRevision())+"&power=0&brightness=87";
  result=lampServer.executeControl(42,true,command);assert(result.status==200&&Brightness==87&&!PowerOn&&paused&&Preferences::writes==membershipWrites&&Preferences::storage==membershipStorage);
  // A restarted legacy follower may be disconnected but ON from its startup
  // effect. A compact absolute OFF may restore its volatile pause without NVS.

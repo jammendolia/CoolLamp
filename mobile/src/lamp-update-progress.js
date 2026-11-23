@@ -18,7 +18,17 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
   fleetProgress??(!task&&!pending&&observation?.state==='updating'&&observation.verified===true&&observation.fresh===true?percent(observation.progress):undefined);
  const progress=written??receiver?.progress;
  const source=task?.stage==='transferring'&&progress!==undefined?task.updateSource:receiver?.source;
- const active=Boolean(task||pending||receiver||['updating','restarting'].includes(observation?.state));
+ const receiverActive=['updating','restarting'].includes(observation?.state);
+ const pendingOnly=Boolean(pending&&!task&&!receiverActive);
+ const active=Boolean(task||receiver||receiverActive);
+ // Persisted uncertainty is not evidence that a check is running. Keep it
+ // visible as a bounded needs-attention result with a navigation escape.
+ if(pendingOnly){
+  const message=feedback?.terminal===true&&typeof feedback.message==='string'&&feedback.message.length<=240?
+   feedback.message:'The previous update still needs a status check. No check is running now.';
+  return {active:false,terminal:true,attemptId:attempt?.attemptId,outcome:'needsAttention',percent:undefined,
+   source:undefined,sourceLabel:'',receiver:null,stage:'needs-attention',message,keepOpen:false};
+ }
  // A durable, settled attempt keeps its result visible after the connection
  // owner has gone. It is a result, not current receiver or progress evidence.
  const terminal=!active&&feedback?.terminal===true&&typeof feedback.message==='string'&&
@@ -26,7 +36,7 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
   ['transferStopped','installationNotStarted'].includes(attempt.outcome);
  if(terminal)return {active:false,terminal:true,attemptId:attempt.attemptId,outcome:attempt.outcome,
   percent:undefined,source:undefined,sourceLabel:'',receiver:null,stage:'stopped',message:feedback.message,keepOpen:false};
- const stage=pending||task?.reconciling?'checking-result':task?.cancelRequested?'stopping':fleetState==='restarting'||observation?.state==='restarting'?'restarting':
+ const stage=(pending&&task)||task?.reconciling?'checking-result':task?.cancelRequested?'stopping':fleetState==='restarting'||observation?.state==='restarting'?'restarting':
   receiver||progress!==undefined?'transferring':fleetState||(task?task.stage||'preparing':'checking-result');
  const pendingMessage=pending&&feedback?.terminal&&['verification-required','verified-restarting'].includes(feedback.outcome)&&typeof feedback.message==='string'?feedback.message:null;
  const fleetMessage=fleetState&&typeof observation?.message==='string'&&observation.message.length>0&&observation.message.length<=160?observation.message:null;

@@ -6,6 +6,11 @@ on:
         description: 'Version in LampVersion.h (major.minor.patch)'
         required: true
         type: string
+      create_draft:
+        description: 'Create a GitHub release draft after validation'
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: write
 concurrency:
@@ -22,13 +27,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install pinned Lamp page optimizer
+        working-directory: tools
+        run: npm ci --ignore-scripts
       - uses: arduino/setup-arduino-cli@v2
         with:
           version: '1.3.1'
+      - name: Install pinned firmware dependencies
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install FastLED@3.10.5 ESP32RotaryEncoder@1.2.0
       - name: Validate version and test release packaging
         run: |
           node -e "require('./tools/package-firmware.cjs').parseVersion(process.env.RELEASE_VERSION)"
-          node --test tests/firmware-release.test.cjs tests/factory-password.test.cjs tests/tls-library.test.cjs
+          node --test tests/firmware-release.test.cjs tests/factory-password.test.cjs tests/tls-library.test.cjs tests/compress-lamp-page.test.cjs tests/publisher-trust.test.cjs
           node --test mobile/tests/*.test.js
           node tests/check.cjs
           node tests/wifi-page.cjs
@@ -57,8 +71,14 @@ jobs:
           python3 tests/edison-appearance-runtime.py
           python3 tests/factory-reset-runtime.py
           python3 tests/lamp-style-runtime.py
+          python3 tests/update-job-runtime.py
           python3 tests/update-handoff-runtime.py
+          python3 tests/update-automatic-download-runtime.py
+          python3 tests/status-builder-memory.py
+          python3 tests/bridge-update-job-runtime.py
+          python3 tests/bridge-update-job-storage-runtime.py
           python3 tests/update-http-runtime.py
+          node tests/browser-upload-page.cjs
           node tests/update-page.cjs
           node tests/effects-page.cjs
           node tests/audio-page.cjs
@@ -96,12 +116,6 @@ jobs:
           /tmp/update-io-test
           g++ -std=c++17 -Wall -Wextra -Werror tests/update-manifest.cpp -o /tmp/update-manifest-test
           /tmp/update-manifest-test
-      - name: Install pinned firmware dependencies
-        run: |
-          arduino-cli config init
-          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli core install esp32:esp32@3.3.11 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-          arduino-cli lib install FastLED@3.10.5 ESP32RotaryEncoder@1.2.0
       - name: Build public firmware and manifest
         run: |
           node tools/build-firmware.cjs --public
@@ -114,6 +128,7 @@ jobs:
           python3 tools/test-experience-contracts.py
           node tools/package-firmware.cjs
       - name: Create reviewable release draft
+        if: ${{ inputs.create_draft }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

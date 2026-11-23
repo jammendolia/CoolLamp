@@ -8,6 +8,8 @@ String updateHttpDiagnostics();
 
 class UpdateHttp {
   esp_tls_t* tls=nullptr;
+  void* inputPlacement=nullptr;
+  bool bundleAttached=false;
   uint8_t buffer[512];
   size_t cursor=0, buffered=0;
   int64_t remaining=0;
@@ -16,10 +18,20 @@ class UpdateHttp {
   uint32_t budget=180000;
   const std::atomic<bool>* cancellation=nullptr;
   bool memoryError=false;
+  void releaseInputPlacement();
+  void closeConnection();
+  static esp_err_t protectedBundle(void* config);
+  static esp_err_t protectedGithubBundle(void* config);
   bool allowed() const;
   int receive(void* output,size_t size);
   bool send(const char* text);
+  enum class HeaderResult:uint8_t {Error,Redirect,Ready};
+  // Keep the bounded 2 KiB redirect workspace off the TLS handshake's stack.
+  __attribute__((noinline)) HeaderResult readResponseHeaders(String& url,const String& host,int& code,int64_t& length);
 public:
+  UpdateHttp()=default;
+  UpdateHttp(const UpdateHttp&)=delete;
+  UpdateHttp& operator=(const UpdateHttp&)=delete;
   void close();
   ~UpdateHttp(){close();}
   bool open(String url,int& code,int64_t& length,

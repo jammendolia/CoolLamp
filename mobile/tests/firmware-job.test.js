@@ -10,17 +10,22 @@ const foreignJobId='b'.repeat(32);
 const requestedJobId='c'.repeat(32);
 const manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.16.0\nesp32c3\ndual-ota-2031616\n512\n'+'a'.repeat(64)+'\n');
 const jobRequest=()=>({jobId:requestedJobId,version:manifest.version,sha256:manifest.sha256});
+const exactJobRequest=()=>({jobId:requestedJobId,targetId:id,ownerId:id,route:'internet',version:manifest.version,
+ size:manifest.size,sha256:manifest.sha256});
 const emptyJob=()=>({version:1,storageReady:true,jobId:'',target:'0.0.0',sha256:'',size:0,state:0,error:0,revision:0,terminal:false});
+const emptyJobV2=()=>({version:2,storageReady:true,jobId:'',targetId:'',ownerId:'',route:0,target:'0.0.0',sha256:'',size:0,
+ state:0,error:0,revision:0,confirmedBytes:0,totalBytes:0,terminal:false});
 const reply=(data,status=200)=>({status,data:typeof data==='string'?data:JSON.stringify(data)});
 const memory=()=>{const rows=new Map();return {getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value)};};
 
 function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutation,aroundJobStart,credential,jobContract=1,
- includeJobSnapshot=jobContract===1,legacyCheckResponse,onJobRejected,automatic=false,wrappedJobResponse=true,
- jobResponseDeviceId=id,jobResponseContract=1,omitResponseJob=false}={}){
- let installed='1.15.9',installedSize=512,installedSha='b'.repeat(64),installedHealthy=true,installedReceiving=false,job=emptyJob(),posts=0;
+ includeJobSnapshot=jobContract>0,legacyCheckResponse,onJobRejected,automatic=false,wrappedJobResponse=true,
+ jobResponseDeviceId=id,jobResponseContract=jobContract,omitResponseJob=false}={}){
+ let installed='1.15.9',installedSize=512,installedSha='b'.repeat(64),installedHealthy=true,installedReceiving=false,
+  job=jobContract===2?emptyJobV2():emptyJob(),posts=0;
  const requests=[],journal=new FirmwareAttemptJournal(memory());
  const firmware=(compact=false)=>({version:installed,phase:[1,2,3,4].includes(job.state)?3:0,latest:'1.16.0',available:true,automatic,wifi:true,
-  progress:job?.state===3?35:0,error:0,...(compact&&jobContract===1?{updateJobContractVersion:1}:{}),...(compact&&includeJobSnapshot?{updateJob:job}:{})});
+  progress:job?.state===3?35:0,error:0,...(compact&&jobContract>0?{updateJobContractVersion:jobContract}:{}),...(compact&&includeJobSnapshot?{updateJob:job}:{})});
  const jobReply=status=>reply(wrappedJobResponse?{deviceId:jobResponseDeviceId,...firmware(false),updateJobContractVersion:jobResponseContract,
   ...(!omitResponseJob?{updateJob:job}:{})}:job,status);
  const http={request:async options=>{
@@ -38,7 +43,12 @@ function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutat
    ++posts;assert.equal(options.headers['X-Lamp-Token'],'fixture-token');
    const form=new URLSearchParams(options.data);assert.equal(form.get('version'),manifest.version);assert.equal(form.get('sha256'),manifest.sha256);
    if(postConflict)return reply('Conflict',409);
-   const jobId=form.get('jobId');job={version:1,storageReady:true,jobId,target:manifest.version,sha256:manifest.sha256,size:0,state:postState,error:postState===6?3:0,revision:1,terminal:postState>=5};
+   const jobId=form.get('jobId');
+   if(jobContract===2){
+    assert.equal(form.get('targetId'),id);assert.equal(form.get('ownerId'),id);assert.equal(form.get('route'),'1');assert.equal(form.get('size'),String(manifest.size));
+    job={version:2,storageReady:true,jobId,targetId:id,ownerId:id,route:1,target:manifest.version,sha256:manifest.sha256,size:manifest.size,
+     state:postState,error:postState===6?3:0,revision:1,confirmedBytes:[4,5].includes(postState)?manifest.size:0,totalBytes:manifest.size,terminal:postState>=5};
+   }else job={version:1,storageReady:true,jobId,target:manifest.version,sha256:manifest.sha256,size:0,state:postState,error:postState===6?3:0,revision:1,terminal:postState>=5};
    if(losePostReply)throw Error('reply lost');return jobReply(202);
   }
   if(url.pathname==='/api/firmware/check'&&options.method==='POST'&&legacyCheckResponse!==undefined)return legacyCheckResponse;
@@ -58,12 +68,71 @@ function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutat
 
 test('a capable lamp accepts one durable exact update job without a phone download or legacy mutation',async()=>{
  const f=fixture(),attempt=f.journal.begin(id,manifest),result=await updateCardFirmware({entry,manifest,attemptJournal:f.journal,attempt,
-  wifi:(_entry,version)=>f.fleet.updateLamp(entry,version,{jobId:attempt.attemptId,version,sha256:manifest.sha256}),
+  wifi:(_entry,version)=>f.fleet.updateLamp(entry,version,{...exactJobRequest(),jobId:attempt.attemptId,version}),
   acquireBluetooth:()=>assert.fail('A lamp-owned job must not acquire Bluetooth.'),download:()=>assert.fail('A lamp-owned job must not download to the phone.')});
  assert.equal(result.outcome,'accepted');assert.equal(result.jobId,attempt.attemptId);assert.equal(result.durable,true);assert.equal(f.posts,1);
  const saved=f.journal.get(id);assert.equal(saved.wifiJobAttempted,true);assert.equal(saved.wifiInstallAttempted,true);assert.equal(f.journal.pending().length,1);
  assert.equal(f.requests.filter(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware').length,1);
  assert.deepEqual(f.requests.filter(value=>value.method==='POST').map(value=>new URL(value.url).pathname),['/api/firmware/job']);
+ const capability=new URL(f.requests.find(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware').url);
+ assert.equal(capability.searchParams.get('updateJobContract'),'2','Old firmware may ignore the explicit V2 capability probe.');
+ const post=f.requests.find(value=>value.method==='POST'),form=new URLSearchParams(post.data);
+ assert.deepEqual([...form.keys()],['jobId','version','sha256'],'A V1 lamp must never receive the V2-only tuple fields.');
+});
+
+test('a v2 lamp accepts only the exact owner-bound tuple and returns an adapted durable snapshot',async()=>{
+ const f=fixture({jobContract:2}),attempt=f.journal.begin(id,manifest),accepted=await f.fleet.updateLamp(entry,manifest.version,
+  {...exactJobRequest(),jobId:attempt.attemptId});
+ assert.equal(accepted.state,'accepted');assert.equal(accepted.updateJob.version,2);assert.equal(accepted.updateJob.normalized.route,'internet');
+ assert.equal(accepted.updateJob.normalized.targetId,id);assert.equal(accepted.updateJob.normalized.artifact.size,manifest.size);assert.equal(f.posts,1);
+ const post=f.requests.find(value=>value.method==='POST'),form=new URLSearchParams(post.data);
+ assert.deepEqual([...form.keys()],['jobId','targetId','ownerId','route','version','sha256','size']);
+ assert.equal(form.get('route'),'1');assert.equal(form.get('targetId'),id);assert.equal(form.get('ownerId'),id);
+ assert.equal(new URL(post.url).search,'','The exact request body, not an untrusted response query, selects the POST contract.');
+ const capability=new URL(f.requests.find(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware').url);
+ assert.equal(capability.searchParams.get('updateJobContract'),'2');
+});
+
+test('a v2 lamp rejects a size-less legacy tuple before the mutation and reconciles the same exact job after a lost reply',async()=>{
+ const invalid=fixture({jobContract:2});
+ await assert.rejects(invalid.fleet.updateLamp(entry,manifest.version,jobRequest()),error=>error.beforeMutation===true);
+ assert.equal(invalid.posts,0);assert.equal(invalid.requests.some(value=>value.method==='POST'),false);
+
+ const f=fixture({jobContract:2,losePostReply:true}),attempt=f.journal.begin(id,manifest),request={...exactJobRequest(),jobId:attempt.attemptId};
+ await assert.rejects(f.fleet.updateLamp(entry,manifest.version,request),error=>error.uncertain===true);assert.equal(f.posts,1);
+ f.setJob({state:3,revision:2,confirmedBytes:256});
+ const active=await f.fleet.reconcileJob(entry,f.journal.get(id));assert.equal(active.outcome,'active');assert.equal(active.updateJob.normalized.phase,'downloading');
+ const exactGet=new URL(f.requests.find(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware/job').url);
+ assert.equal(exactGet.searchParams.get('jobId'),attempt.attemptId);assert.equal(exactGet.searchParams.get('updateJobContract'),'2');
+ f.setJob({state:5,terminal:true,revision:3,confirmedBytes:manifest.size});
+ const installed=await f.fleet.reconcileJob(entry,f.journal.get(id));assert.equal(installed.outcome,'installed');assert.equal(installed.wifiJobId,attempt.attemptId);
+ assert.equal(f.posts,1);
+});
+
+test('foreign route or changed contract stays fenced after one exact POST and is never replayed',async()=>{
+ const route=fixture({jobContract:2,losePostReply:true}),routeAttempt=route.journal.begin(id,manifest);
+ await assert.rejects(route.fleet.updateLamp(entry,manifest.version,{...exactJobRequest(),jobId:routeAttempt.attemptId}),error=>error.uncertain===true);
+ route.replaceJob({...route.job,route:2,ownerId:'112233445566'});
+ await assert.rejects(route.fleet.reconcileJob(entry,route.journal.get(id)),error=>error.identity===true&&error.confirmed===true);
+ assert.equal(route.posts,1);assert.equal(route.requests.filter(value=>value.method==='POST').length,1);
+
+ const contract=fixture({jobContract:2,losePostReply:true,jobResponseContract:1}),contractAttempt=contract.journal.begin(id,manifest);
+ await assert.rejects(contract.fleet.updateLamp(entry,manifest.version,{...exactJobRequest(),jobId:contractAttempt.attemptId}),error=>error.uncertain===true);
+ await assert.rejects(contract.fleet.reconcileJob(entry,contract.journal.get(id)),error=>error.identity===true&&error.confirmed===true);
+ assert.equal(contract.posts,1);assert.equal(contract.requests.filter(value=>value.method==='POST').length,1);
+});
+
+test('v2 reconciliation settles an exact migrated pre-manifest failure without replaying the job',async()=>{
+ const f=fixture({jobContract:2,losePostReply:true}),attempt=f.journal.begin(id,manifest),request={...exactJobRequest(),jobId:attempt.attemptId};
+ await assert.rejects(f.fleet.updateLamp(entry,manifest.version,request),error=>error.uncertain===true);assert.equal(f.posts,1);
+ f.replaceJob({version:2,storageReady:true,jobId:attempt.attemptId,targetId:id,ownerId:id,route:1,target:manifest.version,
+  sha256:manifest.sha256,size:0,state:6,error:3,revision:2,confirmedBytes:0,totalBytes:0,terminal:true});
+ const failed=await f.fleet.reconcileJob(entry,f.journal.get(id));
+ assert.equal(failed.outcome,'installationNotStarted');assert.equal(failed.pending,false);assert.equal(failed.firmwareMayInstall,false);
+ assert.equal(failed.updateJob.kind,'legacy-failed');assert.equal(failed.updateJob.normalized,null);
+ assert.equal(failed.updateJob.receipt.outcome,'installation-not-started');assert.equal(f.posts,1);
+ assert.equal(f.requests.filter(value=>value.method==='POST').length,1,'Reconciliation must remain GET-only.');
+ f.journal.settle(f.journal.get(id),failed);assert.equal(f.journal.pending().length,0);
 });
 
 test('raw durable-job responses remain compatible with the original endpoint shape',async()=>{

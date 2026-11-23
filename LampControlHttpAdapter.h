@@ -26,6 +26,10 @@ class LampControlHttpAdapter : public LampHttpServer {
     // Null copy assignment invalidates/frees it before an OTA TLS operation.
     text=static_cast<const char*>(nullptr);
   }
+  __attribute__((noinline)) const String* findField(const char* name)const{
+    if(name)for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return &fields[i].value;
+    return nullptr;
+  }
   void clearFields(){for(unsigned i=0;i<fieldCount;++i){erase(fields[i].key);erase(fields[i].value);}fieldCount=0;}
   static int digit(char c){return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;}
   static bool utf8(const String& text){
@@ -161,8 +165,11 @@ public:
       if(!found)return false;
     }return true;
   }
-  String arg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::arg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return fields[i].value;return String();}
-  bool hasArg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::hasArg(name);for(unsigned i=0;i<fieldCount;++i)if(fields[i].key==name)return true;return false;}
+  String arg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::arg(name);const auto* value=findField(name.c_str());return value?*value:String();}
+  // Borrow a decoded field only for the synchronous handler callback. The
+  // adapter wipes this storage immediately after dispatch; callers never keep it.
+  const char* argView(const char* name)const{if(!control&&!httpFormActive)return "";const auto* value=findField(name);return value?value->c_str():"";}
+  bool hasArg(const String& name)const{if(!control&&!httpFormActive)return LampHttpServer::hasArg(name);return findField(name.c_str());}
   String uri()const{return control?controlUri:LampHttpServer::uri();}
   bool authenticate(const char* name,const char* password){return control||LampHttpServer::authenticate(name,password);}
   String header(const String& name)const{return control?(name=="X-Lamp-Token"?lampToken:String()):LampHttpServer::header(name);}
@@ -178,7 +185,7 @@ public:
     // reconciliation rather than replay on a different route.
     const bool boundedRead=LampControlResourcePolicy::readEndpoint(id,mutation);
     if(!(boundedRead?LampControlResourcePolicy::readReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
-                   LampControlResourcePolicy::compactMutationEndpoint(id,mutation)?LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
+                   LampControlResourcePolicy::compactMutationEndpoint(id,mutation)?LampControlResourcePolicy::compactMutationEndpointReady(id,ESP.getFreeHeap(),ESP.getMaxAllocHeap(),body.length()):
                    LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap())))
       return {503,"Control resources unavailable. This request was not executed."};
     clearFields();

@@ -8,11 +8,16 @@ enum class LampPhysicalStyle : uint8_t {
   Helix=1,
   LargeHelix=2,
   Corkscrew=3,
-  Edison=4
+  Edison=4,
+  Sonata=5
 };
 // Append new styles without renumbering saved/wire values. Unknown future
 // factory IDs remain in their string descriptor and use generic classification.
-constexpr uint8_t LAMP_PHYSICAL_STYLE_MAX=static_cast<uint8_t>(LampPhysicalStyle::Edison);
+constexpr uint8_t LAMP_PHYSICAL_STYLE_MAX=static_cast<uint8_t>(LampPhysicalStyle::Sonata);
+// Runtime classification only: preserve stored center/path records. Cached at
+// style load/save so the per-pixel geometry helpers need no model lookup.
+inline bool lampWholeStripStyle=false;
+inline bool lampStyleUsesWholeStrip(){return lampWholeStripStyle;}
 void beginLampStyle();
 LampPhysicalStyle getLampStyle();
 uint8_t lampStyleCode();

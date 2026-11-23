@@ -296,7 +296,7 @@ void LampHttpServer::serviceTransport(){
           clearDispatchRequest();queueError(index,503,"Upload preparation memory unavailable. Nothing started.");callback=true;continue;
         }
       }else if(dispatchContext_==int(index)&&LampControlResourcePolicy::compactMutationHttpPath(dispatchRequest_.path,dispatchRequest_.method==LampHttpParser::Method::Post)){
-        if(!LampControlResourcePolicy::compactMutationReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
+        if(!LampControlResourcePolicy::compactMutationHttpReady(dispatchRequest_.path,ESP.getFreeHeap(),ESP.getMaxAllocHeap(),dispatchForm_.length())){
           clearDispatchRequest();queueError(index,503,"Control resources unavailable. This request was not executed.");callback=true;continue;
         }
       }else if(!LampControlResourcePolicy::replyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap()))continue;

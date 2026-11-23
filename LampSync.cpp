@@ -211,6 +211,7 @@ void receivePacket(Packet& p,uint32_t now,bool radio,const uint8_t* mac,uint8_t 
   }
 }
 }
+const char* lampIdentityText(){return identity;}
 const Visual* lampSyncVisual=nullptr;
 bool lampSyncFollowing(){return lampSyncVisual!=nullptr;}
 bool leaveLampSceneForEffect(){

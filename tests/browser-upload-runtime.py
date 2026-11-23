@@ -20,7 +20,7 @@ exec(compile(ast.Module(body=nodes, type_ignores=[]), 'verified_source', 'exec')
 source = scope['verified_source'](ROOT / '.build/tls-library')
 network = (ROOT / 'LampNetwork.ino').read_text()
 production = network[network.index('void clearLampBrowserUpload('):network.index('void beginLampNetwork()')]
-context = network[network.index('struct LampBrowserUpload {'):network.index('const char* const effectNames[]')]
+context = network[network.index('struct LampBrowserUpload {'):network.index('static_assert(LampEffects::Count')]
 spec=importlib.util.spec_from_file_location('browser_lifecycle_extract',ROOT/'tests/control-http-adapter.py')
 extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
 updater=(ROOT/'LampUpdate.cpp').read_text()
@@ -68,6 +68,8 @@ int esp_ota_set_boot_partition(const esp_partition_t* p){assert(p==&target&&ends
 FirmwareManifest installed{};
 namespace LampFirmwareRelay{bool runningManifest(FirmwareManifest& out){out=installed;return known;}}
 namespace LampUpdateAttempt{bool prepare(const FirmwareManifest& p,bool repair){assert(ends==1&&!boots&&repair&&p.size==512);++attempts;return storage;}}
+namespace LampUpdateJob {SubmitResult submit(const char*,const char*,const char*){return Invalid;}Snapshot capture(){return {};}}
+String lampUpdateJson(){return "{}";}
 namespace UpdatePublisher{
  bool enforced(){return publisher;}
  bool verifyProvisioned(const char* text,size_t size,Manifest& out){assert(size==strlen(text)&&!strcmp(text,signedManifestText));if(!publisher||!validSignature)return false;char copy[288];strlcpy(copy,manifestText,sizeof(copy));assert(parseFirmwareManifest(copy,out.image));if(signedWrongArtifact)out.image.sha256[0]^=1;out.epoch=7;return true;}
@@ -84,6 +86,7 @@ struct Server{
  std::map<String,String> fields;Upload part;bool accepted=false,decoded=false;int code=0;String response;
  bool authenticate(const char*,const char*){return auth;}String header(const String&){return fields["token"];}
  String arg(const String& key){return decoded?formDecoder.arg(key):fields[key];}
+ HTTPMethod method(){return HTTP_GET;}const char* argView(const char* key){return fields[key].c_str();}
  bool fieldsAllowed(const char* const* names,size_t count){return decoded?formDecoder.fieldsAllowed(names,count):!fields.count("unexpected");}
  void send(int c,const char*,const String& text){code=c;response=text;}
  Upload& upload(){return part;}void acceptUpload(bool value){accepted=value;}
@@ -112,6 +115,7 @@ uint32_t otaLastActivity=0,restartAt=0;
 constexpr size_t IMAGE_PREFIX_SIZE=sizeof(esp_image_header_t)+sizeof(esp_image_segment_header_t)+sizeof(esp_app_desc_t);
 uint8_t imagePrefix[IMAGE_PREFIX_SIZE]{};size_t imagePrefixUsed=0;bool imageValidated=false;
 bool failContextAllocation=false;void* contextMemory=nullptr;size_t contextBytes=0;unsigned contextsFreed=0;
+void* operator new(size_t size){if(void* out=malloc(size))return out;throw std::bad_alloc();}
 void* operator new(size_t size,const std::nothrow_t&)noexcept{if(failContextAllocation)return nullptr;void* out=malloc(size);contextMemory=out;contextBytes=size;return out;}
 void operator delete(void* ptr)noexcept{if(ptr==contextMemory){for(size_t i=0;i<contextBytes;++i)assert(static_cast<uint8_t*>(ptr)[i]==0);contextMemory=nullptr;++contextsFreed;}free(ptr);}
 void operator delete(void* ptr,size_t)noexcept{::operator delete(ptr);}

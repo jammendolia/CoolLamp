@@ -49,22 +49,62 @@ bool cuePower=true;uint8_t cueBrightness=100;
 LampControlState getLampControlState(){return {4,cueBrightness,cuePower};}
 void setLampUpdateRoute(uint8_t route){status.route=route;}
 LampUpdateHandoff handoff;
+bool dispatchReady=false;uint32_t dispatchReadyAt=0;
 using TaskHandle_t=void*;
 struct StaticTask_t {uint8_t opaque[348];}; // Exact pinned C3 ELF size, not host RTOS.
 void* worker=nullptr;int mux=0;
 std::atomic<bool> workerFinished{false};
+uint32_t lastWorkerStackFree=0,simulatedWorkerStackFree=LampUpdateControlPolicy::WorkerStackBytes-128;
+LampUpdateWorkerAdmission workerAdmission;
+unsigned workerStackReads=0;
 bool taskCreateWorks=true,tlsLive=false;unsigned taskCreations=0,taskDeletes=0,tlsDestructs=0;
 bool manual=false;
+uint8_t durableJobOwner=0;
 bool explicitRepair=false,attemptAllowed=true,measuredReady=false,attemptConfirmWorks=true;unsigned attemptConfirmCalls=0;
+bool updateJobRunning=false,updateJobReconciled=false;
 bool jobBackground=false,backgroundPriorAvailable=false,backgroundReadDeferred=false;
 std::atomic<bool> backgroundActive{false},cancelBackground{false},backgroundDeferred{false};
 bool controlIdle=true;size_t freeHeap=65536,largestHeap=65536;
 constexpr unsigned MALLOC_CAP_8BIT=1;
+bool reservationLive=false,reservationWorks=true;
+unsigned reservationAllocations=0,reservationFrees=0;
+uint8_t reservationToken=0;
 size_t heap_caps_get_free_size(unsigned){return freeHeap;}
 size_t heap_caps_get_largest_free_block(unsigned){return largestHeap;}
+void* heap_caps_malloc(size_t size,unsigned caps){
+ assert(size==LampUpdateControlPolicy::MinLargest&&caps==MALLOC_CAP_8BIT&&!reservationLive);
+ ++reservationAllocations;if(!reservationWorks)return nullptr;
+ assert(freeHeap>=size&&largestHeap>=size);
+ freeHeap-=size;largestHeap-=size;reservationLive=true;return &reservationToken;
+}
+void heap_caps_free(void* token){
+ assert(token==&reservationToken&&reservationLive);
+ freeHeap+=LampUpdateControlPolicy::MinLargest;largestHeap+=LampUpdateControlPolicy::MinLargest;
+ reservationLive=false;++reservationFrees;
+}
+uint32_t uxTaskGetStackHighWaterMark(void* target){
+ assert(target&&target==worker&&workerFinished&&!tlsLive);
+ ++workerStackReads;return simulatedWorkerStackFree;
+}
 bool lampControlTrafficIdle(uint32_t){return controlIdle;}
 namespace LampUpdateAttempt {bool automaticAllowed(const FirmwareManifest&){return attemptAllowed;}bool confirmHealthy(const FirmwareManifest&){++attemptConfirmCalls;return attemptConfirmWorks;}}
 namespace LampUpdateAttempt {AdmissionReason automaticAdmissionReason(const FirmwareManifest&){return attemptAllowed?Eligible:Unconfirmed;}}
+void refreshDurableJobOwner();
+namespace LampUpdateJob {
+ Snapshot fixture{};
+ unsigned advances=0,reconciles=0,submissions=0,durableWrites=0;bool reconcileWorks=true,submitStorageFailure=false,refreshDuringSubmit=false;
+ Snapshot capture(){return fixture;}
+ bool advance(uint8_t state,uint8_t,const FirmwareManifest*,uint32_t){if(state==UINT8_MAX){++reconciles;return reconcileWorks;}++advances;if(fixture.state==state)return state==Checking||state==Downloading;fixture.state=state;return true;}
+ bool matches(const Snapshot&,const FirmwareManifest&){return true;}
+ SubmitResult submitBound(const Submission& submission){const char* id=submission.jobId;const uint8_t route=submission.route;
+  ++submissions;if(refreshDuringSubmit){refreshDurableJobOwner();assert(durableJobOwner==2);}if(submitStorageFailure)return StorageUnavailable;
+  if(!fixture.storageReady)return StorageUnavailable;
+  if(fixture.state!=None&&!strcmp(fixture.jobId,id))return Duplicate;
+  if((fixture.state>=Accepted&&fixture.state<=Committing)||fixture.state==Uncertain)return Conflict;
+  fixture={};fixture.storageReady=true;fixture.state=Accepted;fixture.route=route?route:uint8_t(Internet);strcpy(fixture.jobId,id);++durableWrites;return Submitted;
+ }
+ SubmitResult submit(const char*,const char*,const char*){return Submitted;}
+}
 namespace LampFirmwareRelay {bool runningManifest(FirmwareManifest& out){out.size=512;return measuredReady;}}
 bool automaticAdmission=true;
 bool lampAutomaticUpdateAllowed(){return status.automatic&&automaticAdmission;}
@@ -123,6 +163,7 @@ int esp_ota_get_state_partition(const void*,esp_ota_img_states_t* out){*out=imag
 int esp_ota_mark_app_valid_cancel_rollback(){++confirmations;return confirmWorks?ESP_OK:-1;}
 void xTaskNotifyGive(void* target){
  assert(target==worker);assert(!callerLive);assert(!audioActive);
+ assert(!reservationLive);
  assert(!radioActive&&udpBytes==0&&responseBytes==0);
  assert(responseFrees==1&&ownedReleases<=1);
  assert(status.phase==UPDATE_CHECKING&&(job==1||job==2));++notifications;
@@ -132,16 +173,19 @@ void xTaskNotifyGive(void* target){
 constexpr int pdPASS=1;
 int xTaskCreate(void(*function)(void*),const char*,size_t stack,void* argument,unsigned priority,void** out){
  assert(function&&!argument&&priority==1&&out==&worker&&!worker);
- assert(stack==8192&&!callerLive&&!audioActive&&!radioActive&&udpBytes==0&&responseBytes==0);
+ assert(reservationLive);
+ assert(stack==LampUpdateControlPolicy::WorkerStackBytes&&!callerLive&&!audioActive&&!radioActive&&udpBytes==0&&responseBytes==0);
  ++taskCreations;
  if(!taskCreateWorks)return 0;
  assert(freeHeap>=stack+sizeof(StaticTask_t)&&largestHeap>=stack+sizeof(StaticTask_t));
  freeHeap-=stack+sizeof(StaticTask_t);largestHeap-=stack+sizeof(StaticTask_t);
+ simulatedWorkerStackFree=LampUpdateControlPolicy::WorkerStackBytes-128;
  *out=reinterpret_cast<void*>(uintptr_t(taskCreations));return pdPASS;
 }
 void vTaskDelete(void* target){
  assert(target&&target!=worker&&workerFinished&&!tlsLive);
- ++taskDeletes;freeHeap+=8192+sizeof(StaticTask_t);largestHeap+=8192+sizeof(StaticTask_t);
+ assert(workerStackReads==taskDeletes+1&&lastWorkerStackFree==simulatedWorkerStackFree);
+ ++taskDeletes;freeHeap+=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);largestHeap+=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
 }
 constexpr int pdTRUE=1,portMAX_DELAY=-1;int pdMS_TO_TICKS(int ms){return ms;}
 struct WorkerDone{};unsigned workerWaits=0;bool cancelInside=false,deferInside=false;
@@ -151,9 +195,16 @@ void vTaskDelay(int ms){clockMs+=ms;if(cancelDuringClock)cancelBackground=true;}
 std::time_t fixtureTime(void*){return clockValid?1700000001:0;}
 unsigned checks=0,installs=0;bool checkWasBackground=false;uint32_t checkBudget=0;
 struct TlsOwner {
- void* memory=nullptr;
- TlsOwner(){assert(!tlsLive&&!responseBytes&&!audioActive&&!radioActive);memory=std::malloc(16384);assert(memory);tlsLive=true;++workerAllocations;}
- ~TlsOwner(){std::free(memory);tlsLive=false;++tlsDestructs;}
+ static constexpr size_t Bytes=16384;
+ void* memory=nullptr;size_t previousLargest=0;
+ TlsOwner(){
+  assert(!tlsLive&&!responseBytes&&!audioActive&&!radioActive);
+  assert(LampUpdateControlPolicy::memoryReady(freeHeap,largestHeap));
+  previousLargest=largestHeap;memory=std::malloc(Bytes);assert(memory);
+  freeHeap-=Bytes;largestHeap-=Bytes;tlsLive=true;++workerAllocations;
+  simulatedWorkerStackFree=640;
+ }
+ ~TlsOwner(){std::free(memory);freeHeap+=Bytes;largestHeap=previousLargest;tlsLive=false;++tlsDestructs;}
 };
 bool checkRelease(bool installing=false,bool background=false,uint32_t budget=LampUpdateControlPolicy::BackgroundBudgetMs){
  TlsOwner tls;
@@ -190,6 +241,7 @@ void seedResponse(bool owned=false){
 TESTS = r'''
 int main(int argc,char** argv){
  assert(argc==2);const std::string label=argv[1];origin=label;
+ LampUpdateJob::fixture.storageReady=true;
  candidate.version[0]=1;candidate.version[1]=10;candidate.version[2]=2;
  const bool owned=origin=="http-owned"||origin=="ble-owned"||origin=="automatic-owned";
  if(owned)origin.erase(origin.size()-6);
@@ -199,7 +251,38 @@ int main(int argc,char** argv){
   try{updateTask(nullptr);}catch(const WorkerDone&){}
   assert(workerFinished&&!tlsLive&&job==0);
  };
- if(origin=="manual-lifecycle"||origin=="manual-lifecycle-off"||origin=="manual-lifecycle-uncertain"){
+ const auto submitJob=[&](const char* id="11111111111111111111111111111111"){
+  return submitLampUpdateJob({id,"aabbccddeeff","aabbccddeeff","1.16.0","0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",512,LampUpdateJob::Internet});
+ };
+ if(origin=="job-admission-owners"){
+  trigger=false;nextCheck=clockMs+1000000;
+  assert(reserveLampManualUpdate());assert(submitJob()==LampUpdateJob::Conflict&&!LampUpdateJob::submissions);releaseLampManualUpdate();
+  assert(beginLampBluetoothUpdate());assert(submitJob()==LampUpdateJob::Conflict&&!LampUpdateJob::submissions);finishLampBluetoothUpdate(false,true);
+  status.phase=UPDATE_CHECKING;job=1;assert(submitJob()==LampUpdateJob::Conflict&&!LampUpdateJob::submissions);job=0;status.phase=UPDATE_IDLE;
+  worker=reinterpret_cast<void*>(1);assert(submitJob()==LampUpdateJob::Conflict&&!LampUpdateJob::submissions);worker=nullptr;
+  assert(submitJob()==LampUpdateJob::Submitted&&durableJobOwner==1&&LampUpdateJob::durableWrites==1);
+ }else if(origin=="job-admission-refresh"){
+  trigger=false;nextCheck=clockMs+1000000;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::refreshDuringSubmit=true;
+  assert(submitJob()==LampUpdateJob::Submitted&&durableJobOwner==1&&LampUpdateJob::durableWrites==1);
+ }else if(origin=="job-offline-fence"){
+  trigger=false;nextCheck=clockMs+1000000;WiFi.state=0;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Accepted;LampUpdateJob::fixture.route=LampUpdateJob::Internet;strcpy(LampUpdateJob::fixture.jobId,"11111111111111111111111111111111");refreshDurableJobOwner();
+  assert(durableJobOwner==1&&!requestLampUpdateCheck()&&!requestLampUpdateInstall()&&!reserveLampManualUpdate());
+  assert(submitJob("22222222222222222222222222222222")==LampUpdateJob::Conflict&&LampUpdateJob::submissions==1&&!LampUpdateJob::durableWrites);
+  WiFi.state=WL_CONNECTED;updateJobRunning=true;assert(request(1)&&job==1);job=0;handoff.cancel();status.phase=UPDATE_IDLE;updateJobRunning=false;
+ }else if(origin=="job-reboot-fence"){
+  trigger=false;nextCheck=clockMs+1000000;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Committing;refreshDurableJobOwner();assert(durableJobOwner==1&&!reserveLampManualUpdate()&&!requestLampUpdateCheck());
+  LampUpdateJob::fixture={};LampUpdateJob::fixture.state=LampUpdateJob::Uncertain;refreshDurableJobOwner();assert(durableJobOwner==1&&!reserveLampManualUpdate()&&submitJob()==LampUpdateJob::StorageUnavailable);
+ }else if(origin=="job-duplicate"){
+  trigger=false;nextCheck=clockMs+1000000;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Downloading;strcpy(LampUpdateJob::fixture.jobId,"11111111111111111111111111111111");refreshDurableJobOwner();
+  assert(submitJob()==LampUpdateJob::Duplicate&&durableJobOwner==1&&LampUpdateJob::submissions==1&&!LampUpdateJob::durableWrites);
+ }else if(origin=="job-terminal-release"){
+  trigger=false;nextCheck=clockMs+1000000;durableJobOwner=1;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.state=LampUpdateJob::Confirmed;refreshDurableJobOwner();assert(!durableJobOwner&&reserveLampManualUpdate());releaseLampManualUpdate();
+  durableJobOwner=1;LampUpdateJob::fixture.state=LampUpdateJob::Failed;refreshDurableJobOwner();assert(!durableJobOwner&&requestLampUpdateCheck());job=0;handoff.cancel();status.phase=UPDATE_IDLE;
+ }else if(origin=="job-storage-fence"){
+  trigger=false;nextCheck=clockMs+1000000;LampUpdateJob::fixture.storageReady=true;LampUpdateJob::submitStorageFailure=true;
+  assert(submitJob()==LampUpdateJob::StorageUnavailable&&durableJobOwner==1&&!reserveLampManualUpdate()&&!requestLampUpdateCheck());
+  LampUpdateJob::submitStorageFailure=false;LampUpdateJob::fixture={};LampUpdateJob::fixture.storageReady=true;refreshDurableJobOwner();assert(!durableJobOwner&&reserveLampManualUpdate());releaseLampManualUpdate();
+ }else if(origin=="manual-lifecycle"||origin=="manual-lifecycle-off"||origin=="manual-lifecycle-uncertain"){
   trigger=false;nextCheck=clockMs+1000000;cuePower=origin!="manual-lifecycle-off";
   beginLampManualUpdateCue();assert(status.phase==UPDATE_IDLE&&!status.receiving);
   assert(reserveLampManualUpdate());beginLampManualUpdateCue();assert(status.phase==UPDATE_DOWNLOADING&&status.error==UPDATE_OK&&status.receiving&&status.cueOn==cuePower&&status.route==UPDATE_ROUTE_MANUAL_UPLOAD);
@@ -281,14 +364,18 @@ int main(int argc,char** argv){
   if(origin=="worker-install-reap"){status.available=true;status.phase=UPDATE_AVAILABLE;}
   const uint8_t operation=origin=="worker-install-reap"?2:1;
   assert(request(operation));tick();assert(!worker&&!taskCreations);tick();
-  assert(worker&&taskCreations==1&&freeHeap==idleFree-8192-sizeof(StaticTask_t));
+  assert(worker&&taskCreations==1&&freeHeap==idleFree-LampUpdateControlPolicy::WorkerStackBytes-sizeof(StaticTask_t));
+  assert(workerAdmission.phase==5&&workerAdmission.taskControlBytes==sizeof(StaticTask_t));
   runWorker(operation);
   assert(taskDeletes==0&&tlsDestructs==1&&lampUpdateOwnsResources());
+  assert(!workerStackReads&&!lastWorkerStackFree);
   // Status may already say Available/Idle/Error while the completed task's
   // handle is still valid. Every updater route must wait for loop-owned reap.
   assert(!requestLampUpdateCheck()&&!reserveLampManualUpdate()&&lampRemoteUpdateBusy());
   const auto completed=getLampUpdateStatus();(void)completed;assert(taskDeletes==0);
   tick();assert(!worker&&!workerFinished&&taskDeletes==1&&freeHeap==idleFree&&largestHeap==idleLargest);
+  assert(workerStackReads==1&&lastWorkerStackFree==640);
+  assert(workerAdmission.phase==6);
   if(operation==2){assert(installs==1&&restartAt);clockMs=restartAt;tick();assert(ESP.restarts==1&&!worker);}
   else {
    assert(!lampUpdateOwnsResources()&&requestLampUpdateCheck());tick();tick();
@@ -306,7 +393,7 @@ int main(int argc,char** argv){
   assert(taskCreations==2&&taskDeletes==1&&checks==1&&!worker);
  }else if(origin=="background-late-memory"||origin=="background-late-largest"||origin=="background-exact-worker-budget"){
   trigger=false;nextCheck=clockMs+1000000;
-  const size_t workerBytes=8192+sizeof(StaticTask_t);
+  const size_t workerBytes=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
   freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes;
   largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes;
   assert(request(1,false,true));tick();
@@ -317,8 +404,9 @@ int main(int argc,char** argv){
    assert(taskCreations==1&&worker&&freeHeap==LampUpdateControlPolicy::MinBackgroundFree&&largestHeap==LampUpdateControlPolicy::MinBackgroundLargest);
    runWorker(1);tick();assert(taskDeletes==1&&!worker&&checks==1);
   }else{
-   assert(!worker&&!taskCreations&&!notifications&&!job&&backgroundDeferred&&!backgroundActive);
+   assert(!worker&&!taskCreations&&!notifications&&!job&&!backgroundDeferred&&!backgroundActive&&!automaticJob&&!dispatchReady);
    assert(status.phase==UPDATE_IDLE&&status.error==UPDATE_OK);
+   assert(nextCheck-clockMs==LampUpdateAutomatic::RetryMs);
   }
  }else if(origin=="worker-cancel-before-tls"){
   trigger=false;nextCheck=clockMs+1000000;assert(request(1,false,true));tick();tick();
@@ -369,6 +457,27 @@ int main(int argc,char** argv){
   commissionBusy=false;nextCheck=clockMs+60000;status.automatic=false;
   assert(reserveLampManualUpdate()&&manual&&audioStops==1);releaseLampManualUpdate();
   assert(requestLampUpdateCheck()&&job==1);tick();tick();assert(notifications==1);
+ }else if(origin=="job-downloading-resume"){
+  trigger=false;nextCheck=clockMs+1000000;updateJobReconciled=true;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.route=LampUpdateJob::Internet;LampUpdateJob::fixture.state=LampUpdateJob::Downloading;LampUpdateJob::fixture.target.size=512;
+  tick();assert(job==1&&updateJobRunning&&LampUpdateJob::fixture.state==LampUpdateJob::Downloading&&!LampUpdateJob::advances);
+ }else if(origin=="job-checking-resume"){
+  trigger=false;nextCheck=clockMs+1000000;updateJobReconciled=true;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.route=LampUpdateJob::Internet;LampUpdateJob::fixture.state=LampUpdateJob::Checking;
+  tick();assert(job==1&&updateJobRunning&&LampUpdateJob::fixture.state==LampUpdateJob::Checking&&LampUpdateJob::advances==1);
+ }else if(origin=="job-checking-transient-owner"){
+  trigger=false;nextCheck=clockMs+1000000;updateJobReconciled=true;durableJobOwner=1;commissionBusy=true;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.route=LampUpdateJob::Internet;LampUpdateJob::fixture.state=LampUpdateJob::Checking;
+  tick();assert(!job&&!updateJobRunning&&LampUpdateJob::fixture.state==LampUpdateJob::Checking&&!LampUpdateJob::fixture.error&&LampUpdateJob::advances==1&&durableJobOwner==1);
+  commissionBusy=false;tick();assert(job==1&&updateJobRunning&&LampUpdateJob::fixture.state==LampUpdateJob::Checking&&!LampUpdateJob::fixture.error&&LampUpdateJob::advances==2&&durableJobOwner==1);
+ }else if(origin=="job-bridge-no-internet"){
+  trigger=false;nextCheck=clockMs+1000000;updateJobReconciled=true;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.route=LampUpdateJob::Bridge;LampUpdateJob::fixture.state=LampUpdateJob::Accepted;
+  tick();assert(!job&&!updateJobRunning&&!LampUpdateJob::advances);
+ }else if(origin=="job-reconcile-storage-failure"){
+  trigger=false;nextCheck=clockMs+1000000;measuredReady=true;LampUpdateJob::reconcileWorks=false;
+  LampUpdateJob::fixture.storageReady=true;LampUpdateJob::fixture.route=LampUpdateJob::Internet;LampUpdateJob::fixture.state=LampUpdateJob::Accepted;
+  tick();assert(LampUpdateJob::reconciles==1&&!updateJobReconciled&&!job&&!notifications);
  }else if(origin=="health"){
   trigger=false;nextCheck=clockMs+60000;healthy=false;clockMs=0;bootHealth.begin(clockMs);imageState=ESP_OTA_IMG_PENDING_VERIFY;
   for(clockMs=0;clockMs<30000;clockMs+=100){serviceLampUpdater();}assert(!healthy&&!confirmations&&!notifications);
@@ -415,14 +524,15 @@ int main(int argc,char** argv){
  }else if(origin=="background-defer"){
   trigger=false;const auto pending=nextCheck;controlIdle=false;
   tick();assert(nextCheck==pending&&!job&&!audioStops&&status.phase==UPDATE_IDLE);
-  const size_t workerBytes=8192+sizeof(StaticTask_t);
+  const size_t workerBytes=LampUpdateControlPolicy::WorkerStackBytes+sizeof(StaticTask_t);
   controlIdle=true;freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes-1;tick();assert(nextCheck==pending&&!job&&!audioStops);
   freeHeap=LampUpdateControlPolicy::MinBackgroundFree+workerBytes;largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes-1;tick();assert(nextCheck==pending&&!job&&!audioStops);
   largestHeap=LampUpdateControlPolicy::MinBackgroundLargest+workerBytes;tick();assert(job==1&&jobBackground&&backgroundActive&&audioStops==1);
   // Recent traffic fences the queued check before its worker owns TLS.
   controlIdle=false;tick();assert(cancelBackground&&backgroundActive);tick();assert(!notifications&&!taskCreations&&!worker);
-  assert(!backgroundActive&&backgroundDeferred&&status.phase==UPDATE_IDLE&&status.error==UPDATE_OK&&!checks);
-  tick();assert(nextCheck==clockMs&&!job&&status.phase==UPDATE_IDLE);
+  assert(!backgroundActive&&!backgroundDeferred&&!automaticJob&&status.phase==UPDATE_IDLE&&status.error==UPDATE_OK&&!checks);
+  const auto retryAt=nextCheck;assert(retryAt-clockMs==LampUpdateAutomatic::RetryMs&&workerAdmission.phase==2);
+  tick();assert(nextCheck==retryAt&&!job&&status.phase==UPDATE_IDLE);
  }else if(origin=="background-cancel"||origin=="background-memory"||origin=="manual-noncancel"||origin=="install-noncancel"){
   trigger=false;nextCheck=clockMs+60000;status.available=true;status.phase=UPDATE_AVAILABLE;
   const bool background=origin=="background-cancel"||origin=="background-memory";
@@ -457,6 +567,7 @@ int main(int argc,char** argv){
  rpc.reset();
  assert(responseBytes==0&&responseFrees==1&&ownedReleases==unsigned(owned));
   assert(workerAllocations<=notifications&&tlsDestructs==workerAllocations&&!tlsLive);
+ assert(!reservationLive&&reservationFrees==reservationAllocations);
  std::cout<<"PASS: updater handoff "<<label<<"\n";
 }
 '''
@@ -470,11 +581,15 @@ class UpdateHandoffTests(unittest.TestCase):
         actual_phase=source[source.index('bool busy(uint8_t phase)'):source.index('void startReceiverCue()')]
         actual_phase+=source[source.index('void fail(uint8_t error)'):source.index('String versionText(')]
         public = source[source.index('LampUpdateStatus getLampUpdateStatus()'):source.index('bool setLampAutoUpdate')]
-        ownership = source[source.index('bool lampRemoteUpdateBusy()'):source.index('static void serviceAutomaticUpdates(')]
-        service = source[source.index('static void serviceAutomaticUpdates('):source.index('void getLampUpdatePacket(')]
+        automatic = source.rfind('\n',0,source.index('serviceAutomaticUpdates('))+1
+        ownership = source[source.index('bool lampRemoteUpdateBusy()'):automatic]
+        service = source[automatic:source.index('void getLampUpdatePacket(')]
+        self.assertIn('updateJobReconciled=LampUpdateJob::reconcileRunning(measured);',service)
+        self.assertIn('durable.state!=LampUpdateJob::Downloading&&!LampUpdateJob::markChecking()',service)
         worker = source[source.index('void updateTask(void*)'):source.index('bool request(uint8_t operation')]
         initialization=source[source.index('void beginLampUpdater()'):source.index('LampUpdateStatus getLampUpdateStatus()')]
         self.assertNotIn('xTaskCreate', initialization)
+        self.assertIn('LampUpdateJob::begin();\n  refreshDurableJobOwner();', initialization)
         # Use the actual production loop ordering. The handoff depends on these
         # resource owners running before serviceLampUpdater; changing that order
         # must fail this regression rather than silently weaken the guarantee.
@@ -504,14 +619,14 @@ class UpdateHandoffTests(unittest.TestCase):
                 wire.replace('malloc(size)','trackedMalloc(size)').replace('free(bytes)','trackedFree(bytes)'))
             cpp, binary = directory/'test.cpp', directory/'test'
             artifact=source[source.index('bool lampAutomaticUpdateArtifactAllowed('):source.index('bool lampUpdatePolicySaveUncertain(')]
-            artifact=source[source.index('bool legacyAttemptMatches('):source.index('bool checkRelease(')]+artifact
+            artifact=source[source.index('bool legacyAttemptMatches('):source.index('// Keep manifest text/signature work')]+artifact
             manual_progress=source[source.index('void setLampManualUpdateCueProgress(uint32_t written,uint32_t total)'):source.index('void setLampUpdateRoute(uint8_t route)')]
             manual_progress=source[source.index('void beginLampManualUpdateCue()'):source.index('void setLampManualUpdateCueProgress(uint32_t written)')]+manual_progress
             cpp.write_text(FIXTURE+actual_phase+cue+'\n#define time fixtureTime\n'+worker+'\n#undef time\n'+request+public+ownership+artifact+manual_progress+service+'\nvoid tick(){\n'+sequence+'}\n'+TESTS)
             subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror',*SANITIZERS,
                             '-I'+str(directory),'-I'+str(ROOT),str(cpp),'-o',str(binary)],check=True)
             for scenario in ('http','ble','automatic','install','guards','audio-failure',
-                             'manual-exclusion','commission-exclusion','health','automatic-install','attempt-quarantine','attempt-health','group-unassigned','group-legacy','rollout-denied','rollout-storage','same-version-no-retry',
+                             'manual-exclusion','commission-exclusion','job-admission-owners','job-admission-refresh','job-offline-fence','job-reboot-fence','job-duplicate','job-terminal-release','job-storage-fence','job-downloading-resume','job-checking-resume','job-checking-transient-owner','job-bridge-no-internet','job-reconcile-storage-failure','health','automatic-install','attempt-quarantine','attempt-health','group-unassigned','group-legacy','rollout-denied','rollout-storage','same-version-no-retry',
                              'error-backoff','restart','background-defer','background-cancel','background-memory','manual-noncancel','install-noncancel',
                              'background-offline','background-clock','background-clock-cancel','automatic-install-control',
                              'http-owned','ble-owned','automatic-owned',

@@ -359,7 +359,7 @@ void beginLampBluetooth(const String& name)
   BLEService* service = server->createService(SERVICE);
   auto* command = service->createCharacteristic(COMMAND, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC);
   auto* identity = service->createCharacteristic(IDENTITY, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
-  identity->setValue(lampIdentity().c_str());
+  identity->setValue(lampIdentityText());
   catalogCharacteristic = service->createCharacteristic("7b610007-6e2b-4f3d-9a71-28e45c001001", BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC);
   catalogCharacteristic->setValue("{}");
   command->setCallbacks(&writeCallbacks);

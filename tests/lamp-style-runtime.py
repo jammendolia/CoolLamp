@@ -56,25 +56,26 @@ int main(int argc,char** argv){
  Preferences::records["wifiPower"]={PT_U8,{34}};
  const auto preserved=Preferences::records;
  if(scenario=="defaults"){
-  emit();beginLampStyle();emit();assert(getLampStyle()==LampPhysicalStyle::Unspecified);
+  emit();beginLampStyle();emit();assert(getLampStyle()==LampPhysicalStyle::Unspecified&&!lampStyleUsesWholeStrip());
   assert(Preferences::records==preserved&&Preferences::writes==0);
   assert(configureLampStyle(0));emit();assert(Preferences::records["lampStyle"].type==PT_U8);
   const auto writes=Preferences::writes;assert(configureLampStyle(0)&&Preferences::writes==writes);
  }else if(scenario=="styles"){
-  static_assert(uint8_t(LampPhysicalStyle::Unspecified)==0&&uint8_t(LampPhysicalStyle::Helix)==1&&uint8_t(LampPhysicalStyle::LargeHelix)==2&&uint8_t(LampPhysicalStyle::Corkscrew)==3&&uint8_t(LampPhysicalStyle::Edison)==4,"Never renumber stored/wire styles");
-  const char* names[]={"unspecified","helix","large-helix","corkscrew","edison"};
-  const char* families[]={"unspecified","helix","helix","corkscrew","edison"};
+  static_assert(uint8_t(LampPhysicalStyle::Unspecified)==0&&uint8_t(LampPhysicalStyle::Helix)==1&&uint8_t(LampPhysicalStyle::LargeHelix)==2&&uint8_t(LampPhysicalStyle::Corkscrew)==3&&uint8_t(LampPhysicalStyle::Edison)==4&&uint8_t(LampPhysicalStyle::Sonata)==5,"Never renumber stored/wire styles");
+  static_assert(LAMP_PHYSICAL_STYLE_MAX==5,"Keep the complete physical style contract covered");
+  const char* names[]={"unspecified","helix","large-helix","corkscrew","edison","sonata"};
+  const char* families[]={"unspecified","helix","helix","corkscrew","edison","sonata"};
   beginLampStyle();
-  for(uint8_t code=0;code<=LAMP_PHYSICAL_STYLE_MAX;++code){assert(configureLampStyle(code));assert(lampStyleCode()==code);assert(!strcmp(lampStyleId(),names[code]));assert(!strcmp(lampStyleFamily(),families[code]));emit();
-   beginLampStyle();assert(lampStyleCode()==code);emit();}
-  assert(configureLampStyle(0));beginLampStyle();assert(lampStyleCode()==0);emit();
+  for(uint8_t code=0;code<=LAMP_PHYSICAL_STYLE_MAX;++code){assert(configureLampStyle(code));assert(lampStyleCode()==code);assert(lampStyleUsesWholeStrip()==(code==5));assert(!strcmp(lampStyleId(),names[code]));assert(!strcmp(lampStyleFamily(),families[code]));emit();
+   beginLampStyle();assert(lampStyleCode()==code&&lampStyleUsesWholeStrip()==(code==5));emit();}
+  assert(configureLampStyle(0));beginLampStyle();assert(lampStyleCode()==0&&!lampStyleUsesWholeStrip());emit();
  }else if(scenario=="invalid"){
   beginLampStyle();assert(configureLampStyle(2));const auto before=Preferences::records;const auto writes=Preferences::writes;
-  for(unsigned code=5;code<256;++code){assert(!configureLampStyle(uint8_t(code)));assert(lampStyleCode()==2);}
+  for(unsigned code=6;code<256;++code){assert(!configureLampStyle(uint8_t(code)));assert(lampStyleCode()==2);}
   assert(Preferences::writes==writes&&Preferences::records==before);emit();
  }else if(scenario=="corrupt"){
-  for(const auto& entry:std::vector<Entry>{{PT_U8,{5}},{PT_U8,{255}},{PT_U8,{}},{PT_U8,{1,2}},{PT_STR,{1}},{PT_BLOB,{3}}}){
-   Preferences::records["lampStyle"]=entry;const auto before=Preferences::records;beginLampStyle();assert(lampStyleCode()==0&&Preferences::records==before);emit();}
+  for(const auto& entry:std::vector<Entry>{{PT_U8,{6}},{PT_U8,{255}},{PT_U8,{}},{PT_U8,{1,2}},{PT_STR,{1}},{PT_BLOB,{3}}}){
+   Preferences::records["lampStyle"]=entry;const auto before=Preferences::records;beginLampStyle();assert(lampStyleCode()==0&&!lampStyleUsesWholeStrip()&&Preferences::records==before);emit();}
   Preferences::records["lampStyle"]={PT_U8,{3}};Preferences::failRead=true;beginLampStyle();assert(lampStyleCode()==0);emit();Preferences::failRead=false;
   beginLampStyle();assert(lampStyleCode()==3);emit();
  }else if(scenario=="failures"){
@@ -84,6 +85,10 @@ int main(int argc,char** argv){
   Preferences::failBegin=true;assert(!configureLampStyle(2));assert(lampStyleCode()==1&&Preferences::records==before);emit();
   Preferences::failBegin=false;beginLampStyle();assert(lampStyleCode()==1);
   assert(configureLampStyle(2));beginLampStyle();assert(lampStyleCode()==2);emit();
+  const auto known=Preferences::records;Preferences::failWrite=true;
+  assert(!configureLampStyle(5)&&lampStyleCode()==2&&!lampStyleUsesWholeStrip()&&Preferences::records==known);emit();
+  Preferences::failWrite=false;assert(configureLampStyle(5));beginLampStyle();assert(lampStyleCode()==5&&lampStyleUsesWholeStrip());emit();
+  const auto savedWrites=Preferences::writes;assert(configureLampStyle(5)&&Preferences::writes==savedWrites);
  }else if(scenario=="unavailable-store"){
   Preferences::failBegin=true;beginLampStyle();assert(lampStyleCode()==0&&Preferences::records==preserved);emit();
   assert(!configureLampStyle(2)&&lampStyleCode()==0&&Preferences::writes==0);
@@ -115,9 +120,9 @@ class LampStyleRuntime(unittest.TestCase):
                         self.assertEqual(set(row), {'version', 'code', 'id', 'family', 'locked'})
                         self.assertFalse(row['locked'])
                         self.assertEqual(row['version'], 1)
-                        self.assertIn(row['code'], range(5))
-                        self.assertEqual(row['id'], ['unspecified', 'helix', 'large-helix', 'corkscrew', 'edison'][row['code']])
-                        self.assertEqual(row['family'], ['unspecified', 'helix', 'helix', 'corkscrew', 'edison'][row['code']])
+                        self.assertIn(row['code'], range(6))
+                        self.assertEqual(row['id'], ['unspecified', 'helix', 'large-helix', 'corkscrew', 'edison', 'sonata'][row['code']])
+                        self.assertEqual(row['family'], ['unspecified', 'helix', 'helix', 'corkscrew', 'edison', 'sonata'][row['code']])
 
 
 if __name__ == '__main__':

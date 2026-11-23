@@ -685,9 +685,9 @@ function renderSettingsUpdate(){
   $('settingsUpdate').hidden=!visible;
   $('page-settings').dataset.updateActive=String(visible&&view.active);
   if(!visible)return view;
-  $('settingsUpdateTitle').textContent=view.terminal?view.outcome==='transferStopped'?'Update stopped':'Update did not start':view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
+  $('settingsUpdateTitle').textContent=view.terminal?view.outcome==='needsAttention'?'Update needs attention':view.outcome==='transferStopped'?'Update stopped':'Update did not start':view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
   $('settingsUpdateMessage').textContent=view.message;
-  $('settingsUpdateHint').textContent=view.terminal?'Your lamp’s update result is saved on its card.':view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
+  $('settingsUpdateHint').textContent=view.outcome==='needsAttention'?'No check is running. You can safely leave this screen and check again later.':view.terminal?'Your lamp’s update result is saved on its card.':view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
   $('settingsUpdateArt').innerHTML=lampArtworkSvg(resolvedStyle(selected).id,{updateProgress:view.percent,updateSource:view.source,decorative:true});
   $('settingsUpdatePercent').textContent=view.percent===undefined?'':view.percent+'%';
   $('settingsUpdateSource').textContent=view.sourceLabel||'';
@@ -697,10 +697,11 @@ function renderSettingsUpdate(){
   bar.setAttribute('aria-label',selected.name+' update progress');
   let action=$('settingsUpdate').querySelector('[data-update-result-action]');
   if(view.terminal&&!action){action=document.createElement('button');action.type='button';action.className='secondary';action.dataset.updateResultAction='true';$('settingsUpdate').append(action);}
-  if(action){action.hidden=!view.terminal;action.textContent='View this lamp in Lamps';
+  if(action){action.hidden=!view.terminal;action.textContent=view.outcome==='needsAttention'?'Return to Lamps':'View this lamp in Lamps';
     const id=selected.id,attemptId=view.attemptId;
     action.onclick=()=>{const saved=mergedLampEntries().find(entry=>entry.id===id),current=firmwareAttempts.get(id);
-      if(selected?.id!==id||!saved||current?.attemptId!==attemptId||!['transferStopped','installationNotStarted'].includes(current.outcome))return;
+      if(selected?.id!==id||!saved||current?.attemptId!==attemptId||
+       view.outcome!=='needsAttention'&&!['transferStopped','installationNotStarted'].includes(current.outcome))return;
       page('lamps');$('lampList').querySelector('[data-lamp-id="'+id+'"]')?.scrollIntoView?.({block:'center'});
     };
   }
@@ -1465,7 +1466,7 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
   }
    task.preflightStage='action-journal';
   const progress=value=>{if(!current())return;const path=value.stage==='wifi'?'wifi':'bluetooth';if(path==='bluetooth'&&task.path!=='bluetooth')++bluetoothFirmwareConnectionSerial;task.path=path;task.stage=value.stage;task.updateSource=acknowledgedBluetoothUpdateSource(value,release.version);if(document.hidden&&task.path==='bluetooth'&&!task.transport?.bluetoothUpdate?.commitAttempted&&!task.backgroundPaused){const sender=task.transport?.bluetoothUpdate;if(sender)void cancelBluetoothFirmware('app-hidden',entry.id).catch(()=>{});else task.abort.abort('app-hidden');}const presentation=task.cancelRequested&&!['checking-result','reconciling','restarting'].includes(value.stage)?{message:'Stopping the update…'}:firmwareUpdatePresentation(value);task.progress=presentation.progress;const key=value.stage+':'+presentation.progress+':'+presentation.message+':'+task.updateSource;if(task.presentationKey===key)return;task.presentationKey=key;firmwareFeedback.update(task.feedback,presentation);renderLamps();renderFirmware();};
-  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version,{jobId:task.attempt?.attemptId,version,sha256:release.sha256}),acquireBluetooth:(_entry,options)=>acquireCardFirmwareBluetooth(task.entry,options),isCurrent:current,signal:task.abort.signal,onProgress:progress,waitForForeground:async()=>{await waitForFirmwareForeground({signal:task.abort.signal,isCurrent:current});task.backgroundPaused=false;},allowReinstall,exactReinstall:allowReinstall,phoneFallbackAvailable:cardPhoneFirmwareAvailable(task.entry),
+  const result=await updateCardFirmware({entry:bluetoothOnly?{...task.entry,address:null}:task.entry,manifest:release,wifi:(entry,version)=>fleet.updateLamp(entry,version,{jobId:task.attempt?.attemptId,targetId:entry.id,ownerId:entry.id,route:'internet',version,size:release.size,sha256:release.sha256}),acquireBluetooth:(_entry,options)=>acquireCardFirmwareBluetooth(task.entry,options),isCurrent:current,signal:task.abort.signal,onProgress:progress,waitForForeground:async()=>{await waitForFirmwareForeground({signal:task.abort.signal,isCurrent:current});task.backgroundPaused=false;},allowReinstall,exactReinstall:allowReinstall,phoneFallbackAvailable:cardPhoneFirmwareAvailable(task.entry),
      attemptJournal:firmwareAttempts,onAttempt:attempt=>{task.attempt=attempt;try{firmwareDiagnostics.begin(entry.id,attempt.attemptId);}catch{}},
     onFailure:(error,context)=>{if(current()&&task.attempt)try{firmwareDiagnostics.failure(entry.id,task.attempt.attemptId,error,{...context,safety:firmwareAttempts.get(entry.id)});}catch{}},
     onTransferDiagnostic:value=>{if(current()&&task.attempt)try{firmwareDiagnostics.transfer(entry.id,task.attempt.attemptId,value);}catch{}},
@@ -1668,7 +1669,7 @@ async function updateAllLamps() {
       excludeIds:[...firmwareAttempts.pending().map(value=>value.identity),...legacyFirmwareReceipts.keys()],
       jobFor:entry=>{
         const attempt=firmwareAttempts.begin(entry.id,release);fleetUpdateAttempts.set(entry.id,attempt);
-        return {jobId:attempt.attemptId,version:release.version,sha256:release.sha256};
+        return {jobId:attempt.attemptId,targetId:entry.id,ownerId:entry.id,route:'internet',version:release.version,size:release.size,sha256:release.sha256};
       }
     });
     for(const row of result.results){

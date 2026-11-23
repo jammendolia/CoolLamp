@@ -50,7 +50,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
     def test_real_handlers_authentication_configuration_snapshot_and_cleanup(self):
         source = (ROOT/'LampNetwork.ino').read_text()
         sync_source = (ROOT/'LampSync.cpp').read_text()
-        effect_names = source[source.index('const char* const effectNames[]'):source.index('static_assert(sizeof(effectNames)')]
+        effect_names = '\n#include "LampEffectRegistry.h"\n'
         definitions = '\n'.join(function(source, signature) for signature in [
             'String jsonText(', 'bool authorizedLampRequest(', 'bool readNumber(', 'String lampEffectCatalogEntry(',
             'String lampRuntimeTimingJson()', 'String lampDiagnosticsJson()',
@@ -59,6 +59,9 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'String lampControlSnapshotJson()', 'void saveLampConfiguration()', 'bool saveLampDefaults()'])
         definitions=function(source,'struct LampNetworkAddressWriter ')+';\n'+definitions
         definitions='template<class HttpMetrics>\n'+function(source,'void appendLampRuntimeTimingJson(')+'\n'+definitions
+        # Keep admission real for the new Sonata preview cases; SDK display
+        # and knob side effects are bounded platform fixtures below.
+        definitions=function((ROOT/'LampControl.ino').read_text(),'bool setLampControl(')+'\n'+definitions
         audio_source = (ROOT/'LampAudio.cpp').read_text()
         audio_settings = '\n'.join(function(audio_source, signature) for signature in [
             'void flagRecord(',
@@ -70,7 +73,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
         current_status = '\n'.join(function(update_source, signature) for signature in [
             'String versionText(', 'LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson()',
             'void appendLampUpdatePolicyJson(', 'String lampUpdatePolicyJson()', 'LampUpdateJsonSnapshot captureLampUpdateJson(',
-            'void appendLampUpdateJson(', 'String lampUpdateJson()'])
+            'void appendLampUpdateJson(', 'String lampUpdateJson(bool', 'String lampUpdateJson()'])
         current_status += '\n' + '\n'.join(function(audio_source,signature) for signature in [
             'LampAudioJsonSnapshot captureLampAudioJson()', 'void appendLampAudioJson(', 'String lampAudioJson()'])
         current_status += '\n' + function((ROOT/'UpdateHttp.cpp').read_text(), 'UpdateHttpDiagnosticsSnapshot captureUpdateHttpDiagnostics()')
@@ -83,7 +86,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'LampSyncJsonSnapshot captureLampSyncJson(',
             'bool appendLampSyncJson(LampJsonSink& s,', 'bool appendLampSyncJson(LampJsonSink& reply,',
             'bool appendLampSyncJson(String&', 'String lampSyncJson('])
-        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio'])
+        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio', '/api/preview'])
         routes += '\n' + registration(source, '/api/audio', 'GET')
         routes += '\n' + registration(source, '/api/effects', 'GET')
         routes += '\n' + registration(source, '/api/defaults')
@@ -119,6 +122,7 @@ LampControlHttpAdapter lampServer(80);
 LampRuntimeMetrics::Snapshot diagnosticMetrics;
 const LampRuntimeMetrics::Snapshot& getLampRuntimeMetrics(){return diagnosticMetrics;}
 LampSettings lampSettings;
+const char* lampIdentityText(){return "aabbccddeeff";}
 String lampToken="http-session-token-private",lampHost="coollamp-test",lampName="Test lamp";
 uint32_t apLastActivity=0,restartAt=0,fakeMillis=1000;uint32_t millis(){return fakeMillis;}
 bool following=false,ownsUpdate=false,remoteBusy=false,wifiSetupBusy=false,otaActive=false,mdnsStarted=false,colorsSaved=true;
@@ -136,12 +140,20 @@ bool stopLampAudio(){return true;}
 LampAudioCaptureStatus lampAudioCaptureStatus(){return LampAudioCaptureStatus::Error;}
 uint16_t NUM_LEDS=205;uint8_t Mode=4,Brightness=55;bool PowerOn=true;
 uint8_t heatStorage[1024]{};uint8_t* splitHeat=heatStorage;
-constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47;
+ uint8_t controlPixels[1024]{};uint8_t* leds=controlPixels;
+ struct CRGB {static constexpr uint8_t Black=0;};
+ void fill_solid(uint8_t* pixels,uint16_t count,uint8_t color){assert(count<=1024);memset(pixels,color,count);}
+ struct {void setBrightness(uint8_t){}} FastLED;
+ unsigned controlKnobChanges=0,controlUses=0;
+ void syncLampKnob(){++controlKnobChanges;}void noteLampUpdateUse(){++controlUses;}
+ bool leaveLampSceneForEffect(){return true;}
+ constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47,LAMP_EFFECT_CAPACITY=LampEffects::Count;
 uint8_t legacyEffectCount=47;
 uint8_t lampSyncRole();
-uint8_t lampAvailableEffectCount(){return edisonProfile?(installed?52:51):legacyEffectCount;}
+ uint8_t lampAvailableEffectCount(){return lampStyleUsesWholeStrip()?LampEffects::catalogCount({installed,following,false,lampSyncRole(),lampMicrophoneEnabled(),true}):edisonProfile?(installed?52:51):legacyEffectCount;}
 bool lampEdisonProfileMatches(){return edisonProfile;}
 bool lampEffectAvailable(uint8_t mode){
+  if(lampStyleUsesWholeStrip())return LampEffects::available(mode,{installed,following,false,lampSyncRole(),lampMicrophoneEnabled(),true});
  if(mode<1||mode>lampAvailableEffectCount())return false;
  if(!edisonProfile)return true;
  if(mode<=38)return true;
@@ -164,7 +176,7 @@ LampUpdateStatus getLampUpdateStatus(){LampUpdateStatus s{};s.phase=UPDATE_ERROR
 FirmwareManifest candidate{};unsigned mux=0;
 LampUpdateAutomatic::Service automaticService;
 LampUpdateAutomatic::Snapshot automaticView;
-void* worker=reinterpret_cast<void*>(1);bool healthy=false;
+void* worker=reinterpret_cast<void*>(1);bool healthy=false;uint32_t lastWorkerStackFree=0;LampUpdateWorkerAdmission workerAdmission;
 constexpr int MALLOC_CAP_8BIT=1;
 unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
@@ -180,6 +192,10 @@ String lampUpdatePolicyJson();String updateHttpDiagnostics();
 std::atomic<int> httpStage{INT32_MIN},httpCode{INT32_MIN},httpHost{INT32_MIN},tlsError{INT32_MIN},tlsFlags{INT32_MIN},transportError{INT32_MIN};
 namespace LampUpdateAttempt {unsigned mux=0;bool readable=false;uint8_t count=4;int find(const FirmwareManifest&){return 0;}
 ATTEMPT_JSON
+}
+namespace LampUpdateJob {
+Snapshot capture(){Snapshot value{};value.storageReady=true;return value;}
+void appendJson(LampJsonSink& out,const Snapshot&,bool contractV2){out.concat(contractV2?"{\"version\":2,\"storageReady\":true,\"jobId\":\"\",\"targetId\":\"\",\"ownerId\":\"\",\"route\":0,\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"confirmedBytes\":0,\"totalBytes\":0,\"terminal\":false}":"{\"version\":1,\"storageReady\":true,\"jobId\":\"\",\"target\":\"0.0.0\",\"sha256\":\"\",\"size\":0,\"state\":0,\"error\":0,\"revision\":0,\"terminal\":false}");}
 }
 constexpr int WL_CONNECTED=3;
 enum wifi_ps_type_t {WIFI_PS_NONE=0};
@@ -307,7 +323,7 @@ int main(int argc,char** argv){
  const auto deniedStorage=Preferences::storage;
  const auto deniedWrites=Preferences::writes;
  const auto deniedReserves=String::reserveCalls;
- for(const auto budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
+ for(const auto& budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
   fakeFreeHeap=budget.first;fakeLargestBlock=budget.second;
   for(const char* form:{"name=Blocked","name=%QQ"}){
    const auto denied=lampControlRequest(LampControlEndpoint::Name,true,form);
@@ -342,8 +358,11 @@ int main(int argc,char** argv){
  // local playback or startup values. Factory-locked lamps still reject changes.
  assert(lampControlRequest(LampControlEndpoint::Style,true,"style=4").status==200&&lampStyleCode()==4);
  assert(!strcmp(lampStyleId(),"edison")&&!strcmp(lampStyleFamily(),"edison")&&Preferences::storage.at("settings")==hardwareBefore&&Mode==4&&Brightness==55&&PowerOn&&!restartAt);
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=5").status==200&&lampStyleCode()==5&&lampStyleUsesWholeStrip());
+ assert(!strcmp(lampStyleId(),"sonata")&&!strcmp(lampStyleFamily(),"sonata")&&Preferences::storage.at("settings")==hardwareBefore&&Mode==4&&Brightness==55&&PowerOn&&!restartAt);
  assert(lampControlRequest(LampControlEndpoint::Style,true,"style=3").status==200&&lampStyleCode()==3);
- for(const char* body:{"","style=-1","style=5","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
+ assert(!lampStyleUsesWholeStrip());
+ for(const char* body:{"","style=-1","style=6","style=1x","style=3&style=1"})assert(lampControlRequest(LampControlEndpoint::Style,true,body).status==400);
  Preferences::failWrites=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==500&&lampStyleCode()==3);Preferences::failWrites=false;
  resetPending=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);resetPending=false;
  wifiSetupBusy=true;assert(lampControlRequest(LampControlEndpoint::Style,true,"style=1").status==409&&lampStyleCode()==3);wifiSetupBusy=false;
@@ -694,6 +713,47 @@ int main(int argc,char** argv){
    <<",\"fullHttp\":{\"status\":"<<edisonFullStatus<<",\"body\":"<<jsonText(edisonFull)<<"},\"fullProtected\":{\"status\":"<<edisonProtectedFull.status<<",\"body\":"<<jsonText(edisonProtectedFull.body)<<"}"
    <<",\"bytes\":{\"catalog52\":"<<edison52.body.length()<<",\"catalog51\":"<<edison51.body.length()<<",\"current52\":"<<edisonCurrent.length()<<",\"protectedCurrent52\":"<<edisonProtectedCurrent.body.length()<<",\"current51\":"<<edisonCurrent51.length()<<",\"currentGrouped52\":"<<edisonGroupedCurrent.length()<<",\"protectedCurrentGrouped52\":"<<edisonProtectedGroupedCurrent.body.length()<<",\"currentMaxModel52\":"<<edisonMaxModelCurrent.length()<<"}}";}
  std::cout<<"MEASURE Edison catalog52="<<edison52.body.length()<<" catalog51="<<edison51.body.length()<<" current52="<<edisonCurrent.length()<<" protectedCurrent52="<<edisonProtectedCurrent.body.length()<<" current51="<<edisonCurrent51.length()<<" currentGrouped52="<<edisonGroupedCurrent.length()<<" protectedCurrentGrouped52="<<edisonProtectedGroupedCurrent.body.length()<<" currentMaxModel52="<<edisonMaxModelCurrent.length()<<" fullHttpStatus="<<edisonFullStatus<<" fullProtectedStatus="<<edisonProtectedFull.status<<"\n";
+ // Sonata appends a dense55-slot table without granting Edison or absent
+ // microphone slots. Seed opaque legacy layout first; choosing the style
+ // must reinterpret it without rewriting the saved center/path bytes.
+ edisonProfile=factoryLocked=false;following=false;config.role=0;installed=enabled=preferenceHealthy=true;
+ NUM_LEDS=lampSettings.ledCount=205;Mode=4;Brightness=55;PowerOn=true;lampName="Fixture Sonata";lampToken="fixture-sonata-token";
+ strcpy(lampSettings.ssid,"Saved network");
+ assert(saveLampGeometry(81,NUM_LEDS)&&saveLampMotionPath(0));
+ const auto beforeSonataStyle=Preferences::storage;const auto sonataSettings=lampSettings;const auto beforeSonataMidpoint=lampMidpoint;
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=5").status==200&&lampStyleCode()==5&&lampStyleUsesWholeStrip());
+ auto expectedSonataStorage=beforeSonataStyle;expectedSonataStorage["lampStyle"]={5};
+ assert(Preferences::storage==expectedSonataStorage&&!memcmp(&lampSettings,&sonataSettings,sizeof(lampSettings)));
+ assert(lampMidpoint==beforeSonataMidpoint&&lampMotionPath==0&&lampEffectiveMotionPath()==1);
+ const auto sonataWrites=Preferences::writes,sonataColorsCalls=colorsSaveCalls;const auto sonataStorage=Preferences::storage;
+ const auto selected55=lampControlRequest(LampControlEndpoint::Preview,true,"mode=55&brightness=77&keepPower=1");
+ assert(selected55.status==200&&Mode==55&&Brightness==77&&PowerOn);
+ const auto sonataCatalog=lampControlRequest(LampControlEndpoint::Effects,false,"");assert(sonataCatalog.status==200);
+ lampServer.arguments.clear();lampServer.invokeHttp("/api/state/current",HTTP_GET);assert(lampServer.responseStatus==200);
+ const String sonataCurrent=lampServer.responseBody;
+ const auto sonataPrivateCurrent=lampServer.executeControl(LampControlEndpoint::State,false,"view=current",true);assert(sonataPrivateCurrent.status==200);
+ installed=false;
+ const auto sonataNoAudio=lampControlRequest(LampControlEndpoint::Effects,false,"");assert(sonataNoAudio.status==200&&lampAvailableEffectCount()==55);
+ assert(lampControlRequest(LampControlEndpoint::Preview,true,"mode=48&brightness=77&keepPower=1").status==409&&Mode==55);
+ for(uint8_t role:{uint8_t(1),uint8_t(2)}){
+  config.role=role;following=role==2;
+  assert(!setLampControl(55,88,true)&&Mode==55&&Brightness==77);
+  const auto rejected=lampControlRequest(LampControlEndpoint::Preview,true,"mode=55&brightness=88&keepPower=1");
+  assert(rejected.status==(following?409:400)&&Mode==55&&Brightness==77);
+ }
+ config.role=0;following=false;
+ assert(Preferences::writes==sonataWrites&&Preferences::storage==sonataStorage&&colorsSaveCalls==sonataColorsCalls);
+ assert(lampMidpoint==beforeSonataMidpoint&&lampMotionPath==0&&lampEffectiveMotionPath()==1);
+ assert(lampControlRequest(LampControlEndpoint::Preview,true,"mode=4&brightness=77&keepPower=1").status==200);
+ assert(lampControlRequest(LampControlEndpoint::Style,true,"style=3").status==200&&!lampStyleUsesWholeStrip()&&lampEffectiveMotionPath()==0);
+ const auto wrongStyleWrites=Preferences::writes;const auto wrongStyleStorage=Preferences::storage;
+ assert(!setLampControl(55,88,true)&&Mode==4&&Brightness==77);
+ assert(lampControlRequest(LampControlEndpoint::Preview,true,"mode=55&brightness=88&keepPower=1").status==400&&Mode==4&&Brightness==77);
+ assert(Preferences::writes==wrongStyleWrites&&Preferences::storage==wrongStyleStorage);
+ if(argc>9){std::ofstream file(argv[9]);file<<"{\"catalog55\":"<<sonataCatalog.body<<",\"catalog55NoAudio\":"<<sonataNoAudio.body
+   <<",\"current55\":"<<sonataCurrent<<",\"protectedCurrent55\":"<<sonataPrivateCurrent.body
+   <<",\"bytes\":{\"catalog55\":"<<sonataCatalog.body.length()<<",\"catalog55NoAudio\":"<<sonataNoAudio.body.length()<<",\"current55\":"<<sonataCurrent.length()<<",\"protectedCurrent55\":"<<sonataPrivateCurrent.body.length()<<"}}";}
+ std::cout<<"MEASURE Sonata catalog55="<<sonataCatalog.body.length()<<" catalog55NoAudio="<<sonataNoAudio.body.length()<<" current55="<<sonataCurrent.length()<<" protectedCurrent55="<<sonataPrivateCurrent.body.length()<<"; actual mode55 preview accepted, wrong-style/group/Edison mode rejected, center/path preserved\n";
  std::cout<<"PASS: real HTTP/BLE handlers preserve auth, URI/update/follower guards, strict forms, NVS failures, hardware-only credentials, private snapshot and context cleanup; snapshot bytes="<<snapshot.length()<<" expanded worst-name bytes="<<expandedSnapshot.length()<<"\n";
 }
 '''
@@ -782,7 +842,8 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
             diagnostic=ROOT/'.build/experience-complete-diagnostics.json'
             projection=directory/'projection.json'
             edison=directory/'edison.json'
-            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic),str(projection),str(edison)], check=True)
+            sonata=directory/'sonata.json'
+            subprocess.run([str(binary), str(snapshot), str(catalog), str(expanded),str(ROOT/'.build/experience-complete-state.json'),str(continuation),str(diagnostic),str(projection),str(edison),str(sonata)], check=True)
             legacy,current,private=json.loads(projection.read_text())
             for value in (current,private):
                 expected=dict(legacy,stateView=1)
@@ -919,6 +980,46 @@ inline esp_err_t nvs_get_blob(uint32_t,const char* key,void* data,size_t* length
                 'denseIdsAndLegacyNamesPreserved':True,'newStartupRejectedBeforeWrites':True,
                 'catalogReadsDoNotWriteNvs':True,'currentViewHasAll52Positions':True,
                 'factoryModel':'edison-v1','ledCount':222,'midpoint':81},indent=2)+'\n')
+            sonata_value=json.loads(sonata.read_text())
+            catalog55,no_audio=sonata_value['catalog55'],sonata_value['catalog55NoAudio']
+            for current_catalog in (catalog55,no_audio):
+                self.assertEqual([entry['id'] for entry in current_catalog],list(range(1,56)))
+                self.assertEqual([entry['name'] for entry in current_catalog[:52]],[entry['name'] for entry in edison52])
+                self.assertEqual([entry['name'] for entry in current_catalog[52:]],['Aria','Duet','Cadenza'])
+                self.assertTrue(all(not entry['available'] for entry in current_catalog[47:52]))
+                for entry in current_catalog[52:]:
+                    self.assertTrue(entry['available'])
+                    self.assertTrue(entry['speed'])
+                    self.assertFalse(entry['startupSupported'])
+            self.assertTrue(all(entry['available'] for entry in catalog55[:47]))
+            self.assertTrue(all(entry['available'] for entry in no_audio[:38]))
+            self.assertTrue(all(not entry['available'] for entry in no_audio[38:52]))
+            for field in ('current55','protectedCurrent55'):
+                current=sonata_value[field]
+                self.assertEqual((current['mode'],current['brightness'],current['leds'],current['midpoint'],current['motionPath']),(55,77,205,81,1))
+                self.assertEqual(current['lampStyle'],{'version':1,'code':5,'id':'sonata','family':'sonata','locked':False})
+                self.assertFalse(current['calibration']['centerSupported'])
+                self.assertEqual(len(current['effects']),55)
+                self.assertEqual(current['effects'][-3:],['Aria','Duet','Cadenza'])
+                for appearance in ('colors','effectOptions'):
+                    self.assertEqual(len(current[appearance]),55)
+                    self.assertTrue(all(entry is None for entry in current[appearance][:54]))
+                    self.assertIsNotNone(current[appearance][54])
+            self.assertNotIn('token',sonata_value['protectedCurrent55'])
+            self.assertTrue(all(0<size<=8192 for size in sonata_value['bytes'].values()))
+            sonata_dir=ROOT/'.build/sonata-20261029';sonata_dir.mkdir(parents=True,exist_ok=True)
+            (sonata_dir/'control-http-sonata.json').write_text(json.dumps(sonata_value,indent=2)+'\n')
+            (sonata_dir/'control-http-sonata-budget.json').write_text(json.dumps({
+                'hostOnly':True,'hardwareTouched':False,'fixtureLedCount':205,'physicalLedCountMeasured':False,
+                'productionSerializers':['lampEffectCatalogEntry','sendLampState','appendLampStyleJson'],
+                'productionMutation':['setLampControl','/api/preview'],
+                'bytes':sonata_value['bytes'],'limitBytes':8192,'dense55IdsAndOriginal52NamesPreserved':True,
+                'edisonGapsUnavailable':True,'missingMicrophoneGapsUnavailable':True,
+                'actualStyle5SavePreservesHardware':True,'centerSupported':False,'effectiveMotionPath':1,
+                'storedMidpointAndPathUnchanged':True,'selectedMode55':True,
+                'wrongStyleAndGroupSelectionRejectedBeforeWrites':True,'catalogReadsDoNotWriteNvs':True,
+                'currentViewHasAll55Positions':True,'privateCurrentOmitsToken':True,
+            },indent=2)+'\n')
 
 
 if __name__ == '__main__':

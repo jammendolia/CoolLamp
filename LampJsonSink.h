@@ -66,17 +66,31 @@ public:
   }
   bool quote(const String& value){return quote(value.length()?value.c_str():"");}
 };
-#undef LAMP_JSON_SHARED
 inline void clearLampJson(String& value){
   volatile char* bytes=const_cast<char*>(value.c_str());for(size_t i=0;i<value.length();++i)bytes[i]=0;
   value=static_cast<const char*>(nullptr);
 }
-template<class Encoder>String lampJsonReply(const Encoder& encode,size_t maximum=8192){
-  LampJsonSink count(nullptr,maximum);encode(count);const size_t size=count.size();
+// Keep orchestration shared across encoder types. The caller owns its captured
+// snapshot for this synchronous count/write pair; no callback or context escapes.
+using LampJsonEncoder=void(*)(const void*,LampJsonSink&);
+LAMP_JSON_SHARED inline String lampJsonReplyEncoded(const void* context,LampJsonEncoder encode,size_t maximum){
+  LampJsonSink count(nullptr,maximum);encode(context,count);const size_t size=count.size();
   if(!size||!LampControlResourcePolicy::readReplyReady(ESP.getFreeHeap(),ESP.getMaxAllocHeap(),size))return String();
   String result;if(!result.reserve(size))return String();
-  LampJsonSink write(&result,size);encode(write);
+  LampJsonSink write(&result,size);encode(context,write);
   if(!write.okay()||write.size()!=size||result.length()!=size||!LampHttpJson::complete(result.c_str(),size)){clearLampJson(result);return String();}
   return result;
 }
+template<class Encoder>String lampJsonReply(const Encoder& encode,size_t maximum=8192){
+  if constexpr(std::is_function<Encoder>::value){
+    // Function references cannot be erased to object pointers. Keep a local
+    // function pointer alive through the same synchronous two-pass helper.
+    const auto pointer=&encode;return lampJsonReply(pointer,maximum);
+  }else{
+    return lampJsonReplyEncoded(&encode,[](const void* context,LampJsonSink& sink){
+      (*static_cast<const Encoder*>(context))(sink);
+    },maximum);
+  }
+}
+#undef LAMP_JSON_SHARED
 #endif

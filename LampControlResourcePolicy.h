@@ -78,15 +78,37 @@ inline bool replyReady(size_t freeHeap,size_t largestBlock){
   return freeHeap>=MinFreeHeapBytes&&largestBlock>=MinLargestBlockBytes;
 }
 // StatePatch has no durable write or full-state serializer: its production
-// handler uses fixed ledger/snapshot storage and one <=512-byte receipt.
-// Preserve the full SDK/workspace margin, capture allowance and decoded form
-// budget. Other mutations retain the legacy 24 KiB admission unchanged.
+// handler uses fixed ledger/snapshot storage and one <=512-byte receipt. Scene
+// saves one fixed 432-byte group record and returns a short static reply. Give
+// that NVS operation a separate conservative workspace instead of making it
+// wait behind the legacy 24 KiB String-growth floor. Other mutations retain
+// the legacy admission unchanged.
 constexpr size_t CompactMutationReplyBytes=512;
-inline bool compactMutationEndpoint(uint8_t id,bool mutation){return mutation&&id==LampControlEndpoint::StatePatch;}
-inline bool compactMutationHttpPath(const char* path,bool post){return post&&path&&!strcmp(path,"/api/state/patch");}
-inline bool compactMutationReady(size_t freeHeap,size_t largestBlock,size_t formBytes,bool copyForm=false){
+constexpr size_t CompactScenePersistenceBytes=2048;
+inline bool compactMutationEndpoint(uint8_t id,bool mutation){
+  return mutation&&(id==LampControlEndpoint::StatePatch||id==LampControlEndpoint::Scene);
+}
+inline bool compactMutationHttpPath(const char* path,bool post){
+  return post&&path&&(!strcmp(path,"/api/state/patch")||!strcmp(path,"/api/sync/scene"));
+}
+inline size_t compactMutationPersistenceBytes(uint8_t id){
+  return id==LampControlEndpoint::Scene?CompactScenePersistenceBytes:0;
+}
+inline size_t compactMutationPersistenceBytes(const char* path){
+  return path&&!strcmp(path,"/api/sync/scene")?CompactScenePersistenceBytes:0;
+}
+inline bool compactMutationReady(size_t freeHeap,size_t largestBlock,size_t formBytes,bool copyForm=false,size_t persistenceBytes=0){
   const size_t allocation=roundedReplyBytes(CompactMutationReplyBytes);
-  return largestBlock>=allocation&&readReady(freeHeap>=allocation?freeHeap-allocation:0,largestBlock,formBytes,copyForm);
+  const size_t reserved=allocation+persistenceBytes;
+  const size_t contiguous=persistenceBytes>allocation?persistenceBytes:allocation;
+  return largestBlock>=contiguous&&freeHeap>=reserved&&
+    readReady(freeHeap-reserved,largestBlock,formBytes,copyForm);
+}
+inline bool compactMutationEndpointReady(uint8_t id,size_t freeHeap,size_t largestBlock,size_t formBytes,bool copyForm=false){
+  return compactMutationEndpoint(id,true)&&compactMutationReady(freeHeap,largestBlock,formBytes,copyForm,compactMutationPersistenceBytes(id));
+}
+inline bool compactMutationHttpReady(const char* path,size_t freeHeap,size_t largestBlock,size_t formBytes){
+  return compactMutationHttpPath(path,true)&&compactMutationReady(freeHeap,largestBlock,formBytes,false,compactMutationPersistenceBytes(path));
 }
 }
 #endif

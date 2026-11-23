@@ -1,19 +1,21 @@
 #include "LampEdisonEffects.h"
+#include "LampEffectPackageBuild.h"
 
+#if !COOLLAMP_EFFECT_PACK_REPLACE_NATIVE
 namespace LampEdison {
 namespace {
 constexpr RGB black{0,0,0};
 uint8_t triangle(uint8_t phase){return phase<128?uint8_t(phase*2):uint8_t((255-phase)*2);}
 uint8_t limit(unsigned value){return value>255?255:uint8_t(value);}
-RGB weighted(const RGB& a,const RGB& b,unsigned first,unsigned second){
-  RGB result;
+void writeWeighted(RGB& result,const RGB& a,const RGB& b,unsigned first,unsigned second){
   auto* out=reinterpret_cast<uint8_t*>(&result);
   const auto* x=reinterpret_cast<const uint8_t*>(&a);const auto* y=reinterpret_cast<const uint8_t*>(&b);
   for(unsigned channel=0;channel<3;++channel)out[channel]=limit((unsigned(x[channel])*first+unsigned(y[channel])*second)/255);
-  return result;
 }
-RGB scale(const RGB& color,uint8_t level){return weighted(color,black,level,0);}
-RGB mix(const RGB& a,const RGB& b,uint8_t amount){return weighted(a,b,255-amount,amount);}
+__attribute__((always_inline)) inline RGB weighted(const RGB& a,const RGB& b,unsigned first,unsigned second){
+  RGB result;writeWeighted(result,a,b,first,second);return result;
+}
+__attribute__((always_inline)) inline RGB scale(const RGB& color,uint8_t level){return weighted(color,black,level,0);}
 // Both physical loop ends are at the bottom; LED81 is the sole top anchor.
 uint8_t loopHeight(uint16_t index){return index<=80?index-37:123-index;}
 uint8_t distance(uint8_t a,uint8_t b){const uint8_t forward=a-b,backward=b-a;return forward<backward?forward:backward;}
@@ -21,16 +23,17 @@ uint8_t pulse(uint8_t at,uint8_t head,uint8_t width){const unsigned d=at>head?at
 }
 
 Frame prepare(uint8_t effect,uint32_t clock,const Audio& audio,RGB primary,RGB secondary){
-  Frame frame;
-  frame.effect=effect;frame.phase=(clock>>5)&511;
-  frame.breath=triangle(uint8_t(clock>>5));
-  frame.primary=primary;frame.secondary=secondary;
-  if(audio.valid)frame.audio=audio;
+  Frame frame{uint16_t((clock>>5)&511),effect,triangle(uint8_t(clock>>5)),0,0,
+    primary,secondary,audio.valid?audio:Audio{}};
   // Palette interpolation and progress conversion happen once per frame.
   // Pixel traversal then uses the measured region's native LED distances.
-  if(effect==48||effect==49||effect==52){
-    frame.primary=mix(secondary,primary,220);
-    frame.secondary=mix(secondary,primary,90);
+  if(
+    effect==48||
+    effect==49
+    ||effect==52
+  ){
+    writeWeighted(frame.primary,secondary,primary,35,220);
+    writeWeighted(frame.secondary,secondary,primary,165,90);
   }
   if(effect==49){
     const auto p=frame.phase;
@@ -91,3 +94,4 @@ RGB pixel(const Frame& frame,uint16_t index,uint16_t count){
   return scale(loop?frame.primary:frame.secondary,limit(level));
 }
 }
+#endif

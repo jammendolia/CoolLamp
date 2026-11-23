@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
     # on the exact GET / path at the physically observed low-memory profile.
     gzip_folder=Path(folder)/'gzip';gzip_folder.mkdir()
     gzip_report=json.loads(subprocess.check_output(['node','-e',
-        "const fs=require('node:fs');const r=require(process.argv[1]).compressedPage(fs.readFileSync(process.argv[2],'utf8'));fs.writeFileSync(process.argv[3],r.header);process.stdout.write(JSON.stringify(r.report));",
+        "const fs=require('node:fs');(async()=>{const r=await require(process.argv[1]).optimizedPage(fs.readFileSync(process.argv[2],'utf8'));fs.writeFileSync(process.argv[3],r.header);process.stdout.write(JSON.stringify(r.report));})().catch(error=>{console.error(error);process.exitCode=1});",
         str(ROOT/'tools/compress-lamp-page.cjs'),str(ROOT/'LampPage.h'),str(gzip_folder/'LampPageCompressed.h')],text=True))
     gzip_binary=gzip_folder/'server.exe'
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',

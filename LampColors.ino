@@ -86,6 +86,7 @@ bool saveLampAppearanceV2(uint8_t mode,uint32_t now){return saveLampAppearanceAc
 
 LampColor defaultLampColor(uint8_t mode)
 {
+  if (LampEffects::needsSonata(mode)) return {1,185,110,255};
   if (mode > LAMP_EFFECT_COUNT && mode <= LAMP_EFFECT_CAPACITY) return {1,255,150,35};
   if (mode >= 41) return {0,255,80,0};
   if (mode == 3) return {0, 128, 160, 255};
@@ -95,6 +96,7 @@ LampColor defaultLampColor(uint8_t mode)
 }
 
 LampEffectOptions defaultEffectOptions(uint8_t mode) {
+  if (LampEffects::needsSonata(mode)) return {50,100,1,60,185,255};
   if (mode > LAMP_EFFECT_COUNT && mode <= LAMP_EFFECT_CAPACITY) return {50,100,1,255,65,8};
   return {50, static_cast<uint8_t>(mode == 31 ? 35 : 100), static_cast<uint8_t>(mode >= 30), 35, 160, 255};
 }

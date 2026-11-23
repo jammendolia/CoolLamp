@@ -27,6 +27,7 @@ void begin(){
 const Record& current(){return model;}
 bool locked(){return factoryState!=0;}
 bool factoryAvailable(){return factoryState==1;}
+bool defaultMicrophoneInstalled(){return factoryAvailable()&&!strcmp(style,"sonata");}
 const char* factoryStyle(){return style;}
 bool provision(const Record& value){if(locked()||!LampModel::valid(value))return false;Preferences prefs;if(!prefs.begin("lampmodel",false))return false;const bool ok=prefs.putBytes("descriptorV1",&value,sizeof(value))==sizeof(value);prefs.end();if(ok)model=value;return ok;}
 void appendJson(LampJsonSink& out){

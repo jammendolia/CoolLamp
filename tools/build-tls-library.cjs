@@ -7,7 +7,9 @@ const {spawnSync} = require('node:child_process');
 
 const SOURCE = '9d669eadb1955d348986b9280156710aaaadf79f';
 const ARCHIVE_SHA = '45f5e3ca387dfc1dbc41bd221f56971a6d254eb1a88d8a0faadfa9e0d193719d';
-const INPUT = 16384, OUTPUT = 4096;
+// Keep full-size server records. The fixed GET client writes <=512 bytes;
+// 2 KiB outgoing records also retain room for the SDK's RSA-8192 key exchange.
+const INPUT = 16384, OUTPUT = 2048;
 const headers = ['mbedtls/ssl.h','mbedtls/build_info.h','mbedtls/x509_crt.h','mbedtls/pk.h'];
 const digest = data => crypto.createHash('sha256').update(data).digest('hex');
 function properties(text) {
@@ -120,7 +122,7 @@ async function ensureTlsLibrary({cli,board,sketch,root}) {
   const [sdkLayout,newLayout]=layouts;
   validateLayouts(sdkLayout,newLayout);
   fs.writeFileSync(recordPath,JSON.stringify({fingerprint,source:SOURCE,sourceSha256:ARCHIVE_SHA,sha256:digest(fs.readFileSync(library)),layouts,members},null,2)+'\n');
-  console.log('Built verified C3 TLS library: 16 KB receive / 4 KB transmit.');
+  console.log('Built verified C3 TLS library: 16 KB receive / 2 KB transmit.');
   return library;
 }
 module.exports={ensureTlsLibrary,properties,exported,layout,validateExports,validateLayouts,INPUT,OUTPUT,SOURCE,ARCHIVE_SHA};

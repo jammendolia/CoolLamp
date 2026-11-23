@@ -2,16 +2,21 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
 #include <atomic>
 #include <cstring>
+#include <new>
 
 namespace LampEspNow {
 namespace {
 constexpr uint8_t broadcast[6]={255,255,255,255,255,255};
 constexpr uint32_t Dwell=340, SendTimeout=200;
 struct SendItem { uint8_t data[PayloadLimit]{},destination[6]{};uint16_t length=0;bool priority=false; };
-Received incoming[ReceiveCapacity];
-SendItem outgoing[SendCapacity];
+Received* incoming=nullptr;
+portMUX_TYPE receiveMux=portMUX_INITIALIZER_UNLOCKED;
+// Only the loop owns allocation/deletion. A short critical section fences
+// the receive pointer and one bounded packet copy against radio callbacks.
+SendItem* outgoing=nullptr;
 unsigned sendCount=0;
 std::atomic<uint32_t> head{0},tail{0},rxTotal{0},rxDropped{0},epoch{0};
 std::atomic<bool> accepting{false},inFlight{false},completed{false},successful{false};
@@ -24,24 +29,43 @@ Status state;
 bool due(uint32_t now,uint32_t when){return int32_t(now-when)>=0;}
 void onReceive(const esp_now_recv_info_t* info,const uint8_t* data,int length) {
   if(!accepting.load(std::memory_order_acquire)||!info||!info->src_addr||!info->rx_ctrl||!data||length<=0||length>int(PayloadLimit))return;
-  const auto generation=epoch.load(std::memory_order_acquire),write=head.load(std::memory_order_relaxed);
-  if(write-tail.load(std::memory_order_acquire)>=ReceiveCapacity){rxDropped.fetch_add(1,std::memory_order_relaxed);return;}
-  auto& item=incoming[write%ReceiveCapacity];
-  memcpy(item.data,data,size_t(length));memcpy(item.source,info->src_addr,6);item.length=uint16_t(length);
-  item.channel=info->rx_ctrl->channel;item.rssi=info->rx_ctrl->rssi;item.receivedAt=millis();
-  if(!accepting.load(std::memory_order_acquire)||generation!=epoch.load(std::memory_order_acquire))return;
-  head.store(write+1,std::memory_order_release);rxTotal.fetch_add(1,std::memory_order_relaxed);
+  const uint32_t generation=epoch.load(std::memory_order_acquire),receivedAt=millis();
+  portENTER_CRITICAL(&receiveMux);
+  if(accepting.load(std::memory_order_relaxed)&&incoming&&generation==epoch.load(std::memory_order_relaxed)){
+    const auto write=head.load(std::memory_order_relaxed);
+    if(write-tail.load(std::memory_order_relaxed)>=ReceiveCapacity)rxDropped.fetch_add(1,std::memory_order_relaxed);
+    else{
+      auto& item=incoming[write%ReceiveCapacity];
+      memcpy(item.data,data,size_t(length));memcpy(item.source,info->src_addr,6);item.length=uint16_t(length);
+      item.channel=info->rx_ctrl->channel;item.rssi=info->rx_ctrl->rssi;item.receivedAt=receivedAt;
+      head.store(write+1,std::memory_order_release);rxTotal.fetch_add(1,std::memory_order_relaxed);
+    }
+  }
+  portEXIT_CRITICAL(&receiveMux);
 }
 void onSend(const esp_now_send_info_t* info,esp_now_send_status_t result) {
   if(!accepting.load(std::memory_order_acquire)||!inFlight.load(std::memory_order_acquire)||!info||!info->des_addr||memcmp(info->des_addr,pendingDestination,6))return;
   successful.store(result==ESP_NOW_SEND_SUCCESS,std::memory_order_relaxed);
   completed.store(true,std::memory_order_release);
 }
-void discard(){tail.store(head.load(std::memory_order_acquire),std::memory_order_release);sendCount=0;completed=false;inFlight=false;}
+void discard(bool advanceEpoch=false){
+  portENTER_CRITICAL(&receiveMux);
+  if(advanceEpoch)epoch.fetch_add(1,std::memory_order_acq_rel);
+  tail.store(head.load(std::memory_order_acquire),std::memory_order_release);
+  portEXIT_CRITICAL(&receiveMux);
+  sendCount=0;completed=false;inFlight=false;
+}
 void deactivate() {
+  portENTER_CRITICAL(&receiveMux);
   accepting.store(false,std::memory_order_release);epoch.fetch_add(1,std::memory_order_acq_rel);
+  portEXIT_CRITICAL(&receiveMux);
   if(state.active){esp_now_unregister_recv_cb();esp_now_unregister_send_cb();esp_now_deinit();}
   state.active=false;state.generation=epoch.load();driverPeerCount=0;discard();
+  portENTER_CRITICAL(&receiveMux);
+  auto* retired=incoming;incoming=nullptr;
+  portEXIT_CRITICAL(&receiveMux);
+  delete[] retired;
+  delete[] outgoing;outgoing=nullptr;
 }
 bool addPeer(const uint8_t* mac) {
   for(unsigned i=0;i<driverPeerCount;++i)if(!memcmp(driverPeers[i],mac,6))return true;
@@ -74,7 +98,7 @@ void flush(uint32_t now) {
 }
 bool changeChannel(uint8_t channel,uint32_t now) {
   if(esp_wifi_set_channel(channel,WIFI_SECOND_CHAN_NONE)!=ESP_OK)return false;
-  state.sendDropped+=sendCount;discard();epoch.fetch_add(1,std::memory_order_acq_rel);
+  state.sendDropped+=sendCount;discard(true);
   state.generation=epoch.load();state.channel=channel;++state.channelChanges;dwellAt=now;deferredHop=false;return true;
 }
 }
@@ -94,14 +118,19 @@ void service(uint32_t now,bool blocked,bool scanning,bool associated,bool seekin
       if(esp_wifi_set_channel(anchor,WIFI_SECOND_CHAN_NONE)!=ESP_OK)return;
       current=anchor;
     }
-    if(esp_now_init()!=ESP_OK){retryAt=now+1000;return;}
+    outgoing=new(std::nothrow) SendItem[SendCapacity];
+    if(!outgoing){state.suspended=true;retryAt=now+1000;return;}
+    auto* received=new(std::nothrow) Received[ReceiveCapacity];
+    if(!received){deactivate();state.suspended=true;retryAt=now+1000;return;}
+    portENTER_CRITICAL(&receiveMux);incoming=received;portEXIT_CRITICAL(&receiveMux);
+    if(esp_now_init()!=ESP_OK){deactivate();retryAt=now+1000;return;}
     state.active=true;
     if(esp_now_register_recv_cb(onReceive)!=ESP_OK||esp_now_register_send_cb(onSend)!=ESP_OK||!addPeer(broadcast)){deactivate();retryAt=now+1000;return;}
     wifi_country_t country{};
     if(esp_wifi_get_country(&country)==ESP_OK&&country.schan>=1&&country.nchan>=1&&country.schan+country.nchan<=15){firstChannel=country.schan;lastChannel=country.schan+country.nchan-1;}
     state.channel=current;anchor=current;dwellAt=now;epoch.fetch_add(1);state.generation=epoch.load();
   }
-  if(state.suspended){discard();epoch.fetch_add(1);state.generation=epoch.load();dwellAt=now;}
+  if(state.suspended){discard(true);state.generation=epoch.load();dwellAt=now;}
   if(state.seeking&&!seeking&&!associated)anchor=current;
   state.suspended=false;state.seeking=seeking&&!associated;
   if(associated) {
@@ -119,12 +148,17 @@ void service(uint32_t now,bool blocked,bool scanning,bool associated,bool seekin
 }
 bool receive(Received& item) {
   if(!state.active||state.suspended)return false;
+  bool available=false;
+  portENTER_CRITICAL(&receiveMux);
   const auto read=tail.load(std::memory_order_relaxed);
-  if(read==head.load(std::memory_order_acquire))return false;
-  item=incoming[read%ReceiveCapacity];tail.store(read+1,std::memory_order_release);return true;
+  if(incoming&&read!=head.load(std::memory_order_acquire)){
+    item=incoming[read%ReceiveCapacity];tail.store(read+1,std::memory_order_release);available=true;
+  }
+  portEXIT_CRITICAL(&receiveMux);
+  return available;
 }
 bool enqueue(const uint8_t* data,size_t length,const uint8_t* destination,bool priority) {
-  if(!state.active||state.suspended||!data||!length||length>PayloadLimit)return false;
+  if(!state.active||state.suspended||!outgoing||!data||!length||length>PayloadLimit)return false;
   const uint8_t* mac=destination?destination:broadcast;
   // Latest normal frame replaces the older queued frame for this recipient.
   unsigned index=sendCount;

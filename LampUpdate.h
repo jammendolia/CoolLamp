@@ -5,6 +5,7 @@
 #include "UpdateManifest.h"
 #include "LampUpdateAutomatic.h"
 #include "LampUpdateAttempt.h"
+#include "LampUpdateJob.h"
 #include "UpdateHttpDiagnostics.h"
 class LampJsonSink;
 
@@ -26,6 +27,7 @@ void serviceLampUpdater();
 LampUpdateStatus getLampUpdateStatus();
 bool requestLampUpdateCheck();
 bool requestLampUpdateInstall();
+LampUpdateJob::SubmitResult submitLampUpdateJob(const LampUpdateJob::Submission& submission);
 bool setLampAutoUpdate(bool enabled);
 bool lampRemoteUpdateBusy();
 bool lampUpdateOwnsResources();
@@ -40,6 +42,7 @@ bool beginLampBluetoothUpdateRadio();
 void finishLampBluetoothUpdateRadio(bool restarting);
 void getLampUpdatePacket(uint8_t* packet); // Exactly 20 bytes; fits minimum BLE MTU.
 String lampUpdateJson();
+String lampUpdateJson(bool updateJobContractV2);
 struct LampUpdatePolicyJsonSnapshot {
   LampUpdatePolicy::Policy policy{};
   uint32_t revision=0;
@@ -47,22 +50,32 @@ struct LampUpdatePolicyJsonSnapshot {
   uint8_t coordination=0;
   bool valid=false;
 };
+// Volatile loop-owned admission evidence. No addresses, credentials or records.
+// phase:0 unused,1 waiting,2 preflight refused,3 task allocation failed,
+// 4 post-allocation refused,5 running,6 completed,7 TLS-block reservation failed.
+struct LampUpdateWorkerAdmission {
+  uint32_t beforeFree=0,beforeLargest=0,afterFree=0,afterLargest=0,taskControlBytes=0;
+  uint8_t phase=0;
+};
+static_assert(sizeof(LampUpdateWorkerAdmission)<=24,"Worker admission evidence must stay bounded");
 static_assert(sizeof(LampUpdatePolicyJsonSnapshot)<=84,"Policy read snapshot must stay bounded");
 LampUpdatePolicyJsonSnapshot captureLampUpdatePolicyJson();
 void appendLampUpdatePolicyJson(LampJsonSink& out,const LampUpdatePolicyJsonSnapshot& snapshot);
 struct LampUpdateJsonSnapshot {
   LampUpdateStatus status{};
   LampUpdateAttempt::StatusSnapshot attempt{};
+  LampUpdateJob::Snapshot job{};
   LampUpdatePolicyJsonSnapshot policy{};
   UpdateHttpDiagnosticsSnapshot http{};
   LampUpdateAutomatic::Snapshot automaticService{};
+  LampUpdateWorkerAdmission workerAdmission{};
   char deviceId[13]{};
   uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
   bool wifi=false,healthy=false,publisher=false;
 };
-static_assert(sizeof(LampUpdateJsonSnapshot)<=256,"Update read snapshot must stay bounded");
+static_assert(sizeof(LampUpdateJsonSnapshot)<=352,"Update read snapshot must stay bounded");
 LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic=false);
-void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic=false);
+void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic=false,bool updateJobContractV2=false);
 // Loop-owned durable policy. Automatic and donation admission share this gate;
 // Update now retains its explicit manual override.
 void noteLampUpdateUse();

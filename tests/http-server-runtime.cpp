@@ -76,6 +76,12 @@ void* operator new[](std::size_t size){
   }
   return ::operator new(size);
 }
+void* operator new(std::size_t size,const std::nothrow_t&)noexcept{
+  try{return ::operator new(size);}catch(...){return nullptr;}
+}
+void* operator new[](std::size_t size,const std::nothrow_t&)noexcept{
+  try{return ::operator new[](size);}catch(...){return nullptr;}
+}
 void operator delete(void* memory)noexcept{
   for(size_t i=0;i<std::size(parserAllocations);++i)if(parserAllocations[i]==memory&&memory){
     static_assert(std::is_standard_layout<LampHttpParser::CompactParser>::value,"Request metadata is the parser's first member");
@@ -91,6 +97,8 @@ void operator delete(void* memory)noexcept{
 void operator delete[](void* memory)noexcept{::operator delete(memory);}
 void operator delete(void* memory,std::size_t)noexcept{::operator delete(memory);}
 void operator delete[](void* memory,std::size_t)noexcept{::operator delete(memory);}
+void operator delete(void* memory,const std::nothrow_t&)noexcept{::operator delete(memory);}
+void operator delete[](void* memory,const std::nothrow_t&)noexcept{::operator delete[](memory);}
 
 String lampToken="development-token";
 static uint64_t clockUs=0;
@@ -255,6 +263,7 @@ struct Fixture {
     server.on("/api/effects/schema",HTTP_POST,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/power",HTTP_POST,[this](){if(!auth(true))return;const char* const fields[]={"on"};if(!server.fieldsAllowed(fields,1)||server.arg("on")!="1"){server.send(400,"text/plain","Invalid form.");return;}++mutations;server.send(200,"text/plain","Light on.");});
     server.on("/api/state/patch",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"application/json","{\"outcome\":\"executed\"}");});
+    server.on("/api/sync/scene",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"text/plain","Group scene saved.");});
     server.on("/large",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(4000,'a')));});
     server.on("/full-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(5998,'a')+"\""));});
     server.on("/max-json",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json",String(std::string("\"")+std::string(8190,'a')+"\""));});
@@ -370,7 +379,7 @@ int main(int argc,char** argv){
     turn(f.server,5000);runCloser();assert(sockets[waiting].closed&&sockets[prepared].closed&&!f.reads&&!f.mutations&&detachedRequests.at(prepared).absoluteTimeoutMs==5000);
   }else if(scenario=="parser-admission-bounds-and-recovery"){
     Fixture f;accountParserAllocation=true;
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{uint32_t(ParserReserveBytes+ParserAllocationBytes-1),7668},{16316,uint32_t(ParserAllocationBytes-1)}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto attempts=parserAllocationAttempts,allocations=totalParsers;
       const int denied=connect(f.listener,post("/api/power","on=1"));f.finish(denied);
       contains(denied,"503 Service Unavailable");contains(denied,"HTTP resources unavailable. No command was executed.");
@@ -445,7 +454,7 @@ int main(int argc,char** argv){
     assert(!LampControlResourcePolicy::readHttpPath("/",false));
   }else if(scenario=="mapped-page-low-memory-bounds-and-copy-failure"){
     Fixture f;static_assert(LampHttpServer::StaticPageHeapFloorBytes==11776);
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{11775,7668},{16316,511}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;const auto began=millis();
       const int page=connect(f.listener,get("/"));f.finish(page,30);contains(page,"503 Service Unavailable");
       if(budget.second<ParserAllocationBytes)contains(page,"HTTP resources unavailable. No command was executed.");else contains(page,"Nothing changed");
@@ -714,7 +723,7 @@ int main(int argc,char** argv){
     assert(f.reads==6&&!f.mutations&&uint32_t(millis()-began)<100);
     // A denied read gets a bounded response while the original connection is
     // healthy. It does not wait five seconds without headers or execute later.
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{8703,7668},{16316,15}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{8703,7668},{16316,15}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
       const auto deniedAt=millis();const int fd=connect(f.listener,get());f.finish(fd,30);
       contains(fd,"503 Service Unavailable");assert(uint32_t(millis()-deniedAt)<100);
@@ -777,13 +786,27 @@ int main(int argc,char** argv){
     fakeFreeHeap=floor-1;const int denied=connect(f.listener,post("/api/state/patch",form));f.finish(denied,40);
     contains(denied,"503 Service Unavailable");contains(denied,"This request was not executed");assert(f.mutations==1);
     fakeFreeHeap=floor;const int fresh=connect(f.listener,post("/api/state/patch",form));f.finish(fresh,40);contains(fresh,"200 OK");assert(f.mutations==2);
+    // The physical Sonata failure had 23,388 free bytes and a 9,204-byte
+    // largest block. A fixed 432-byte scene save must execute there, while its
+    // separate NVS workspace and exact form budget still fail closed.
+    const std::string scene="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170";
+    assert(LampControlResourcePolicy::compactMutationHttpPath("/api/sync/scene",true));
+    assert(LampControlResourcePolicy::compactMutationEndpoint(LampControlEndpoint::Scene,true));
+    assert(LampControlResourcePolicy::compactMutationHttpReady("/api/sync/scene",23388,9204,scene.size()));
+    fakeFreeHeap=23388;fakeLargestFreeBlock=9204;
+    const int sceneOk=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneOk,40);contains(sceneOk,"200 OK");assert(f.mutations==3);
+    const uint32_t sceneFloor=uint32_t(LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::CompactScenePersistenceBytes+LampControlResourcePolicy::roundedReplyBytes(scene.size())+24*32);
+    fakeFreeHeap=sceneFloor-1;const int sceneLow=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneLow,40);contains(sceneLow,"503 Service Unavailable");assert(f.mutations==3);
+    fakeFreeHeap=23388;fakeLargestFreeBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;
+    const int sceneFragmented=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneFragmented,40);contains(sceneFragmented,"503 Service Unavailable");assert(f.mutations==3);
     // Legacy/persistent mutations still wait under their unchanged floor.
+    fakeLargestFreeBlock=9204;
     const int legacy=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
-    assert(f.mutations==2);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==2);
+    assert(f.mutations==3);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==3);
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;
-    for(const auto budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
+    for(const auto& budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
       for(const char* body:{"on=1","on=%QQ"}){
         inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::Power,true,body,true);inControl=false;

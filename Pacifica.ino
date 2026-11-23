@@ -29,22 +29,25 @@
 // These three custom blue-green color palettes were inspired by the colors found in
 // the waters off the southern coast of California, https://goo.gl/maps/QQgd97jjHesHZVxQ7
 //
-CRGBPalette16 pacifica_palette_1 =
+const TProgmemRGBPalette16 pacifica_palette_1 FL_PROGMEM =
     { 0x000507, 0x000409, 0x00030B, 0x00030D, 0x000210, 0x000212, 0x000114, 0x000117,
       0x000019, 0x00001C, 0x000026, 0x000031, 0x00003B, 0x000046, 0x14554B, 0x28AA50 };
-CRGBPalette16 pacifica_palette_2 =
+const TProgmemRGBPalette16 pacifica_palette_2 FL_PROGMEM =
     { 0x000507, 0x000409, 0x00030B, 0x00030D, 0x000210, 0x000212, 0x000114, 0x000117,
       0x000019, 0x00001C, 0x000026, 0x000031, 0x00003B, 0x000046, 0x0C5F52, 0x19BE5F };
-CRGBPalette16 pacifica_palette_3 =
+const TProgmemRGBPalette16 pacifica_palette_3 FL_PROGMEM =
     { 0x000208, 0x00030E, 0x000514, 0x00061A, 0x000820, 0x000927, 0x000B2D, 0x000C33,
       0x000E39, 0x001040, 0x001450, 0x001860, 0x001C70, 0x002080, 0x1040BF, 0x2060FF };
 
+
+void pacifica_one_layer(const TProgmemRGBPalette16& p, uint16_t cistart,
+                       uint16_t wavescale, uint8_t bri, uint16_t ioff);
 
 void pacifica_loop()
 {
   // Increment the four "color index start" counters, one for each wave layer.
   // Each is incremented at a different speed, and the speeds vary over time.
-  static uint16_t sCIStart1, sCIStart2, sCIStart3, sCIStart4;
+  static uint16_t starts[4];
   static uint32_t sLastms = 0;
   uint32_t ms = lampEffectMillis();
   uint32_t deltams = ms - sLastms;
@@ -54,29 +57,40 @@ void pacifica_loop()
   uint32_t deltams1 = (deltams * speedfactor1) / 256;
   uint32_t deltams2 = (deltams * speedfactor2) / 256;
   uint32_t deltams21 = (deltams1 + deltams2) / 2;
-  sCIStart1 += (deltams1 * lampBeatSin88(1011,10,13));
-  sCIStart2 -= (deltams21 * lampBeatSin88(777,8,11));
-  sCIStart3 -= (deltams1 * lampBeatSin88(501,5,7));
-  sCIStart4 -= (deltams2 * lampBeatSin88(257,4,6));
+  starts[0] += (deltams1 * lampBeatSin88(1011,10,13));
+  starts[1] -= (deltams21 * lampBeatSin88(777,8,11));
+  starts[2] -= (deltams1 * lampBeatSin88(501,5,7));
+  starts[3] -= (deltams2 * lampBeatSin88(257,4,6));
 
   // Clear out the LED array to a dim background blue-green
   fill_solid( leds, NUM_LEDS, CRGB( 2, 6, 10));
 
   // Render each of four layers, with different scales and speeds, that vary over time
-  pacifica_one_layer( pacifica_palette_1, sCIStart1, lampBeatSin16( 3, 11 * 256, 14 * 256), lampBeatSin8( 10, 70, 130), 0-lampBeat16( 301) );
-  pacifica_one_layer( pacifica_palette_2, sCIStart2, lampBeatSin16( 4,  6 * 256,  9 * 256), lampBeatSin8( 17, 40,  80), lampBeat16( 401) );
-  pacifica_one_layer( pacifica_palette_3, sCIStart3, 6 * 256, lampBeatSin8( 9, 10,38), 0-lampBeat16(503));
-  pacifica_one_layer( pacifica_palette_3, sCIStart4, 5 * 256, lampBeatSin8( 8, 10,28), lampBeat16(601));
+  struct Layer {
+    const TProgmemRGBPalette16* palette;
+    uint16_t scaleLow, scaleHigh, offsetBeat;
+    uint8_t scaleBeat, brightnessBeat, brightnessLow, brightnessHigh;
+  };
+  static const Layer layers[] = {
+    {&pacifica_palette_1, 11 * 256, 14 * 256, 301, 3, 10, 70, 130},
+    {&pacifica_palette_2, 6 * 256, 9 * 256, 401, 4, 17, 40, 80},
+    {&pacifica_palette_3, 6 * 256, 6 * 256, 503, 0, 9, 10, 38},
+    {&pacifica_palette_3, 5 * 256, 5 * 256, 601, 0, 8, 10, 28},
+  };
+  for (uint8_t layer = 0; layer < 4; ++layer) {
+    const auto& recipe = layers[layer];
+    const uint16_t scale = recipe.scaleBeat ? lampBeatSin16(recipe.scaleBeat, recipe.scaleLow, recipe.scaleHigh) : recipe.scaleLow;
+    const uint8_t brightness = lampBeatSin8(recipe.brightnessBeat, recipe.brightnessLow, recipe.brightnessHigh);
+    const uint16_t offset = lampBeat16(recipe.offsetBeat);
+    pacifica_one_layer(*recipe.palette, starts[layer], scale, brightness, layer & 1 ? offset : -offset);
+  }
 
-  // Add brighter 'whitecaps' where the waves lines up more
+  // Add whitecaps and deepen each pixel in one ordered finishing pass.
   pacifica_add_whitecaps();
-
-  // Deepen the blues and greens a bit
-  pacifica_deepen_colors();
 }
 
 // Add one layer of waves into the led array
-void pacifica_one_layer( CRGBPalette16& p, uint16_t cistart, uint16_t wavescale, uint8_t bri, uint16_t ioff)
+void pacifica_one_layer(const TProgmemRGBPalette16& p, uint16_t cistart, uint16_t wavescale, uint8_t bri, uint16_t ioff)
 {
   uint16_t ci = cistart;
   uint16_t waveangle = ioff;
@@ -108,13 +122,6 @@ void pacifica_add_whitecaps()
       uint8_t overage2 = qadd8( overage, overage);
       leds[i] += CRGB( overage, overage2, qadd8( overage2, overage2));
     }
-  }
-}
-
-// Deepen the blues and greens
-void pacifica_deepen_colors()
-{
-  for( uint16_t i = 0; i < NUM_LEDS; i++) {
     leds[i].blue = scale8( leds[i].blue,  145);
     leds[i].green= scale8( leds[i].green, 200);
     leds[i] |= CRGB( 2, 5, 7);

@@ -19,12 +19,11 @@ struct LampSettings {
 };
 extern LampSettings lampSettings;
 void loadLampSettings();
-inline String lampIdentity() {
-  const uint64_t mac = ESP.getEfuseMac();
-  char id[13];
-  snprintf(id, sizeof(id), "%012llx", (unsigned long long)(mac & 0xffffffffffffULL));
-  return String(id);
-}
+// beginLampSync() initializes this canonical low-48-bit hardware identity
+// before updater, network and Bluetooth startup. Keep one representation for
+// every subsystem instead of repeatedly formatting the eFuse MAC.
+const char* lampIdentityText();
+inline String lampIdentity(){return String(lampIdentityText());}
 String lampEffectCatalogEntry(uint8_t mode);
 bool lampIdentifyActive();
 void beginLampNetwork();

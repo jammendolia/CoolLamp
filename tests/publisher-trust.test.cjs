@@ -19,7 +19,7 @@ test('actual build helper combines public/provisioned flags, stages only generat
   assert.equal(command.cli,'mock-cli');assert(command.args.includes('esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=no_fs'));
   const flags=Array.from(command.args).filter(value=>value.startsWith('compiler.cpp.extra_flags='));assert.deepEqual(flags,['compiler.cpp.extra_flags=-DCOOL_LAMP_PAGE_GZIP=1 -DCOOL_LAMP_PUBLIC_RELEASE=1'+(configured?' -DCOOL_LAMP_PUBLISHER_TRUST_PROVISIONED=1':'')]);
   assert([...writes.keys()].some(file=>file.endsWith('LampPageGzip.generated.h')));
-  const compression=JSON.parse([...writes.entries()].find(([file])=>file.endsWith('page-compression.json'))[1]);assert(compression.noRuntimeCompression&&compression.gzipBytes<compression.rawBytes);
+  const compression=JSON.parse([...writes.entries()].find(([file])=>file.endsWith('page-compression.json'))[1]);assert(compression.noRuntimeCompression&&compression.gzipBytes<compression.minifiedBytes&&compression.minifiedBytes<compression.rawBytes);assert.deepEqual(compression.optimizer,{terser:'5.51.4',zopfli:'1.0.15',terserPasses:3,zopfliIterations:200});
   assert.equal([...writes.keys()].some(file=>file.endsWith('LampPublisherTrust.generated.h')),configured);
   if(configured)assert([...writes.entries()].some(([file,bytes])=>file.endsWith('publisher-trust-public.json')&&JSON.parse(bytes).sha256===configuration.provenance.sha256));
   assert.equal(processContext.exitCode,0);

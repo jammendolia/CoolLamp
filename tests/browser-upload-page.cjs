@@ -1,5 +1,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
-const script=fs.readFileSync('LampPage.h','utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const {minifiedPage}=require('../tools/compress-lamp-page.cjs');
+const pageSource=fs.readFileSync('LampPage.h','utf8').replace('</script>',';globalThis.BrowserFileHash=BrowserFileHash;globalThis.inspectBrowserFirmware=inspectBrowserFirmware;</script>');
+const script=minifiedPage(pageSource).page.toString().match(/<script>([\s\S]*?)<\/script>/)[1];
 const identity='f0b950b2f180',boot='0000000000000001',nextBoot='0000000000000002',ticket='12345678'.repeat(4);
 function fixture({holdInitial=false}={}){
  const elements={},requests=[],xhrs=[],intervals=[];let now=0,yields=0,cancelAtYield=Infinity,statusIndex=0,stateIndex=0,releaseInitial;
