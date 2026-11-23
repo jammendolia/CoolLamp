@@ -27,20 +27,20 @@ let tasks = FakeTasks(), lease = tasks.lease()
 precondition(try! lease.begin(session: first))
 precondition(lease.owner == first && tasks.expirations.count == 1)
 precondition(try! lease.begin(session: first))
-precondition(tasks.expirations.count == 1)
+precondition(tasks.expirations.count == 2 && tasks.ended == [10])
 fails(.alreadyOwned) { try lease.begin(session: second) }
 precondition(try! lease.end(session: second))
-precondition(lease.active && tasks.ended.isEmpty)
+precondition(lease.active && tasks.ended == [10])
 precondition(!(try! lease.end(session: first)))
-precondition(!lease.active && tasks.ended == [10])
+precondition(!lease.active && tasks.ended == [10, 11])
 
 precondition(try! lease.begin(session: second))
 tasks.expirations.first?()
-precondition(lease.active && lease.owner == second && tasks.ended == [10])
+precondition(lease.active && lease.owner == second && tasks.ended == [10, 11])
 tasks.expirations.last?()
-precondition(!lease.active && tasks.ended == [10, 11])
+precondition(!lease.active && tasks.ended == [10, 11, 12])
 tasks.expirations.last?()
-precondition(tasks.ended == [10, 11])
+precondition(tasks.ended == [10, 11, 12])
 
 let unavailableTasks = FakeTasks()
 unavailableTasks.beginReturnsInvalid = true
@@ -48,10 +48,17 @@ let unavailable = unavailableTasks.lease()
 fails(.unavailable) { try unavailable.begin(session: first) }
 precondition(!unavailable.active && unavailableTasks.ended.isEmpty)
 
+let renewalTasks = FakeTasks(), renewal = renewalTasks.lease()
+precondition(try! renewal.begin(session: first))
+renewalTasks.beginReturnsInvalid = true
+fails(.unavailable) { try renewal.begin(session: first) }
+precondition(renewal.active && renewal.owner == first && renewalTasks.ended.isEmpty)
+precondition(!(try! renewal.end(session: first)) && renewalTasks.ended == [10])
+
 for invalid in ["", "a", String(repeating: "0", count: 32),
                 String(repeating: "A", count: 32), String(repeating: "g", count: 32)] {
     fails(.invalidSession) { try lease.begin(session: invalid) }
     fails(.invalidSession) { try lease.end(session: invalid) }
 }
 
-print("PASS: short firmware handoff lease idempotence, token isolation, expiry cleanup and unavailable handling")
+print("PASS: short firmware handoff renewal, token isolation, expiry cleanup and unavailable handling")

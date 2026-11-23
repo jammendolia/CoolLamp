@@ -5,7 +5,7 @@ import {runInNewContext} from 'node:vm';
 import {FirmwareAttemptJournal} from '../src/firmware-attempt.js';
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8'),identity='f0b950b2f180';
-const marker='beforeMutation:({identity,path,expectedVersion})=>{',start=source.indexOf(marker),end=source.indexOf('\n},onStatus:',start);
+const marker='beforeMutation:({identity,path,expectedVersion})=>{',start=source.indexOf(marker),end=source.indexOf('\n},aroundJobStart:',start);
 assert(start>=0&&end>start);const hook=source.slice(start+marker.length,end);
 const manifest=parsePhoneManifest('COOLLAMP-OTA-1\n1.15.1\nesp32c3\ndual-ota-2031616\n512\n'+'a'.repeat(64)+'\n');
 function fixture(){
@@ -56,11 +56,36 @@ test('only verified installed reconciliation immediately updates the card versio
 });
 test('automatic recovery rotates between unreachable lamps even when the first 45-second check expires its cooldown',()=>{
  const first=source.indexOf('const firmwareResultCheckAt=new Map();'),last=source.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingFirmwareChecks();});",first);
- const ids=[identity,'aabbccddeeff','112233445566'],calls=[],context={Map,Set,performance:{now:()=>0},document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+ const ids=[identity,'aabbccddeeff','112233445566'],calls=[],timers=new Map();let timerId=0;const context={Map,Set,Promise,clearTimeout:id=>timers.delete(id),setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn:()=>{timers.delete(id);fn();},delay});return id;},performance:{now:()=>0},document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
   firmwareAttempts:{pending:()=>ids.map(identity=>({identity}))},legacyFirmwareReceipts:new Map(),mergedLampEntries:()=>ids.map(id=>({id})),checkLampUpdateResult:entry=>{calls.push(entry.id);}};
  runInNewContext(source.slice(first,last)+';globalThis.resume=resumePendingFirmwareChecks;',context);
  context.resume();context.performance.now=()=>65000;context.resume();context.performance.now=()=>130000;context.resume();context.performance.now=()=>195000;context.resume();
  assert.deepEqual(calls,[...ids,identity]);context.document.hidden=true;context.resume();assert.equal(calls.length,4);
+});
+test('durable jobs keep reconciling every ten seconds on a detail route until terminal',async()=>{
+ const first=source.indexOf('const firmwareResultCheckAt=new Map();'),last=source.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingFirmwareChecks();});",first);
+ const timers=new Map(),calls=[];let timerId=0,now=0,pending=[{identity,wifiJobAttempted:true}];
+ const context={Map,Set,Promise,clearTimeout:id=>timers.delete(id),setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn:()=>{timers.delete(id);fn();},delay});return id;},performance:{now:()=>now},document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+  firmwareAttempts:{pending:()=>pending},legacyFirmwareReceipts:new Map(),mergedLampEntries:()=>[{id:identity}],
+  // A route lookup here would make this test fail: reconciliation must not be
+  // coupled to page-lamps being visible.
+  $:()=>{throw Error('inventory route must not be consulted');},
+  checkLampUpdateResult:async entry=>{calls.push(entry.id);if(calls.length===2)pending=[];}};
+ runInNewContext(source.slice(first,last)+';globalThis.resume=resumePendingFirmwareChecks;',context);
+ context.resume();await Promise.resolve();await Promise.resolve();
+ assert.deepEqual(calls,[identity]);assert.equal([...timers.values()][0].delay,10000);
+ now=10000;const next=[...timers.values()][0];next.fn();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(calls,[identity,identity]);assert.equal(timers.size,0);
+});
+test('a newly accepted single-card job starts reconciliation when its task releases',()=>{
+ const first=source.indexOf('function resumeCompletedCardFirmwareTask('),last=source.indexOf('\nasync function updateLampCard(',first),calls=[];
+ assert(first>=0&&last>first);
+ const context={resumePendingFirmwareChecks:()=>calls.push('resume')};
+ runInNewContext(source.slice(first,last)+';globalThis.completed=resumeCompletedCardFirmwareTask;',context);
+ context.completed(undefined);context.completed('cancel');context.completed('wifi');
+ assert.deepEqual(calls,['resume']);
+ const updateStart=source.indexOf('async function updateLampCard('),updateEnd=source.indexOf('\nfunction cardFirmwareButton(',updateStart);
+ assert.match(source.slice(updateStart,updateEnd),/cardFirmwareTasks\.delete\(entry\.id\);resumeCompletedCardFirmwareTask\(routeFollowup\)/);
 });
 test('background lifecycle preserves an active sender task but aborts non-resumable preflight work',async()=>{
  const first=source.indexOf("document.addEventListener('visibilitychange',()=>{if(document.hidden){void cancelBluetoothFirmware('app-hidden')"),last=source.indexOf('\nfunction waitForFirmwareForeground(',first);

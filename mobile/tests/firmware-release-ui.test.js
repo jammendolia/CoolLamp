@@ -14,19 +14,20 @@ const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const cardHandler=source.slice(source.indexOf('async function updateLampCard('),source.indexOf('function cardFirmwareButton('));
 const resultCheckHandler=source.slice(source.indexOf('async function checkLampUpdateResult('),source.indexOf('\nconst firmwareResultCheckAt='));
 const release=version=>parsePhoneManifest(`COOLLAMP-OTA-1\n${version}\nesp32c3\ndual-ota-2031616\n288\n${'a'.repeat(64)}\n`);
-function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0}={}){
+function harness({available=release('1.15.0'),accept=true,wifiFailure=null,routeChoice='phone',routeChoiceFailure=false,installed='1.13.0',onCheck,onConfirm,onTransfer,staleUnconfirmed=false,addressless=false,productionReconcile=false,reconcileFailure=null,settleWriteFailures=0,nativeMode=false,jobAccepted=false}={}){
  const entry={id:'aabbccddeeff',name:'Reading corner',address:addressless?undefined:'192.168.1.20',deviceId:'paired'},calls=[],messages=[];
  let inventory=[entry],running=installed,remainingWifiFailures=wifiFailure?1:0,remainingSettleWriteFailures=settleWriteFailures,journalWriteFailures=0;
  const data=new Map(),firmwareAttempts=new FirmwareAttemptJournal({getItem:key=>data.get(key)??null,setItem:(key,value)=>{if(journalWriteFailures-- >0)throw Error('Storage unavailable.');data.set(key,value);}});
  const tasks=new Map(),cardMessages=new Map(),messageOwners=new Map();
  const context={AbortController,availableCardRelease,updateCardFirmware,cardFirmwareTasks:tasks,cardFirmwareMessages:cardMessages,cardFirmwareMessageOwners:messageOwners,pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},
-  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,native:{},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
+  firmwareAttempts,firmwareDiagnostics:new FirmwareUpdateDiagnostics({getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}),FirmwareScreenAwake,
+  native:{setFirmwareScreenAwake:async value=>{calls.push(['awake',value.enabled]);return {active:value.enabled};}},firmwareUpdatePresentation,firmwareUpdateFailurePresentation,firmwareUpdateResultPresentation,firmwareUpdateRouteChoicePresentation,acknowledgedBluetoothUpdateSource,rememberVerifiedUpdateResult(){},
   reconcileFirmwareAttempt:options=>reconcileFirmwareAttempt({...options,maxAttempts:1}),
   cardFirmwareUnconfirmed:new Map(staleUnconfirmed?[[entry.id,'1.15.0']]:[]),groupRemovedIds:new Set(),legacyFirmwareReceipts:new Map(),entry,calls,messages,
   powerLaneBusy:()=>false,fleetLampInstalling:()=>false,cardInstalledVersion:()=>installed,
-  mergedLampEntries:()=>inventory,renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},refreshLampFirmware:()=>{},
-  refreshPublicFirmware:async options=>{calls.push(['check',options.force]);await onCheck?.({remove:()=>{inventory=[];},changeAddress:()=>{inventory=[{...entry,address:'192.168.1.21'}];},hide:()=>tasks.get(entry.id).abort.abort('app-hidden')});return available;},
-  cardUpdateConfirmation:async(_entry,manifest,options)=>{calls.push(['confirm',manifest.version,options.previousVersion]);await onConfirm?.({hide:()=>tasks.get(entry.id).abort.abort('app-hidden')});return accept;},
+  mergedLampEntries:()=>inventory,renderLamps:()=>{},renderPower:()=>{},renderFirmware:()=>{},refreshLampFirmware:()=>{},resumeCompletedCardFirmwareTask:()=>{},
+  refreshPublicFirmware:async options=>{calls.push(['check',options.force]);await onCheck?.({remove:()=>{inventory=[];},changeAddress:()=>{inventory=[{...entry,address:'192.168.1.21'}];},hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return available;},
+  cardUpdateConfirmation:async(_entry,manifest,options)=>{calls.push(['confirm',manifest.version,options.previousVersion]);await onConfirm?.({hide:()=>{const task=tasks.get(entry.id);if(task.path!=='wifi')task.abort.abort('app-hidden');},task:()=>tasks.get(entry.id)});return accept;},
    cardPhoneFirmwareAvailable:()=>true,
   cardUpdateRouteChoice:async(_entry,error)=>{calls.push(['route',routeChoice,error.firmwareError??null]);if(routeChoiceFailure)throw Error('private route dialog detail');return routeChoice;},
   checkLampUpdateResult:async()=>{
@@ -38,13 +39,17 @@ function harness({available=release('1.15.0'),accept=true,wifiFailure=null,route
   firmwareFeedback:{begin:()=>1,update:(_id,value)=>messages.push(value.message)},
   bluetoothFirmwareFailureMessage:error=>error.message,status:message=>messages.push(message),
   validFirmwareVersion:value=>typeof value==='string'&&/^\d+\.\d+\.\d+$/.test(value),
-  fleet:{updateLamp:async(_entry,version)=>{calls.push(['wifi',version]);firmwareAttempts.beforeWifi(firmwareAttempts.get(entry.id),'/api/firmware/check');
-   if(remainingWifiFailures-- >0)throw wifiFailure;running=version;if(remainingSettleWriteFailures>0){journalWriteFailures=remainingSettleWriteFailures;remainingSettleWriteFailures=0;}return {id:entry.id,state:'updated',verified:true,fresh:true,installedVersion:version};}},
+  fleet:{updateLamp:async(_entry,version,job)=>{calls.push(['wifi',version]);const attempt=firmwareAttempts.get(entry.id);firmwareAttempts.beforeWifi(attempt,jobAccepted?'/api/firmware/job':'/api/firmware/check');
+   if(remainingWifiFailures-- >0)throw wifiFailure;if(jobAccepted)return {id:entry.id,state:'accepted',durable:true,jobId:attempt.attemptId,targetVersion:version,sha256:available.sha256,message:'Update accepted by the lamp.'};
+   running=version;if(remainingSettleWriteFailures>0){journalWriteFailures=remainingSettleWriteFailures;remainingSettleWriteFailures=0;}return {id:entry.id,state:'updated',verified:true,fresh:true,installedVersion:version};},
+   reconcileJob:async(_entry,attempt)=>{calls.push(['job-status',attempt.attemptId]);running=attempt.version;return {identity:entry.id,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,
+    outcome:'installed',installedVersion:attempt.version,controlResponsive:true,receiverInactive:true,firmwareMayInstall:false,commitUnconfirmed:false,wifiJobId:attempt.attemptId,
+    wifiJobTarget:attempt.version,wifiJobSha256:attempt.sha256,wifiJobState:5,wifiJobTerminal:true,message:'Your lamp is updated.'};}},
   acquireCardFirmwareBluetooth:async()=>{calls.push(['ble']);if(reconcileFailure&&tasks.get(entry.id)?.reconciling)throw reconcileFailure;return {lamp:{identity:entry.id,refreshFirmware:async()=>({version:running,phase:0}),
    readFirmwareUpdateSnapshot:async()=>({identity:entry.id,observedAt:Date.now(),firmware:{version:running,phase:0},state:{mode:1,effectCount:38,power:true,brightness:100},receiver:{phase:0,error:0,committed:false,session:0,size:0,offset:0}}),
    updateOverBluetooth:async(pkg,notify,options)=>{calls.push(['transfer',pkg.manifest.version]);await onTransfer?.({pkg,notify,options,remove:()=>{inventory=[];}});running=pkg.manifest.version;return {version:pkg.manifest.version,committed:true};}},release:async()=>calls.push(['release'])};},
   downloadPhoneFirmware:async(_http,options)=>{calls.push(['download',options.expectedManifest.version]);return {manifest:options.expectedManifest,image:new Uint8Array(288)};},
-  CapacitorHttp:{},document:{hidden:false},isNative:false};
+  CapacitorHttp:{},document:{hidden:false},isNative:nativeMode};
  runInNewContext(`let publicFirmware=${JSON.stringify(release('1.14.0'))},publicFirmwareFresh=true,publicFirmwareError='Phone offline';
  let connecting=false,bluetoothFirmwareTask=null,fleetUpdating=false,bluetoothFirmwareConnectionSerial=0;
  ${productionReconcile?resultCheckHandler:''}
@@ -110,14 +115,26 @@ test('removed addressless target cannot pass the live-entry check through undefi
  const ui=harness({addressless:true,onCheck:actions=>actions.remove()});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.tasks.size,0);
  assert(ui.messages.some(message=>/no longer available/i.test(message)&&/No update was started/.test(message)));
 });
-test('app-hidden during the public manifest check reports a stopped preflight and sends nothing',async()=>{
- const ui=harness({onCheck:actions=>actions.hide()});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.tasks.size,0);
- assert(ui.messages.some(message=>/Update check stopped when CoolLamp left the screen/.test(message)&&/Nothing was sent/.test(message)));
+test('an Internet update owns its route before the public manifest refresh and survives app hiding',async()=>{
+ const ui=harness({onCheck:actions=>{assert.equal(actions.task().path,'wifi');actions.hide();}});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0']]);assert.equal(ui.tasks.size,0);
+ assert(!ui.messages.some(message=>/Update check stopped when CoolLamp left the screen/.test(message)));
 });
-test('app-hidden while confirmation resolves false replaces preflight copy instead of reporting a user cancellation',async()=>{
+test('app-hidden while an Internet confirmation is open preserves an honest user cancellation',async()=>{
  const ui=harness({accept:false,onConfirm:actions=>actions.hide()});await ui.update();assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0']]);
- assert(ui.messages.some(message=>/Update check stopped when CoolLamp left the screen/.test(message)&&/Nothing was sent/.test(message)));
- assert(![...ui.cardMessages.values()].some(message=>/Update cancelled/.test(message)));
+ assert([...ui.cardMessages.values()].some(message=>/Update cancelled/.test(message)));
+ assert(!ui.messages.some(message=>/Update check stopped when CoolLamp left the screen/.test(message)));
+});
+test('native Internet updates never acquire the foreground screen-awake lease',async()=>{
+ const ui=harness({nativeMode:true});await ui.update();
+ assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0']]);
+ assert(!ui.calls.some(call=>call[0]==='awake'));
+});
+test('a lamp-owned Wi-Fi job detaches after durable acceptance and reconciles without Bluetooth',async()=>{
+ const ui=harness({productionReconcile:true,jobAccepted:true});await ui.update();const pending=ui.attempts.pending()[0];
+ assert(pending);assert.equal(pending.wifiJobAttempted,true);assert.deepEqual(ui.calls,[['check',true],['confirm','1.15.0','1.14.0'],['wifi','1.15.0']]);
+ assert(ui.messages.some(message=>/accepted by the lamp/i.test(message)));assert(!ui.calls.some(call=>call[0]==='ble'));
+ await ui.check();assert.deepEqual(ui.calls.at(-1),['job-status',pending.attemptId]);assert.equal(ui.attempts.pending().length,0);assert(!ui.calls.some(call=>call[0]==='ble'));
 });
 test('an address change during release verification reports an honest retry instead of silently returning',async()=>{
  const ui=harness({onCheck:actions=>actions.changeAddress()});await ui.update();assert.deepEqual(ui.calls,[['check',true]]);assert.equal(ui.tasks.size,0);

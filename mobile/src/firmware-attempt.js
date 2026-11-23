@@ -39,18 +39,31 @@ function restored(value){
   if(typeof value[field]!=='boolean')throw Error('Invalid update safety boundary.');result[field]=value[field];
  }
  // Additive v1 fields default to false. Unknown fields are never exposed/stored.
- for(const field of ['dataIssued','cancelAttempted','resumeAttempted','wifiCheckAttempted','wifiInstallAttempted','reinstall','commitAcknowledged','commitUnconfirmed']){
+ for(const field of ['dataIssued','cancelAttempted','resumeAttempted','wifiCheckAttempted','wifiInstallAttempted','wifiJobAttempted','reinstall','commitAcknowledged','commitUnconfirmed']){
   if(value[field]!==undefined&&typeof value[field]!=='boolean')throw Error('Invalid update safety boundary.');result[field]=value[field]??false;
  }
  if(result.session!==null&&!integer(result.session,1,0xffffffff)||!integer(result.offset,0,parsed.size)||
   !integer(result.safetyVersion,0,32)||!integer(result.writes,1,WRITE_LIMIT+1)||!integer(result.checkpoint,0,10)||result.checkpoint!==Math.floor(result.offset*10/parsed.size)||
-  !outcomes.has(result.outcome)||result.lastOperation!==null&&!([1,2,3,4,5,6,7,'wifi-check','wifi-install'].includes(result.lastOperation))||
+  !outcomes.has(result.outcome)||result.lastOperation!==null&&!([1,2,3,4,5,6,7,'wifi-check','wifi-install','wifi-job'].includes(result.lastOperation))||
   result.commitAttempted&&!result.beginAttempted||result.dataIssued&&!result.beginAttempted||
   result.beginAttempted&&result.session===null||result.wifiInstallAttempted&&result.beginAttempted||
   result.commitAcknowledged&&!result.commitAttempted||result.commitUnconfirmed&&terminal.has(result.outcome)||
+  result.wifiJobAttempted&&(!result.wifiCheckAttempted||!result.wifiInstallAttempted||result.lastOperation!=='wifi-job')||
+  !result.wifiJobAttempted&&result.lastOperation==='wifi-job'||
   result.commitSequence!==null&&(!result.commitAttempted||!integer(result.commitSequence,1,65535)))
   throw Error('Invalid update attempt.');
  return result;
+}
+
+export function confirmedFirmwareJobRejection(attempt,evidence){
+ const value=restored(attempt);
+ if(!value.wifiJobAttempted||evidence?.wifiJobRejected!==true||evidence.wifiJobStatus!==409||
+  evidence.wifiJobId!==value.attemptId||evidence.wifiJobTarget!==value.version||evidence.wifiJobSha256!==value.sha256||
+  !version(evidence.installedVersion))throw failure('The rejected firmware job could not be verified.',{requiresReconciliation:true});
+ return Object.freeze({identity:value.identity,attemptId:value.attemptId,safetyVersion:value.safetyVersion,
+  outcome:'installationNotStarted',pending:false,controlResponsive:true,receiverInactive:false,firmwareMayInstall:true,
+  installedVersion:evidence.installedVersion,wifiJobRejected:true,wifiJobStatus:409,wifiJobId:value.attemptId,
+  wifiJobTarget:value.version,wifiJobSha256:value.sha256,message:evidence.message||'The lamp did not accept this update job.'});
 }
 
 // This journal stores intent/proof boundaries, never authority or firmware bytes.
@@ -102,7 +115,7 @@ export class FirmwareAttemptJournal {
   }
   const bytes=crypto.getRandomValues(new Uint8Array(16)),attemptId=Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('');
   const result={identity,attemptId,...parsed,session:null,metadataIssued:false,beginAttempted:false,commitAttempted:false,
-   dataIssued:false,cancelAttempted:false,resumeAttempted:false,wifiCheckAttempted:false,wifiInstallAttempted:false,
+   dataIssued:false,cancelAttempted:false,resumeAttempted:false,wifiCheckAttempted:false,wifiInstallAttempted:false,wifiJobAttempted:false,
    offset:0,outcome:'pending',safetyVersion:0,writes:1,checkpoint:0,lastOperation:null,reinstall,commitAcknowledged:false,commitSequence:null,commitUnconfirmed:false};
   records.set(identity,result);this.persist(records);return copy(result);
  }
@@ -135,12 +148,13 @@ export class FirmwareAttemptJournal {
  }
  beforeWifi(attempt,path){
   const value=this.require(attempt);
-  if(!['/api/firmware/check','/api/firmware/install'].includes(path)||value.commitUnconfirmed||value.beginAttempted||value.commitAttempted||value.wifiInstallAttempted)
+  if(!['/api/firmware/check','/api/firmware/install','/api/firmware/job'].includes(path)||value.commitUnconfirmed||value.beginAttempted||value.commitAttempted||value.wifiInstallAttempted)
    throw failure('The original update route needs confirmation. Nothing was sent.',{requiresReconciliation:true,beforeMutation:true});
+  const job=path==='/api/firmware/job';
   const install=path==='/api/firmware/install';
-  if(!install&&value.wifiCheckAttempted)throw failure('The update check was already sent. Check your lamp before trying again.',{requiresReconciliation:true,beforeMutation:true});
-  return this.save(value,{...value,wifiCheckAttempted:value.wifiCheckAttempted||!install,wifiInstallAttempted:install,
-   lastOperation:install?'wifi-install':'wifi-check',safetyVersion:value.safetyVersion+1});
+  if(!install&&!job&&value.wifiCheckAttempted)throw failure('The update check was already sent. Check your lamp before trying again.',{requiresReconciliation:true,beforeMutation:true});
+  return this.save(value,{...value,wifiCheckAttempted:value.wifiCheckAttempted||!install,wifiInstallAttempted:install||job,
+   wifiJobAttempted:job,lastOperation:job?'wifi-job':install?'wifi-install':'wifi-check',safetyVersion:value.safetyVersion+1});
  }
  confirmCommit(attempt,receipt){
   const value=this.require(attempt);
@@ -183,9 +197,15 @@ export class FirmwareAttemptJournal {
    result.safetyVersion!==value.safetyVersion)throw failure('This lamp check belongs to an older update attempt.',{stale:true});
   if(!terminal.has(result.outcome))return result.commitUnconfirmed===true?this.noteCommitUnconfirmed(value):copy(value);
   const installed=result.outcome==='installed';
+  const terminalJobFailure=value.wifiJobAttempted===true&&result.wifiJobTerminal===true&&result.wifiJobState===6&&result.wifiJobId===value.attemptId&&
+   result.wifiJobTarget===value.version&&result.wifiJobSha256===value.sha256;
+  const terminalJobRejection=value.wifiJobAttempted===true&&result.outcome==='installationNotStarted'&&result.wifiJobRejected===true&&
+   result.wifiJobStatus===409&&result.wifiJobId===value.attemptId&&result.wifiJobTarget===value.version&&result.wifiJobSha256===value.sha256&&
+   result.controlResponsive===true&&version(result.installedVersion);
+  if(terminalJobRejection)return this.save(value,{...value,outcome:result.outcome},{terminalWrite:true});
   if(value.commitUnconfirmed||result.commitUnconfirmed===true||!result.controlResponsive||!version(result.installedVersion)||result.firmwareMayInstall===true||
    installed&&(result.installedVersion!==value.version||result.receiverInactive!==true||value.reinstall&&!value.commitAcknowledged)||
-   !installed&&(value.commitAttempted||value.wifiInstallAttempted||result.receiverInactive!==true||
+   !installed&&(value.commitAttempted||value.wifiInstallAttempted&&!terminalJobFailure||result.receiverInactive!==true||
     (compareFirmwareVersions(result.installedVersion,value.version)>=0&&!(value.reinstall&&result.installedVersion===value.version))||
     result.outcome==='installationNotStarted'&&value.beginAttempted||result.outcome==='transferStopped'&&!value.beginAttempted))
    throw failure('The lamp did not confirm a safe update outcome.',{requiresReconciliation:true});

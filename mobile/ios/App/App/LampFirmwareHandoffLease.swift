@@ -33,14 +33,18 @@ final class LampFirmwareHandoffLease {
         guard Self.validSession(requested) else { throw Failure.invalidSession }
         if let current = sessionId {
             guard current == requested else { throw Failure.alreadyOwned }
-            return true
         }
-        generation += 1
-        let requestedGeneration = generation
+        // Same-owner begin is a real renewal, not a stale liveness check. Take
+        // the replacement first so failure leaves the existing task intact,
+        // then generation-fence and end the old task with no uncovered gap.
+        let requestedGeneration = generation + 1
         let newTask = beginTask { [weak self] in self?.expire(generation: requestedGeneration) }
         guard newTask != invalidTask else { throw Failure.unavailable }
+        let previousTask = task
+        generation = requestedGeneration
         task = newTask
         sessionId = requested
+        if let previousTask { endTask(previousTask) }
         return true
     }
 

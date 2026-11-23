@@ -67,7 +67,11 @@ final class LampFirmwareBackgroundCoordinator: NSObject, CBCentralManagerDelegat
     func capability(completion: @escaping ([String: Any]) -> Void) {
         queue.async {
             let continued: Bool
-            if #available(iOS 26.0, *) { continued = true } else { continued = false }
+            if #available(iOS 26.0, *) {
+                continued = self.registeredContinuedTask
+            } else {
+                continued = false
+            }
             completion([
                 "journalVersion": LampFirmwareBackgroundRecord.schemaVersion,
                 "bluetoothCentral": true,

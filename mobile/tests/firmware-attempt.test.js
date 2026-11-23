@@ -65,6 +65,17 @@ test('Wi-Fi Install is persisted before POST and prevents a BLE route from start
  assert.equal(new FirmwareAttemptJournal(a.memory).get(id).wifiInstallAttempted,true);
  assert.throws(()=>a.journal.beforeWrite(a.token,1,9),error=>error.requiresReconciliation);
 });
+test('one-shot Wi-Fi job intent is durable before POST, exact, and settles only from its terminal job proof',()=>{
+ const a=attempt();a.journal.beforeWifi(a.token,'/api/firmware/job');const saved=new FirmwareAttemptJournal(a.memory).get(id);
+ assert.equal(saved.wifiCheckAttempted,true);assert.equal(saved.wifiInstallAttempted,true);assert.equal(saved.wifiJobAttempted,true);assert.equal(saved.lastOperation,'wifi-job');
+ assert.throws(()=>a.journal.beforeWifi(a.token,'/api/firmware/job'),error=>error.requiresReconciliation);
+ assert.throws(()=>a.journal.beforeWrite(a.token,1,9),error=>error.requiresReconciliation);
+ const base={identity:id,attemptId:saved.attemptId,safetyVersion:saved.safetyVersion,outcome:'installationNotStarted',installedVersion:'1.14.0',
+  controlResponsive:true,receiverInactive:true,firmwareMayInstall:false,commitUnconfirmed:false,wifiJobTerminal:true,wifiJobState:6,
+  wifiJobTarget:saved.version,wifiJobSha256:saved.sha256};
+ assert.throws(()=>a.journal.settle(saved,{...base,wifiJobId:'different'}),error=>error.requiresReconciliation);
+ a.journal.settle(saved,{...base,wifiJobId:saved.attemptId});assert.equal(a.journal.pending().length,0);
+});
 test('chunk and progress work has bounded durable writes and never accepts attempted/reordered bytes',()=>{
  const a=attempt({begin:true,size:2000000});
  for(let i=0;i<10000;i++){
@@ -87,10 +98,19 @@ test('unknown journal versions, duplicates and malformed bounds fail closed with
 });
 test('additive v1 Wi-Fi flags default false and unrecognized fields never enter restored records',()=>{
  const a=attempt(),raw=JSON.parse(a.memory.getItem(FIRMWARE_ATTEMPT_KEY));
- for(const field of ['wifiCheckAttempted','wifiInstallAttempted'])delete raw.records[0][field];raw.records[0].password='must-not-survive';
+ for(const field of ['wifiCheckAttempted','wifiInstallAttempted','wifiJobAttempted'])delete raw.records[0][field];raw.records[0].password='must-not-survive';
  a.memory.data.set(FIRMWARE_ATTEMPT_KEY,JSON.stringify(raw));const restored=new FirmwareAttemptJournal(a.memory);
- assert.equal(restored.healthy,true);assert.equal(restored.get(id).wifiInstallAttempted,false);
+ assert.equal(restored.healthy,true);assert.equal(restored.get(id).wifiInstallAttempted,false);assert.equal(restored.get(id).wifiJobAttempted,false);
  assert(!JSON.stringify(restored.get(id)).includes('must-not-survive'));
+});
+test('restored Wi-Fi job flags require their exact durable boundary tuple',()=>{
+ const a=attempt();a.journal.beforeWifi(a.token,'/api/firmware/job');const base=JSON.parse(a.memory.getItem(FIRMWARE_ATTEMPT_KEY));
+ for(const change of [
+  {wifiCheckAttempted:false},{wifiInstallAttempted:false},{lastOperation:'wifi-check'},{wifiJobAttempted:false}
+ ]){
+  const value=structuredClone(base);Object.assign(value.records[0],change);const memory=storage();memory.data.set(FIRMWARE_ATTEMPT_KEY,JSON.stringify(value));
+  const restored=new FirmwareAttemptJournal(memory);assert.equal(restored.healthy,false);assert.throws(()=>restored.begin(id,manifest()),error=>error.journalFailure);
+ }
 });
 test('all 32 pending attempts are retained; a 33rd cannot evict one',()=>{
  const memory=storage(),journal=new FirmwareAttemptJournal(memory);

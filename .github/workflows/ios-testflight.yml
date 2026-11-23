@@ -72,6 +72,14 @@ jobs:
         run: |
           swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareScreenAwake.swift ios/tests/firmware-screen-awake/main.swift -o "$RUNNER_TEMP/coollamp-firmware-screen-awake"
           "$RUNNER_TEMP/coollamp-firmware-screen-awake"
+      - name: Test durable firmware background journal
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareBackgroundJournal.swift ios/tests/firmware-background/main.swift -o "$RUNNER_TEMP/coollamp-firmware-background"
+          "$RUNNER_TEMP/coollamp-firmware-background"
+      - name: Test short firmware handoff lease
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareHandoffLease.swift ios/tests/firmware-handoff/main.swift -o "$RUNNER_TEMP/coollamp-firmware-handoff"
+          "$RUNNER_TEMP/coollamp-firmware-handoff"
       - name: Test patched Bluetooth write backpressure
         run: |
           swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" node_modules/@capacitor-community/bluetooth-le/ios/Sources/BluetoothLe/WriteWithoutResponseGate.swift ios/tests/bluetooth-write-gate/main.swift -o "$RUNNER_TEMP/coollamp-bluetooth-write-gate"

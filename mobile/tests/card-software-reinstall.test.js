@@ -29,7 +29,7 @@ function fixture({installed='1.15.1',receiverVersion=installed,afterDownloadVers
   groupRemovedIds:new Set(),removedAccessoryIds:new Set(),phonePlatform:platform,store:{items:[saved]},mergedLampEntries:()=>context.store.items,
   cardInstalledVersion:()=>installed,powerLaneBusy:()=>false,fleetLampInstalling:()=>false,
   busy:false,connecting:false,bluetoothFirmwareTask:null,fleetUpdating:false,bluetoothFirmwareConnectionSerial:0,
-  pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},renderLamps(){},renderPower(){},renderFirmware(){},refreshLampFirmware(){},
+  pauseFirmwareBackgroundWork(){assert.equal(tasks.size,1);},renderLamps(){},renderPower(){},renderFirmware(){},refreshLampFirmware(){},resumeCompletedCardFirmwareTask(){},
   refreshPublicFirmware:async()=>{calls.push('public-check');await onRefresh?.(context);return context.publicFirmware;},
   checkLampUpdateResult:value=>{calls.push(['read-only-check',value.id]);},
   firmwareFeedback:{begin:()=>1,update:(_token,value)=>messages.push(value)},

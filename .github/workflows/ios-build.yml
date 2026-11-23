@@ -30,6 +30,14 @@ jobs:
           pnpm exec cap sync ios
       - name: Check Xcode
         run: xcodebuild -version
+      - name: Test durable firmware background journal
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareBackgroundJournal.swift ios/tests/firmware-background/main.swift -o "$RUNNER_TEMP/coollamp-firmware-background"
+          "$RUNNER_TEMP/coollamp-firmware-background"
+      - name: Test short firmware handoff lease
+        run: |
+          swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" ios/App/App/LampFirmwareHandoffLease.swift ios/tests/firmware-handoff/main.swift -o "$RUNNER_TEMP/coollamp-firmware-handoff"
+          "$RUNNER_TEMP/coollamp-firmware-handoff"
       - name: Compile iPhone app without signing
         run: |
           set -o pipefail

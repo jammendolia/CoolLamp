@@ -1,5 +1,5 @@
 import {compareFirmwareVersions,parsePhoneManifest,fetchPhoneManifest} from './bluetooth-firmware.js';
-import {classifyFirmwareSnapshot,firmwareMayInstall,acquireFirmwareResumeLease} from './firmware-attempt.js';
+import {classifyFirmwareSnapshot,firmwareMayInstall,acquireFirmwareResumeLease,confirmedFirmwareJobRejection} from './firmware-attempt.js';
 import {safeFirmwareTransferMetrics} from './firmware-update-diagnostics.js';
 
 // The lamp's installed-version observation is separate from a public release
@@ -25,7 +25,7 @@ export function availableCardRelease(installed,manifest){
 // A Wi-Fi mutation with an uncertain result must never be replayed over BLE.
 // Wi-Fi owns its own identity/token checks; the BLE lease rechecks protected ID.
 export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,download,isCurrent=()=>true,onProgress=()=>{},signal,
- attemptJournal,attempt,onAttempt=()=>{},reconcile,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable,
+ attemptJournal,attempt,onAttempt=()=>{},reconcile,reconcileWifiJob,allowReinstall=false,exactReinstall=false,onFailure=()=>{},onTransferDiagnostic=()=>{},phoneFallbackAvailable,
  waitForForeground}){
  const release=parsePhoneManifest(manifest.text);
  const current=()=>{if(signal?.aborted||!isCurrent())throw Object.assign(Error('Lamp changed or update cancelled.'),{cancelled:true});};
@@ -46,10 +46,12 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
   {confirmed:false,commitUnconfirmed:true,uncertain:true,verificationRequired:true,receiverBusy:true,installationNotStarted:false,safeBluetoothFallback:false});
  const checkResult=async failure=>{
   if(failure?.commitUnconfirmed)failure=unconfirmedCommit();
-  if(!reconcile||!attemptJournal||!attempt)throw failure;
+  const wifiJob=latest()?.wifiJobAttempted===true;
+  const check=wifiJob?reconcileWifiJob:reconcile;
+  if(!check||!attemptJournal||!attempt)throw failure;
   current();onProgress({stage:'checking-result'});
-  const result=await reconcile(latest(),{entry,signal,isCurrent,onProgress});current();
-  return finish({...result,path:'bluetooth'});
+  const result=await check(latest(),{entry,signal,isCurrent,onProgress});current();
+  return finish({...result,path:wifiJob?'wifi':'bluetooth'});
  };
  const stopUnstarted=async error=>{
   const value=latest();
@@ -79,6 +81,17 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    if(result?.commitUnconfirmed)return stopUnstarted(unconfirmedCommit());
    if(attemptJournal){
     const value=latest();
+    if(result?.state==='accepted'){
+     if(result.durable!==true||result.id!==entry.id||result.jobId!==value.attemptId||result.targetVersion!==release.version||result.sha256!==release.sha256)
+      throw Object.assign(Error('The lamp confirmed a different firmware update job.'),{identity:true,confirmed:true,requiresReconciliation:true});
+     return {...result,path:'wifi',outcome:'accepted',pending:true,identity:entry.id,attemptId:value.attemptId,safetyVersion:value.safetyVersion,
+      controlResponsive:true,receiverInactive:false,installedVersion:null};
+    }
+    if(result?.state==='rejected'){
+     const settled=latest(),proof=confirmedFirmwareJobRejection(settled,result);
+     if(settled.outcome!=='installationNotStarted')throw Object.assign(Error('The rejected firmware job was not saved safely.'),{requiresReconciliation:true,confirmed:true});
+     return {...proof,...result,path:'wifi'};
+    }
     if(result.state==='updated'&&result.verified&&result.fresh&&result.id===entry.id&&result.installedVersion===release.version)
      return finish({...result,path:'wifi',outcome:'installed',identity:entry.id,attemptId:value.attemptId,safetyVersion:value.safetyVersion,controlResponsive:true,receiverInactive:true});
     return checkResult(null);

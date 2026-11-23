@@ -52,6 +52,7 @@ export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
 }
 export function firmwareUpdateResultPresentation(result,diagnostic){
  if(result?.outcome==='installed')return 'Your lamp is updated.';
+ if(result?.outcome==='accepted')return result.message||'Update accepted by the lamp. You can leave CoolLamp while the lamp downloads and installs it.';
  const last=diagnostic?.stages?.at(-1);
  if(last?.code==='app-hidden'&&last.commitAttempted===false)return 'Sending stopped when CoolLamp left the screen. We’re checking your lamp. Keep it powered.';
  if(!['installationNotStarted','transferStopped'].includes(result?.outcome))return result?.message||'We’ll check your lamp when it is available. Keep it powered and nearby.';
