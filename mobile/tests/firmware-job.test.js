@@ -15,11 +15,14 @@ const reply=(data,status=200)=>({status,data:typeof data==='string'?data:JSON.st
 const memory=()=>{const rows=new Map();return {getItem:key=>rows.get(key)??null,setItem:(key,value)=>rows.set(key,value)};};
 
 function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutation,aroundJobStart,credential,jobContract=1,
- includeJobSnapshot=jobContract===1,legacyCheckResponse,onJobRejected,automatic=false}={}){
+ includeJobSnapshot=jobContract===1,legacyCheckResponse,onJobRejected,automatic=false,wrappedJobResponse=true,
+ jobResponseDeviceId=id,jobResponseContract=1,omitResponseJob=false}={}){
  let installed='1.15.9',installedSize=512,installedSha='b'.repeat(64),installedHealthy=true,installedReceiving=false,job=emptyJob(),posts=0;
  const requests=[],journal=new FirmwareAttemptJournal(memory());
  const firmware=(compact=false)=>({version:installed,phase:[1,2,3,4].includes(job.state)?3:0,latest:'1.16.0',available:true,automatic,wifi:true,
   progress:job?.state===3?35:0,error:0,...(compact&&jobContract===1?{updateJobContractVersion:1}:{}),...(compact&&includeJobSnapshot?{updateJob:job}:{})});
+ const jobReply=status=>reply(wrappedJobResponse?{deviceId:jobResponseDeviceId,...firmware(false),updateJobContractVersion:jobResponseContract,
+  ...(!omitResponseJob?{updateJob:job}:{})}:job,status);
  const http={request:async options=>{
   requests.push(options);const url=new URL(options.url);
   if(url.pathname==='/api/diagnostics')return reply({deviceId:id,firmware:firmware(),uptimeMs:100000});
@@ -27,7 +30,7 @@ function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutat
   if(url.pathname==='/api/firmware'&&options.method==='GET')return reply({deviceId:id,...firmware(true)});
   if(url.pathname==='/api/firmware/job'&&options.method==='GET'){
    if(url.searchParams.get('jobId')!==job.jobId)return reply('Missing',404);
-   return reply(job);
+   return jobReply(200);
   }
   if(url.pathname==='/api/firmware/upload/status'&&options.method==='GET')return reply({deviceId:id,boot:'0000000000000001',
    version:installed,healthy:installedHealthy,receiving:installedReceiving,installedKnown:true,size:installedSize,sha256:installedSha});
@@ -36,7 +39,7 @@ function fixture({losePostReply=false,postConflict=false,postState=1,aroundMutat
    const form=new URLSearchParams(options.data);assert.equal(form.get('version'),manifest.version);assert.equal(form.get('sha256'),manifest.sha256);
    if(postConflict)return reply('Conflict',409);
    const jobId=form.get('jobId');job={version:1,storageReady:true,jobId,target:manifest.version,sha256:manifest.sha256,size:0,state:postState,error:postState===6?3:0,revision:1,terminal:postState>=5};
-   if(losePostReply)throw Error('reply lost');return reply(job,202);
+   if(losePostReply)throw Error('reply lost');return jobReply(202);
   }
   if(url.pathname==='/api/firmware/check'&&options.method==='POST'&&legacyCheckResponse!==undefined)return legacyCheckResponse;
   assert.fail('Unexpected request '+options.method+' '+url.pathname);
@@ -61,6 +64,30 @@ test('a capable lamp accepts one durable exact update job without a phone downlo
  const saved=f.journal.get(id);assert.equal(saved.wifiJobAttempted,true);assert.equal(saved.wifiInstallAttempted,true);assert.equal(f.journal.pending().length,1);
  assert.equal(f.requests.filter(value=>value.method==='GET'&&new URL(value.url).pathname==='/api/firmware').length,1);
  assert.deepEqual(f.requests.filter(value=>value.method==='POST').map(value=>new URL(value.url).pathname),['/api/firmware/job']);
+});
+
+test('raw durable-job responses remain compatible with the original endpoint shape',async()=>{
+ const f=fixture({wrappedJobResponse:false}),attempt=f.journal.begin(id,manifest);
+ const accepted=await f.fleet.updateLamp(entry,manifest.version,{jobId:attempt.attemptId,version:manifest.version,sha256:manifest.sha256});
+ assert.equal(accepted.state,'accepted');assert.equal(accepted.updateJob.jobId,attempt.attemptId);assert.equal(f.posts,1);
+ f.setJob({state:3,revision:2,size:manifest.size});
+ const active=await f.fleet.reconcileJob(entry,f.journal.get(id));assert.equal(active.outcome,'active');assert.equal(active.wifiJobId,attempt.attemptId);
+});
+
+test('wrapped job responses require the exact lamp identity, contract and embedded snapshot',async()=>{
+ for(const options of [{jobResponseDeviceId:'ffffffffffff'},{jobResponseContract:0},{omitResponseJob:true}]){
+  const f=fixture(options),attempt=f.journal.begin(id,manifest);
+  await assert.rejects(f.fleet.updateLamp(entry,manifest.version,{jobId:attempt.attemptId,version:manifest.version,sha256:manifest.sha256}),
+   error=>options.jobResponseDeviceId?error.identity===true:error.invalidRead===true);
+  assert.equal(f.posts,1);
+ }
+});
+
+test('wrapped reconciliation rejects a foreign lamp response without replaying the saved job',async()=>{
+ const f=fixture({losePostReply:true,jobResponseDeviceId:'ffffffffffff'}),attempt=f.journal.begin(id,manifest);
+ await assert.rejects(f.fleet.updateLamp(entry,manifest.version,{jobId:attempt.attemptId,version:manifest.version,sha256:manifest.sha256}),error=>error.uncertain===true);
+ await assert.rejects(f.fleet.reconcileJob(entry,f.journal.get(id)),error=>error.identity===true);
+ assert.equal(f.posts,1);
 });
 
 test('a lost acceptance reply is never replayed and the exact durable job reconciles after foreground return',async()=>{

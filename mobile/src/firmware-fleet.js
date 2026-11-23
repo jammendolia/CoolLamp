@@ -76,6 +76,16 @@ function firmwareJobSnapshot(value,{jobId,target,sha256,allowEmpty=false}={}){
   return Object.freeze({version:1,storageReady:value.storageReady,jobId:value.jobId,target:value.target,sha256:value.sha256,
     size:value.size,state,error:value.error,revision:value.revision,terminal:value.terminal});
 }
+function firmwareJobResponse(value,deviceId,expected){
+  const wrapped=['deviceId','updateJobContractVersion','updateJob'].some(key=>Object.hasOwn(value??{},key));
+  if(wrapped){
+    if(value?.deviceId!==deviceId)throw failure('This address belongs to a different lamp. Refresh the Wi-Fi list.',{identity:true});
+    if(value.updateJobContractVersion!==1||value.updateJob===undefined)
+      throw failure('Invalid firmware update-job capability.',{invalidRead:true});
+    value=value.updateJob;
+  }
+  return firmwareJobSnapshot(value,expected);
+}
 function installedFirmwareSnapshot(value,deviceId){
   if(value?.deviceId!==deviceId||typeof value.boot!=='string'||!/^[0-9a-f]{16}$/.test(value.boot)||
     !validFirmwareVersion(value.version)||typeof value.healthy!=='boolean'||typeof value.receiving!=='boolean'||
@@ -378,7 +388,7 @@ export class FirmwareFleet {
       return this.emit(lamp,run,{...settled,state:'rejected',verified:true,fresh:true,durable:true,message:evidence.message});
     }
     if(started.busy)throw failure('The lamp is already handling another update.',{httpStatus:409,confirmed:true});
-    const snapshot=firmwareJobSnapshot(parse(started.response),{jobId:job.jobId,target:job.version,sha256:job.sha256});
+    const snapshot=firmwareJobResponse(parse(started.response),lamp.id,{jobId:job.jobId,target:job.version,sha256:job.sha256});
     if(!snapshot.storageReady)throw failure('The lamp could not save the update job.',{confirmed:true,uncertain:true});
     if(snapshot.terminal||![1,2,3,4].includes(snapshot.state))
       throw failure('The lamp returned a terminal result instead of accepting this update job.',{confirmed:true,requiresReconciliation:true});
@@ -556,7 +566,7 @@ export class FirmwareFleet {
         throw failure(exact?'The installed update is still completing its health check.':'The saved update job is no longer available, and this exact installed firmware could not be verified.',
           {confirmed:true,requiresReconciliation:true,jobMissing:true,installedManifestVerified:exact});
       }
-      const job=firmwareJobSnapshot(parse(response),{jobId:attempt.attemptId,target:attempt.version,sha256:attempt.sha256});
+      const job=firmwareJobResponse(parse(response),lamp.id,{jobId:attempt.attemptId,target:attempt.version,sha256:attempt.sha256});
       const base={identity:entry.id,attemptId:attempt.attemptId,safetyVersion:attempt.safetyVersion,installedVersion:identity.firmware.version,
         controlResponsive:true,receiverInactive:true,firmwareMayInstall:[1,2,3,4,7].includes(job.state),commitUnconfirmed:false,
         wifiJobId:job.jobId,wifiJobTarget:job.target,wifiJobSha256:job.sha256,wifiJobState:job.state,wifiJobTerminal:job.terminal,updateJob:job};
