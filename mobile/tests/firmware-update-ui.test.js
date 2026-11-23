@@ -50,6 +50,21 @@ test('a confirmed memory rejection offers explicit Internet and phone choices wi
  const fallback=firmwareUpdateFailurePresentation(error);assert.match(fallback,/This lamp/);assert.match(fallback,/No new firmware was installed/);assert(!fallback.includes('private allocator'));
  for(const unsafe of [{...error,uncertain:true},{...error,uncertain:undefined},{...error,confirmed:false},{...error,installationNotStarted:false},{...error,safeBluetoothFallback:true},{...error,failedPath:'bluetooth'}])assert.equal(firmwareUpdateRouteChoicePresentation(unsafe),null);
 });
+test('legacy software offers only the consented phone route when no Internet request was sent',()=>{
+ const phoneOnly={fallbackRequiresConsent:true,phoneFallbackAvailable:true,directInternetRetryAvailable:false,phoneTransferRequired:true,
+  confirmed:true,uncertain:false,installationNotStarted:true,safeBluetoothFallback:false,failedPath:'wifi'};
+ const value=firmwareUpdateRouteChoicePresentation(phoneOnly,'Edison CoolLamp');
+ assert.equal(value.title,'Send update from phone?');assert.equal(value.retryLabel,null);assert.equal(value.phoneLabel,'Send from phone');
+ assert.match(value.message,/cannot safely start a manual Internet update for Edison CoolLamp on its current software/i);assert.match(value.message,/No update request was sent/i);
+ assert.match(value.message,/keep CoolLamp open/i);assert.match(value.message,/keep the phone near the lamp/i);
+ assert.equal(firmwareUpdateRouteChoicePresentation({...phoneOnly,phoneTransferRequired:false}),null);
+ assert.equal(firmwareUpdateRouteChoicePresentation({...phoneOnly,phoneTransferRequired:undefined}),null);
+ const unavailable=firmwareUpdateFailurePresentation({...phoneOnly,phoneFallbackAvailable:false,fallbackRequiresConsent:false});
+ assert.match(unavailable,/approve it using Bluetooth/i);assert.match(unavailable,/no update request was sent/i);
+ const pendingUnavailable=firmwareUpdateFailurePresentation({...phoneOnly,phoneFallbackAvailable:false,fallbackRequiresConsent:false},{pending:true});
+ assert.match(pendingUnavailable,/approve it using Bluetooth/i);assert.match(pendingUnavailable,/no update request was sent/i);
+ assert.doesNotMatch(pendingUnavailable,/connection was lost/i);
+});
 test('a safely settled stopped transfer offers Internet alone when phone authorization is unavailable',()=>{
  const evidence={fallbackRequiresConsent:true,phoneFallbackAvailable:false,directInternetRetryAvailable:true,confirmed:true,uncertain:false,
   installationNotStarted:false,safeBluetoothFallback:false,failedPath:'bluetooth',settledTerminalRetry:true,settledOutcome:'transferStopped',commitUnconfirmed:false};

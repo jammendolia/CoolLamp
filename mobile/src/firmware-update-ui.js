@@ -15,16 +15,19 @@ export function firmwareUpdateRouteChoicePresentation(error,name='This lamp'){
  const settledRetry=error?.settledTerminalRetry===true&&['installationNotStarted','transferStopped'].includes(error?.settledOutcome);
  const liveUnstartedInternet=unstartedInternet&&!settledRetry;
  const internet=error?.directInternetRetryAvailable===true,phone=error?.phoneFallbackAvailable===true;
+ const phoneTransferRequired=error?.phoneTransferRequired===true;
  if(error?.fallbackRequiresConsent!==true||typeof error?.phoneFallbackAvailable!=='boolean'||typeof error?.directInternetRetryAvailable!=='boolean'||!internet&&!phone||
   error?.confirmed!==true||error?.uncertain!==false||error?.safeBluetoothFallback!==false||!unstartedInternet&&!settledRetry)return null;
- if(liveUnstartedInternet&&(!internet||!phone))return null;
+ if(phoneTransferRequired&&(!liveUnstartedInternet||internet||!phone))return null;
+ if(liveUnstartedInternet&&(!internet||!phone)&&!phoneTransferRequired)return null;
  if(settledRetry&&error.commitUnconfirmed!==false)return null;
  const subject=typeof name==='string'&&name.trim()?name.trim():'This lamp';
  const reason=error.firmwareError===8?' because it did not have enough free memory':'';
  const transferStopped=error.settledOutcome==='transferStopped';
- const opening=transferStopped?'The previous phone transfer to '+subject+' stopped before installation. '+subject+' is still on its previous firmware.':
+ const opening=phoneTransferRequired?'CoolLamp cannot safely start a manual Internet update for '+subject+' on its current software. No update request was sent.':
+  transferStopped?'The previous phone transfer to '+subject+' stopped before installation. '+subject+' is still on its previous firmware.':
   subject+' could not start its Internet download'+reason+'. No new firmware was installed.';
- return Object.freeze({title:transferStopped?'Choose how to try again':'Internet download couldn’t start',
+ return Object.freeze({title:phoneTransferRequired?'Send update from phone?':transferStopped?'Choose how to try again':'Internet download couldn’t start',
   message:opening+(internet?' Try the Internet download again'+(phone?', send the update from this phone, or stop for now.':', or stop for now.'):
    ' Send the update from this phone, or stop for now.')+(phone?' If you send it from this phone, keep CoolLamp open and keep the phone near the lamp until it finishes.':
    ' To send it from this phone, first connect to and approve the lamp using its Bluetooth icon.'),
@@ -32,6 +35,10 @@ export function firmwareUpdateRouteChoicePresentation(error,name='This lamp'){
 }
 export function firmwareUpdateFailurePresentation(error,{pending=false}={}){
  if(pending&&error?.stopReason==='app-hidden')return 'Sending stopped when CoolLamp left the screen. We’ll check your lamp when you return. Keep it powered.';
+ if(error?.phoneTransferRequired){
+  const route=firmwareUpdateRouteChoicePresentation(error);if(route)return route.message;
+  return 'CoolLamp cannot safely start a manual Internet update on this lamp’s current software. To update now, approve it using Bluetooth and send it from your phone. No update request was sent.';
+ }
  if(pending)return 'The connection was lost. We’ll check your lamp when it is available. Keep it powered and nearby.';
  const route=firmwareUpdateRouteChoicePresentation(error);
  if(route)return route.message;

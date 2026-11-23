@@ -127,7 +127,8 @@ export async function updateCardFirmware({entry,manifest,wifi,acquireBluetooth,d
    if(error.safeBluetoothFallback===true&&!error.uncertain&&!error.identity&&!error.stale&&!error.cancelled&&!mutationStarted){
     const canUsePhone=typeof phoneFallbackAvailable==='boolean'?phoneFallbackAvailable:typeof entry.deviceId==='string'&&entry.deviceId.length>0;
     throw Object.assign(error,{confirmed:true,uncertain:false,installationNotStarted:true,safeBluetoothFallback:false,
-     phoneFallbackAvailable:canUsePhone,directInternetRetryAvailable:true,fallbackRequiresConsent:canUsePhone,failedPath:'wifi'});
+      phoneFallbackAvailable:canUsePhone,directInternetRetryAvailable:error.phoneTransferRequired===true?false:true,
+      fallbackRequiresConsent:canUsePhone,failedPath:'wifi'});
    }
    if(value?.wifiInstallAttempted)return checkResult(error);
    return stopUnstarted(error);

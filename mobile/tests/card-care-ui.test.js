@@ -143,9 +143,16 @@ test('unsafe or unverified attempts never offer the phone route',()=>{
 });
 test('a persisted unfinished update offers a status check and never another install',()=>{
  const {button,calls}=fixture({firmwareAttempts:{pending:()=>[{identity:entry.id}]},cardFirmwareUnconfirmed:new Map([[entry.id,'1.14.0']])});
- assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check update');button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
+ assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check nearby');assert.match(button.attributes['aria-label'],/nearby over Bluetooth/);
+ button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
 });
 test('an older app’s unfinished receipt offers the same read-only check',()=>{
  const {button,calls}=fixture({legacyFirmwareReceipts:new Map([[entry.id,{targetVersion:'1.14.0',outcome:'verification-required'}]])});
- assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check update');button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
+ assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check nearby');assert.match(button.attributes['aria-label'],/nearby over Bluetooth/);
+ button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
+});
+test('a durable lamp-owned update job keeps its automatic status-check action',()=>{
+ const {button,calls}=fixture({firmwareAttempts:{pending:()=>[{identity:entry.id,wifiJobAttempted:true}]},cardFirmwareUnconfirmed:new Map([[entry.id,'1.14.0']])});
+ assert.equal(button.disabled,false);assert.equal(button.label.textContent,'Check update');assert.doesNotMatch(button.attributes['aria-label'],/Bluetooth/);
+ button.onclick();assert.deepEqual(calls,[['check-update',entry.id]]);
 });

@@ -154,7 +154,7 @@ test('the brief mutation lease encloses durable intent and the one job POST',asy
  assert.deepEqual(events,['begin','journal','post','end']);
 });
 
-test('the job handoff starts before credential access and releases before a legacy check POST',async()=>{
+test('the job handoff starts before credential access and legacy software is refused before any mutation',async()=>{
  let releaseCredential,credentialStarted;const credentialGate=new Promise(resolve=>releaseCredential=resolve),started=new Promise(resolve=>credentialStarted=resolve);
  const events=[];let active=false;
  const aroundJobStart=async(_context,operation)=>{events.push('begin');active=true;try{return await operation();}finally{active=false;events.push('end');}};
@@ -164,16 +164,42 @@ test('the job handoff starts before credential access and releases before a lega
  assert.deepEqual(f.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/firmware','/api/state']);
 
  const legacyEvents=[];active=false;
- const legacy=fixture({jobContract:0,legacyCheckResponse:reply('Rejected',500),aroundJobStart:async(_context,operation)=>{
+ const legacy=fixture({jobContract:0,aroundJobStart:async(_context,operation)=>{
   legacyEvents.push('begin');active=true;try{return await operation();}finally{active=false;legacyEvents.push('end');}
  }});
- const legacyAttempt=legacy.journal.begin(id,manifest),request=legacy.fleet.http.request;
- legacy.fleet.http.request=options=>{if(options.method==='POST'&&new URL(options.url).pathname==='/api/firmware/check'){
-  assert.equal(active,false);legacyEvents.push('check-post');
- }return request(options);};
- await assert.rejects(legacy.fleet.updateLamp(entry,manifest.version,{jobId:legacyAttempt.attemptId,version:manifest.version,sha256:manifest.sha256}));
- assert(legacyEvents.indexOf('end')>=0);assert(legacyEvents.indexOf('end')<legacyEvents.indexOf('check-post'));
- assert.deepEqual(legacy.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/firmware','/api/state']);
+ const legacyAttempt=legacy.journal.begin(id,manifest);
+ await assert.rejects(legacy.fleet.updateLamp(entry,manifest.version,{jobId:legacyAttempt.attemptId,version:manifest.version,sha256:manifest.sha256}),error=>
+  error.safeBluetoothFallback===true&&error.phoneTransferRequired===true);
+ assert.deepEqual(legacyEvents,['begin','end']);assert.equal(legacy.posts,0);
+ assert.deepEqual(legacy.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/firmware']);
+ assert.equal(legacy.requests.some(value=>value.method==='POST'),false);
+ const saved=legacy.journal.get(id);assert.equal(saved.wifiCheckAttempted,false);assert.equal(saved.wifiInstallAttempted,false);assert.equal(saved.wifiJobAttempted,false);
+});
+
+test('the card updater turns a legacy job refusal into an explicit phone-only choice without sending anything',async()=>{
+ const f=fixture({jobContract:0}),attempt=f.journal.begin(id,manifest);let downloadCalled=false,bluetoothCalled=false;
+ await assert.rejects(updateCardFirmware({entry,manifest,attemptJournal:f.journal,attempt,phoneFallbackAvailable:true,
+  wifi:(_entry,version)=>f.fleet.updateLamp(entry,version,{jobId:attempt.attemptId,version,sha256:manifest.sha256}),
+  acquireBluetooth:()=>{bluetoothCalled=true;assert.fail('Consent is required before acquiring Bluetooth.');},
+  download:()=>{downloadCalled=true;assert.fail('Consent is required before downloading to the phone.');}}),error=>{
+   assert.equal(error.phoneTransferRequired,true);assert.equal(error.confirmed,true);assert.equal(error.uncertain,false);
+   assert.equal(error.installationNotStarted,true);assert.equal(error.safeBluetoothFallback,false);
+   assert.equal(error.phoneFallbackAvailable,true);assert.equal(error.directInternetRetryAvailable,false);
+   assert.equal(error.fallbackRequiresConsent,true);assert.equal(error.failedPath,'wifi');return true;
+  });
+ assert.equal(downloadCalled,false);assert.equal(bluetoothCalled,false);assert.equal(f.posts,0);
+ assert.equal(f.requests.some(value=>value.method==='POST'),false);
+ const saved=f.journal.get(id);assert.equal(saved.outcome,'pending');assert.equal(saved.wifiCheckAttempted,false);
+ assert.equal(saved.wifiInstallAttempted,false);assert.equal(saved.wifiJobAttempted,false);
+});
+
+test('an already-updated legacy lamp returns ready before the phone-only fallback and sends no mutation',async()=>{
+ const f=fixture({jobContract:0});f.setInstalled({version:manifest.version});const attempt=f.journal.begin(id,manifest);
+ const result=await f.fleet.updateLamp(entry,manifest.version,{jobId:attempt.attemptId,version:manifest.version,sha256:manifest.sha256});
+ assert.equal(result.state,'ready');assert.equal(result.installedVersion,manifest.version);assert.match(result.message,/Already up to date/);
+ assert.equal(f.posts,0);assert.equal(f.requests.some(value=>value.method==='POST'),false);
+ assert.deepEqual(f.requests.filter(value=>value.method==='GET').map(value=>new URL(value.url).pathname),['/api/diagnostics','/api/diagnostics','/api/firmware']);
+ const saved=f.journal.get(id);assert.equal(saved.wifiCheckAttempted,false);assert.equal(saved.wifiInstallAttempted,false);assert.equal(saved.wifiJobAttempted,false);
 });
 
 test('bulk updates hand capable lamps off as independent durable jobs',async()=>{

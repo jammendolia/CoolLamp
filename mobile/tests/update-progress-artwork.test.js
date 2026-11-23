@@ -186,7 +186,7 @@ test('production cards show only the receiving model with a visible percentage a
 test('downloaded, unconfirmed, stopping and restart cards never borrow a hundred-percent fill',()=>{
  for(const options of [
   ...['downloading','downloaded','preparing','connecting','verifying','restarting','checking-result'].map(stage=>({stage,progress:100})),
-  {pending:true,progress:100},{reconciling:true,progress:100},{cancelRequested:true,progress:65},
+  {reconciling:true,progress:100},{cancelRequested:true,progress:65},
   ...[undefined,NaN,-1,101,50.5,'65'].map(progress=>({progress}))
  ]){
   // Passing undefined explicitly models a sender with no offset, rather than
@@ -195,6 +195,17 @@ test('downloaded, unconfirmed, stopping and restart cards never borrow a hundred
   const view=fixture(options),art=view.card.querySelector('.v2-card-art'),bar=view.card.querySelector('.lamp-update-progress');
   assert(!art.innerHTML.includes('data-update-progress'));assert.equal(art.querySelector('.v2-card-update-percent'),null);assert.equal(bar.value,undefined);
  }
+});
+
+test('passive update uncertainty asks for a check without showing active progress',()=>{
+ const passive=fixture({task:false,pending:true,feedbackMessage:'The update needs confirmation.'});
+ assert.equal(passive.card.querySelector('.v2-card-status').textContent,'Update needs a check');
+ assert.equal(passive.card.querySelector('.lamp-update-progress'),null);
+ assert.deepEqual(passive.card.querySelectorAll('.lamp-update-status').map(value=>value.textContent),['The update needs confirmation.']);
+ assert(!passive.card.querySelector('.v2-card-art').innerHTML.includes('data-update-progress'));
+ const active=fixture({task:true,reconciling:true,progress:100});
+ assert.equal(active.card.querySelector('.v2-card-status').textContent,'Checking your update');
+ const progress=active.card.querySelector('.lamp-update-progress');assert(progress);assert.equal(progress.value,undefined);
 });
 
 test('fleet percentages require both fresh target verification and an updating phase',()=>{

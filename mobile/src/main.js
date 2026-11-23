@@ -1309,7 +1309,7 @@ async function checkLampUpdateResult(entry){
  const messageOwner=cardFirmwareMessageOwners.get(entry.id);
  if(messageOwner&&messageOwner.attemptId===attempt.attemptId){if(cardFirmwareMessages.get(entry.id)===messageOwner.message)cardFirmwareMessages.delete(entry.id);cardFirmwareMessageOwners.delete(entry.id);}
  const current=()=>cardFirmwareTasks.get(entry.id)===task&&!task.abort.signal.aborted&&mergedLampEntries().some(value=>value.id===entry.id&&value.deviceId===entry.deviceId)&&!groupRemovedIds.has(entry.id);
- task.isCurrent=current;task.attempt=attempt;task.feedback=firmwareFeedback.begin(entry.id,{preservePending:Boolean(legacy)});
+ task.isCurrent=current;task.attempt=attempt;task.feedback=firmwareFeedback.begin(entry.id,{preservePending:true});
  const progress=value=>{if(!current())return;firmwareFeedback.update(task.feedback,firmwareUpdatePresentation(value));renderLamps();};
  try{
   const options={isCurrent:current,signal:task.abort.signal,onProgress:progress,acquire:(_attempt,readOptions)=>acquireCardFirmwareBluetooth(task.entry,readOptions)};
@@ -1351,7 +1351,10 @@ function schedulePendingFirmwareChecks(){
 function resumePendingFirmwareChecks(){
  schedulePendingFirmwareChecks();
  if(document.hidden||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating)return;
- const pending=[...firmwareAttempts.pending(),...legacyFirmwareReceipts.values()],ids=new Set(pending.map(value=>value.identity));
+ // Only durable lamp-owned jobs advance automatically. Legacy receipts and
+ // check-only uncertainty require an explicit nearby, read-only status check;
+ // repeatedly acquiring Bluetooth here only creates fake progress and churn.
+ const pending=firmwareAttempts.pending().filter(value=>value.wifiJobAttempted===true),ids=new Set(pending.map(value=>value.identity));
  for(const id of firmwareResultCheckAt.keys())if(!ids.has(id))firmwareResultCheckAt.delete(id);
  const start=pending.findIndex(value=>value.identity===firmwareResultCheckCursor)+1;
  for(let index=0;index<pending.length;index++){
@@ -1360,7 +1363,7 @@ function resumePendingFirmwareChecks(){
   const now=performance.now(),last=firmwareResultCheckAt.get(entry.id);
   // Lamp-owned Wi-Fi jobs are cheap authenticated GETs and provide real
   // progress. Protected Bluetooth reconciliation remains deliberately sparse.
-  const interval=attempt.wifiJobAttempted?10000:60000;
+  const interval=10000;
   if(last!==undefined&&now-last<interval)continue;
   firmwareResultCheckCursor=entry.id;firmwareResultCheckAt.set(entry.id,now);
   void Promise.resolve(checkLampUpdateResult(entry)).finally(schedulePendingFirmwareChecks);break;
@@ -1492,7 +1495,8 @@ async function updateLampCard(entry,{bluetoothOnly=false,allowReinstall=false,ap
     const pending=firmwareAttempts.pending().some(value=>value.identity===entry.id);
     if(pending)cardFirmwareUnconfirmed.set(entry.id,task.attempt?.version);else cardFirmwareUnconfirmed.delete(entry.id);
      const message=dialogFailure?'Could not open the update choices. No new firmware was installed. Checking that your lamp is unchanged…':
-      routeFollowup==='cancel'?'The Internet download did not start. Checking that your lamp is unchanged…':'Checking your lamp before continuing…';
+      routeFollowup==='cancel'?(error.phoneTransferRequired?'No Internet update was attempted. Checking that your lamp is unchanged…':
+       'The Internet download did not start. Checking that your lamp is unchanged…'):'Checking your lamp before continuing…';
     if(task.attempt)try{firmwareDiagnostics.complete(entry.id,task.attempt.attemptId,{outcome:pending?'unresolved':'installationNotStarted'});}catch{}
     if(task.feedback)firmwareFeedback.update(task.feedback,{message,terminal:true,...(pending?{outcome:'verification-required',targetVersion:task.attempt?.version}:{})});
     if(current()){setTaskMessage(message,{reconciliation:true});status(message);}
@@ -1524,7 +1528,11 @@ function cardFirmwareButton(entry){
  const button=document.createElement('button');button.type='button';button.className='lamp-connection lamp-firmware-update v2-card-update';button.dataset.connection='update';
  button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="'+(release?'M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4':'M20 7v5h-5M20 12a8 8 0 1 0-2.35 5.65')+'"/></svg><span>'+(release?'Update':checking?'Checking…':'Check')+'</span>';
  button.title=release?'Update '+(entry.name||'lamp')+' to firmware '+release.version:'Check firmware updates for '+(entry.name||'lamp');button.setAttribute('aria-label',button.title);
- if(unresolved){button.querySelector('span').textContent='Check update';button.title='Check '+(entry.name||'lamp')+' update';button.setAttribute('aria-label',button.title);}
+ if(unresolved){
+  const durable=Boolean(!legacyFirmwareReceipts.has(entry.id)&&firmwareAttempts.pending().find(value=>value.identity===entry.id)?.wifiJobAttempted);
+  button.querySelector('span').textContent=durable?'Check update':'Check nearby';
+  button.title=durable?'Check '+(entry.name||'lamp')+' update':'Check '+(entry.name||'lamp')+' update nearby over Bluetooth';button.setAttribute('aria-label',button.title);
+ }
  else if(retryChoice){button.querySelector('span').textContent='Try again';button.title='Choose how to retry '+(entry.name||'this lamp')+' firmware '+release.version;button.setAttribute('aria-label',button.title);}
  else if(release&&firmwareFeedback.get(entry.id)?.terminal&&firmwareFeedback.get(entry.id)?.outcome!=='installed'&&firmwareAttempts.get?.(entry.id)?.version===release.version)button.querySelector('span').textContent='Try again';
  button.disabled=Boolean((!unresolved&&checking)||connecting||cardFirmwareTasks.size||bluetoothFirmwareTask||fleetUpdating||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id));button.onclick=unresolved?()=>checkLampUpdateResult(entry):retryChoice?()=>retryCardFirmware(entry,release,retryChoice):release?()=>updateLampCard(entry):()=>{refreshPublicFirmware({force:true});refreshLampFirmware();};return button;
@@ -2300,18 +2308,19 @@ function renderLamps() {
     const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove v2-card-remove';remove.dataset.connection='remove';remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6"/></svg>';remove.title='Remove '+name+' from this phone';remove.setAttribute('aria-label',remove.title);
     remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};links.append(remove);
     const feedback=document.createElement('div');feedback.className='v2-card-feedback';
-    if(task||pendingUpdate||receiverUpdate)readiness.textContent=task?.reconciling||pendingUpdate&&!task?'Checking your update':'Updating your lamp';
+    if(task||receiverUpdate)readiness.textContent=task?.reconciling?'Checking your update':'Updating your lamp';
+    else if(pendingUpdate)readiness.textContent='Update needs a check';
     // Only copy owned by this update generation may outrank retained feedback.
     // Unrelated late card messages (for example fleet provisioning) cannot
     // hide active or terminal transfer/reconciliation feedback.
     const cardFirmwareMessage=cardFirmwareMessages.get(entry.id),messageOwner=cardFirmwareMessageOwners.get(entry.id);
-    const firmwareMessage=messageOwner?.message===cardFirmwareMessage?cardFirmwareMessage:updateFeedback?.message||cardFirmwareMessage;
+    const firmwareMessage=messageOwner&&messageOwner.message===cardFirmwareMessage?cardFirmwareMessage:updateFeedback?.message||cardFirmwareMessage;
     const messages=[cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate?null:cardConnectionMessages.get(entry.id),firmwareMessage,meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
     for(const messageText of [...new Set(messages)]){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=messageText;feedback.append(message);}
     if(sourceLabel){const source=document.createElement('small');source.className='v2-card-update-source';source.textContent=sourceLabel;feedback.append(source);}
     const automaticMessage=!task&&!pendingUpdate&&!receiverUpdate?automaticUpdateCardMessage(observation,entry.id):null;
     if(automaticMessage){const attention=document.createElement('small');attention.className='v2-card-auto-attention';attention.textContent=automaticMessage;feedback.append(attention);}
-    if(task||pendingUpdate||receiverUpdate||['updating','restarting'].includes(observation?.state)){const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;if(updatePercent!==undefined)progress.value=updatePercent;progress.setAttribute('aria-label',name+' update progress'+(sourceLabel?' · '+sourceLabel.toLowerCase():''));feedback.append(progress);}
+    if(task||receiverUpdate||['updating','restarting'].includes(observation?.state)){const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;if(updatePercent!==undefined)progress.value=updatePercent;progress.setAttribute('aria-label',name+' update progress'+(sourceLabel?' · '+sourceLabel.toLowerCase():''));feedback.append(progress);}
     const cancelUpdate=cardFirmwareCancelButton(entry);if(cancelUpdate)feedback.append(cancelUpdate);
     wrapper.append(button,readiness,actions,feedback,connectionDetails);$('lampList').append(wrapper);
     if(focusedId===entry.id){const control=focusedConnection==='power'?power:focusedConnection==='settings'?gear:focusedConnection==='lighting'?button:focusedConnection==='update'?update:focusedConnection==='reinstall-update'?reinstall:focusedConnection==='cancel-update'?cancelUpdate:focusedRemove||focusedConnection==='remove'?remove:focusedConnection?links.querySelector('[data-connection="'+focusedConnection+'"]'):button;if(control&&!control.disabled){if(connectionDetails.contains(control))connectionDetails.open=true;control.focus({preventScroll:true});}}

@@ -54,13 +54,15 @@ test('only verified installed reconciliation immediately updates the card versio
  context.remember(identity,{outcome:'installed',installedVersion:'1.15.1',controlResponsive:true,receiverInactive:true});
  assert.equal(calls[0].version,'1.15.1');assert.equal(statuses.get(identity).installedVersion,'1.15.1');
 });
-test('automatic recovery rotates between unreachable lamps even when the first 45-second check expires its cooldown',()=>{
- const first=source.indexOf('const firmwareResultCheckAt=new Map();'),last=source.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingFirmwareChecks();});",first);
- const ids=[identity,'aabbccddeeff','112233445566'],calls=[],timers=new Map();let timerId=0;const context={Map,Set,Promise,clearTimeout:id=>timers.delete(id),setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn:()=>{timers.delete(id);fn();},delay});return id;},performance:{now:()=>0},document:{hidden:false},connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
-  firmwareAttempts:{pending:()=>ids.map(identity=>({identity}))},legacyFirmwareReceipts:new Map(),mergedLampEntries:()=>ids.map(id=>({id})),checkLampUpdateResult:entry=>{calls.push(entry.id);}};
+test('automatic recovery never checks or schedules non-job and legacy uncertainty, including on foreground return',()=>{
+ const first=source.indexOf('const firmwareResultCheckAt=new Map();'),last=source.indexOf('\nfunction resumeCompletedCardFirmwareTask(',first);
+ const calls=[],timers=new Map(),listeners=[];let timerId=0;const document={hidden:false,addEventListener:(name,listener)=>{assert.equal(name,'visibilitychange');listeners.push(listener);}};
+ const context={Map,Set,Promise,clearTimeout:id=>timers.delete(id),setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn,delay});return id;},performance:{now:()=>0},document,connecting:false,cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,fleetUpdating:false,
+  firmwareAttempts:{pending:()=>[{identity,wifiJobAttempted:false}]},legacyFirmwareReceipts:new Map([['aabbccddeeff',{targetVersion:'1.15.1'}]]),
+  mergedLampEntries:()=>[{id:identity},{id:'aabbccddeeff'}],checkLampUpdateResult:entry=>{calls.push(entry.id);}};
  runInNewContext(source.slice(first,last)+';globalThis.resume=resumePendingFirmwareChecks;',context);
- context.resume();context.performance.now=()=>65000;context.resume();context.performance.now=()=>130000;context.resume();context.performance.now=()=>195000;context.resume();
- assert.deepEqual(calls,[...ids,identity]);context.document.hidden=true;context.resume();assert.equal(calls.length,4);
+ context.resume();assert.deepEqual(calls,[]);assert.equal(timers.size,0);assert.equal(listeners.length,1);
+ document.hidden=true;listeners[0]();document.hidden=false;listeners[0]();assert.deepEqual(calls,[]);assert.equal(timers.size,0);
 });
 test('durable jobs keep reconciling every ten seconds on a detail route until terminal',async()=>{
  const first=source.indexOf('const firmwareResultCheckAt=new Map();'),last=source.indexOf("\ndocument.addEventListener('visibilitychange',()=>{if(!document.hidden)resumePendingFirmwareChecks();});",first);

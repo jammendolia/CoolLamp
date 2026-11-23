@@ -424,6 +424,13 @@ export class FirmwareFleet {
     if (!identity.firmware.supported) throw failure('This lamp does not support Wi-Fi updates.', {unsupported: true});
     if(identity.firmware.wifi===false)throw failure('This lamp is not connected to Wi-Fi.',{safeBluetoothFallback:true});
     if(run.expectedVersion&&!newer(run.expectedVersion,identity.firmware.version))return this.live(lamp,run,identity,'ready','Already up to date.');
+    // A saved app attempt needs a durable lamp-owned receipt before any Wi-Fi
+    // mutation can leave the phone. Legacy firmware cannot identify or recover
+    // an uncertain /api/firmware/check request, so keep that endpoint available
+    // only to callers that did not request the durable job contract.
+    if(run.job&&identity.firmware.updateJobContractVersion!==1)
+      throw failure('CoolLamp cannot safely start a manual Internet update on this lamp’s current software. To update now, send it from your phone.',
+       {safeBluetoothFallback:true,phoneTransferRequired:true});
     if(run.job&&identity.firmware.updateJobContractVersion===1)return this.startUpdateJob(lamp,run,identity);
     const originalVersion = identity.firmware.version;
     if (!busyPhases.includes(identity.firmware.phase)) {
