@@ -9,7 +9,7 @@ const main=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replac
 function extract(source,start,end){const first=source.indexOf(start),last=source.indexOf(end,first+start.length);assert(first>=0&&last>first,start);return source.slice(first,last);}
 const selectedRoute=extract(main,'async function openSelectedLampGroup(','\nfunction openCardGroups(');
 const editor=extract(main,'async function closeGroupEditor(','\nasync function groupSceneAction(');
-const acquire=extract(main,'async function acquireGroupLamp(','\nasync function stopGroupInspection(');
+const acquire=extract(main,'function usableGroupLamp(','\nasync function stopGroupInspection(');
 const foreground=extract(main,'function pauseFirmwareBackgroundWork(','\nfunction firmwareConnectionNotice(');
 const page=extract(main,'function page(name,','\n\n\nconst $ =');
 const refresh=extract(main,'function refreshRoomGroups(','\nasync function roomGroupAction(');
@@ -34,7 +34,7 @@ function fixture({role=1,leader=role===2?left:right,read,acquireHook}={}){
  const transports=new Map();
  const transport=id=>{
   if(transports.has(id))return transports.get(id);
-  const value={identity:id,deviceIdentity:id,id:'peripheral-'+(id===right?'right':'left'),epoch:7,raw:clone(models.get(id)),tail:Promise.resolve(),reads:0,
+  const value={identity:id,deviceIdentity:id,id:'peripheral-'+(id===right?'right':'left'),epoch:7,base:'bluetooth://'+id,raw:clone(models.get(id)),tail:Promise.resolve(),reads:0,
    enqueue(action){const pending=this.tail.then(action);this.tail=pending.catch(()=>{});return pending;},
    async refresh(expected,retry,guard){assert.equal(expected,id);assert.equal(retry,true);assert.equal(typeof guard,'function');guard();calls.push({op:'read',id,count:++this.reads});
     const result=read?await read(context,id,this.reads,models):undefined;guard();this.raw=clone(result||models.get(id));return this.raw;},

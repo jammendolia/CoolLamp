@@ -28,7 +28,8 @@ function handler(name){
 function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=false,httpGate=null,httpHealthy=false,bluetoothGate=null,budget={}}={}){
  const entry={id,name:'Corkscrew',deviceId:'saved-ble',accessoryManaged:authorized,address:'http://192.168.1.42',firmwareVersion:'1.15.2'};
  const calls=[],messages=[],failures=new Map();let releases=0,provisions=0;
- const peer={identity:id,epoch:1,base:'ble:saved-ble',supportsOfflineGroups:true,raw:{deviceId:id,name:entry.name},async request(path){
+ const peer={identity:id,epoch:1,base:'ble:saved-ble',supportsOfflineGroups:true,raw:{deviceId:id,name:entry.name},
+  enqueue:action=>Promise.resolve().then(action),async refresh(){return this.raw;},async request(path){
   calls.push(path);if(path==='/api/mesh/status')return {version:1,deviceId:id,available:true,fleetId};
   if(path==='/api/mesh/new')return {version:1,candidates:[{id:target,name:'CoolLamp Bridge',firmwareVersion:'0.2.1',broker:id,online:true,claimed:false}]};
   throw Error('Unexpected enrollment mutation');
@@ -39,6 +40,8 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
    assert(options.isCurrent());if(bluetoothGate)await bluetoothGate.promise;if(!options.isCurrent())throw Object.assign(Error('Canceled'),{cancelled:true});
    if(bluetoothFailure)throw Error('Unavailable');this.identity=id;this.base=peer.base;return {};
   }
+  enqueue(action){return Promise.resolve().then(action);}
+  async refresh(){return this.raw;}
   request(...args){return peer.request(...args);}
   async disconnect(){releases++;}
  }
@@ -59,7 +62,7 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
   validFirmwareVersion:value=>value,compareFirmwareVersions:()=>-1,clearTimeout,AbortController,
   meshNetworkMessages:new Map(),document:{hidden:false},meshWizard:null,navigationSerial:1,meshDiscoveryRun:null,meshDiscoveryFailures:failures,
   $:()=>({hidden:false}),status:value=>messages.push(value),meshOnboarding:null};
- runInNewContext(['observeBrokerConnection','createGroupLampLease','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
+ runInNewContext(['observeBrokerConnection','createGroupLampLease','usableGroupLamp','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
  context.meshOnboarding=new MeshOnboarding({getBridges:()=>[entry],acquireBridge:context.acquireOnboardingBridge,
   onDiscoveryError:(entry,error)=>failures.set(entry.id,{name:entry.name,error}),requestTimeout:7900});
  return {entry,calls,context,messages,failures,peer,releases:()=>releases,provisions:()=>provisions};
@@ -95,7 +98,7 @@ test('onboarding shares an existing group Bluetooth owner and cannot disconnect 
  await discovery.release();assert.equal(f.releases(),0);await owner.release();assert.equal(f.releases(),1);
 });
 test('an open group editor is borrowed without opening or closing its Bluetooth peripheral',async()=>{
- const f=fixture();f.context.groupEditor={lamp:f.peer};const lease=await f.context.acquireOnboardingBridge(id);
+ const f=fixture();f.context.groupEditor={id,epoch:f.peer.epoch,lamp:f.peer};const lease=await f.context.acquireOnboardingBridge(id);
  assert.equal(lease.lamp,f.peer);assert.deepEqual(f.calls,['/api/mesh/status']);await lease.release();assert.equal(f.releases(),0);
 });
 test('timed-out production pooled HTTP acquisition retires before fresh Bluetooth fallback',async()=>{

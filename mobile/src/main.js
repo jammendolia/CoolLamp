@@ -1798,6 +1798,19 @@ function cardPowerButton(entry){
   button.disabled=pending||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
   button.onclick=()=>changeCardPower(entry,cardPowerExpected(entry)?expected:null);return button;
 }
+function groupPowerControl(entry,group,name=entry.name||'CoolLamp'){
+  const expected=cardPowerExpected(entry),pending=cardPowerTasks.has(entry.id),ready=Boolean(group?.available&&group?.leader?.verified&&group.leader.role===1);
+  const membership=ready?{group:{role:1,leader:entry.id},...(expected?{power:expected.power}:{})}:null;
+  const disabled=pending||!ready||group?.leader?.sync?.membershipLocked===true||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
+  const control=document.createElement('div');control.className='v2-group-power-set';control.setAttribute('role','group');control.setAttribute('aria-label','Set '+name+' group power');control.setAttribute('aria-busy',String(pending));
+  const label=document.createElement('span');label.textContent=pending?'Working…':'Power';control.append(label);
+  for(const [copy,desired] of [['On',true],['Off',false]]){
+    const button=document.createElement('button');button.type='button';button.dataset.connection='power-'+copy.toLowerCase();button.dataset.powerIntent=String(desired);button.textContent=copy;
+    button.setAttribute('aria-label','Turn '+name+' group '+copy.toLowerCase());button.setAttribute('aria-pressed',String(Boolean(expected&&expected.power===desired)));button.disabled=disabled;
+    button.onclick=()=>changeCardPower(entry,membership,{requestedPower:desired});control.append(button);
+  }
+  return control;
+}
 async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgress,isScopeCurrent=()=>true,requestedPower=null}={}){
   const scopeCurrent=()=>{try{return isScopeCurrent()!==false;}catch{return false;}};
   if(!scopeCurrent())return Object.freeze({outcome:'failed',message:'The active Home changed. Open Home and choose the light again.'});
@@ -1807,9 +1820,15 @@ async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgre
   if(groupRemovedIds.has(entry.id))return Object.freeze({outcome:'failed',message:'This lamp is being removed. Wait for that change to finish.'});
   const current=mergedLampEntries().find(value=>value.id===entry.id);
   if(!current)return Object.freeze({outcome:'failed',message:'This lamp is no longer available. Open Lights to check your saved lamps.'});
-  const location=JSON.stringify([current.address??null,current.deviceId??null]),job={cancelled:false,
-    restoreFocus:document.activeElement?.dataset.connection==='power'&&document.activeElement.closest('.lamp-entry')?.dataset.lampId===entry.id,navigation:navigationSerial};
-  const cancelFocus=event=>{if(event.target?.dataset?.connection!=='power'||event.target.closest('.lamp-entry')?.dataset.lampId!==entry.id)job.restoreFocus=false;};
+  const activeControl=document.activeElement,activeConnection=activeControl?.dataset?.connection;
+  const restoreFocus=activeConnection==='power'&&activeControl.closest?.('.lamp-entry')?.dataset.lampId===entry.id?{scope:'lamp',connection:activeConnection}:
+    (activeConnection==='power-on'||activeConnection==='power-off')&&activeControl.closest?.('[data-group-id]')?.dataset.groupId===entry.id?{scope:'group',connection:activeConnection}:null;
+  const location=JSON.stringify([current.address??null,current.deviceId??null]),job={cancelled:false,restoreFocus,navigation:navigationSerial};
+  const cancelFocus=event=>{
+    if(!job.restoreFocus||event.target===document.body)return;
+    const targetId=job.restoreFocus.scope==='lamp'?event.target?.closest?.('.lamp-entry')?.dataset.lampId:event.target?.closest?.('[data-group-id]')?.dataset.groupId;
+    if(event.target?.dataset?.connection!==job.restoreFocus.connection||targetId!==entry.id)job.restoreFocus=null;
+  };
   for(const type of ['focusin','pointerdown','keydown'])document.addEventListener(type,cancelFocus);
   cardPowerTasks.set(entry.id,job);cardPowerMessages.delete(entry.id);renderLamps();renderRoomGroups();
   const isPresent=()=>scopeCurrent()&&!job.cancelled&&cardPowerTasks.get(entry.id)===job&&!groupRemovedIds.has(entry.id)&&
@@ -1841,8 +1860,14 @@ async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgre
   }finally{
     for(const type of ['focusin','pointerdown','keydown'])document.removeEventListener(type,cancelFocus);
     if(cardPowerTasks.get(entry.id)===job)cardPowerTasks.delete(entry.id);renderLamps();renderRoomGroups();if(groupEditor)renderGroupScenes();
-    if(job.restoreFocus&&job.navigation===navigationSerial&&!$('page-lamps').hidden&&document.activeElement===document.body){
-      const control=[...$('lampList').querySelectorAll('.lamp-entry')].find(card=>card.dataset.lampId===entry.id)?.querySelector('.lamp-power');if(control&&!control.disabled)control.focus({preventScroll:true});
+    if(job.restoreFocus&&job.navigation===navigationSerial&&document.activeElement===document.body){
+      let control=null;
+      if(job.restoreFocus.scope==='lamp'&&!$('page-lamps').hidden){
+        const card=[...$('lampList').querySelectorAll('.lamp-entry')].find(item=>item.dataset.lampId===entry.id);control=[...card?.querySelectorAll('[data-connection]')||[]].find(item=>item.dataset.connection===job.restoreFocus.connection);
+      }else if(job.restoreFocus.scope==='group'&&!$('page-groups').hidden){
+        const card=[...$('groupsList').querySelectorAll('[data-group-id]')].find(item=>item.dataset.groupId===entry.id);control=[...card?.querySelectorAll('[data-connection]')||[]].find(item=>item.dataset.connection===job.restoreFocus.connection);
+      }
+      if(control&&!control.disabled)control.focus({preventScroll:true});
     }
   }
 }
@@ -3118,6 +3143,9 @@ function groupInventoryEntries() {
   }
   return [...entries.values()];
 }
+function usableGroupLamp(lamp,id){
+  return Boolean(lamp&&lamp.identity===id&&Number.isInteger(lamp.epoch)&&typeof lamp.base==='string'&&typeof lamp.refresh==='function'&&typeof lamp.enqueue==='function');
+}
 async function acquireGroupLamp(id,options={}) {
   const readGeneration=firmwareBackgroundGeneration;
   const admitted=()=>{
@@ -3133,8 +3161,8 @@ async function acquireGroupLamp(id,options={}) {
   options={...options,entry:current};
   if(cardPowerTasks.has(id)&&options.purpose!=='power'&&options.readOnly!==true)throw Object.assign(Error('Wait for this lamp’s power request to finish before changing its group.'),{confirmed:true,cancelled:true});
   const borrowedBasicPower=options.purpose==='power'&&lamp===bleLamp&&(options.readOnly===true||legacyWithoutGroups(firmware?.version));
-  if(verifiedSelectedLamp()&&lamp.identity===id&&(advancedAvailable()||borrowedBasicPower))return {lamp,release:async()=>{}};
-  if(groupEditor?.lamp?.identity===id)return {lamp:groupEditor.lamp,release:async()=>{}};
+  if(verifiedSelectedLamp()&&lamp.identity===id&&(advancedAvailable()||borrowedBasicPower)&&usableGroupLamp(lamp,id))return {lamp,release:async()=>{}};
+  if(groupEditor?.lamp?.identity===id&&groupEditor.lamp.epoch===groupEditor.epoch&&usableGroupLamp(groupEditor.lamp,id))return {lamp:groupEditor.lamp,release:async()=>{}};
   let connection=groupConnections.get(id);
   if(connection?.closed){try{await closeGroupConnection(id,connection);}catch(error){if(!options.readOnly||!options.onboardingRoute)throw error;}admitted();connection=groupConnections.get(id);if(connection?.closed)throw Object.assign(Error('This lamp’s earlier connection is still closing.'),{cancelled:true,confirmed:true});}
   if(!connection){
@@ -3144,18 +3172,23 @@ async function acquireGroupLamp(id,options={}) {
     connection.promise=Promise.resolve().then(()=>createGroupLampLease(id,{...options,...(onboarding?{signal:undefined}:{}),
       isCurrent:()=>!owner.closed&&(callerCurrent()||onboarding&&owner.refs>1)}));
   }
-  ++connection.refs;
+  ++connection.refs;let joined=true;
   try{
     const lease=await connection.promise;
     admitted();
     if(connection.closed)throw Error('Lamp connection changed. Refresh Groups.');
+    if(!usableGroupLamp(lease?.lamp,id)||typeof lease?.release!=='function'){
+      joined=false;connection.refs=Math.max(0,connection.refs-1);await closeGroupConnection(id,connection);admitted();
+      if(options.recoveredStaleLease)throw Object.assign(Error('The lamp connection changed before it could be used.'),{cancelled:true,confirmed:true,noMutation:true});
+      return acquireGroupLamp(id,{...options,recoveredStaleLease:true});
+    }
     let released=false;
     return {lamp:lease.lamp,release:async()=>{
       if(released)return connection.releaseRun;released=true;
       if(connection.closed)return connection.releaseRun;
       if(--connection.refs===0)return closeGroupConnection(id,connection);
     }};
-  }catch(error){if(--connection.refs===0&&!connection.closed){try{await closeGroupConnection(id,connection);}catch{}}throw error;}
+  }catch(error){if(joined&&--connection.refs===0&&!connection.closed){try{await closeGroupConnection(id,connection);}catch{}}throw error;}
 }
 function closeGroupConnection(id,connection){
   if(connection.releaseRun)return connection.releaseRun;
@@ -3358,7 +3391,7 @@ function renderRoomGroups() {
     const card=document.createElement('section');card.className='panel room-group v2-group-card';card.dataset.groupId=group.id;card.dataset.state=ready?'ready':'waiting';
     const heading=document.createElement('div');heading.className='section-title v2-group-heading';
     const title=document.createElement('div'),kicker=document.createElement('p'),label=document.createElement('h3');kicker.className='eyebrow';kicker.textContent='YOUR GROUP · '+total+' '+(total===1?'LAMP':'LAMPS');label.textContent=name;title.append(kicker,label);heading.append(title);
-    const entry=mergedLampEntries().find(item=>item.id===group.id)||{id:group.id,name:group.leader.name||name};const power=cardPowerButton(entry);power.classList.add('v2-group-power');heading.append(power);card.append(heading);
+    const entry=mergedLampEntries().find(item=>item.id===group.id)||{id:group.id,name:group.leader.name||name};heading.append(groupPowerControl(entry,group,name));card.append(heading);
     const illustrations=document.createElement('div');illustrations.className='v2-group-art';illustrations.setAttribute('aria-hidden','true');
     for(const row of rows.slice(0,3)){const member=mergedLampEntries().find(entry=>entry.id===row.id)||{id:row.id};illustrations.append(lampStyleIllustration(resolvedStyle(member).id));}card.append(illustrations);
     const detail=document.createElement('p');detail.className='v2-group-status';detail.textContent=locked?'The group is updating · Membership is protected':ready?reachable+' of '+total+' lamps reachable'+(paused?' · '+paused+' used separately':''):group.placeholder?'Waiting for the main lamp · Saved membership is kept':'Not reachable now · Last known group';card.append(detail);

@@ -90,7 +90,7 @@ function fixture(){
  context.lamp={disconnect:async()=>events.push('old-target-closed')};context.wifiLamp={};
  context.verifiedSelectedLamp=()=>Boolean(!context.connecting&&context.state&&context.selected&&context.lamp.identity===context.selected.id);
  context.advancedAvailable=()=>Boolean(context.lamp.raw);context.legacyWithoutGroups=()=>false;
- const names=['firmwareBackgroundWorkAllowed','pauseFirmwareBackgroundWork','beginForegroundConnection','acquireGroupLamp','closeGroupConnection','stopGroupInspection',
+ const names=['firmwareBackgroundWorkAllowed','pauseFirmwareBackgroundWork','beginForegroundConnection','usableGroupLamp','acquireGroupLamp','closeGroupConnection','stopGroupInspection',
   'createGroupLampLease','connect','openCardSettings','completeCardSettings','connectCardBluetooth','loadApp2EffectSchema'];
  runInNewContext(names.map(handler).join('\n'),context);
  return {context,radio,events,entries,entry:entries[0]};
@@ -219,4 +219,30 @@ test('explicit group acquisition retains provisioning while passive acquisition 
  const f=fixture(),explicit=await f.context.acquireGroupLamp(entryId,{readOnly:false});
  assert.equal(f.events.filter(row=>row==='provision').length,1);await explicit.release();
  const passive=await f.context.acquireGroupLamp(entryId,{readOnly:true});assert.equal(f.events.filter(row=>row==='provision').length,1);await passive.release();
+});
+
+test('power acquisition retires a disconnected scan lease and reconnects once',async()=>{
+ const f=fixture(),scan=await f.context.acquireGroupLamp(entryId,{readOnly:true,purpose:'groups-scan'});
+ assert.equal(scan.lamp.identity,entryId);assert.equal(f.radio.events.filter(row=>row[0]==='connect').length,1);
+ await scan.lamp.disconnect();assert.equal(scan.lamp.identity,null);assert.equal(scan.lamp.base,null);
+ assert.equal(f.context.groupConnections.has(entryId),true,'the scan still owns the stale pooled entry');
+
+ const power=await f.context.acquireGroupLamp(entryId,{readOnly:false,purpose:'power'});
+ assert.notEqual(power.lamp,scan.lamp);assert.equal(power.lamp.identity,entryId);assert.equal(typeof power.lamp.base,'string');
+ assert.equal(f.radio.events.filter(row=>row[0]==='connect').length,2,'one fresh connection replaces the dead scan lease');
+ assert.equal(f.events.filter(row=>row==='provision').length,1,'the explicit replacement retains normal power-lane provisioning');
+
+ await power.release();await scan.release();assert.equal(f.context.groupConnections.size,0);
+});
+
+test('persistently invalid pooled power leases stop after one replacement',async()=>{
+ const f=fixture();let acquisitions=0,releases=0;
+ f.context.createGroupLampLease=async()=>{
+  acquisitions++;
+  return {lamp:{identity:null,epoch:acquisitions,base:null,enqueue:async action=>action(),refresh:async()=>null},release:async()=>{releases++;}};
+ };
+ await assert.rejects(f.context.acquireGroupLamp(entryId,{readOnly:false,purpose:'power'}),/verif|connection/i);
+ assert.equal(acquisitions,2,'the stale lease gets only one fresh replacement');
+ assert.equal(releases,2,'both invalid leases are retired exactly once');
+ assert.equal(f.context.groupConnections.size,0);
 });
