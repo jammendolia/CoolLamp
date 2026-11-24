@@ -140,7 +140,12 @@ export async function runLampPower({id,expected=null,requestedPower=null,acquire
       Object.assign(readFailure,{confirmed:true,noMutation:true});
       error=readFailure;
     }
-    if(attempted&&!error.uncertain)error.uncertain=true;
+    // A transport may cross its write fence and still receive a device/bridge
+    // proof that the power endpoint rejected the request before mutation. Only
+    // that explicit receipt is safely retryable; every other post-fence failure
+    // remains ambiguous, including a failed refresh after a successful POST.
+    const rejectedBeforeMutation=attempted&&error.confirmed===true&&error.noMutation===true&&error.uncertain!==true;
+    if(attempted&&!rejectedBeforeMutation&&!error.uncertain)error.uncertain=true;
     throw error;
   }finally{
     try{await lease?.release?.();}catch{/* Cleanup must not replace a confirmed or ambiguous device outcome. */}

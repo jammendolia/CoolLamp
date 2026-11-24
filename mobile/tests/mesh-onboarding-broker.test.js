@@ -25,9 +25,9 @@ function handler(name){
  }
  assert.fail('Unterminated production handler '+name);
 }
-function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=false,httpGate=null,httpHealthy=false,bluetoothGate=null,budget={}}={}){
+function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=false,httpGate=null,httpHealthy=false,bluetoothGate=null,meshHealthy=false,wifiFresh=fresh,budget={}}={}){
  const entry={id,name:'Corkscrew',deviceId:'saved-ble',accessoryManaged:authorized,address:'http://192.168.1.42',firmwareVersion:'1.15.2'};
- const calls=[],messages=[],failures=new Map();let releases=0,provisions=0;
+ const calls=[],messages=[],failures=new Map();let releases=0,meshReleases=0,provisions=0;
  const peer={identity:id,epoch:1,base:'ble:saved-ble',supportsOfflineGroups:true,raw:{deviceId:id,name:entry.name},
   enqueue:action=>Promise.resolve().then(action),async refresh(){return this.raw;},async request(path){
   calls.push(path);if(path==='/api/mesh/status')return {version:1,deviceId:id,available:true,fleetId};
@@ -47,7 +47,7 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
  }
  const context={acquireOnboardingBroker:options=>acquireOnboardingBroker({...options,...budget}),onboardingDiscoveryMessage,WifiTransport,LampTransport:BluetoothTransport,
   ConnectionBroker,readOnlyConnectionFailure,connectionBroker:new ConnectionBroker(),meshInventory:new MeshInventorySession(),roomGroups:null,
-  store:{items:[entry]},connectivity:{get:()=>({wifi:{fresh,state:'connected'}})},phonePlatform:'ios',groupRemovedIds:new Set(),
+  store:{items:[entry]},connectivity:{get:()=>({wifi:{fresh:wifiFresh,state:wifiFresh?'connected':'unknown'}})},phonePlatform:'ios',groupRemovedIds:new Set(),
   cardFirmwareTasks:new Map(),bluetoothFirmwareTask:null,cardPowerTasks:new Map(),groupConnections:new Map(),groupEditor:null,
   firmwareBackgroundGeneration:0,firmwareBackgroundWorkAllowed:()=>true,groupInventoryEntries:()=>[entry],mergedLampEntries:()=>[entry],
   lamp:active?peer:null,bleLamp:{initialization:{},supportsOfflineGroups:true},state:active?{}:null,
@@ -57,15 +57,15 @@ function fixture({fresh=false,authorized=true,active=false,bluetoothFailure=fals
     {deviceId:id,token:'fixture-token',hostname:'coollamp-fixture',effects:['Rainbow'],mode:1,brightness:128,firmware:{version:'1.15.2'}}:'{"token":"SECRET",'};}},
   initializeGroupRadio:async options=>{assert.equal(options.knownDevices().map(value=>value.id).join(','),id);},
   pairing:{},accessoryNative:{},BleClient:{},rememberAccessories:()=>{},removedAccessoryIds:new Set(),savedDevice:null,
-  createMeshLampLease:async(_id,options)=>{calls.push('mesh');assert.equal(_id,id);assert.equal(options.recoveryOnly,true);throw Object.assign(Error('No route'),{noRoute:true});},
+  createMeshLampLease:async(_id,options)=>{calls.push('mesh');assert.equal(_id,id);assert.equal(options.recoveryOnly,true);if(meshHealthy)return {lamp:peer,release:async()=>{meshReleases++;}};throw Object.assign(Error('No route'),{noRoute:true});},
   liveGroupBluetooth:new Map(),renderLamps:()=>{},observeLampWifi:()=>{},observeLampLighting:()=>{},isNative:true,firmwareFleetTrust:{provision:async()=>{provisions++;}},
   validFirmwareVersion:value=>value,compareFirmwareVersions:()=>-1,clearTimeout,AbortController,
   meshNetworkMessages:new Map(),document:{hidden:false},meshWizard:null,navigationSerial:1,meshDiscoveryRun:null,meshDiscoveryFailures:failures,
   $:()=>({hidden:false}),status:value=>messages.push(value),meshOnboarding:null};
- runInNewContext(['observeBrokerConnection','createGroupLampLease','usableGroupLamp','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
+ runInNewContext(['observeBrokerConnection','createGroupLampLease','usableGroupLamp','usableDirectGroupPowerLamp','acquireGroupLamp','closeGroupConnection','acquireOnboardingBridge','refreshNewMeshLamps'].map(handler).join('\n'),context);
  context.meshOnboarding=new MeshOnboarding({getBridges:()=>[entry],acquireBridge:context.acquireOnboardingBridge,
   onDiscoveryError:(entry,error)=>failures.set(entry.id,{name:entry.name,error}),requestTimeout:7900});
- return {entry,calls,context,messages,failures,peer,releases:()=>releases,provisions:()=>provisions};
+ return {entry,calls,context,messages,failures,peer,releases:()=>releases,meshReleases:()=>meshReleases,provisions:()=>provisions};
 }
 
 test('production onboarding prefers saved Bluetooth to a stale 1.15.2 HTTP state and finds bridge read-only',async()=>{
@@ -123,6 +123,36 @@ test('unauthorized iOS saved devices do not open Bluetooth and explicit guide ge
 test('main route restriction preserves mesh-first ordinary group acquisition',async()=>{
  const f=fixture();await f.context.createGroupLampLease(id,{readOnly:true});
  assert.deepEqual(f.calls,['mesh','wifi-state','bluetooth']);assert.equal(f.provisions(),0);
+});
+test('one-tap power prefers a saved direct Wi-Fi route instead of a recoverable mesh path',async()=>{
+ const f=fixture({fresh:true,httpHealthy:true,meshHealthy:true}),lease=await f.context.createGroupLampLease(id,{purpose:'power'});
+ assert.deepEqual(f.calls,['wifi-state']);assert.equal(f.context.connectionBroker.get(id).route,'wifi');await lease.release();
+});
+test('one-tap power falls back to mesh only when direct Wi-Fi acquisition fails before a mutation',async()=>{
+ const f=fixture({fresh:true,meshHealthy:true}),lease=await f.context.createGroupLampLease(id,{purpose:'power'});
+ assert.deepEqual(f.calls,['wifi-state','mesh']);assert.equal(f.context.connectionBroker.get(id).route,'mesh');await lease.release();
+});
+test('one-tap power tries a saved direct Wi-Fi address even when reachability telemetry is stale',async()=>{
+ const f=fixture({httpHealthy:true,meshHealthy:true,wifiFresh:false}),lease=await f.context.createGroupLampLease(id,{purpose:'power'});
+ assert.deepEqual(f.calls,['wifi-state']);assert.equal(f.context.connectionBroker.get(id).route,'wifi');await lease.release();
+});
+test('one-tap power bypasses a valid pooled read-only mesh lease and releases each owner exactly once',async()=>{
+ const f=fixture({httpHealthy:true,meshHealthy:true}),inspection=await f.context.acquireGroupLamp(id,{readOnly:true});
+ assert.deepEqual(f.calls,['mesh']);assert.equal(f.context.groupConnections.size,1);
+ const power=await f.context.acquireGroupLamp(id,{purpose:'power'});assert.notEqual(power.lamp,inspection.lamp);
+ assert.deepEqual(f.calls,['mesh','wifi-state']);assert.equal(f.context.groupConnections.size,1);
+ const powerEpoch=power.lamp.epoch;await power.release();assert.equal(power.lamp.epoch,powerEpoch+1);
+ await power.release();assert.equal(power.lamp.epoch,powerEpoch+1);assert.equal(f.meshReleases(),0);
+ await inspection.release();assert.equal(f.meshReleases(),1);await inspection.release();assert.equal(f.meshReleases(),1);
+});
+test('one-tap power releases one stale dedicated lease, reconnects once, and owns the replacement exactly once',async()=>{
+ const f=fixture();let opens=0,releases=0;
+ f.context.createGroupLampLease=async(...args)=>{
+  opens++;if(opens===1)return {lamp:{identity:target,epoch:1,base:'http://wrong',refresh(){},enqueue(){}},release:async()=>{releases++;}};
+  assert.equal(args[0],id);assert.equal(args[1].purpose,'power');return {lamp:f.peer,release:async()=>{releases++;}};
+ };
+ const power=await f.context.acquireGroupLamp(id,{purpose:'power'});assert.equal(opens,2);assert.equal(releases,1);
+ await power.release();assert.equal(releases,2);await power.release();assert.equal(releases,2);
 });
 test('canceling discovery ignores a late actual HTTP state reply and never opens another route',async()=>{
  const gate=deferred(),f=fixture({fresh:true,httpGate:gate}),run=f.context.refreshNewMeshLamps({explicit:true});

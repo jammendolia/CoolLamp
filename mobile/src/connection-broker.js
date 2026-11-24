@@ -88,11 +88,13 @@ export class ConnectionBroker {
   const previous=this.records.get(id);if(previous)this.records.set(id,{...previous,state:'unknown',verified:false,available:false});this.notify(id);
  }
  forget(id){this.revisions.set(id,this.revision(id)+1);this.versions.set(id,(this.versions.get(id)||0)+1);this.selections.set(id,(this.selections.get(id)||0)+1);for(const dispose of [...this.active.get(id)||[]])dispose();this.records.delete(id);this.notify(id);}
- async select(id,{routes=[],only=null,signal,isCurrent=()=>true,timeoutMs=25000,verify,onStatus}={}){
+ async select(id,{routes=[],only=null,routeOrder=kinds,signal,isCurrent=()=>true,timeoutMs=25000,verify,onStatus}={}){
   if(!canonical(id)||typeof verify!=='function'||typeof isCurrent!=='function'||!Number.isFinite(timeoutMs)||timeoutMs<1)throw failure('Select a verified lamp and a bounded connection operation.');
+  if(!Array.isArray(routeOrder)||routeOrder.length!==kinds.length||new Set(routeOrder).size!==kinds.length||routeOrder.some(kind=>!kinds.includes(kind)))
+   throw failure('Choose each supported connection route exactly once.');
   const allowed=only==null?kinds:Array.isArray(only)?only:[only];
   const plan=routes.map((route,index)=>({...route,index})).filter(route=>allowed.includes(route.kind)&&kinds.includes(route.kind)&&typeof route.acquire==='function')
-   .sort((a,b)=>kinds.indexOf(a.kind)-kinds.indexOf(b.kind)||a.index-b.index);
+   .sort((a,b)=>routeOrder.indexOf(a.kind)-routeOrder.indexOf(b.kind)||a.index-b.index);
   const revision=this.revision(id),version=(this.versions.get(id)||0)+1,deadline=this.now()+timeoutMs;this.versions.set(id,version);
   const generation=(this.selections.get(id)||0)+1;this.selections.set(id,generation);
   const current=()=>{try{return !signal?.aborted&&Boolean(isCurrent())&&this.revision(id)===revision;}catch{return false;}};

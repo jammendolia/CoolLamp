@@ -399,7 +399,17 @@ export class WifiTransport {
     if(mode!==null && !effectAvailable(this.catalog,mode))throw Object.assign(new Error('This effect is not available on the selected lamp.'),{confirmed:true});
     if(op==='saveDefaults'&&this.catalog?.some(entry=>entry.id===this.state.mode&&entry.startupSupported===false))throw Object.assign(Error('Choose a different effect for the lamp’s startup light.'),{confirmed:true});
     if(!paths[op])throw new Error('Unsupported command.');
-    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene){fence();await this.configureGroupScene({scene:0});}fence(); await this.request(...paths[op]);
+    try { if(op==='effect' && this.raw?.sync?.role===1 && this.raw.sync.scene){fence();await this.configureGroupScene({scene:0});}fence();
+      try{await this.request(...paths[op]);}
+      catch(error){
+        // Confirmed 4xx and busy 503 /api/power refusals happen before
+        // setLampControl changes power. Keep that receipt distinct from a
+        // later state-refresh failure after a successful POST, and from an
+        // unexpected 5xx whose mutation boundary is not proven.
+        const confirmedRefusal=error?.noRoute===true||Number.isInteger(error?.status)&&((error.status>=400&&error.status<500)||error.status===503);
+        if(op==='power'&&error?.confirmed===true&&error.uncertain!==true&&confirmedRefusal)error.noMutation=true;
+        throw error;
+      }
       if(['checkFirmware','installFirmware','autoUpdate'].includes(op))await this.refreshFirmware();else await this.refresh(); }
     catch(e) { if(!e.confirmed && epoch===this.epoch)await this.disconnect();throw e; }
   }); }

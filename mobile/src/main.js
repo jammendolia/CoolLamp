@@ -1854,7 +1854,9 @@ async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgre
   }catch(error){
     if(error.uncertain){const attemptedAt=mutationAttemptedAt??Date.now();connectivity.invalidateLighting(entry.id,{attemptedAt});connectivity.invalidateGroup(entry.id,{attemptedAt});}
     if(!isPresent())return Object.freeze({outcome:error.uncertain?'uncertain':'failed',message:error.uncertain?'The light may have changed before this Home was closed. Check its current state before changing it again.':'This lamp changed while the app was checking it. Open the lamp to see its current state.'});
-    const message=error.uncertain?'Power may have changed. Check the light’s current state before trying again.':error.noMutation?'We couldn’t check this lamp. No change was sent. Keep it powered on, then try again.':error.message;
+    const detail=typeof error.message==='string'&&error.message.trim()?error.message.trim():'The lamp could not be checked.';
+    const punctuated=/[.!?]$/.test(detail)?detail:detail+'.';
+    const message=error.uncertain?'Power may have changed. Check the light’s current state before trying again.':error.noMutation?punctuated+' No power change was sent.':detail;
     cardPowerMessages.set(entry.id,message);status((current.name||'CoolLamp')+' · '+message);
     return Object.freeze({outcome:error.uncertain?'uncertain':'failed',message,needsReview:Boolean(error.needsReview||error.uncertain),safeToRetry:Boolean(error.noMutation),checkedAt:Date.now()});
   }finally{
@@ -3146,6 +3148,9 @@ function groupInventoryEntries() {
 function usableGroupLamp(lamp,id){
   return Boolean(lamp&&lamp.identity===id&&Number.isInteger(lamp.epoch)&&typeof lamp.base==='string'&&typeof lamp.refresh==='function'&&typeof lamp.enqueue==='function');
 }
+function usableDirectGroupPowerLamp(lamp,id){
+  return usableGroupLamp(lamp,id)&&lamp.isMesh!==true&&!lamp.base.startsWith('mesh:');
+}
 async function acquireGroupLamp(id,options={}) {
   const readGeneration=firmwareBackgroundGeneration;
   const admitted=()=>{
@@ -3161,8 +3166,29 @@ async function acquireGroupLamp(id,options={}) {
   options={...options,entry:current};
   if(cardPowerTasks.has(id)&&options.purpose!=='power'&&options.readOnly!==true)throw Object.assign(Error('Wait for this lamp’s power request to finish before changing its group.'),{confirmed:true,cancelled:true});
   const borrowedBasicPower=options.purpose==='power'&&lamp===bleLamp&&(options.readOnly===true||legacyWithoutGroups(firmware?.version));
-  if(verifiedSelectedLamp()&&lamp.identity===id&&(advancedAvailable()||borrowedBasicPower)&&usableGroupLamp(lamp,id))return {lamp,release:async()=>{}};
-  if(groupEditor?.lamp?.identity===id&&groupEditor.lamp.epoch===groupEditor.epoch&&usableGroupLamp(groupEditor.lamp,id))return {lamp:groupEditor.lamp,release:async()=>{}};
+  const directPower=options.purpose==='power';
+  if(verifiedSelectedLamp()&&lamp.identity===id&&(advancedAvailable()||borrowedBasicPower)&&(directPower?usableDirectGroupPowerLamp(lamp,id):usableGroupLamp(lamp,id)))return {lamp,release:async()=>{}};
+  if(groupEditor?.lamp?.identity===id&&groupEditor.lamp.epoch===groupEditor.epoch&&(directPower?usableDirectGroupPowerLamp(groupEditor.lamp,id):usableGroupLamp(groupEditor.lamp,id)))return {lamp:groupEditor.lamp,release:async()=>{}};
+  // A card power action owns a short, independently verified lease. Never
+  // inherit the pooled group-inspection lease here: it may be a recovery mesh
+  // route selected for a read-only scan long before this user mutation. The
+  // dedicated broker selection can prefer the lamp's saved direct address and
+  // still fall back to mesh or Bluetooth before the write fence opens. Its new
+  // broker generation also prevents that older read owner from publishing a
+  // late observation into the explicit mutation's state.
+  if(directPower){
+    const lease=await createGroupLampLease(id,options);admitted();
+    if(!usableGroupLamp(lease?.lamp,id)||typeof lease?.release!=='function'){
+      await lease?.release?.();admitted();
+      if(options.recoveredStaleLease)throw Object.assign(Error('The lamp connection changed before it could be used.'),{cancelled:true,confirmed:true,noMutation:true});
+      return acquireGroupLamp(id,{...options,recoveredStaleLease:true});
+    }
+    let released=false,releaseRun;
+    return {lamp:lease.lamp,release:async()=>{
+      if(released)return releaseRun;released=true;
+      releaseRun=Promise.resolve().then(()=>lease.release());return releaseRun;
+    }};
+  }
   let connection=groupConnections.get(id);
   if(connection?.closed){try{await closeGroupConnection(id,connection);}catch(error){if(!options.readOnly||!options.onboardingRoute)throw error;}admitted();connection=groupConnections.get(id);if(connection?.closed)throw Object.assign(Error('This lamp’s earlier connection is still closing.'),{cancelled:true,confirmed:true});}
   if(!connection){
@@ -3204,7 +3230,7 @@ async function stopGroupInspection(id) {
   const connection=groupConnections.get(id);if(!connection)return;
   try{await closeGroupConnection(id,connection);}catch{}
 }
-async function createGroupLampLease(id,{entry,readOnly=false,signal,isCurrent=()=>true,onboardingRoute=null,timeoutMs=null}={}) {
+async function createGroupLampLease(id,{entry,readOnly=false,signal,isCurrent=()=>true,onboardingRoute=null,timeoutMs=null,purpose=null}={}) {
   entry=groupInventoryEntries().find(value=>value.id===id);
   if(!entry||!/^[0-9a-f]{12}$/.test(id))throw Error('Find or pair this lamp before managing its groups.');
   const generation=firmwareBackgroundGeneration;
@@ -3255,7 +3281,11 @@ async function createGroupLampLease(id,{entry,readOnly=false,signal,isCurrent=()
       return {lamp:transport,release:()=>{clearLink();return transport.disconnect();}};
     }catch(error){await transport.disconnect();throw error;}
   })});
-  return connectionBroker.select(id,{routes,signal,isCurrent:current,// Discovery owns its short route deadline. A pooled group owner can keep
+  // A saved address is enough to try the direct route. connect() verifies the
+  // authenticated lamp identity before this lease can be returned, so stale
+  // reachability telemetry must not force a user mutation through a bridge.
+  const directPower=purpose==='power'&&Boolean(entry.address);
+  return connectionBroker.select(id,{routes,signal,isCurrent:current,routeOrder:directPower?['wifi','mesh','bluetooth']:undefined,// Discovery owns its short route deadline. A pooled group owner can keep
     // the same acquisition alive after discovery retires its reference.
     timeoutMs:onboarding?25000:timeoutMs||25000,only:onboarding?onboardingRoute:null,
     verify:(lease,context)=>{

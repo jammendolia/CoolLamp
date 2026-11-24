@@ -120,8 +120,19 @@ test('uncertain writes disconnect and queued commands never replay',async()=>{
 });
 test('server rejection stays visible and does not claim success',async()=>{
   const {lamp,http}=setup();await lamp.connect('192.168.1.9','test');
-  http.request=async()=>({status:409,data:'Updater busy'});
-  await assert.rejects(lamp.command('power',0),/Updater busy/);assert.equal(lamp.state.power,true);await lamp.disconnect();
+  for(const status of [400,401,404,422,499,503]){
+    http.request=async()=>({status,data:'Updater busy'});
+    await assert.rejects(lamp.command('power',0),error=>error.status===status&&error.confirmed===true&&error.noMutation===true&&!error.uncertain);
+  }
+  http.request=async()=>({status:500,data:'Unexpected server failure'});
+  await assert.rejects(lamp.command('power',0),error=>error.status===500&&error.confirmed===true&&error.noMutation!==true&&!error.uncertain);
+  assert.equal(lamp.state.power,true);await lamp.disconnect();
+});
+test('a confirmed refresh failure after an accepted power POST is not labeled no-mutation',async()=>{
+  const {lamp,http}=setup();await lamp.connect('192.168.1.9','test');let posts=0;
+  http.request=async options=>{if(options.method==='POST'){posts++;return {status:200,data:'Light off.'};}return {status:409,data:'State temporarily unavailable'};};
+  await assert.rejects(lamp.command('power',0),error=>error.confirmed===true&&error.status===409&&error.noMutation!==true);
+  assert.equal(posts,1);await lamp.disconnect();
 });
 test('adjusting an off lamp preserves power and older firmware cannot turn it on accidentally',async()=>{
   const {lamp,setRaw,calls}=setup();setRaw({...fixture(),power:false,apiVersion:2});

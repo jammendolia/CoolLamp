@@ -182,6 +182,18 @@ test('an uncertain transport failure before any write is a safe read failure, no
   assert.deepEqual(f.writes,[]);assert.equal(f.calls.acquire,1);assert.equal(f.calls.release,1);
 });
 
+test('a confirmed pre-mutation power rejection stays safe after the write fence',async()=>{
+  const f=fixture();f.lamp.onWrite=()=>{throw Object.assign(new Error('Updater busy'),{confirmed:true,noMutation:true,status:409});};
+  await assert.rejects(runLampPower(f.options),error=>error.noMutation===true&&error.confirmed===true&&error.uncertain!==true);
+  assert.deepEqual(f.writes,[{action:'power',value:0}]);assert.deepEqual(f.reads,[id]);assert.equal(f.calls.release,1);
+});
+
+test('a generic confirmed failure after the write fence remains uncertain',async()=>{
+  const f=fixture();f.lamp.onWrite=()=>{throw Object.assign(new Error('State refresh failed'),{confirmed:true,status:409});};
+  await assert.rejects(runLampPower(f.options),error=>error.uncertain===true&&error.noMutation!==true);
+  assert.deepEqual(f.writes,[{action:'power',value:0}]);assert.deepEqual(f.reads,[id]);assert.equal(f.calls.release,1);
+});
+
 test('readback requires requested power, same membership and paused follower Off',async()=>{
   for(const change of [f=>f.raw.power=true,f=>Object.assign(f.raw.sync,{role:1,leader:id})]) {
     const f=fixture();let read=0;f.lamp.onRead=()=>{if(++read===2)change(f);};

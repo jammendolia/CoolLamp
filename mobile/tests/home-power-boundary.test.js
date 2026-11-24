@@ -95,3 +95,10 @@ test('Home ambiguity starts at the actual write boundary and invalidates even af
  assert.equal(result.outcome,'uncertain');assert.equal(f.writes.length,1);assert.equal(f.releaseCalls(),1);assert.equal(f.invalidations.length,2);
  for(const value of f.invalidations){assert(Number.isFinite(value.attemptedAt));assert(value.attemptedAt>=queueReadyAt);assert(value.attemptedAt>=sendingAt);}
 });
+
+test('Home reports a confirmed pre-mutation rejection without claiming power may have changed',async()=>{
+ const f=commandFixture();f.lamp.onWrite=()=>{throw Object.assign(Error('Updater busy'),{confirmed:true,noMutation:true,status:409});};
+ const result=await f.change({requestedPower:false});
+ assert.equal(result.outcome,'failed');assert.equal(result.safeToRetry,true);assert.equal(result.message,'Updater busy. No power change was sent.');
+ assert.doesNotMatch(result.message,/may have changed/i);assert.equal(f.invalidations.length,0);assert.equal(f.releaseCalls(),1);
+});

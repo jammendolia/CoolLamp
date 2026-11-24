@@ -31,6 +31,18 @@ test('a successful first mesh route does not open direct Wi-Fi or Bluetooth',asy
  assert.deepEqual(calls,['mesh']);
 });
 
+test('an explicit direct route order prefers Wi-Fi and can fall back to mesh before selection',async()=>{
+ const {broker}=fixture(),calls=[];await broker.select(id,{verify,routeOrder:['wifi','mesh','bluetooth'],routes:[
+  {kind:'bluetooth',acquire:()=>{calls.push('bluetooth');return lease();}},
+  {kind:'mesh',acquire:()=>{calls.push('mesh');return lease();}},
+  {kind:'wifi',acquire:()=>{calls.push('wifi');throw fail({noRoute:true});}}]});
+ assert.deepEqual(calls,['wifi','mesh']);assert.equal(broker.get(id).route,'mesh');
+});
+
+test('route order must name every supported route exactly once',async()=>{
+ const {broker}=fixture();await assert.rejects(broker.select(id,{verify,routeOrder:['wifi','wifi','bluetooth']}),/each supported connection route/);
+});
+
 test('an explicit Wi-Fi-only request never crosses to another connection type',async()=>{
  const {broker}=fixture(),calls=[];await assert.rejects(broker.select(id,{only:'wifi',verify,routes:['mesh','wifi','bluetooth'].map(kind=>({kind,acquire:()=>{calls.push(kind);throw fail({needsPassword:true});}}))}),error=>error.needsPassword);
  assert.deepEqual(calls,['wifi']);
