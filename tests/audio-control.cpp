@@ -36,8 +36,17 @@ int main(){
   assert(lampAvailableEffectCount()==47);
   assert(setLampControl(39,100,true) && setLampControl(47,100,true));
   assert(!setLampControl(48,100,true) && !setLampControl(40,0,true));
+  assert(setLampControl(39,100,true));
   installed=false;
   assert(!setLampControl(47,100,true));
+  // A follower can retain a group-provided audio effect without its own mic.
+  // If powering it on would make that effect unavailable after pausing, reject
+  // before changing either power or the follower's runtime state.
+  syncRole=2;following=true;syncPaused=false;PowerOn=false;
+  assert(lampEffectAvailable(Mode));
+  assert(!setLampControl(Mode,100,true));
+  assert(!PowerOn&&Mode==39&&syncRole==2&&!syncPaused&&following&&lampEffectAvailable(Mode));
+  syncRole=0;following=false;syncPaused=false;
   assert(setLampControl(4,100,true));
   syncRole=2;following=true;
   assert(lampAvailableEffectCount()==47);

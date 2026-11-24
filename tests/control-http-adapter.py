@@ -160,6 +160,14 @@ bool lampEffectAvailable(uint8_t mode){
  if(mode<=47)return installed||following;
  return lampSyncRole()==0&&(mode!=52||(installed&&lampMicrophoneEnabled()));
 }
+bool lampEffectAvailableWhile(uint8_t mode,bool wouldFollow){
+  if(lampStyleUsesWholeStrip())return LampEffects::available(mode,{installed,wouldFollow,false,lampSyncRole(),lampMicrophoneEnabled(),true});
+  if(mode<1||mode>lampAvailableEffectCount())return false;
+  if(!edisonProfile)return true;
+  if(mode<=38)return true;
+  if(mode<=47)return installed||wouldFollow;
+  return lampSyncRole()==0&&(mode!=52||(installed&&lampMicrophoneEnabled()));
+}
 bool lampEffectNeedsAudio(uint8_t mode){return (mode>=39&&mode<=47)||mode==52;}
 struct Color {uint8_t enabled=1,r=70,g=220,b=255;};
 Color getLampColor(uint8_t){return {1,255,255,255};}

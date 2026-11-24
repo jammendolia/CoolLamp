@@ -1,5 +1,5 @@
 import { legacyCatalog, validateCatalog, effectAvailable } from './catalog.js';
-import { lampAddress } from './lamps.js';
+import { lampAddress, validFirmwareVersion } from './lamps.js';
 import { parseGroupCode, groupMemberLimit, supportsGroupProtocol } from './sync.js';
 import { availableGroupScenes, groupSceneSettings } from './group-scenes.js';
 import { styleDefinition, normalizeLampStyle, lampStyleLocked } from './lamp-style.js';
@@ -17,6 +17,12 @@ const busyReadReplies=new Set(['Another response is pending. This request was no
 // deadline; these waits never reserve a new budget for the following catalog.
 const busyReadDelays=[500,1000,1500,1000,1000];
 const requestBudgetMs=13000;
+const firmwareAtLeast=(value,minimum)=>{
+  const current=validFirmwareVersion(value)?.split('.').map(Number),target=minimum.split('.').map(Number);
+  if(!current||target.length!==3)return false;
+  for(let index=0;index<3;index++)if(current[index]!==target[index])return current[index]>target[index];
+  return true;
+};
 
 // One absolute durable field per request. A lost reply permits a fresh read,
 // never a second POST or automatic route change. Call from the owning queue.
@@ -406,7 +412,9 @@ export class WifiTransport {
         // setLampControl changes power. Keep that receipt distinct from a
         // later state-refresh failure after a successful POST, and from an
         // unexpected 5xx whose mutation boundary is not proven.
-        const confirmedRefusal=error?.noRoute===true||Number.isInteger(error?.status)&&((error.status>=400&&error.status<500)||error.status===503);
+        const status=error?.status,legacyAmbiguous409=status===409&&!firmwareAtLeast(this.raw?.firmware?.version,'1.15.11');
+        const confirmedRefusal=error?.noMutation===true||error?.noRoute===true||status===503||
+          Number.isInteger(status)&&status>=400&&status<500&&!legacyAmbiguous409;
         if(op==='power'&&error?.confirmed===true&&error.uncertain!==true&&confirmedRefusal)error.noMutation=true;
         throw error;
       }

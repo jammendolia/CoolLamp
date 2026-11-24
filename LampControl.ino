@@ -5,8 +5,11 @@
 static_assert(LAMP_EFFECT_CAPACITY == MODE_MAX, "Keep the Bluetooth effect bound in sync");
 static_assert(LAMP_BASE_EFFECT_COUNT==LampEffects::BaseCount&&LAMP_EFFECT_COUNT==LampEffects::LegacyCount&&LAMP_EFFECT_CAPACITY==LampEffects::Count,"Keep the protocol catalog bounds in sync");
 
+static LampEffects::Availability lampEffectAvailability(bool regional,bool capture,bool following){
+  return {lampHasMicrophone(),following,regional&&lampEdisonProfileMatches(),uint8_t(regional?lampSyncRole():0),capture&&lampMicrophoneEnabled(),regional&&lampStyleUsesWholeStrip()};
+}
 static LampEffects::Availability lampEffectAvailability(bool regional,bool capture){
-  return {lampHasMicrophone(),lampSyncFollowing(),regional&&lampEdisonProfileMatches(),uint8_t(regional?lampSyncRole():0),capture&&lampMicrophoneEnabled(),regional&&lampStyleUsesWholeStrip()};
+  return lampEffectAvailability(regional,capture,lampSyncFollowing());
 }
 
 // V1 remains a dense slot table. Optional availability metadata fences gaps;
@@ -14,11 +17,14 @@ static LampEffects::Availability lampEffectAvailability(bool regional,bool captu
 uint8_t lampAvailableEffectCount() {
   return LampEffects::catalogCount(lampEffectAvailability(true,false));
 }
-bool lampEffectAvailable(uint8_t mode){
+static bool lampEffectAvailableWhile(uint8_t mode,bool following){
   if(!LampEffects::find(mode))return false;
   const auto requirement=LampEffects::requirement(mode);
   if(requirement==LampEffects::Requirement::General)return true;
-  return LampEffects::available(mode,lampEffectAvailability(LampEffects::needsEdison(mode)||LampEffects::needsSonata(mode),requirement==LampEffects::Requirement::EdisonAudio));
+  return LampEffects::available(mode,lampEffectAvailability(LampEffects::needsEdison(mode)||LampEffects::needsSonata(mode),requirement==LampEffects::Requirement::EdisonAudio,following));
+}
+bool lampEffectAvailable(uint8_t mode){
+  return lampEffectAvailableWhile(mode,lampSyncFollowing());
 }
 uint8_t lampNextAvailableEffect(uint8_t current,int delta){
   const int bound=lampAvailableEffectCount();
@@ -40,6 +46,10 @@ bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
   const bool offCurrent=!power&&mode==Mode;
   if (lampCalibrationActive() || mode<1 || mode>LAMP_EFFECT_CAPACITY || brightness<1 || brightness>255 || (!offCurrent&&!lampEffectAvailable(uint8_t(mode)))) return false;
   const bool wasFollowing = lampSyncFollowing();
+  // Validate the state after a follower pause before mutating that pause. This
+  // keeps a rejected current-effect On request genuinely pre-mutation, while
+  // still allowing an exact-current Off regardless of effect availability.
+  if (wasFollowing && !offCurrent && !lampEffectAvailableWhile(uint8_t(mode),false)) return false;
   if (wasFollowing) {
     pauseLampSync();
     if (mode > lampAvailableEffectCount()) mode = Mode;

@@ -119,7 +119,7 @@ test('uncertain writes disconnect and queued commands never replay',async()=>{
   assert.equal(writes,1);assert.equal(lamp.state,null);
 });
 test('server rejection stays visible and does not claim success',async()=>{
-  const {lamp,http}=setup();await lamp.connect('192.168.1.9','test');
+  const {lamp,http,setRaw}=setup();setRaw({...fixture(),firmware:{version:'1.15.11'}});await lamp.connect('192.168.1.9','test');
   for(const status of [400,401,404,422,499,503]){
     http.request=async()=>({status,data:'Updater busy'});
     await assert.rejects(lamp.command('power',0),error=>error.status===status&&error.confirmed===true&&error.noMutation===true&&!error.uncertain);
@@ -127,6 +127,12 @@ test('server rejection stays visible and does not claim success',async()=>{
   http.request=async()=>({status:500,data:'Unexpected server failure'});
   await assert.rejects(lamp.command('power',0),error=>error.status===500&&error.confirmed===true&&error.noMutation!==true&&!error.uncertain);
   assert.equal(lamp.state.power,true);await lamp.disconnect();
+});
+test('a legacy 1.15.10 power 409 remains ambiguous because it may have paused a follower',async()=>{
+  const {lamp,http,setRaw}=setup();setRaw({...fixture(),firmware:{version:'1.15.10'}});await lamp.connect('192.168.1.9','test');
+  http.request=async options=>options.method==='POST'?{status:409,data:'Invalid power value.'}:{status:200,data:JSON.stringify(fixture())};
+  await assert.rejects(lamp.command('power',0),error=>error.status===409&&error.confirmed===true&&error.noMutation!==true);
+  await lamp.disconnect();
 });
 test('a confirmed refresh failure after an accepted power POST is not labeled no-mutation',async()=>{
   const {lamp,http}=setup();await lamp.connect('192.168.1.9','test');let posts=0;
