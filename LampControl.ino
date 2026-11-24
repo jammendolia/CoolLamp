@@ -37,7 +37,7 @@ LampControlState getLampControlState()
 
 bool setLampControl(uint32_t mode, uint32_t brightness, bool power)
 {
-  const bool offCurrent=!power&&mode==Mode&&lampSyncRole()==0;
+  const bool offCurrent=!power&&mode==Mode;
   if (lampCalibrationActive() || mode<1 || mode>LAMP_EFFECT_CAPACITY || brightness<1 || brightness>255 || (!offCurrent&&!lampEffectAvailable(uint8_t(mode)))) return false;
   const bool wasFollowing = lampSyncFollowing();
   if (wasFollowing) {

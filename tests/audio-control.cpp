@@ -84,6 +84,17 @@ int main(){
   assert(lampAvailableEffectCount()==55);
   for(uint8_t id=53;id<=55;++id)assert(lampEffectAvailable(id)&&setLampControl(id,80,true));
   lampWholeStripStyle=false;
+  // A group lamp can retain a regional effect that is no longer selectable
+  // after it becomes a coordinator or follower. Turning that exact current
+  // effect off is still a power-only command: preserve the effect and group
+  // role while applying the existing coordinator/follower pause semantics.
+  for(uint8_t role:{uint8_t(1),uint8_t(2)}){
+    syncRole=role;following=role==2;syncPaused=false;PowerOn=true;
+    assert(Mode==55&&!lampEffectAvailable(Mode));
+    assert(setLampControl(Mode,80,false));
+    assert(!PowerOn&&Mode==55&&syncRole==role);
+    assert(role==1?!syncPaused:syncPaused&&!following);
+  }
   // Region effects cannot travel in legacy Mirror/group packets. A rejected
   // selection must not pause a follower or apply power/brightness changes.
   for(uint8_t role:{uint8_t(1),uint8_t(2)}){
