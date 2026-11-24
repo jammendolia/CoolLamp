@@ -313,6 +313,7 @@ struct {
  uint32_t getMinFreeHeap(){return values.minHeap;}
  uint32_t getMaxAllocHeap(){return values.largestBlock;}
 }ESP;
+const char* lampIdentityText(){return efuse?"74b950b2f180":"000000000000";}
 uint32_t millis(){return values.uptime;}
 uint32_t uxTaskGetStackHighWaterMark(void*){return values.loopStack;}
 constexpr int WL_CONNECTED=3;
