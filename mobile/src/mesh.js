@@ -131,7 +131,8 @@ export class MeshTransport extends WifiTransport {
     if(reply.uncertain===true)throw unconfirmed();
     if(reply.status==='no-route'){if(reply.executed||offset)throw unconfirmed();confirmedReply=true;throw noRoute();}
     if(reply.status==='rejected'){
-     if(reply.executed)throw unconfirmed();confirmedReply=true;throw Object.assign(Error('Mesh bridge rejected this request. Connect directly over Bluetooth.'),{confirmed:true,status:reply.httpStatus});
+     if(reply.executed)throw unconfirmed();confirmedReply=true;throw Object.assign(Error('Mesh bridge rejected this request. Connect directly over Bluetooth.'),
+      {confirmed:true,status:reply.httpStatus,...(mutation?{noMutation:true}:{})});
     }
     if(reply.status==='ok'){
      if(!transaction(reply.targetBoot)||targetBoot&&reply.targetBoot!==targetBoot||this.targetBoot&&reply.targetBoot!==this.targetBoot)throw Object.assign(unconfirmed(),{targetRestarted:true});

@@ -78,6 +78,11 @@ test('no route is distinguished from ambiguous execution and suggests direct Blu
  await assert.rejects(f.lamp.request('/api/state'),error=>error.noRoute===true&&error.confirmed===true&&/Bluetooth/.test(error.message));
  f.bridge.request=async(path,fields)=>({version:1,target,requestId:fields.requestId,status:'no-route',executed:true});await assert.rejects(f.lamp.request('/api/power',{on:0}),error=>error.uncertain===true&&!error.noRoute);
 });
+test('a bridge rejection before target execution proves that power did not change',async t=>{
+ const f=await connected(t);f.bridge.request=async(path,fields)=>({version:1,target,requestId:fields.requestId,status:'rejected',executed:false});
+ await assert.rejects(f.lamp.request('/api/power',{on:0}),error=>error.confirmed===true&&error.noMutation===true&&error.uncertain!==true);
+ assert.equal(f.writes.length,0);assert.equal(f.raw.power,true);
+});
 test('a changed target, transaction, response offset or boot cannot confirm a change',async t=>{
  for(const patch of [{target:bridgeId},{requestId:boot},{offset:1},{targetBoot:'fedcba0987654321'}]){
   const f=await connected(t),original=f.bridge.request.bind(f.bridge);f.bridge.request=async(path,fields,...args)=>{const reply=await original(path,fields,...args);return path==='/api/mesh/result'?{...reply,...patch}:reply;};
