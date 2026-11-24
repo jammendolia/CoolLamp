@@ -23,7 +23,6 @@ struct String : std::string {
  String(T n):std::string(std::to_string(n)){}
  bool isEmpty()const{return empty();}
 };
-inline struct { uint64_t getEfuseMac(){return 0x24eae26e9e9cULL;} } ESP;
 template<class T,typename std::enable_if<std::is_integral<T>::value,int>::type=0>
 String operator+(const String& s,T n){return String(std::string(s)+std::to_string(n));}
 inline size_t strlcpy(char* dst,const char* src,size_t n){size_t len=strlen(src);if(n){size_t c=len<n-1?len:n-1;memcpy(dst,src,c);dst[c]=0;}return len;}
@@ -63,6 +62,7 @@ struct Wifi {
  void scanDelete(){}
 } WiFi;
 LampSettings lampSettings;
+const char* lampIdentityText(){return "24eae26e9e9c";}
 bool setupAP=false,scanActive=false,updating=false;
 bool otaActive=false;uint32_t apLastActivity=0;
 void beginLampScan(){scanActive=true;}void esp_wifi_scan_stop(){}
