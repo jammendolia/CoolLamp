@@ -74,6 +74,7 @@ with tempfile.TemporaryDirectory(prefix='experience-',dir=ROOT/'.build') as tmp:
 #include "LampJsonSink.h"
 #include "UpdatePublisher.h"
 LampControlHttpAdapter lampServer(80);LampSettings lampSettings{};
+const char* lampIdentityText(){return "aabbccddeeff";}
 String lampToken="private-token";uint32_t now=100;uint32_t millis(){return now;}
 uint32_t esp_random(){static uint32_t value=900;return ++value;}
 uint16_t NUM_LEDS=205,lampMidpoint=102;uint8_t Mode=4,Brightness=100;bool PowerOn=true;

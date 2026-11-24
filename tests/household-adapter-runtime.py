@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix='household-adapter-',dir=ROOT/'.build') 
 #include "esp_mac.h"
 #include "esp_random.h"
 LampControlHttpAdapter lampServer(80);LampSettings lampSettings{};
+const char* lampIdentityText(){return "050403020102";}
 String lampToken="fixture-only-admin-token";uint32_t now=1000,apLastActivity=0;uint32_t millis(){return now;}
 uint32_t esp_random(){static uint32_t value=19;value=value*1664525+1013904223;return value;}
 int esp_read_mac(uint8_t* out,int){const uint8_t mac[6]{2,1,2,3,4,5};memcpy(out,mac,6);return 0;}

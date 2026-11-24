@@ -24,6 +24,7 @@ context = network[network.index('struct LampBrowserUpload {'):network.index('sta
 spec=importlib.util.spec_from_file_location('browser_lifecycle_extract',ROOT/'tests/control-http-adapter.py')
 extract=importlib.util.module_from_spec(spec);spec.loader.exec_module(extract)
 updater=(ROOT/'LampUpdate.cpp').read_text()
+read_number=extract.function(network,'bool readNumber(')
 lifecycle='\n'.join(extract.function(updater,name) for name in ('void phase(', 'void startReceiverCue()', 'void beginLampManualUpdateCue()', 'void finishLampManualUpdate(', 'void setLampManualUpdateCueProgress(uint32_t written)', 'void setLampManualUpdateCueProgress(uint32_t written,uint32_t total)'))
 version = re.search(r'LAMP_FIRMWARE_VERSION "([^"]+)"', (ROOT / 'LampVersion.h').read_text())[1]
 image = bytearray(512)
@@ -69,7 +70,8 @@ FirmwareManifest installed{};
 namespace LampFirmwareRelay{bool runningManifest(FirmwareManifest& out){out=installed;return known;}}
 namespace LampUpdateAttempt{bool prepare(const FirmwareManifest& p,bool repair){assert(ends==1&&!boots&&repair&&p.size==512);++attempts;return storage;}}
 namespace LampUpdateJob {SubmitResult submit(const char*,const char*,const char*){return Invalid;}Snapshot capture(){return {};}}
-String lampUpdateJson(){return "{}";}
+LampUpdateJob::SubmitResult submitLampUpdateJob(const LampUpdateJob::Submission&){return LampUpdateJob::Invalid;}
+String lampUpdateJson(){return "{}";}String lampUpdateJson(bool){return "{}";}
 namespace UpdatePublisher{
  bool enforced(){return publisher;}
  bool verifyProvisioned(const char* text,size_t size,Manifest& out){assert(size==strlen(text)&&!strcmp(text,signedManifestText));if(!publisher||!validSignature)return false;char copy[288];strlcpy(copy,manifestText,sizeof(copy));assert(parseFirmwareManifest(copy,out.image));if(signedWrongArtifact)out.image.sha256[0]^=1;out.epoch=7;return true;}
@@ -86,6 +88,7 @@ struct Server{
  std::map<String,String> fields;Upload part;bool accepted=false,decoded=false;int code=0;String response;
  bool authenticate(const char*,const char*){return auth;}String header(const String&){return fields["token"];}
  String arg(const String& key){return decoded?formDecoder.arg(key):fields[key];}
+ bool hasArg(const String& key){return decoded?formDecoder.hasArg(key):fields.count(key);}
  HTTPMethod method(){return HTTP_GET;}const char* argView(const char* key){return fields[key].c_str();}
  bool fieldsAllowed(const char* const* names,size_t count){return decoded?formDecoder.fieldsAllowed(names,count):!fields.count("unexpected");}
  void send(int c,const char*,const String& text){code=c;response=text;}
@@ -245,7 +248,7 @@ int esp_ota_abort(esp_ota_handle_t);int esp_ota_end(esp_ota_handle_t);int esp_ot
     for name, text in [('esp_ota_ops.h', sdk),
                        ('esp_app_format.h', constants['FORMAT']), ('sha-config.h', '#define MBEDTLS_SHA256_C\n#define MBEDTLS_PLATFORM_C\n'),
                        ('fixture.h', 'const uint8_t image[]={' + ','.join(map(str, image)) + '};\nconst char manifestText[]=' + json.dumps(manifest) + ';\nconst char fixtureVersion[]=' + json.dumps(version) + ';\nconst char pageSerializedForm[]=' + json.dumps(urllib.parse.urlencode({'deviceId': 'f0b950b2f180', 'manifest': manifest.replace('\n', '|')})) + ';\nconst char signedManifestText[]=' + json.dumps(manifest.replace('COOLLAMP-OTA-1\n','COOLLAMP-OTA-2\n') + '7\n00000042\n' + '0'*128 + '\n') + ';'),
-                       ('test.cpp', fixture + lifecycle + context + production + test)]:
+                       ('test.cpp', fixture + read_number + lifecycle + context + production + test)]:
         (folder / name).write_text(text)
     includes = ['-I' + str(folder), '-I' + str(ROOT / 'tests/http-server-stubs'), '-I' + str(ROOT), '-I' + str(source / 'include'), '-I' + str(source / 'library')]
     defines = ['-DMBEDTLS_CONFIG_FILE="sha-config.h"']
