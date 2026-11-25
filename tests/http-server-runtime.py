@@ -8,12 +8,14 @@ import re
 from host_compiler import SANITIZERS
 
 ROOT=Path(__file__).resolve().parents[1]
+POWER_MEMORY_SCENARIO='compact-state-patch-memory'
+POWER_MEMORY_MEASUREMENT='MEASURE compact-power '
 POLICY_SCENARIOS=('policy-header-ack-3.6','policy-header-ack-rollover','policy-header-no-progress-absolute','policy-header-no-progress-rollover','policy-header-cancel-uncertain-once')
 LARGE_READ_SCENARIOS=('large-read-rto-and-delayed-acks','large-read-rto-and-delayed-acks-rollover','large-read-absolute-progress-rollover-and-fairness','large-read-policy-is-dispatch-content-and-size-bound')
 SCENARIOS=('mapped-page-low-memory-auth-and-no-copy','mapped-page-low-memory-bounds-and-copy-failure','mapped-page-low-memory-client-fairness','mapped-page-low-memory-absolute-rollover','mapped-page-low-memory-send-allocation-failure','mapped-binary-exact-length','mapped-binary-bounds','browser-preparation-budget','authentication','released-request-metadata','compact-parser-and-exact-bodies','body-allocation-failure-and-cancel','partial-and-cancel','idle-deadlines','absolute-and-rollover',
            'fairness-and-capacity','slow-reader-and-no-replay','trickled-response-hard-deadline','static-page-heap-guard','static-page-priority','static-page-pressure-deadline','ready-memory-before-mutation','stalled-json-memory-recovery','response-budget','household-compatibility','invalid-json-and-allocation-after-mutation','bounded-work',
            'static-page-separate-floor','static-page-receiving-priority','static-page-input-deadline-resumes','static-page-upload-deadline-resumes',
-           'control-memory-before-decode','compact-state-patch-memory','current-state-read-admission','read-memory-admission-and-immediate-denial','read-form-capture-budget','prepared-releases-before-memory-admission','prepared-raw-form-and-ble-isolation','prepared-single-slot-and-half-close','prepared-form-allocation-failure','prepared-survives-upload-completion','prepared-waits-for-delayed-cleanup','complete-input-total-deadline-and-rollover','prepared-reply-drain','prepared-reply-deadline-rollover','prepared-reply-cancel','prepared-reply-stop',
+           'control-memory-before-decode',POWER_MEMORY_SCENARIO,'current-state-read-admission','read-memory-admission-and-immediate-denial','read-form-capture-budget','prepared-releases-before-memory-admission','prepared-raw-form-and-ble-isolation','prepared-single-slot-and-half-close','prepared-form-allocation-failure','prepared-survives-upload-completion','prepared-waits-for-delayed-cleanup','complete-input-total-deadline-and-rollover','prepared-reply-drain','prepared-reply-deadline-rollover','prepared-reply-cancel','prepared-reply-stop',
            'transmit-credit-delayed-ack-and-deadline','transmit-credit-delayed-ack-reachable','mapped-page-delayed-ack','mapped-page-fast-delayed-ack','mapped-root-delayed-ack','owned-state-two-copy-dma-pressure','single-data-ack-loss-recovers-at-three-seconds','partial-ack-progress-before-drain-and-rollover','partial-ack-equal-contention-and-fd-reuse','partial-ack-segments-total-and-cancel','partial-ack-html-progress-beyond-five','final-flight-baseline-close-backpressure','mapped-page-deadline-rollover-and-cleanup','ack-drain-restores-unsent-idle','mapped-page-idle-cancel-and-request-bound','close-queue-full','stopped-close-queue-full','upload-complete','upload-abort-owner','upload-malformed-and-loss','failed-old-upload-new-owner','upload-final-status-under-response-pressure','fleet-twenty',
            'parser-admission-bounds-and-recovery','parser-admission-retained-ble-pressure','parser-admission-cancel-and-close-queue-full','parser-admission-allocation-failure-and-race')+POLICY_SCENARIOS+LARGE_READ_SCENARIOS
 with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as folder:
@@ -23,7 +25,14 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
                     str(ROOT/'tests/http-server-runtime.cpp'),str(ROOT/'LampHttpServer.cpp'),
                     '-o',str(binary)],check=True)
     for scenario in SCENARIOS:
-        subprocess.run([str(binary),scenario],check=True,timeout=15)
+        if scenario!=POWER_MEMORY_SCENARIO:
+            subprocess.run([str(binary),scenario],check=True,timeout=15)
+            continue
+        output=subprocess.check_output([str(binary),scenario],text=True,timeout=15)
+        print(output,end='',flush=True)
+        measurement,=[line.removeprefix(POWER_MEMORY_MEASUREMENT) for line in output.splitlines()
+                      if line.startswith(POWER_MEMORY_MEASUREMENT)]
+        power_memory=json.loads(measurement)
     # Exercise the actual build-helper gzip bytes, including embedded NULs,
     # on the exact GET / path at the physically observed low-memory profile.
     gzip_folder=Path(folder)/'gzip';gzip_folder.mkdir()
@@ -102,6 +111,7 @@ with tempfile.TemporaryDirectory(prefix='http-server-',dir=ROOT/'.build') as fol
                 mappedPageSingleFlightBytes=384,acceptedReceiveAndUploadHaveBulkPriority=True,
                 lowMemorySafeReadBudget={'freeHeapBytes':16316,'largestBlockBytes':7668},
                 lowMemoryReadDenialImmediate=True,legacyMutationAdmissionUnchanged=True,compactStatePatchAdmissionMeasuredSeparately=True,
+                compactPowerMemory=power_memory,
                 bulkHtmlOriginalTotalMs=15000,mappedHtmlByteExact=len((ROOT/'LampPage.h').read_text(encoding='utf-8').split('R"HTML(',1)[1].rsplit(')HTML";',1)[0].encode('utf-8')),
                 mappedGzipLowMemoryScenariosPassed=len(gzip_scenarios),mappedGzip=gzip_report,
                 twoCopyPressure=dict(hostModelOnly=True,physicalCauseConfirmed=False,fixtureDmaBlockBytes=1380,

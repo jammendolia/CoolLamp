@@ -401,11 +401,34 @@ int main(){
  const std::string sceneForm="scene=0&speed=50&intensity=85&r=70&g=220&b=255&r2=255&g2=65&b2=170";
  fakeFreeHeap=23388;fakeLargestBlock=9204;
  compactSubmit(6,LampControlEndpoint::Scene,sceneForm);assert(u16(out+4)==200&&calls==compactCalls+3&&lastEndpoint==LampControlEndpoint::Scene&&lastForm==sceneForm);
- fakeLargestBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;
+ fakeLargestBlock=LampControlResourcePolicy::CompactGroupPersistenceBytes-1;
  compactSubmit(7,LampControlEndpoint::Scene,sceneForm);assert(u16(out+4)==503&&calls==compactCalls+3);
  // An updater still rejects this ordinary mutation before admission. A new
  // compact budget never overrides update ownership or replays old Commit.
  updating=true;assert(send(begin(8,LampControlEndpoint::StatePatch,Mutation),19)==3&&calls==compactCalls+3);updating=false;
+ // CoolLamp 2's observed heap is below the legacy floor. Power has a small
+ // reply and still reserves workspace for a follower's persistent pause.
+ const std::string powerForm="on=0";
+ const auto beforePower=calls;
+ fakeFreeHeap=16928;fakeLargestBlock=7668;
+ compactSubmit(9,LampControlEndpoint::Power,powerForm);
+ assert(u16(out+4)==200&&calls==beforePower+1&&lastEndpoint==LampControlEndpoint::Power&&lastMutation&&lastForm==powerForm);
+ assert(send(commit(9),19)==2&&calls==beforePower+1);
+ compactSubmit(10,LampControlEndpoint::AppearanceSave,"");
+ assert(u16(out+4)==503&&calls==beforePower+1);
+ const auto powerPersistence=LampControlResourcePolicy::compactMutationPersistenceBytes(LampControlEndpoint::Power);
+ assert(powerPersistence==2048);
+ const auto powerFloor=LampControlResourcePolicy::ReadDispatchHeapBytes+
+  LampControlResourcePolicy::roundedReplyBytes(LampControlResourcePolicy::CompactMutationReplyBytes)+
+  2*LampControlResourcePolicy::roundedReplyBytes(powerForm.size())+24*32+powerPersistence;
+ fakeFreeHeap=powerFloor-1;
+ compactSubmit(11,LampControlEndpoint::Power,powerForm);
+ assert(u16(out+4)==503&&payload()=="Control resources unavailable. No command executed."&&calls==beforePower+1);
+ fakeFreeHeap=powerFloor;
+ assert(send(page(11),19)==0&&u16(out+4)==503&&send(commit(11),19)==2&&calls==beforePower+1);
+ fakeLargestBlock=powerPersistence-1;
+ compactSubmit(12,LampControlEndpoint::Power,powerForm);
+ assert(u16(out+4)==503&&calls==beforePower+1);
  resetLampBleControlTransfer(20);fakeFreeHeap=16316;fakeLargestBlock=2048;
  const auto currentCalls=calls;const std::string currentForm="view=current";
  outSize=lampBleControlMetadata(out,sizeof(out));assert(payload().find("current-state-v1")!=std::string::npos);
@@ -416,7 +439,7 @@ int main(){
  for(uint16_t bytes:{uint16_t(1),uint16_t(11),uint16_t(13),uint16_t(1024)})assert(send(begin(2,LampControlEndpoint::State,Read,bytes),20)==2&&calls==currentCalls+1);
  assert(send(begin(2,LampControlEndpoint::Firmware,Read,currentForm.size()),20)==2&&calls==currentCalls+1);
  assert(send(begin(2,LampControlEndpoint::State,Read),20)==0&&send(commit(2),20)==0&&calls==currentCalls+2&&lastForm.empty());
-  std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/compact-patch-and-scene/legacy-mutation admission, allocation-free immutable503 read refusals, unchanged persistent mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
+  std::cout<<"PASS: loop-only endpoint adapter, exact forms and private replies, one GET evaluation with immutable480-byte paging, move-owned5424-byte response with zero wire allocations, separate safe-read/compact power, patch and scene/legacy-mutation admission, allocation-free immutable503 read refusals, unchanged persistent mutation/error outcomes, wiped owner release, no Commit replay, generation/rollover/expiry/update cleanup\n";
 }
 '''
         with tempfile.TemporaryDirectory(prefix='lamp-ble-control-') as directory:

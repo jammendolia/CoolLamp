@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,updateSourceLabel,UPDATE_SOURCE_FRESH_MS,automaticUpdateEvidence,automaticUpdateCardMessage} from '../src/update-source.js';
+import {acknowledgedBluetoothUpdateSource,observedReceiverUpdate,observedSenderUpdate,updateSourceLabel,UPDATE_SOURCE_FRESH_MS,automaticUpdateEvidence,automaticUpdateCardMessage} from '../src/update-source.js';
+import {lampUpdatePresentation} from '../src/lamp-update-progress.js';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 
 const target='aabbccddeeff',proof={verified:true,fresh:true,observedAt:1000,now:1500};
@@ -31,6 +32,30 @@ test('active source snapshots are target fenced, time bounded and physically rec
  assert.equal(observedReceiverUpdate({...snapshot(),deviceId:'112233445566'},target,proof),null);
  for(const fields of [{phase:0},{phase:1},{phase:2},{phase:4},{phase:5},{receiver:false},{updateContractVersion:1},{writtenOffset:501,progress:51},{totalBytes:0},{totalBytes:2031617},{progress:100},{writtenOffset:-1}])assert.equal(observedReceiverUpdate({deviceId:target,firmware:{...status,...fields}},target,proof),null);
  assert.deepEqual(observedReceiverUpdate({deviceId:target,...status},target,proof),{progress:50,source:'internet'},'A future identity-bearing compact status uses the same verified contract.');
+});
+
+test('sending requires a fresh report from the exact lamp and never stands in for receiving',()=>{
+ const sending={deviceId:target,firmware:{sending:true}};
+ assert.equal(observedSenderUpdate(sending,target,proof),true);
+ assert.equal(observedSenderUpdate({deviceId:target,sending:true},target,proof),true);
+ for(const snapshot of [{deviceId:target},{deviceId:target,sending:'true'},{deviceId:target,automaticService:{state:1,reason:22}}])
+  assert.equal(observedSenderUpdate(snapshot,target,proof),false);
+ for(const fields of [{verified:false},{fresh:false},{now:999},{now:1000+UPDATE_SOURCE_FRESH_MS+1}])
+  assert.equal(observedSenderUpdate(sending,target,{...proof,...fields}),null);
+ assert.equal(observedSenderUpdate(sending,'000000000000',proof),null);
+ const view=lampUpdatePresentation(target,{selectedSnapshot:sending,selectedObservedAt:1000,now:1500});
+ assert.equal(view.sending,true);assert.equal(view.active,false);assert.equal(view.receiver,null);assert.equal(view.percent,undefined);
+});
+
+test('the newest verified sender read clears an earlier sender report on idle or expiry',()=>{
+ const selectedSnapshot={deviceId:target,sending:true};
+ const observation={senderSnapshot:{deviceId:target,sending:false},senderSnapshotAt:1200,verified:true,fresh:true};
+ const read=(options={})=>lampUpdatePresentation(target,{selectedSnapshot,selectedObservedAt:1100,observation,now:1500,...options}).sending;
+ assert.equal(read(),false);
+ assert.equal(read({selectedObservedAt:1300}),true);
+ assert.equal(read({selectedObservedAt:1300,now:6301}),false);
+ assert.equal(read({selectedSnapshot:null,observation:{...observation,senderSnapshot:{deviceId:target,sending:true}}}),true);
+ assert.equal(read({selectedSnapshot:null,observation:{...observation,verified:false,senderSnapshot:{deviceId:target,sending:true}}}),false);
 });
 
 test('artwork accepts only known source enums while ordinary drawings and unknown fills remain generic',()=>{
@@ -63,6 +88,15 @@ test('actual source colors preserve route hue ratios and distinguish the silhoue
 
 const service=()=>({version:1,state:5,reason:14,retryInMs:75000,donorWaitMs:0,internetAttempts:1,donorOffers:0,attention:true,phoneFallback:true,newerSeen:true});
 const automatic=()=>({deviceId:target,version:'1.15.1',latest:'1.15.2',phase:0,error:0,automatic:true,bootHealthy:true,automaticService:service()});
+test('sender evidence never offers a phone update and suppresses prior fallback only while fresh',()=>{
+ const attention=automaticUpdateEvidence(automatic(),target,proof);
+ const sending=automaticUpdateEvidence({...automatic(),sending:true},target,proof);
+ assert.equal(sending.kind,'sending');assert.notEqual(sending.offerPhone,true);
+ assert.equal(automaticUpdateCardMessage({automaticAttention:attention,automaticContext:sending},target,{now:1500}),null);
+ assert.match(automaticUpdateCardMessage({automaticAttention:attention,automaticContext:sending},target,{now:10000}),/last check/);
+ assert.match(automaticUpdateCardMessage({automaticAttention:attention,automaticContext:sending,
+  senderSnapshotAt:1100,senderSnapshot:{deviceId:target,sending:false}},target,{now:1500}),/Tap Update/);
+});
 test('automatic attention requires opt-in, fresh canonical evidence and a newer release or actual failed attempt',()=>{
  const evidence=automaticUpdateEvidence(automatic(),target,proof);assert.equal(evidence.kind,'attention');assert.equal(evidence.offerPhone,true);
  assert.match(automaticUpdateCardMessage({automaticEnabled:true,automaticAttention:evidence},target,{now:1500}),/keep checking.*Tap Update/);

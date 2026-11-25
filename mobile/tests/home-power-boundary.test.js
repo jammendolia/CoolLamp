@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
-import {runLampPower,legacyPowerWithoutGroups} from '../src/lamp-power.js';
+import {runLampPower,legacyPowerWithoutGroups,SENDING_UPDATE_NOTICE} from '../src/lamp-power.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8').replace(/\r\n/g,'\n');
 const id='aabbccddeeff',entry={id,name:'Reading lamp',address:'192.168.1.9',deviceId:'native-id'};
@@ -38,9 +38,10 @@ test('a stale group card offers explicit one-tap On and Off without inferring a 
   getAttribute(name){return this.attributes.get(name);}
   append(...children){this.children.push(...children);}
  }
+ let sending=false;
  const calls=[],context={
   document:{createElement:tag=>new Element(tag)},cardPowerExpected:()=>null,cardPowerTasks:new Map(),powerLaneBusy:()=>false,
-  fleetLampInstalling:()=>false,groupRemovedIds:new Set(),busy:false,connecting:false,selected:null,
+  fleetLampInstalling:()=>false,lampSendingUpdate:target=>target===id&&sending,groupRemovedIds:new Set(),busy:false,connecting:false,selected:null,
   changeCardPower:(target,expected,options)=>calls.push({target,expected,options})
  };
  const controlSource=extract('function groupPowerControl(','\nasync function changeCardPower(');
@@ -52,8 +53,11 @@ test('a stale group card offers explicit one-tap On and Off without inferring a 
  buttons[0].onclick();buttons[1].onclick();assert.equal(calls.length,2);
  assert.deepEqual(calls.map(call=>call.options.requestedPower),[true,false]);
  for(const call of calls){assert.equal(call.target,entry);assert.equal(call.expected.group.role,1);assert.equal(call.expected.group.leader,id);assert.equal(Object.hasOwn(call.expected,'power'),false);}
+ const powerButtons=()=>context.makeGroupPower(entry,group).children.filter(child=>child.tagName==='BUTTON');
+ sending=true;assert(powerButtons().every(button=>button.disabled),'Both group power actions pause during a known outgoing transfer.');
+ sending=false;assert(powerButtons().every(button=>!button.disabled),'The same group offers both actions once the sender clears.');
 });
-function commandFixture({focusConnection=null}={}){
+function commandFixture({focusConnection=null,sending=false}={}){
  const raw={deviceId:id,power:true,mode:1,firmware:{version:'1.9.6',phase:0,wifi:true},sync:{version:2,role:0,leader:null,paused:false,active:false},wifi:{connected:true,rssi:-60},calibration:{active:false}};
  const writes=[],invalidations=[],events=[];let tail=Promise.resolve(),scope=true,releaseCalls=0;
  const lamp={identity:id,epoch:3,base:'http://192.168.1.9',raw,catalog:[{id:1,name:'Rain'}],
@@ -69,9 +73,10 @@ function commandFixture({focusConnection=null}={}){
  const body={},groupButton={dataset:{connection:focusConnection},disabled:false,focus(){document.activeElement=this;events.push('focus:'+focusConnection);},closest:selector=>selector==='[data-group-id]'?groupCard:null},
   groupCard={dataset:{groupId:id},querySelectorAll:selector=>selector==='[data-connection]'?[groupButton]:[]},groupList={querySelectorAll:selector=>selector==='[data-group-id]'?[groupCard]:[]};
  const document={activeElement:focusConnection?groupButton:{dataset:{},closest:()=>null},body,addEventListener(){},removeEventListener(){}};let groupRenders=0;
- const context={runLampPower,legacyWithoutGroups:legacyPowerWithoutGroups,connectivity,entry,console,Map,Set,Date,
+ const context={runLampPower,SENDING_UPDATE_NOTICE,legacyWithoutGroups:legacyPowerWithoutGroups,connectivity,entry,console,Map,Set,Date,
   acquireGroupLamp:async()=>({lamp,release:async()=>{releaseCalls++;}}),mergedLampEntries:()=>[entry],
-  powerLaneBusy:()=>false,fleetLampInstalling:()=>false,renderLamps(){},renderRoomGroups(){if(focusConnection&&++groupRenders===1)document.activeElement=body;},renderGroupScenes(){},status(){},document,
+  powerLaneBusy:()=>false,fleetLampInstalling:()=>false,lampSendingUpdate:target=>target===id&&sending,refreshLampFirmware(){},
+  renderLamps(){},renderRoomGroups(){if(focusConnection&&++groupRenders===1)document.activeElement=body;},renderGroupScenes(){},status(){},document,
   $:name=>name==='page-groups'?{hidden:!focusConnection}:name==='page-lamps'?{hidden:Boolean(focusConnection)}:name==='groupsList'?groupList:{hidden:true,querySelectorAll:()=>[]}};
  const handler=extract('async function changeCardPower(','\nasync function openSelectedLampGroup(');
  runInNewContext(`let busy=false,connecting=false,selected=null,navigationSerial=1,groupEditor=null;
@@ -101,4 +106,9 @@ test('Home reports a confirmed pre-mutation rejection without claiming power may
  const result=await f.change({requestedPower:false});
  assert.equal(result.outcome,'failed');assert.equal(result.safeToRetry,true);assert.equal(result.message,'Updater busy. No power change was sent.');
  assert.doesNotMatch(result.message,/may have changed/i);assert.equal(f.invalidations.length,0);assert.equal(f.releaseCalls(),1);
+});
+
+test('Home power explains a known outgoing firmware transfer before opening a command connection',async()=>{
+ const f=commandFixture({sending:true});const result=await f.change({requestedPower:false});
+ assert.equal(result.outcome,'failed');assert.equal(result.message,SENDING_UPDATE_NOTICE);assert.equal(f.writes.length,0);assert.equal(f.releaseCalls(),0);
 });

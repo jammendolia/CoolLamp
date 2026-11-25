@@ -1,5 +1,5 @@
 // Presentation evidence only: this module never starts, retries or reroutes an
-// update. Source comes from written-byte ACKs or a fresh verified target read.
+// update. Transfer state comes from written-byte ACKs or a fresh verified target read.
 const maxImageBytes=2031616;
 const sourceLabels=Object.freeze({bluetooth:'From your phone',internet:'From the internet',donation:'From another trusted lamp','manual-upload':'From your computer'});
 export const UPDATE_SOURCE_FRESH_MS=5000;
@@ -17,6 +17,10 @@ function verifiedFirmwareValue(snapshot,target,{verified=false,fresh=false,obser
  if(typeof target!=='string'||!/^[0-9a-f]{12}$/.test(target)||snapshot?.deviceId!==target||verified!==true||fresh!==true||
    !Number.isFinite(observedAt)||observedAt<=0||!Number.isFinite(now)||now<observedAt||now-observedAt>UPDATE_SOURCE_FRESH_MS)return null;
  return snapshot.firmware??snapshot;
+}
+export function observedSenderUpdate(snapshot,target,proof={}){
+ const value=verifiedFirmwareValue(snapshot,target,proof);
+ return value?value.sending===true:null;
 }
 export function observedReceiverUpdate(snapshot,target,proof={}){
  const value=verifiedFirmwareValue(snapshot,target,proof);
@@ -48,6 +52,7 @@ export function automaticUpdateEvidence(snapshot,target,{latestVersion=null,...p
  const record={target,checkedAt:proof.observedAt,automatic:value.automatic,service};
  if(observedReceiverUpdate(snapshot,target,proof))return Object.freeze({...record,kind:'receiving'});
  if(value.phase===4||service?.state===6||service?.reason===24)return Object.freeze({...record,kind:'pending'});
+ if(value.sending===true)return Object.freeze({...record,kind:'sending'});
  let latest=validVersion(value.latest)&&value.latest!=='0.0.0'?value.latest:null;
  if(validVersion(latestVersion)&&(!latest||compare(latestVersion,latest)>0))latest=latestVersion;
  if(value.bootHealthy===true&&latest&&compare(value.version,latest)>=0)return Object.freeze({...record,kind:'healthy'});
@@ -68,6 +73,8 @@ export function automaticUpdateCardMessage(observation,target,{now=Date.now()}={
  const evidence=observation?.automaticAttention;
  if(!evidence||evidence.target!==target||observation.automaticEnabled===false||!Number.isFinite(evidence.checkedAt)||evidence.checkedAt<=0)return null;
  const context=observation.automaticContext;
+ if(context?.target===target&&context.kind==='sending'&&now>=context.checkedAt&&now-context.checkedAt<=UPDATE_SOURCE_FRESH_MS&&
+   !(observation.senderSnapshotAt>context.checkedAt&&observation.senderSnapshot?.sending!==true))return null;
  if(context?.target===target&&context.kind==='waiting'&&([0,2,4,6].includes(context.service?.state)||
    [1,2,3,4,5,6,7,8,9,10,17,18,19,20,21,22,23,24].includes(context.service?.reason)))return null;
  if(evidence.kind==='pending')return 'We’re checking the earlier update. A new update will wait until it is confirmed.';

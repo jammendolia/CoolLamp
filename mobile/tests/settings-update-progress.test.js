@@ -10,6 +10,7 @@ import {FirmwareAttemptJournal,classifyFirmwareSnapshot} from '../src/firmware-a
 import {parsePhoneManifest} from '../src/bluetooth-firmware.js';
 import {firmwareUpdatePresentation,firmwareUpdateResultPresentation} from '../src/firmware-update-ui.js';
 import {acknowledgedBluetoothUpdateSource} from '../src/update-source.js';
+import {SENDING_UPDATE_NOTICE} from '../src/lamp-power.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const markup=readFileSync(new URL('../index.html',import.meta.url),'utf8');
@@ -64,7 +65,7 @@ function fixture({task=true,stage='transferring',percent=7,verified=false,path='
   cardFirmwareTasks:tasks,bluetoothFirmwareTask:null,firmwareFeedback:feedback,firmwareAttempts:journal,cardFirmwareUnconfirmed:pending,fleetStatuses:statuses,
   firmware:null,firmwareReceivedAt:0,settingsRestartWaitUntil:0,verifiedSelectedLamp:()=>connected,
   firmwareConnectionBusy:()=>Boolean(tasks.size||context.bluetoothFirmwareTask||[...statuses.values()].some(value=>['updating','restarting'].includes(value.state))),
-  lampUpdatePresentation,lampArtworkSvg,lampStyleUsesWholeStrip,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
+  lampUpdatePresentation,lampArtworkSvg,lampStyleUsesWholeStrip,SENDING_UPDATE_NOTICE,resolvedStyle:entry=>({id:entry.phoneLampStyle||'unspecified'}),
   updatingLamp:()=>tasks.has(context.selected?.id),publicFirmwareFresh:false,publicFirmwareRun:null,publicFirmwareError:'',publicFirmware:null,
   state:null,busy:false,liveLightSending:false,availableCardRelease:()=>null,validFirmwareVersion:()=>false,firmwareMessage:()=>'',
   renderFirmwareFeedback(){},renderBluetoothFirmwareControls(){},renderPower(){},renderLampStyleSettings(){},renderCenterTool(){},renderNetworkNameSettings(){},
@@ -289,6 +290,16 @@ test('successful fresh completion hides update presentation and restores verifie
  assert.equal(f.$('page-settings').dataset.connectionRecovering,'false');
  assert.equal(f.$('connectionBadge').textContent,'Wi-Fi');
  assert.equal(f.$('settingsConnection').textContent,'Pink Corkscrew · Wi-Fi');
+});
+
+test('Settings reports an outgoing transfer without installing or restarting the selected lamp',()=>{
+ const f=fixture({task:false});const senderSnapshotAt=Date.now();
+ f.statuses.set(id,{verified:true,fresh:true,senderSnapshot:{deviceId:id,sending:true},senderSnapshotAt});f.render();
+ assert.equal(f.$('settingsUpdate').hidden,false);assert.equal(f.$('page-settings').dataset.updateActive,'false');
+ assert.equal(f.$('settingsUpdateTitle').textContent,'Sending a lamp update');assert.equal(f.$('settingsUpdateMessage').textContent,SENDING_UPDATE_NOTICE);
+ assert.equal(f.$('settingsUpdateProgress').hidden,true);assertNeutral(f);
+ f.statuses.set(id,{verified:true,fresh:true,senderSnapshot:{deviceId:id,sending:false},senderSnapshotAt});f.render();
+ assert.equal(f.$('settingsUpdate').hidden,true);
 });
 
 for(const outcome of ['transferStopped','installationNotStarted'])test('durably confirmed '+outcome+' stays visible in selected Settings without ongoing progress',()=>{

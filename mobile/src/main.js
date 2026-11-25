@@ -25,7 +25,7 @@ import { GroupDiscovery } from './group-discovery.js';
 import { BluetoothGroups, initializeGroupRadio } from './bluetooth-groups.js';
 import { Groups, groupCreationPlan } from './groups.js';
 import { GroupLightingUi } from './group-lighting-ui.js';
-import { runLampPower } from './lamp-power.js';
+import { runLampPower, SENDING_UPDATE_NOTICE } from './lamp-power.js';
 import { downloadPhoneFirmware, compareFirmwareVersions, firmwareBase64, bluetoothFirmwareFailureMessage, parsePhoneManifest } from './bluetooth-firmware.js';
 import { FirmwareFeedback } from './firmware-feedback.js';
 import { FirmwareScreenAwake } from './firmware-screen-awake.js';
@@ -183,7 +183,7 @@ function page(name,{preserveGroupFocus=false,preserveCardSettings=false,restoreS
   const primary=['lights','lamps','groups','settings'].includes(name)?'lights':['people-access','help','bridges'].includes(name)?'app-settings':name;
   document.querySelectorAll('[data-page]').forEach(b=>{if(b.dataset.page===primary)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
   if(name==='settings'){renderSettings();if(settingsView==='groups')refreshGroupCoordinators();}
-  if(name==='groups'){$('status').textContent='Manage groups over Wi-Fi or authorized Bluetooth connections.';renderRoomGroups();refreshRoomGroups();}
+  if(name==='groups'){$('status').textContent='Manage groups over Wi-Fi or authorized Bluetooth connections.';renderRoomGroups();refreshRoomGroups();refreshLampFirmware();}
   if((name==='home'||name==='lights')&&mergedLampEntries().length){refreshRoomGroups();if(name==='home')refreshLampFirmware();}
   if(name==='bridges')bridgeManagementUi?.refresh();
   appV2?.navigate(route);
@@ -411,7 +411,7 @@ function renderEffectPane() {
   return model;
 }
 
-function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask); }
+function updatingLamp() { return Boolean(firmware&&[1,3,4].includes(firmware.phase))||lampSendingUpdate(selected?.id)||fleetLampInstalling(selected?.id)||bluetoothFirmwareTask?.id===selected?.id&&Boolean(bluetoothFirmwareTask); }
 function bluetoothFirmwareOwner(){return bluetoothFirmwareTask||[...cardFirmwareTasks.values()].find(task=>task.path==='bluetooth')||null;}
 function firmwareBackgroundWorkAllowed(){return !appTourActive&&!bluetoothFirmwareTask&&!cardFirmwareTasks.size&&!fleetUpdating&&!connecting&&!foregroundConnectionHold;}
 function pauseFirmwareBackgroundWork(){
@@ -451,6 +451,7 @@ function independentLightingAllowed(){
   return legacyWithoutGroups(firmware?.version);
 }
 function renderPower() {
+  const sending=lampSendingUpdate(selected?.id);
   const art=$('lampArt'),style=resolvedStyle().id;
   if(art.dataset.style!==style){art.innerHTML=lampArtworkSvg(style,{decorative:true});art.dataset.style=style;}
   art.style.opacity=state?.power?'1':'.2';
@@ -465,10 +466,10 @@ function renderPower() {
   $('lightEmpty').hidden=Boolean(state);
   document.querySelector('.light-hero').hidden=!state;
   $('controls').hidden=!state;
-  $('powerState').textContent=updatingLamp()?'Updating lamp':state?.power?'Light is on':state?'Light is off':'Not connected';
+  $('powerState').textContent=sending?'Sending an update':updatingLamp()?'Updating lamp':state?.power?'Light is on':state?'Light is off':'Not connected';
   $('lightModeBadge').textContent=sync?.scene>0?(groupScenes.find(x=>x.id===sync.scene)?.name||'Group scene'):(lamp?.catalog?.find(x=>x.id===state?.mode)?.name||'Choose an effect');
   $('brightnessHelp').textContent=sync?.active?'Brightness follows the coordinator. Pause this lamp’s sync to adjust it here.':'Shared lamp brightness.';
-  $('powerHint').textContent=!state?'Connect to a lamp to control its power.':updatingLamp()?'Wait for the firmware update to finish.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Groups when you are ready.':state.power?'Turns the light off while keeping the lamp connected.':'Turns the light on using its current effect and brightness.';
+  $('powerHint').textContent=!state?'Connect to a lamp to control its power.':sending?SENDING_UPDATE_NOTICE:updatingLamp()?'Wait for the firmware update to finish.':state.calibration?.active?'Finish LED setup to use the power control.':sync?.role===1?'Controls this lamp and its connected followers.':sync?.active?'Controls only this lamp and pauses its group sync. Use the controller to turn off the whole group.':sync?.role===2&&sync.paused?'Group sync is paused. Resume it in Settings → Groups when you are ready.':state.power?'Turns the light off while keeping the lamp connected.':'Turns the light on using its current effect and brightness.';
 }
 function renderOptions() {
   renderSavedLooks();
@@ -522,7 +523,7 @@ function renderFirmware() {
   const updating = updatingLamp();
   const release=publicFirmwareFresh?availableCardRelease(firmware?.version,publicFirmware):null;
   $('firmwareVersion').textContent = state ? firmware?.version || 'Older firmware' : 'Connect to view';
-  const updateMessage=!state?'Connect to view update status.':firmware&&[1,3,4,5].includes(firmware.phase)?firmwareMessage(firmware):publicFirmwareRun?'Checking the public firmware release…':publicFirmwareError?'Could not check the public release. '+publicFirmwareError:!publicFirmwareFresh?'Check for updates to verify the current public release.':release?'Firmware '+release.version+' is available.':validFirmwareVersion(firmware?.version)?'Your lamp is up to date with public firmware '+publicFirmware.version+'.':firmwareMessage(firmware);
+  const updateMessage=!state?'Connect to view update status.':lampSendingUpdate(selected?.id)?SENDING_UPDATE_NOTICE:firmware&&[1,3,4,5].includes(firmware.phase)?firmwareMessage(firmware):publicFirmwareRun?'Checking the public firmware release…':publicFirmwareError?'Could not check the public release. '+publicFirmwareError:!publicFirmwareFresh?'Check for updates to verify the current public release.':release?'Firmware '+release.version+' is available.':validFirmwareVersion(firmware?.version)?'Your lamp is up to date with public firmware '+publicFirmware.version+'.':firmwareMessage(firmware);
   if($('firmwareStatus').textContent!==updateMessage)$('firmwareStatus').textContent=updateMessage;
   $('firmwareControls').disabled = !state || !firmware || busy || updating;
   if(!busy)$('autoUpdate').checked = Boolean(firmware?.automatic);
@@ -680,24 +681,26 @@ function lampUpdateView(entry,attempt=null){
     feedback:firmwareFeedback.get(id),attempt,pending:cardFirmwareUnconfirmed.has(id),observation:fleetStatuses.get(id),
     selectedSnapshot:connected&&lamp.raw?.firmware===firmware?lamp.raw:null,selectedObservedAt:firmwareReceivedAt});
 }
+function lampSendingUpdate(id){return Boolean(id&&lampUpdateView({id}).sending);}
 function renderSettingsUpdate(){
-  const view=lampUpdateView(selected,firmwareAttempts.get(selected?.id)),visible=!$('page-settings').hidden&&(view.active||view.terminal===true);
+  const view=lampUpdateView(selected,firmwareAttempts.get(selected?.id)),sending=view.sending&&!view.active;
+  const visible=!$('page-settings').hidden&&(view.active||view.terminal===true||sending);
   $('settingsUpdate').hidden=!visible;
   $('page-settings').dataset.updateActive=String(visible&&view.active);
   if(!visible)return view;
-  $('settingsUpdateTitle').textContent=view.terminal?view.outcome==='needsAttention'?'Update needs attention':view.outcome==='transferStopped'?'Update stopped':'Update did not start':view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
-  $('settingsUpdateMessage').textContent=view.message;
-  $('settingsUpdateHint').textContent=view.outcome==='needsAttention'?'No check is running. You can safely leave this screen and check again later.':view.terminal?'Your lamp’s update result is saved on its card.':view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
+  $('settingsUpdateTitle').textContent=sending?'Sending a lamp update':view.terminal?view.outcome==='needsAttention'?'Update needs attention':view.outcome==='transferStopped'?'Update stopped':'Update did not start':view.stage==='checking-result'?'Checking '+selected.name:view.stage==='restarting'?'Restarting '+selected.name:view.stage==='stopping'?'Stopping the update':'Updating '+selected.name;
+  $('settingsUpdateMessage').textContent=sending?SENDING_UPDATE_NOTICE:view.message;
+  $('settingsUpdateHint').textContent=sending?'Keep this lamp powered during the transfer.':view.outcome==='needsAttention'?'No check is running. You can safely leave this screen and check again later.':view.terminal?'Your lamp’s update result is saved on its card.':view.keepOpen?'Keep CoolLamp open and stay near your lamp until the update finishes.':'Keep your lamp powered. We’ll check its software after it restarts.';
   $('settingsUpdateArt').innerHTML=lampArtworkSvg(resolvedStyle(selected).id,{updateProgress:view.percent,updateSource:view.source,decorative:true});
   $('settingsUpdatePercent').textContent=view.percent===undefined?'':view.percent+'%';
   $('settingsUpdateSource').textContent=view.sourceLabel||'';
   $('settingsUpdateSource').hidden=!view.sourceLabel;
-  const bar=$('settingsUpdateProgress');bar.max=100;bar.hidden=Boolean(view.terminal);
+  const bar=$('settingsUpdateProgress');bar.max=100;bar.hidden=sending||Boolean(view.terminal);
   if(view.percent===undefined)bar.removeAttribute('value');else bar.value=view.percent;
   bar.setAttribute('aria-label',selected.name+' update progress');
   let action=$('settingsUpdate').querySelector('[data-update-result-action]');
   if(view.terminal&&!action){action=document.createElement('button');action.type='button';action.className='secondary';action.dataset.updateResultAction='true';$('settingsUpdate').append(action);}
-  if(action){action.hidden=!view.terminal;action.textContent=view.outcome==='needsAttention'?'Return to Lamps':'View this lamp in Lamps';
+  if(action){action.hidden=sending||!view.terminal;action.textContent=view.outcome==='needsAttention'?'Return to Lamps':'View this lamp in Lamps';
     const id=selected.id,attemptId=view.attemptId;
     action.onclick=()=>{const saved=mergedLampEntries().find(entry=>entry.id===id),current=firmwareAttempts.get(id);
       if(selected?.id!==id||!saved||current?.attemptId!==attemptId||
@@ -777,6 +780,7 @@ const callbacks = {
   onOptions(next) { effectOptions = next; renderOptions(); },
   onFirmware(next) {
     const hadReceiverProgress=firmware?.receiver===true&&firmware?.phase===3;
+    const senderChanged=(firmware?.sending===true)!==(next?.sending===true);
     const previousLabel=selected?lampFirmwareLabel(selected,{connected:verifiedSelectedLamp(),firmware,firmwareReceivedAt,
       observation:fleetStatuses.get(selected.id)}):null;
     firmware = next;
@@ -788,7 +792,8 @@ const callbacks = {
       store.rememberFirmware(selected.id,next);
       confirmInstalledFirmware(selected.id,{version:next?.version,verified:true,fresh:true});
       const nextLabel=lampFirmwareLabel(selected,{connected:true,firmware,firmwareReceivedAt,observation:fleetStatuses.get(selected.id)});
-      if(previousLabel!==nextLabel||hadReceiverProgress||next?.receiver===true&&next.phase===3)renderLamps();
+      if(previousLabel!==nextLabel||hadReceiverProgress||next?.receiver===true&&next.phase===3||senderChanged)renderLamps();
+      if(senderChanged){renderPower();renderSettingsUpdate();if(!$('page-groups').hidden)renderRoomGroups();}
     }
     renderFirmware();
   },
@@ -903,9 +908,20 @@ aroundMutation:({identity,path},operation)=>{
 },onJobRejected:evidence=>{
  const attempt=firmwareAttempts.get(evidence.identity),proof=confirmedFirmwareJobRejection(attempt,evidence);
  firmwareAttempts.settle(attempt,proof);return proof;
-},onStatus:(id,value)=>{
+},onStatus:(id,value,{senderOnly=false}={})=>{
   if(!mergedLampEntries().some(entry=>entry.id===id))return;
+  const wasSending=lampSendingUpdate(id);
   fleetStatuses.set(id,value);
+  const sending=lampSendingUpdate(id);
+  if(wasSending!==sending){
+    if(!$('page-groups').hidden)renderRoomGroups();
+    scheduleLampStatusRefresh();
+  }
+  if(senderOnly){
+    renderLamps();
+    if(id===selected?.id){renderPower();renderFirmware();renderSettingsUpdate();}
+    return;
+  }
   if(value.verified&&value.fresh){
     connectivity?.observe(id,{deviceId:id,wifi:value.wifi,checkedAt:value.wifiObservedAt,source:'diagnostics'});
     if(value.group)connectivity?.observeGroup(id,{deviceId:id,group:value.group,checkedAt:value.groupObservedAt,source:'diagnostics'});
@@ -1631,19 +1647,19 @@ function renderFleetControls() {
   $('updateAllLamps').textContent=fleetUpdating?'Updating lamps…':'Update all lamps';
   $('fleetFirmwareStatus').textContent=fleetSummary;
 }
-function refreshLampFirmware({newDiscovery=false}={}) {
+function refreshLampFirmware({newDiscovery=false,senderIds}={}) {
   if(!fleet||!firmwareBackgroundWorkAllowed())return;
   if(fleetRefreshRun){fleetRefreshQueued ||= newDiscovery;return;}
-  fleetSummary='Reading each lamp’s installed version in the background…';
+  if(!senderIds)fleetSummary='Reading each lamp’s installed version in the background…';
   const excludeIds=new Set([...cardFirmwareTasks.keys(),...firmwareAttempts.pending().map(value=>value.identity),...legacyFirmwareReceipts.keys()]);
   if(bluetoothFirmwareTask?.id)excludeIds.add(bluetoothFirmwareTask.id);
-  const run=fleet.refresh({excludeIds});fleetRefreshRun=run;renderFleetControls();
+  const run=fleet.refresh(senderIds?{excludeIds,onlyIds:senderIds,senderOnly:true}:{excludeIds});fleetRefreshRun=run;renderFleetControls();
   run.then(result=>{
-    if(result.cancelled||result.busy||fleetUpdating)return;
+    if(senderIds||result.cancelled||result.busy||fleetUpdating)return;
     const live=result.results.filter(value=>value.verified&&value.fresh).length;
     const attention=result.results.filter(value=>['offline','failed','needs-password','unsupported'].includes(value.state)).length;
     fleetSummary='Versions refreshed · '+live+' reachable'+(attention?' · '+attention+' need attention':'')+'.';
-  }).catch(error=>{if(!fleetUpdating)fleetSummary=error.message||'Could not refresh lamp versions.';})
+  }).catch(error=>{if(!senderIds&&!fleetUpdating)fleetSummary=error.message||'Could not refresh lamp versions.';})
     .finally(()=>{
       if(fleetRefreshRun===run)fleetRefreshRun=null;
       renderFleetControls();
@@ -1725,8 +1741,15 @@ async function refreshBrokerMeshInventory() {
 }
 function scheduleLampStatusRefresh() {
   clearTimeout(lampStatusTimer);lampStatusTimer=null;
-  if(appTourActive||document.hidden||$('page-lamps').hidden)return;
-  lampStatusTimer=setTimeout(()=>{if(!document.hidden&&!$('page-lamps').hidden){renderLamps();resumePendingFirmwareChecks();refreshLampFirmware();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();scheduleLampStatusRefresh();}},20000);
+  if(appTourActive||document.hidden||$('page-lamps').hidden&&$('page-groups').hidden)return;
+  const senderIds=[...fleetStatuses.keys()].filter(id=>lampSendingUpdate(id));
+  lampStatusTimer=setTimeout(()=>{
+    if(document.hidden||$('page-lamps').hidden&&$('page-groups').hidden)return;
+    if(!$('page-groups').hidden)renderRoomGroups();
+    if(!$('page-lamps').hidden){renderLamps();if(!senderIds.length){resumePendingFirmwareChecks();refreshBasicBluetoothTelemetry();refreshNewMeshLamps();}}
+    refreshLampFirmware(senderIds.length?{senderIds}:undefined);
+    scheduleLampStatusRefresh();
+  },senderIds.length?2500:20000);
 }
 function refreshBasicBluetoothTelemetry() {
   if(!firmwareBackgroundWorkAllowed()||bleConnectivityRead||connecting||busy||lamp!==bleLamp||!verifiedSelectedLamp()||bleLamp.supportsOfflineControl||!(state.capabilities&4)||updatingLamp())return;
@@ -1788,6 +1811,7 @@ function cardPowerExpected(entry){
 }
 function cardPowerButton(entry){
   const expected=cardPowerExpected(entry),pending=cardPowerTasks.has(entry.id),role=expected?.group.role;
+  const sending=lampSendingUpdate(entry.id);
   const label=role===1?'Group power':role===2?'Lamp power':'Power',name=entry.name||'CoolLamp';
   const button=document.createElement('button');button.type='button';button.className='lamp-power';button.dataset.connection='power';button.dataset.powerState=pending?'pending':expected?expected.power?'on':'off':'unknown';
   button.setAttribute('aria-busy',String(pending));
@@ -1795,13 +1819,13 @@ function cardPowerButton(entry){
   button.title=action;button.setAttribute('aria-label',action);
   button.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2v10m-5-7a9 9 0 1 0 10 0"/></svg>';
   const copy=document.createElement('span'),scope=document.createElement('strong'),value=document.createElement('small');scope.textContent=label;value.textContent=pending?'Working…':expected?expected.power?'On':'Off':'Check status';copy.append(scope,value);button.append(copy);
-  button.disabled=pending||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
+  button.disabled=pending||sending||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
   button.onclick=()=>changeCardPower(entry,cardPowerExpected(entry)?expected:null);return button;
 }
 function groupPowerControl(entry,group,name=entry.name||'CoolLamp'){
   const expected=cardPowerExpected(entry),pending=cardPowerTasks.has(entry.id),ready=Boolean(group?.available&&group?.leader?.verified&&group.leader.role===1);
   const membership=ready?{group:{role:1,leader:entry.id},...(expected?{power:expected.power}:{})}:null;
-  const disabled=pending||!ready||group?.leader?.sync?.membershipLocked===true||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
+  const disabled=pending||!ready||lampSendingUpdate(entry.id)||group?.leader?.sync?.membershipLocked===true||powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||groupRemovedIds.has(entry.id)||busy&&selected?.id===entry.id||connecting&&selected?.id===entry.id;
   const control=document.createElement('div');control.className='v2-group-power-set';control.setAttribute('role','group');control.setAttribute('aria-label','Set '+name+' group power');control.setAttribute('aria-busy',String(pending));
   const label=document.createElement('span');label.textContent=pending?'Working…':'Power';control.append(label);
   for(const [copy,desired] of [['On',true],['Off',false]]){
@@ -1814,6 +1838,7 @@ function groupPowerControl(entry,group,name=entry.name||'CoolLamp'){
 async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgress,isScopeCurrent=()=>true,requestedPower=null}={}){
   const scopeCurrent=()=>{try{return isScopeCurrent()!==false;}catch{return false;}};
   if(!scopeCurrent())return Object.freeze({outcome:'failed',message:'The active Home changed. Open Home and choose the light again.'});
+  if(lampSendingUpdate(entry.id))return Object.freeze({outcome:'failed',message:SENDING_UPDATE_NOTICE});
   if(cardPowerTasks.has(entry.id))return Object.freeze({outcome:'failed',message:'This lamp is already changing or checking its power.'});
   if(powerLaneBusy(entry.id)||fleetLampInstalling(entry.id)||(busy||connecting)&&selected?.id===entry.id)
     return Object.freeze({outcome:'failed',message:'This lamp is finishing another task. Wait for it to finish, then try again.'});
@@ -1857,7 +1882,9 @@ async function changeCardPower(entry,expected=cardPowerExpected(entry),{onProgre
     const detail=typeof error.message==='string'&&error.message.trim()?error.message.trim():'The lamp could not be checked.';
     const punctuated=/[.!?]$/.test(detail)?detail:detail+'.';
     const message=error.uncertain?'Power may have changed. Check the light’s current state before trying again.':error.noMutation?punctuated+' No power change was sent.':detail;
-    cardPowerMessages.set(entry.id,message);status((current.name||'CoolLamp')+' · '+message);
+    if(detail===SENDING_UPDATE_NOTICE)refreshLampFirmware({senderIds:[entry.id]});
+    else cardPowerMessages.set(entry.id,message);
+    status((current.name||'CoolLamp')+' · '+message);
     return Object.freeze({outcome:error.uncertain?'uncertain':'failed',message,needsReview:Boolean(error.needsReview||error.uncertain),safeToRetry:Boolean(error.noMutation),checkedAt:Date.now()});
   }finally{
     for(const type of ['focusin','pointerdown','keydown'])document.removeEventListener(type,cancelFocus);
@@ -2336,17 +2363,18 @@ function renderLamps() {
     const remove=document.createElement('button');remove.type='button';remove.className='lamp-connection lamp-remove v2-card-remove';remove.dataset.connection='remove';remove.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6"/></svg>';remove.title='Remove '+name+' from this phone';remove.setAttribute('aria-label',remove.title);
     remove.disabled=busy||connecting||fleetLampInstalling(entry.id)||cardPowerTasks.has(entry.id)||bluetoothFirmwareOwner()?.id===entry.id;remove.onclick=e=>{e.stopPropagation();removeLampFromPhone(entry).catch(()=>{});};links.append(remove);
     const feedback=document.createElement('div');feedback.className='v2-card-feedback';
-    if(task||receiverUpdate)readiness.textContent=task?.reconciling?'Checking your update':'Updating your lamp';
+    if(updateView.sending)readiness.textContent='Sending an update to another lamp';
+    else if(task||receiverUpdate)readiness.textContent=task?.reconciling?'Checking your update':'Updating your lamp';
     else if(pendingUpdate)readiness.textContent='Update needs a check';
     // Only copy owned by this update generation may outrank retained feedback.
     // Unrelated late card messages (for example fleet provisioning) cannot
     // hide active or terminal transfer/reconciliation feedback.
     const cardFirmwareMessage=cardFirmwareMessages.get(entry.id),messageOwner=cardFirmwareMessageOwners.get(entry.id);
     const firmwareMessage=messageOwner&&messageOwner.message===cardFirmwareMessage?cardFirmwareMessage:updateFeedback?.message||cardFirmwareMessage;
-    const messages=[cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate?null:cardConnectionMessages.get(entry.id),firmwareMessage,meshNetworkMessages.get(entry.id),task||pendingUpdate?null:fleetCardStatus(observation,entry)].filter(Boolean);
+    const messages=[updateView.sending?'Power will be available when the transfer finishes.':cardPowerMessages.get(entry.id),task||pendingUpdate||receiverUpdate||updateView.sending?null:cardConnectionMessages.get(entry.id),firmwareMessage,meshNetworkMessages.get(entry.id),task||pendingUpdate||updateView.sending?null:fleetCardStatus(observation,entry)].filter(Boolean);
     for(const messageText of [...new Set(messages)]){const message=document.createElement('small');message.className='lamp-update-status';message.textContent=messageText;feedback.append(message);}
     if(sourceLabel){const source=document.createElement('small');source.className='v2-card-update-source';source.textContent=sourceLabel;feedback.append(source);}
-    const automaticMessage=!task&&!pendingUpdate&&!receiverUpdate?automaticUpdateCardMessage(observation,entry.id):null;
+    const automaticMessage=!task&&!pendingUpdate&&!receiverUpdate&&!updateView.sending?automaticUpdateCardMessage(observation,entry.id):null;
     if(automaticMessage){const attention=document.createElement('small');attention.className='v2-card-auto-attention';attention.textContent=automaticMessage;feedback.append(attention);}
     if(task||receiverUpdate||['updating','restarting'].includes(observation?.state)){const progress=document.createElement('progress');progress.className='lamp-update-progress';progress.max=100;if(updatePercent!==undefined)progress.value=updatePercent;progress.setAttribute('aria-label',name+' update progress'+(sourceLabel?' · '+sourceLabel.toLowerCase():''));feedback.append(progress);}
     const cancelUpdate=cardFirmwareCancelButton(entry);if(cancelUpdate)feedback.append(cancelUpdate);
@@ -3416,7 +3444,7 @@ function renderRoomGroups() {
     const fallbackName=group.placeholder?(savedLeader?.name?savedLeader.name+'’s group':'Saved lamp group'):group.name||'Lamp group';
     const name=(typeof appV2!=='undefined'?appV2?.groupName(group.id,fallbackName):null)||fallbackName,rows=[group.leader,...group.followers];
     const total=Math.max(rows.length,group.leader.sync?.order?.length||0,(group.usedSlots||0)+1);
-    const ready=group.available&&group.leader.verified,locked=group.leader.sync?.membershipLocked===true;
+    const ready=group.available&&group.leader.verified,locked=group.leader.sync?.membershipLocked===true,sending=lampSendingUpdate(group.id);
     const reachable=rows.filter(row=>row.available&&row.verified).length,paused=group.followers.filter(row=>row.available&&row.verified&&row.sync?.paused).length;
     const card=document.createElement('section');card.className='panel room-group v2-group-card';card.dataset.groupId=group.id;card.dataset.state=ready?'ready':'waiting';
     const heading=document.createElement('div');heading.className='section-title v2-group-heading';
@@ -3424,7 +3452,7 @@ function renderRoomGroups() {
     const entry=mergedLampEntries().find(item=>item.id===group.id)||{id:group.id,name:group.leader.name||name};heading.append(groupPowerControl(entry,group,name));card.append(heading);
     const illustrations=document.createElement('div');illustrations.className='v2-group-art';illustrations.setAttribute('aria-hidden','true');
     for(const row of rows.slice(0,3)){const member=mergedLampEntries().find(entry=>entry.id===row.id)||{id:row.id};illustrations.append(lampStyleIllustration(resolvedStyle(member).id));}card.append(illustrations);
-    const detail=document.createElement('p');detail.className='v2-group-status';detail.textContent=locked?'The group is updating · Membership is protected':ready?reachable+' of '+total+' lamps reachable'+(paused?' · '+paused+' used separately':''):group.placeholder?'Waiting for the main lamp · Saved membership is kept':'Not reachable now · Last known group';card.append(detail);
+    const detail=document.createElement('p');detail.className='v2-group-status';detail.textContent=sending?SENDING_UPDATE_NOTICE:locked?'The group is updating · Membership is protected':ready?reachable+' of '+total+' lamps reachable'+(paused?' · '+paused+' used separately':''):group.placeholder?'Waiting for the main lamp · Saved membership is kept':'Not reachable now · Last known group';card.append(detail);
     const sync=group.leader.sync,scene=Number.isInteger(sync?.scene)?sync.scene:null;
     const live=groupEditor?.id===group.id&&groupEditor.lamp?.epoch===groupEditor.epoch&&groupEditor.lamp?.identity===group.id?groupEditor.lamp:verifiedSelectedLamp()&&selected.id===group.id?lamp:null;
     const light=connectivity?.get(group.id).lighting,raw=live?.raw?.deviceId===group.id&&live.raw.sync?.role===1?live.raw:null;
@@ -3432,7 +3460,7 @@ function renderRoomGroups() {
     const summary=document.createElement('div');summary.className='v2-group-summary';const mode=document.createElement('strong'),effect=document.createElement('span'),brightness=document.createElement('small');
     mode.textContent=scene===0?'Together':scene>0?'Across the room':'Shared light';effect.textContent=effectName||'Open controls to see the current effect';
     brightness.textContent=raw&&Number.isInteger(raw.brightness)&&raw.brightness>=1&&raw.brightness<=255?'Group brightness · '+Math.round(raw.brightness*100/255)+'%':'Group power, brightness & effects';summary.append(mode,effect,brightness);card.append(summary);
-    const controls=document.createElement('button');controls.type='button';controls.className='primary v2-group-controls';controls.dataset.groupAction='controls';controls.textContent=ready?'Control '+name:'Waiting for the main lamp';controls.disabled=!ready||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;controls.onclick=()=>openGroupEditor(group.id);card.append(controls);
+    const controls=document.createElement('button');controls.type='button';controls.className='primary v2-group-controls';controls.dataset.groupAction='controls';controls.textContent=ready?'Control '+name:'Waiting for the main lamp';controls.disabled=!ready||sending||groupActions.has(group.id)||cardPowerTasks.has(group.id)||fleetLampInstalling(group.id)||bluetoothFirmwareOwner()?.id===group.id;controls.onclick=()=>openGroupEditor(group.id);card.append(controls);
     const add=document.createElement('button');add.type='button';add.className='secondary v2-group-add';add.dataset.groupAction='add';add.textContent='Add lamps';add.setAttribute('aria-label','Add lamps to '+name);add.disabled=groupActions.has(group.id)||fleetLampInstalling(group.id);add.onclick=()=>appV2?.addGroupLamps(group.id);card.append(add);
     const sound=document.createElement('small');sound.className='v2-sound-label';sound.textContent=ready?group.leader.audio?.installed?'Sound listens at '+(group.leader.name||'the main lamp'):'Choose light effects · The main lamp has no microphone':'Sound source will be checked on reconnect';card.append(sound);
     const members=document.createElement('details');members.className='v2-group-members';members.open=expanded.has(group.id);const memberSummary=document.createElement('summary');memberSummary.textContent='Lamps in this group · '+total;members.append(memberSummary);

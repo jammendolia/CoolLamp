@@ -21,7 +21,7 @@ function harness(producer=async()=>true){
  class ClockQueue extends LiveLightQueue{constructor(options){super({...options,set:(run,delay)=>{const id=++nextTimer;timers.set(id,{run,at:now+delay,delay});return id;},clear:id=>timers.delete(id),now:()=>now});}}
  const context={$:element,effectAvailable,lampArtworkSvg,resolveLampStyle,LiveLightQueue:ClockQueue,document:{querySelector:()=>element('hero'),documentElement:{style:{setProperty(){}}}},
   status:message=>messages.push(message),paintRanges:()=>{},renderFirmware:()=>{},filterEffects:()=>{},observeLampLighting:()=>{},rememberLampStyle:()=>{},observeLampWifi:()=>{},
-  groupsAvailable:()=>true,updatingLamp:()=>false,fleetLampInstalling:()=>false,legacyWithoutGroups:()=>false,
+  groupsAvailable:()=>true,updatingLamp:()=>false,lampSendingUpdate:()=>false,fleetLampInstalling:()=>false,legacyWithoutGroups:()=>false,
   app2LightChange:async(...args)=>{calls.push(args);return producer(...args);}};
  runInNewContext(`
  let selected=null,lamp=null,bleLamp=null,wifiLamp={},state=null,busy=false,connecting=false,liveLightSending=false,liveLight=null;

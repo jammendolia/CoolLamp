@@ -45,6 +45,32 @@ function setup(count = 1) {
 const writes = calls => calls.filter(call => call.method === 'POST');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('fleet sender polling checks only the observed target without renewing group or installed status',async()=>{
+ const {fleet,devices,calls,setNow}=setup(2);
+ devices[0].firmware={...status('1.15.13'),sending:true};
+ const initial=await fleet.refresh();
+ const sender=initial.results.find(row=>row.id===ids[0]);
+ assert.equal(sender.senderSnapshot.sending,true);assert.equal(sender.state,'ready');assert.equal(sender.receiverSnapshot,null);
+ assert.equal(initial.results.find(row=>row.id===ids[1]).senderSnapshot.sending,false);
+ calls.length=0;setNow(4500);
+ devices[0].polls=[{...status('1.15.13'),deviceId:ids[0]}];
+ let metadata;
+ fleet.onStatus=(_id,_row,source)=>{metadata=source;};
+ const done=await fleet.refresh({onlyIds:[ids[0]],senderOnly:true});
+ assert.deepEqual(calls.map(call=>[call.method,call.url]),[['GET','http://192.168.1.20/api/firmware']]);
+ assert.deepEqual(metadata,{senderOnly:true});
+ assert.deepEqual(done.results,[{...sender,senderSnapshot:{deviceId:ids[0],sending:false},senderSnapshotAt:4500}]);
+});
+
+test('a sender poll discards a mismatched target without invalidating installed-version or group observations',async()=>{
+ const {fleet,devices}=setup();
+ devices[0].firmware={...status('1.15.13'),sending:true};
+ const [sender]=(await fleet.refresh()).results;
+ devices[0].polls=[{...status('1.15.13'),deviceId:ids[1],sending:true}];
+ const done=await fleet.refresh({onlyIds:[ids[0]],senderOnly:true});
+ assert.deepEqual(done.results,[{...sender,senderSnapshot:null,senderSnapshotAt:0}]);
+});
+
 test('single card update marks a confirmed pre-install server failure safe for BLE without an install POST',async()=>{
  const {fleet,devices,calls,entries}=setup();devices[0].polls=[{...status(),phase:5,error:3}];
  await assert.rejects(fleet.updateLamp(entries()[0],'1.9.5'),error=>error.safeBluetoothFallback===true);

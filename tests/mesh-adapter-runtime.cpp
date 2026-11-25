@@ -137,13 +137,13 @@ int main(int argc,char** argv){
  else if(scenario=="resource-denied-no-replay"){
   exerciseResourceAdapter=true;
   resourceAdapter.on("/api/power",HTTP_POST,[]{assert(side==2&&resourceAdapter.controlActive()&&resourceAdapter.uri()=="/api/power"&&resourceAdapter.arg("power")=="1");++calls;resourceAdapter.send(200,"text/plain","Applied once.");});
-  fakeFreeHeap=16384;fakeLargestBlock=24000;
+  fakeFreeHeap=14000;fakeLargestBlock=7668;
   assert(start().status==202);complete();const auto denied=result();
   assert(denied.status==200&&numberField(denied.body,"httpStatus")==503&&denied.body.find("\"uncertain\":false")!=std::string::npos);
   assert(decode(denied.body)=="Control resources unavailable. This request was not executed."&&!calls&&!resourceAdapter.controlActive()&&!resourceAdapter.hasArg("power"));
   // The authenticated target processed a denial and retains that reply.
   // Neither release of heap nor duplicated RF request/receipt executes it.
-  fakeFreeHeap=24576;fakeLargestBlock=6160;run(100);
+  fakeFreeHeap=16928;fakeLargestBlock=7668;run(100);
   assert(start().status==200&&numberField(result().body,"httpStatus")==503&&!calls);
   assert(start("0000000000000002").status==202);complete();const auto fresh=result(0,"0000000000000002");
   assert(numberField(fresh.body,"httpStatus")==200&&decode(fresh.body)=="Applied once."&&calls==1);
@@ -156,7 +156,7 @@ int main(int argc,char** argv){
   fakeFreeHeap=23388;fakeLargestBlock=9204;side=0;
   assert(Origin::request(targetId,requestId,"5","2",form).status==202);complete();const auto accepted=result();
   assert(numberField(accepted.body,"httpStatus")==200&&decode(accepted.body)=="Group scene saved."&&calls==1);
-  fakeFreeHeap=23388;fakeLargestBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;side=0;
+  fakeFreeHeap=23388;fakeLargestBlock=LampControlResourcePolicy::CompactGroupPersistenceBytes-1;side=0;
   assert(Origin::request(targetId,"0000000000000002","5","2",form).status==202);complete();const auto denied=result(0,"0000000000000002");
   assert(numberField(denied.body,"httpStatus")==503&&decode(denied.body)=="Control resources unavailable. This request was not executed."&&calls==1);
  }

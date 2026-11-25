@@ -13,7 +13,13 @@ function membership(raw) {
   return raw?.sync===undefined&&legacyPowerWithoutGroups(raw?.firmware?.version)?{role:0,leader:null}:null;
 }
 const sameGroup=(left,right)=>Boolean(left&&right&&left.role===right.role&&left.leader===right.leader);
-const blocked=raw=>[1,3,4].includes(raw?.firmware?.phase)||raw?.calibration?.active===true;
+export const SENDING_UPDATE_NOTICE='Sending an update to another lamp. Power will be available when it finishes.';
+function powerBlockReason(raw) {
+  if(raw?.firmware?.sending===true)return SENDING_UPDATE_NOTICE;
+  if([1,3,4].includes(raw?.firmware?.phase)||raw?.calibration?.active===true)
+    return 'Finish this lamp’s update or LED setup before changing power.';
+  return null;
+}
 
 // Public card telemetry only: never return an HTTP token or invitation key.
 export function lampPowerSnapshot(raw,catalog,checkedAt=Date.now()) {
@@ -98,12 +104,14 @@ export async function runLampPower({id,expected=null,requestedPower=null,acquire
     // A follower can look off because its leader is off. An explicit local Off
     // must still invoke the setter once when following has not been paused.
     if(satisfied(first.snapshot))return {changed:false,noop:true,desired,snapshot:first.snapshot};
-    if(blocked(first.raw))throw cancelled('Finish this lamp’s update or LED setup before changing power.',{blocked:true});
+    const firstBlock=powerBlockReason(first.raw);
+    if(firstBlock)throw cancelled(firstBlock,{blocked:true});
     const beforeWrite=()=>{
       identityCurrent();const raw=currentRaw(),current=lampPowerSnapshot(raw,lamp.catalog,now());
       if(!current||current.id!==id)throw cancelled('The lamp’s current power state could not be verified.');
       if(!sameGroup(current.group,plannedGroup)){publish(raw,now());throw cancelled('This lamp’s group membership changed. Review its card before changing power.',{groupChanged:true});}
-      if(blocked(raw)){publish(raw,now());throw cancelled('Finish this lamp’s update or LED setup before changing power.',{blocked:true});}
+      const currentBlock=powerBlockReason(raw);
+      if(currentBlock){publish(raw,now());throw cancelled(currentBlock,{blocked:true});}
       if(satisfied(current)){publish(raw,now());throw cancelled('The requested state is already active.',{alreadyDesired:true});}
       if(current.power!==first.snapshot.power){publish(raw,now());throw cancelled('Power changed while this request was waiting. Its current state is shown on the card.',{powerChanged:true,alreadyDesired:false});}
       const attemptedAt=now();try{onAttempt(attemptedAt);}catch{/* Attempt observers are diagnostic only. */}identityCurrent();attempted=true;

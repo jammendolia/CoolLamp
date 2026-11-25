@@ -71,7 +71,7 @@ struct LampUpdateJsonSnapshot {
   LampUpdateWorkerAdmission workerAdmission{};
   char deviceId[13]{};
   uint32_t heap=0,largest=0,workerStack=0,loopStack=0;
-  bool wifi=false,healthy=false,publisher=false;
+  bool wifi=false,healthy=false,publisher=false,sending=false;
 };
 static_assert(sizeof(LampUpdateJsonSnapshot)<=352,"Update read snapshot must stay bounded");
 LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic=false);

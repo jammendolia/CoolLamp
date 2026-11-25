@@ -127,6 +127,44 @@ jobs:
           python3 tests/mesh-adapter-runtime.py
           python3 tools/test-experience-contracts.py
           node tools/package-firmware.cjs
+      - name: Record packaged OTA slot headroom
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          release = Path('firmware/public')
+          image = (release / 'CoolLamp.ino.bin').read_bytes()
+          magic, version, chip, layout, size, digest = (release / 'coollamp-manifest.txt').read_text().splitlines()
+          slot = re.fullmatch(r'dual-ota-([0-9]+)', layout)
+          if (magic, version, chip) != ('COOLLAMP-OTA-1', os.environ['RELEASE_VERSION'], 'esp32c3') or slot is None:
+              raise SystemExit('Unexpected OTA release manifest')
+          slot_bytes = int(slot[1])
+          if int(size) != len(image) or digest != hashlib.sha256(image).hexdigest() or len(image) > slot_bytes:
+              raise SystemExit('Packaged application does not match the OTA release manifest')
+          report = {
+              'sourceCommit': os.environ['GITHUB_SHA'],
+              'firmwareVersion': version,
+              'applicationSha256': digest,
+              'applicationBytes': len(image),
+              'otaSlotBytes': slot_bytes,
+              'otaSlotHeadroomBytes': slot_bytes - len(image),
+          }
+          Path('.build/firmware-ota-slot-budget.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - name: Upload firmware memory evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ inputs.version }}-memory-evidence
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .build/http-server-ack-policy-runtime.json
+            .build/firmware-ota-slot-budget.json
+            firmware/public/coollamp-manifest.txt
       - name: Create reviewable release draft
         if: ${{ inputs.create_draft }}
         env:

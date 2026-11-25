@@ -647,6 +647,7 @@ LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
   // can be measured after cleanup, without retaining its handle or stack.
   snapshot.workerStack=worker?uxTaskGetStackHighWaterMark(worker):lastWorkerStackFree;snapshot.loopStack=uxTaskGetStackHighWaterMark(nullptr);
   snapshot.wifi=WiFi.status()==WL_CONNECTED;snapshot.healthy=healthy;snapshot.publisher=UpdatePublisher::enforced();
+  snapshot.sending=LampFirmwareRelay::sending();
   if(includeAutomatic){
     snapshot.job=LampUpdateJob::capture();
     snapshot.automaticService=automaticView;const auto timing=automaticService.snapshot(millis());
@@ -657,6 +658,13 @@ LampUpdateJsonSnapshot captureLampUpdateJson(bool includeAutomatic) {
 }
 void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapshot,bool includeAutomatic,bool updateJobContractV2) {
   const auto& s=snapshot.status;const auto add=[&](const auto& value){out.concat(value);};
+  // Share the repeated field encoders to keep the update reply within the OTA image budget.
+  const auto flag=[](LampJsonSink& sink,const char* key,bool value) __attribute__((noinline)){
+    sink.concat(key);sink.concat(value?"true":"false");
+  };
+  const auto number=[](LampJsonSink& sink,const char* key,uint32_t value) __attribute__((noinline)){
+    sink.concat(key);sink.concat(value);
+  };
   add("{\"version\":\"");
   add(LAMP_FIRMWARE_VERSION);add("\",\"build\":\"");
 #ifdef COOL_LAMP_PUBLIC_RELEASE
@@ -665,14 +673,15 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
   add("COOLLAMP-LOCAL-" LAMP_FIRMWARE_VERSION);
 #endif
   add("\",\"latest\":\"");add(s.latest[0]);add('.');add(s.latest[1]);add('.');add(s.latest[2]);
-  add("\",\"phase\":");add(s.phase);add(",\"progress\":");add(s.progress);add(",\"error\":");add(s.error);
-  add(",\"automatic\":");add((s.automatic?"true":"false"));add(",\"available\":");add((s.available?"true":"false"));
-  add(",\"wifi\":");add((snapshot.wifi?"true":"false"));
-  add(",\"updateContractVersion\":2,\"route\":");add(s.route);add(",\"checkedAt\":");add(s.checkedAt);
-  add(",\"receiver\":");add((s.receiving?"true":"false"));add(",\"writtenOffset\":");add(s.writtenOffset);add(",\"totalBytes\":");add(s.totalBytes);
-  add(",\"freeHeap\":");add(snapshot.heap);add(",\"largestBlock\":");add(snapshot.largest);
-  add(",\"workerStackFree\":");add(snapshot.workerStack);add(",\"loopStackFree\":");add(snapshot.loopStack);
-  add(",\"bootHealthy\":");add((snapshot.healthy?"true":"false"));add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
+  add("\",\"phase\":");add(s.phase);number(out,",\"progress\":",s.progress);number(out,",\"error\":",s.error);
+  flag(out,",\"automatic\":",s.automatic);flag(out,",\"available\":",s.available);
+  flag(out,",\"wifi\":",snapshot.wifi);
+  add(",\"updateContractVersion\":2,\"route\":");add(s.route);number(out,",\"checkedAt\":",s.checkedAt);
+  flag(out,",\"receiver\":",s.receiving);number(out,",\"writtenOffset\":",s.writtenOffset);number(out,",\"totalBytes\":",s.totalBytes);
+  if(snapshot.sending)add(",\"sending\":true");
+  number(out,",\"freeHeap\":",snapshot.heap);number(out,",\"largestBlock\":",snapshot.largest);
+  number(out,",\"workerStackFree\":",snapshot.workerStack);number(out,",\"loopStackFree\":",snapshot.loopStack);
+  flag(out,",\"bootHealthy\":",snapshot.healthy);add(",\"healthGate\":\"loop-continuity-v1\",\"publisherEnforced\":");add((snapshot.publisher?"true":"false"));
   if(includeAutomatic)add(",\"publisherDonation\":true");
   add(",\"bleResumeLifetimeMs\":120000,\"bleResumeMinMtu\":53,\"bleResumeAcrossReboot\":false,\"fleetLease\":true,\"fleetLeaseMode\":\"protected-orchestration-v1\",\"automaticRadioRollout\":false,\"attemptGuard\":");
   LampUpdateAttempt::appendStatus(out,snapshot.attempt);
@@ -686,14 +695,14 @@ void appendLampUpdateJson(LampJsonSink& out,const LampUpdateJsonSnapshot& snapsh
     const auto& a=snapshot.automaticService;
     const auto& w=snapshot.workerAdmission;
     add(",\"workerAdmission\":{\"version\":1,\"phase\":");add(w.phase);
-    add(",\"stackBytes\":");add(LampUpdateControlPolicy::WorkerStackBytes);add(",\"taskControlBytes\":");add(w.taskControlBytes);
-    add(",\"beforeFree\":");add(w.beforeFree);add(",\"beforeLargest\":");add(w.beforeLargest);
-    add(",\"afterFree\":");add(w.afterFree);add(",\"afterLargest\":");add(w.afterLargest);add('}');
+    add(",\"stackBytes\":");add(LampUpdateControlPolicy::WorkerStackBytes);number(out,",\"taskControlBytes\":",w.taskControlBytes);
+    number(out,",\"beforeFree\":",w.beforeFree);number(out,",\"beforeLargest\":",w.beforeLargest);
+    number(out,",\"afterFree\":",w.afterFree);number(out,",\"afterLargest\":",w.afterLargest);add('}');
     add(",\"deviceId\":\"");add(snapshot.deviceId);add("\",\"automaticService\":{\"version\":1,\"state\":");add(a.state);
-    add(",\"reason\":");add(a.reason);add(",\"retryInMs\":");add(a.retryInMs);add(",\"donorWaitMs\":");add(a.donorWaitMs);
-    add(",\"internetAttempts\":");add(a.internetAttempts);add(",\"donorOffers\":");add(a.donorOffers);
-    add(",\"attention\":");add(a.attention?"true":"false");add(",\"phoneFallback\":");add(a.phoneFallback?"true":"false");
-    add(",\"newerSeen\":");add(a.newerSeen?"true":"false");add('}');
+    number(out,",\"reason\":",a.reason);number(out,",\"retryInMs\":",a.retryInMs);number(out,",\"donorWaitMs\":",a.donorWaitMs);
+    number(out,",\"internetAttempts\":",a.internetAttempts);number(out,",\"donorOffers\":",a.donorOffers);
+    flag(out,",\"attention\":",a.attention);flag(out,",\"phoneFallback\":",a.phoneFallback);
+    flag(out,",\"newerSeen\":",a.newerSeen);add('}');
   }
   add('}');
 }

@@ -118,6 +118,7 @@ void* worker=reinterpret_cast<void*>(1);bool healthy=false;uint32_t lastWorkerSt
 constexpr int MALLOC_CAP_8BIT=1;unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
 namespace UpdatePublisher {bool enforced(){return false;}}
+namespace LampFirmwareRelay {bool sending(){return false;}}
 bool policyReadable=false;LampUpdatePolicy::Policy updatePolicy;uint32_t policyRevision=UINT32_MAX;
 LampUpdatePolicy::Eligibility policyEligibility(){return LampUpdatePolicy::InvalidPolicy;}
 uint8_t lampRolloutAutomaticAdmissionSnapshotReason(){return 4;}

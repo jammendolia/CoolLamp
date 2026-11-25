@@ -77,25 +77,23 @@ inline bool readHttpPath(const char* path,bool post){
 inline bool replyReady(size_t freeHeap,size_t largestBlock){
   return freeHeap>=MinFreeHeapBytes&&largestBlock>=MinLargestBlockBytes;
 }
-// StatePatch has no durable write or full-state serializer: its production
-// handler uses fixed ledger/snapshot storage and one <=512-byte receipt. Scene
-// saves one fixed 432-byte group record and returns a short static reply. Give
-// that NVS operation a separate conservative workspace instead of making it
-// wait behind the legacy 24 KiB String-growth floor. Other mutations retain
-// the legacy admission unchanged.
+// StatePatch uses fixed ledger storage and a <=512-byte receipt. Scene and
+// Power return short replies. Scene saves one group record; Power can save a
+// follower's pause flag. Reserve workspace for those NVS writes without using
+// the legacy full-state reply budget.
 constexpr size_t CompactMutationReplyBytes=512;
-constexpr size_t CompactScenePersistenceBytes=2048;
+constexpr size_t CompactGroupPersistenceBytes=2048;
 inline bool compactMutationEndpoint(uint8_t id,bool mutation){
-  return mutation&&(id==LampControlEndpoint::StatePatch||id==LampControlEndpoint::Scene);
+  return mutation&&(id==LampControlEndpoint::StatePatch||id==LampControlEndpoint::Scene||id==LampControlEndpoint::Power);
 }
 inline bool compactMutationHttpPath(const char* path,bool post){
-  return post&&path&&(!strcmp(path,"/api/state/patch")||!strcmp(path,"/api/sync/scene"));
+  return post&&path&&(!strcmp(path,"/api/state/patch")||!strcmp(path,"/api/sync/scene")||!strcmp(path,"/api/power"));
 }
 inline size_t compactMutationPersistenceBytes(uint8_t id){
-  return id==LampControlEndpoint::Scene?CompactScenePersistenceBytes:0;
+  return id==LampControlEndpoint::StatePatch?0:CompactGroupPersistenceBytes;
 }
 inline size_t compactMutationPersistenceBytes(const char* path){
-  return path&&!strcmp(path,"/api/sync/scene")?CompactScenePersistenceBytes:0;
+  return path&&strcmp(path,"/api/state/patch")?CompactGroupPersistenceBytes:0;
 }
 inline bool compactMutationReady(size_t freeHeap,size_t largestBlock,size_t formBytes,bool copyForm=false,size_t persistenceBytes=0){
   const size_t allocation=roundedReplyBytes(CompactMutationReplyBytes);

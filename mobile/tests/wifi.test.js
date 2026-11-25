@@ -29,9 +29,12 @@ test('update actions and busy polling use compact status without allocating full
     await lamp.poll();assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware']);
     assert.equal(lamp.state.firmware.progress,47);assert.equal(states.length,stateCount);
     raw.firmware=updateStatus(4);calls.length=0;await lamp.poll();assert.equal(calls.length,1);
+    raw.firmware={...updateStatus(),sending:true};calls.length=0;await lamp.poll();
+    assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware']);
+    assert.equal(lamp.state.firmware.sending,true);assert.equal(states.length,stateCount);
     raw.firmware=updateStatus(2);calls.length=0;await lamp.poll();
     assert.deepEqual(calls.map(c=>c.url),['http://192.168.1.9/api/firmware','http://192.168.1.9/api/state']);
-    assert.equal(states.length,stateCount+1);assert.equal(lamp.state.mode,1);
+    assert.equal(states.length,stateCount+1);assert.equal(lamp.state.mode,1);assert.equal(lamp.state.firmware.sending,undefined);
   } finally {await lamp.disconnect();}
 });
 test('a firmware restart refreshes identity, token and catalog before controls resume',async()=>{

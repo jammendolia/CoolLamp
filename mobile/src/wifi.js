@@ -173,7 +173,7 @@ export class WifiTransport {
     if(Number.isInteger(this.raw?.firmware?.phase)) {
       const version=this.raw.firmware.version;
       const next=await this.refreshFirmware(guard);this.readFence(epoch,guard);
-      if([1,3,4].includes(next.phase)||next.version!==version)return;
+      if(next.sending===true||[1,3,4].includes(next.phase)||next.version!==version)return;
     }
     await this.refresh(undefined,true,guard);this.readFence(epoch,guard);
   }

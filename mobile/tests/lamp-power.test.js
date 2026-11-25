@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {runLampPower,lampPowerSnapshot,legacyPowerWithoutGroups} from '../src/lamp-power.js';
+import {runLampPower,lampPowerSnapshot,legacyPowerWithoutGroups,SENDING_UPDATE_NOTICE} from '../src/lamp-power.js';
 import {runGroupLighting} from '../src/group-lighting-ui.js';
 import {WifiTransport} from '../src/wifi.js';
 import {LampTransport} from '../src/transport.js';
@@ -64,6 +64,20 @@ test('absolute stale-state power still fails closed when membership changes befo
   f.lamp.beforeCommand=()=>Object.assign(f.raw.sync,{role:1,leader:id});
   await assert.rejects(runLampPower(f.options),error=>error.groupChanged&&error.cancelled);
   assert.deepEqual(f.writes,[]);assert.equal(f.calls.release,1);
+});
+
+test('group power reports a sending lamp before and at the write fence',async()=>{
+  for(const start of ['read','before-write']){
+    const f=fixture({role:1});
+    const beginRelay=()=>{f.raw.firmware.sending=true;};
+    if(start==='read')beginRelay();else f.lamp.beforeCommand=beginRelay;
+    await assert.rejects(runLampPower(f.options),error=>error.confirmed&&error.blocked&&error.message===SENDING_UPDATE_NOTICE);
+    assert.deepEqual(f.writes,[]);
+    delete f.raw.firmware.sending;
+    f.lamp.beforeCommand=null;
+    assert.equal((await runLampPower(f.options)).changed,true);
+    assert.deepEqual(f.writes,[{action:'power',value:0}]);
+  }
 });
 
 test('absolute power rejects malformed requested state before acquiring a lamp',async()=>{

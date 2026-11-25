@@ -9,7 +9,7 @@ function fixture({holdInitial=false}={}){
  const el=id=>elements[id]??={value:'',files:[],options:[],add(option){this.options.push(option)},addEventListener(){},disabled:false,hidden:false};
  const state={version:'1.15.1',latest:'1.15.1',wifi:false,phase:0,error:0};
  const lampState={stateView:1,deviceId:identity,token:'test-token',effects:['Fire','VU Meter'],colors:[[1,11,22,33],null],effectOptions:[[60,44,1,9,8,7],null],mode:1,brightness:80,power:true,leds:205,milliamps:500,midpoint:102,sync:{role:0}};
- const control={prepareTarget:identity,statuses:[],states:[],offline:false,releaseInitial:()=>releaseInitial?.()};
+ const control={prepareTarget:identity,statuses:[],states:[],firmware:state,offline:false,releaseInitial:()=>releaseInitial?.()};
  class Form{constructor(){this.parts=[];}append(...part){this.parts.push(part);}}
  class Xhr{constructor(){this.upload={};this.headers={};xhrs.push(this);}open(method,path){this.method=method;this.path=path;}setRequestHeader(k,v){this.headers[k]=v;}send(body){this.body=body;}abort(){this.onabort();}}
  const context={document:{getElementById:el},Option:function(name,value){this.name=name;this.value=value},URLSearchParams,AbortSignal,Uint8Array,Uint32Array,DataView,FormData:Form,XMLHttpRequest:Xhr,setInterval:fn=>intervals.push(fn),
@@ -39,6 +39,11 @@ function proof(bytes,session=nextBoot){return{deviceId:identity,boot:session,ins
  const initial=fixture({holdInitial:true});await settle();assert.deepEqual(initial.requests.map(r=>r.path),['/api/state/current']);
  await initial.intervals[0]();assert.equal(initial.requests.length,1);initial.control.releaseInitial();await settle();await settle();
  assert.deepEqual(initial.requests.map(r=>r.path),['/api/state/current','/api/firmware']);assert.equal(initial.el('mode').options.length,2);
+ const outgoing=fixture();await settle();
+ Object.assign(outgoing.control.firmware,{sending:true,wifi:true,available:true});await outgoing.intervals[0]();
+ assert.equal(outgoing.el('status').textContent,'Sending an update to another lamp.');assert(outgoing.el('power').disabled);assert(outgoing.el('checkFirmware').disabled);
+ delete outgoing.control.firmware.sending;await outgoing.intervals[0]();
+ assert.match(outgoing.el('status').textContent,/is available/);assert(!outgoing.el('power').disabled);assert(!outgoing.el('checkFirmware').disabled);
  assert.equal(initial.el('color').value,'#0b1621');assert.equal(initial.el('speed').value,60);
  initial.el('mode').value='2';initial.el('mode').onchange();assert.match(initial.el('colorHint').textContent,/Preview.*saved colors and settings/);
  for(const id of ['color','applyColor','speed','intensity','dual','secondaryColor','applyOptions'])assert(initial.el(id).disabled,id+' must not imply known inactive settings');

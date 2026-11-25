@@ -1,4 +1,4 @@
-import {observedReceiverUpdate,updateSourceLabel} from './update-source.js';
+import {observedReceiverUpdate,observedSenderUpdate,updateSourceLabel} from './update-source.js';
 import {firmwareUpdatePresentation} from './firmware-update-ui.js';
 
 // Presentation only. No connection, polling, mutation or installation replay.
@@ -7,6 +7,9 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
  const percent=value=>valid(value)&&value>=0&&value<=100?value:undefined;
  if(typeof target!=='string'||!/^[a-f0-9]{12}$/.test(target))return {active:false};
  const proof={verified:true,fresh:true,now};
+ const selectedSender=observedSenderUpdate(selectedSnapshot,target,{...proof,observedAt:selectedObservedAt});
+ const fleetSender=observedSenderUpdate(observation?.senderSnapshot,target,{verified:observation?.verified,fresh:observation?.fresh,now,observedAt:observation?.senderSnapshotAt});
+ const sending=selectedSender!==null&&(fleetSender===null||selectedObservedAt>=observation.senderSnapshotAt)?selectedSender:fleetSender===true;
  const selectedReceiver=observedReceiverUpdate(selectedSnapshot,target,{...proof,observedAt:selectedObservedAt});
  const fleetReceiver=observation?.receiverSnapshot&&!['restarting','failed','offline','unsupported','needs-password','pending'].includes(observation.state)?
   observedReceiverUpdate(observation.receiverSnapshot,target,{...proof,observedAt:observation.receiverSnapshotAt}):null;
@@ -26,7 +29,7 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
  if(pendingOnly){
   const message=feedback?.terminal===true&&typeof feedback.message==='string'&&feedback.message.length<=240?
    feedback.message:'The previous update still needs a status check. No check is running now.';
-  return {active:false,terminal:true,attemptId:attempt?.attemptId,outcome:'needsAttention',percent:undefined,
+  return {active:false,sending,terminal:true,attemptId:attempt?.attemptId,outcome:'needsAttention',percent:undefined,
    source:undefined,sourceLabel:'',receiver:null,stage:'needs-attention',message,keepOpen:false};
  }
  // A durable, settled attempt keeps its result visible after the connection
@@ -34,13 +37,13 @@ export function lampUpdatePresentation(target,{task,feedback,attempt,pending=fal
  const terminal=!active&&feedback?.terminal===true&&typeof feedback.message==='string'&&
   attempt?.identity===target&&/^[0-9a-f]{32}$/.test(attempt.attemptId)&&attempt.commitUnconfirmed!==true&&
   ['transferStopped','installationNotStarted'].includes(attempt.outcome);
- if(terminal)return {active:false,terminal:true,attemptId:attempt.attemptId,outcome:attempt.outcome,
+ if(terminal)return {active:false,sending,terminal:true,attemptId:attempt.attemptId,outcome:attempt.outcome,
   percent:undefined,source:undefined,sourceLabel:'',receiver:null,stage:'stopped',message:feedback.message,keepOpen:false};
  const stage=(pending&&task)||task?.reconciling?'checking-result':task?.cancelRequested?'stopping':fleetState==='restarting'||observation?.state==='restarting'?'restarting':
   receiver||progress!==undefined?'transferring':fleetState||(task?task.stage||'preparing':'checking-result');
  const pendingMessage=pending&&feedback?.terminal&&['verification-required','verified-restarting'].includes(feedback.outcome)&&typeof feedback.message==='string'?feedback.message:null;
  const fleetMessage=fleetState&&typeof observation?.message==='string'&&observation.message.length>0&&observation.message.length<=160?observation.message:null;
  const message=pendingMessage||(stage==='stopping'?'Stopping the update. We’ll check your lamp…':fleetMessage||firmwareUpdatePresentation({stage,progress}).message);
- return {active,percent:progress,source,sourceLabel:updateSourceLabel(source),receiver:receiver||null,stage,message,
+ return {active,sending,percent:progress,source,sourceLabel:updateSourceLabel(source),receiver:receiver||null,stage,message,
   keepOpen:Boolean(task?.path==='bluetooth'&&!task.reconciling&&!task.cancelRequested)};
 }

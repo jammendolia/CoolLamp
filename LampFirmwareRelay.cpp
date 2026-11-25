@@ -104,7 +104,8 @@ void begin(){
  esp_read_mac(self,ESP_MAC_WIFI_STA);boot=randomSession();sequence=0;
  Preferences prefs;if(prefs.begin("coollamp",true)){paired=prefs.getBytesLength("fleetKeyV1")==16&&prefs.getBytes("fleetKeyV1",fleet,16)==16;prefs.end();}
 }
-bool ownsRadio(){return state==Receiving||state==Sending;}
+bool sending(){return state==Sending;}
+bool ownsRadio(){return state==Receiving||sending();}
 DiscoverySnapshot discoverySnapshot(uint32_t now){
  const auto radio=LampEspNow::status();DiscoverySnapshot out;out.state=state;out.paired=paired;
  out.radioAvailable=radio.active&&!radio.suspended;

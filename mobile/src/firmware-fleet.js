@@ -2,7 +2,7 @@ import { lampAddress, validFirmwareVersion } from './lamps.js';
 import { wifiObservation,groupObservation,lightingObservation } from './lamp-connectivity.js';
 import {normalizeLampStyle} from './lamp-style.js';
 import {validateCatalog} from './catalog.js';
-import {automaticUpdateEvidence,observedReceiverUpdate} from './update-source.js';
+import {automaticUpdateEvidence,observedReceiverUpdate,observedSenderUpdate} from './update-source.js';
 import {lampUpdateJobV2Body,parseLampUpdateJobV2} from './update-job-wire.js';
 
 const busyPhases = [1, 3, 4];
@@ -163,7 +163,7 @@ export class FirmwareFleet {
     const previous=this.statuses.get(lamp.id),evidence=status.automaticEvidence;
     const attention=evidence?.kind==='receiving'||evidence?.kind==='healthy'?null:
       ['attention','pending'].includes(evidence?.kind)?evidence:previous?.automaticAttention??null;
-    const value = {...previous, verified: false, fresh: false, receiverSnapshot:null,receiverSnapshotAt:0,
+    const value = {...previous, verified: false, fresh: false, receiverSnapshot:null,receiverSnapshotAt:0,senderSnapshot:null,senderSnapshotAt:0,
       ...status,automaticAttention:attention,automaticContext:evidence??previous?.automaticContext??null};
     this.statuses.set(lamp.id, value);
     this.onStatus?.(lamp.id, value);
@@ -230,7 +230,8 @@ export class FirmwareFleet {
     const cached=this.catalogues.get(lamp.id);
     const lighting=lightingObservation(raw,cached?.key===catalogueKey?cached.entries:null);
     let latestVersion=null;try{latestVersion=this.getLatestVersion();}catch{}
-    const evidenceAt=this.now(),baseEvidence=automaticUpdateEvidence(raw,lamp.id,{verified:true,fresh:true,observedAt:evidenceAt,now:evidenceAt,latestVersion});
+    const evidenceAt=this.now(),proof={verified:true,fresh:true,observedAt:evidenceAt,now:evidenceAt};
+    const baseEvidence=automaticUpdateEvidence(raw,lamp.id,{...proof,latestVersion});
     let compact=null;
     // One extra bounded read under the existing status owner. It cannot scan,
     // provision, install or start a phone transfer. Old receivers keep their
@@ -244,6 +245,7 @@ export class FirmwareFleet {
     return {firmware:effective, token: raw.token, wifi:wifiObservation(raw), group:groupObservation(raw), lampStyle,lighting:versionChanged?null:lighting,
       catalogueKey:versionChanged?JSON.stringify([lamp.base,effective.version,raw.audio?.installed??null]):catalogueKey, wifiObservedAt,
       automaticEvidence:compact?.compactTargetVerified?compact.automaticEvidence:baseEvidence,receiverSnapshot:compact?.receiverSnapshot??null,receiverSnapshotAt:compact?.receiverSnapshotAt??0,
+      senderSnapshot:compact?.senderSnapshot??{deviceId:lamp.id,sending:observedSenderUpdate(raw,lamp.id,proof)===true},senderSnapshotAt:compact?.senderSnapshotAt??evidenceAt,
       uptimeMs: !versionChanged&&Number.isInteger(raw.uptimeMs) && raw.uptimeMs >= 0 ? raw.uptimeMs : null};
   }
   live(lamp, run, identity, state = 'ready', message = '') {
@@ -258,13 +260,14 @@ export class FirmwareFleet {
       verified: true, fresh: true, wifi:identity.wifi ?? null,
       automaticEnabled:fw.automatic,automaticEvidence:identity.automaticEvidence,
       receiverSnapshot:identity.receiverSnapshot??null,receiverSnapshotAt:identity.receiverSnapshotAt??0,
+      senderSnapshot:identity.senderSnapshot??null,senderSnapshotAt:identity.senderSnapshotAt??0,
       wifiObservedAt:identity.wifi?identity.wifiObservedAt:null,group:identity.group ?? null,
       groupObservedAt:identity.group?identity.wifiObservedAt:null,lampStyle:identity.lampStyle ?? null,
       styleObservedAt:identity.lampStyle?identity.wifiObservedAt:null,lighting:identity.lighting??null,
       lightingObservedAt:identity.lighting?identity.wifiObservedAt:null, message, error: ''});
   }
   async enrichLighting(lamp,run,identity,row){
-    if(!identity.lighting||identity.lighting.kind==='group'&&identity.lighting.scene!==0||identity.lighting.name||identity.receiverSnapshot||busyPhases.includes(identity.firmware.phase))return row;
+    if(!identity.lighting||identity.lighting.kind==='group'&&identity.lighting.scene!==0||identity.lighting.name||identity.receiverSnapshot||identity.senderSnapshot?.sending||busyPhases.includes(identity.firmware.phase))return row;
     if(this.catalogues.get(lamp.id)?.key===identity.catalogueKey)return row;
     try{
       const value=parse(await this.request(lamp,run,'/api/effects'));
@@ -311,19 +314,36 @@ export class FirmwareFleet {
       return {id: entry.id, ...value};
     }
   }
-  async refresh({excludeIds=[]}={}) {
+  async refreshSender(entry,run) {
+    const previous=this.statuses.get(entry.id);
+    if(!previous)return null;
+    let compact;
+    try{compact=await this.compact(await this.prepare(entry,run),run);}
+    catch(error){if(error.cancelled||error.stale||run.cancelled)return null;}
+    this.assertCurrent(target(entry),run);
+    const value={...previous,senderSnapshot:compact?.senderSnapshot??null,senderSnapshotAt:compact?.senderSnapshotAt??0};
+    // This read identifies the current sender only. Keep the timestamps and
+    // provenance of the earlier group, power and installed firmware reads.
+    this.statuses.set(entry.id,value);
+    this.onStatus?.(entry.id,value,{senderOnly:true});
+    return {id:entry.id,...value};
+  }
+  async refresh({excludeIds=[],onlyIds=null,senderOnly=false}={}) {
     const excluded=new Set(excludeIds);
-    if (this.bulkRun && !this.bulkRun.cancelled||[...this.singleRuns.keys()].some(id=>!excluded.has(id))) return {results: [], cancelled: false, busy: true};
+    const included=onlyIds===null?null:new Set(onlyIds);
+    const accepts=id=>!excluded.has(id)&&(!included||included.has(id));
+    if(senderOnly&&!included||this.bulkRun&&!this.bulkRun.cancelled||[...this.singleRuns.keys()].some(accepts)) return {results: [], cancelled: false, busy: true};
     this.cancelRefresh();
     const run = this.run(); this.refreshRun = run;
     // Exclusion belongs only to this passive workload. Target validation and
     // mutative tasks continue to consult the complete owned-lamp inventory.
-    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()].filter(entry=>!excluded.has(entry.id)), results = [];
+    const entries = [...new Map(this.getLamps().map(entry => [entry.id, {...entry}])).values()].filter(entry=>accepts(entry.id)), results = [];
     let index = 0;
     const worker = async () => {
       while (!run.cancelled && index < entries.length) {
         const entry = entries[index++];
         try {
+          if(senderOnly){const result=await this.refreshSender(entry,run);if(result)results.push(result);continue;}
           const lamp = await this.prepare(entry, run);
           this.emit(lamp, run, {state: 'checking', message: 'Reading installed firmware…', attemptedAt: this.now()});
           const identity = await this.identify(lamp, run,false,{automaticServiceRead:true});
@@ -331,7 +351,7 @@ export class FirmwareFleet {
             identity.firmware.phase === 4 ? 'restarting' : identity.firmware.phase === 3 ? 'updating' : 'checking' : 'ready' : 'unsupported';
           const row=this.live(lamp, run, identity, state, identity.firmware.supported ? '' : 'This lamp does not support Wi-Fi updates.');
           results.push(await this.enrichLighting(lamp,run,identity,row));
-        } catch (error) { const result = this.errorStatus(entry, run, error); if (result) results.push(result); }
+        } catch (error) { if(!senderOnly){const result=this.errorStatus(entry,run,error);if(result)results.push(result);} }
       }
     };
     await Promise.all([worker(), worker()]);
@@ -428,6 +448,8 @@ export class FirmwareFleet {
     const at=this.now(),proof={verified:true,fresh:true,observedAt:at,now:at};
     let latestVersion=null;try{latestVersion=this.getLatestVersion();}catch{}
     value.automaticEvidence=automaticUpdateEvidence(raw,lamp.id,{...proof,latestVersion});
+    value.senderSnapshot={deviceId:lamp.id,sending:observedSenderUpdate(raw,lamp.id,proof)===true};
+    value.senderSnapshotAt=at;
     const receiver=observedReceiverUpdate(raw,lamp.id,proof);
     value.receiverSnapshot=receiver?{deviceId:lamp.id,firmware:{updateContractVersion:raw.updateContractVersion,receiver:true,phase:raw.phase,
       route:Number.isInteger(raw.route)&&raw.route>=0&&raw.route<=255?raw.route:0,progress:raw.progress,writtenOffset:raw.writtenOffset,totalBytes:raw.totalBytes}}:null;

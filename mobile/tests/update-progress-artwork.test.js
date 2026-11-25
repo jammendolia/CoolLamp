@@ -183,6 +183,13 @@ test('production cards show only the receiving model with a visible percentage a
  }
 });
 
+test('the lamp card shows an outgoing update without receiver progress or a restart state',()=>{
+ const view=fixture({task:false,observation:{state:'ready',verified:true,fresh:true,senderSnapshotAt:Date.now(),senderSnapshot:{deviceId:id,sending:true}}});
+ assert.equal(view.card.querySelector('.v2-card-status').textContent,'Sending an update to another lamp');
+ assert(view.card.querySelectorAll('.lamp-update-status').some(node=>/Power will be available/.test(node.textContent)));
+ assert.equal(view.card.querySelector('.lamp-update-progress'),null);assert.equal(view.otherCard.querySelector('.v2-card-status').textContent,'Tap to connect');
+});
+
 test('downloaded, unconfirmed, stopping and restart cards never borrow a hundred-percent fill',()=>{
  for(const options of [
   ...['downloading','downloaded','preparing','connecting','verifying','restarting','checking-result'].map(stage=>({stage,progress:100})),

@@ -5,6 +5,7 @@
 namespace LampFirmwareRelay {
 void begin();
 bool ownsRadio();
+bool sending(); // True only for an active outgoing firmware donation.
 bool receive(const LampEspNow::Received& message);
 void service(uint32_t now);
 void suspend();

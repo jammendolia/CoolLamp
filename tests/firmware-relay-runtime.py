@@ -131,6 +131,7 @@ void deliver(){
 }
 int main(int argc,char** argv){
  assert(argc==2);const std::string scenario=argv[1];scenarioName=scenario;side=0;Donor::begin();side=1;Recipient::begin();
+ assert(!Donor::sending()&&!Recipient::sending());
  if(scenario=="unpaired-measurement"){
   side=0;radioAvailable=false;for(unsigned i=0;i<2000;++i){Donor::service(fakeNow);++fakeNow;}
   FirmwareManifest measured{};assert(Donor::runningManifest(measured)&&measured.size==sizeof(image)&&packets.empty()&&!begins&&!boots);return 0;
@@ -175,18 +176,21 @@ int main(int argc,char** argv){
  dropAck=scenario=="lost-ack";dropData=scenario=="lost-data";dropFinish=scenario=="lost-finish-ack";corrupt=scenario=="corrupt";
  if(scenario=="old-offer")installed[300+16]='0';
  if(scenario=="retained-mismatch")installed[400]^=1;
+ bool sentFirmware=false;
  for(unsigned i=0;i<160000&&!boots;++i){
   side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();
+  sentFirmware=sentFirmware||Donor::sending();assert(!Recipient::sending());
   if(scenario=="auto-disabled-midway"&&flash.size()>1000)automatic=false;
   if(scenario=="radio-lost"&&flash.size()>1000)radioAvailable=false;
   ++fakeNow;
  }
  if(scenario=="lost-finish-ack")for(unsigned i=0;i<2000;++i){side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();++fakeNow;}
  if(scenario=="success"||scenario=="lost-ack"||scenario=="lost-data"||scenario=="lost-finish-ack"||scenario=="coordinator-legacy"){
-  assert(boots==1&&ends==1&&verified&&flash==installed);assert(begins==1);if(dropAck)assert(ackDropped);if(dropData)assert(dataDropped);if(dropFinish)assert(finishDropped);
+  assert(boots==1&&ends==1&&verified&&flash==installed);assert(begins==1&&sentFirmware&&!Donor::sending());if(dropAck)assert(ackDropped);if(dropData)assert(dataDropped);if(dropFinish)assert(finishDropped);
  }else{assert(!boots&&!verified);if(scenario=="internet-first"||scenario=="unknown-legacy-attempt"||scenario=="auto-off"||scenario=="wrong-fleet"||scenario=="old-offer"||scenario=="commission"||scenario=="quiet-window"||scenario=="attempt-quarantine"||scenario=="group-unassigned"||scenario=="group-legacy"||scenario=="rollout-denied"||scenario=="rollout-storage"||scenario=="coordinator-held"||scenario=="malicious-signature"||scenario=="malicious-artifact"||scenario=="unsigned-offer"||scenario=="missing-metadata"||scenario=="retained-mismatch")assert(!begins);}
  if(scenario=="internet-first"){assert(donorOffersObserved&&Recipient::discoverySnapshot(fakeNow).state==0);donorDiscovery=true;for(unsigned i=0;i<30000&&!boots;++i){side=0;Donor::service(fakeNow);deliver();side=1;Recipient::service(fakeNow);deliver();++fakeNow;}assert(boots==1&&verified&&flash==installed);}
- if(scenario=="unknown-legacy-attempt")assert(!donorOffersObserved);
+ if(scenario=="unknown-legacy-attempt")assert(!donorOffersObserved&&!sentFirmware);
+ if(scenario=="wrong-fleet"||scenario=="auto-off")assert(!sentFirmware);
  if(scenario=="attempt-storage"||scenario=="boot-error-selected"){
   assert(attemptPrepares==1&&ends==1&&!boots&&commitHeld[1]&&reservations[1]);
   assert(bootSelectionChanged==(scenario=="boot-error-selected")&&bootWrites==unsigned(bootSelectionChanged));

@@ -4,24 +4,28 @@ import {readFileSync} from 'node:fs';
 import {runInNewContext} from 'node:vm';
 import {lampArtworkSvg} from '../src/lamp-artwork.js';
 import {LAMP_STYLES,normalizeLampStyle,resolveLampStyle} from '../src/lamp-style.js';
+import {SENDING_UPDATE_NOTICE} from '../src/lamp-power.js';
 
 const source=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const extract=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
 const power=extract('function renderPower() {','\nfunction renderOptions() {');
 const resolution=extract('function resolvedStyle(entry=selected) {',"\n$('lampStyle').replaceChildren");
+const updating=extract('function updatingLamp() {','\nfunction bluetoothFirmwareOwner()');
 const descriptor=id=>{const {code,family}=LAMP_STYLES.find(style=>style.id===id);return {version:1,code,id,family};};
 
 function fixture(){
  const elements=new Map();let renders=0,html='';
+ const sendingIds=new Set();
  const node=id=>{if(!elements.has(id))elements.set(id,{dataset:{},style:{},classList:{toggle(){}},setAttribute(){}});return elements.get(id);};
  Object.defineProperty(node('lampArt'),'innerHTML',{get:()=>html,set:value=>{html=value;renders++;}});
  const context={$:node,lampArtworkSvg,normalizeLampStyle,resolveLampStyle,selected:{id:'aabbccddeeff',phoneLampStyle:'helix',lampStyle:descriptor('helix')},
   lamp:{identity:'aabbccddeeff',raw:{lampStyle:descriptor('sonata'),leds:128,budget:500,midpoint:0},catalog:[{id:4,name:'Fire'}],command(){throw Error('Rendering must not write to the lamp');}},
   state:{power:true,mode:4,sync:{role:0}},busy:false,connecting:false,liveLightSending:false,groupScenes:[],
-  groupsAvailable:()=>true,updatingLamp:()=>false,independentLightingAllowed:()=>true,document:{querySelector:()=>node('hero')}};
+  groupsAvailable:()=>true,lampSendingUpdate:id=>sendingIds.has(id),firmware:null,fleetLampInstalling:()=>false,bluetoothFirmwareTask:null,
+  SENDING_UPDATE_NOTICE,independentLightingAllowed:()=>true,document:{querySelector:()=>node('hero')}};
  context.verifiedSelectedLamp=()=>!context.connecting&&context.lamp.identity===context.selected?.id;
- runInNewContext(resolution+'\n'+power+'\nthis.render=renderPower;',context);
- return {context,node,render:context.render,html:()=>html,renders:()=>renders};
+ runInNewContext(resolution+'\n'+updating+'\n'+power+'\nthis.render=renderPower;',context);
+ return {context,node,render:context.render,html:()=>html,renders:()=>renders,sendingIds};
 }
 
 test('the actual Effects hero draws verified Sonata over stale cached or phone Helix artwork',()=>{
@@ -54,4 +58,11 @@ test('Sonata retains its silhouette through power changes and never keeps anothe
  assert.equal(f.node('powerHint').textContent,'Turns the light on using its current effect and brightness.');
  f.context.state.power=true;f.render();assert.equal(f.node('lampArt').style.opacity,'1');
  f.context.selected=null;f.context.state=null;f.render();assert.match(f.html(),/data-lamp-artwork="unspecified"/);
+});
+
+test('the selected lamp explains its outgoing update and keeps power disabled until the transfer clears',()=>{
+ const f=fixture();f.sendingIds.add(f.context.selected.id);f.render();
+ assert.equal(f.node('powerState').textContent,'Sending an update');assert.equal(f.node('powerHint').textContent,SENDING_UPDATE_NOTICE);
+ assert.equal(f.node('power').disabled,true);assert.equal(f.node('brightness').disabled,true);
+ f.sendingIds.clear();f.render();assert.equal(f.node('powerState').textContent,'Light is on');assert.equal(f.node('power').disabled,false);
 });

@@ -86,7 +86,7 @@ class ControlHttpAdapterTests(unittest.TestCase):
             'LampSyncJsonSnapshot captureLampSyncJson(',
             'bool appendLampSyncJson(LampJsonSink& s,', 'bool appendLampSyncJson(LampJsonSink& reply,',
             'bool appendLampSyncJson(String&', 'String lampSyncJson('])
-        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio', '/api/preview'])
+        routes = '\n'.join(registration(source, route) for route in ['/api/sync', '/api/sync/scene', '/api/sync/invite', '/api/name', '/api/style', '/api/geometry', '/api/audio', '/api/preview', '/api/power'])
         routes += '\n' + registration(source, '/api/audio', 'GET')
         routes += '\n' + registration(source, '/api/effects', 'GET')
         routes += '\n' + registration(source, '/api/defaults')
@@ -146,6 +146,7 @@ uint8_t heatStorage[1024]{};uint8_t* splitHeat=heatStorage;
  struct {void setBrightness(uint8_t){}} FastLED;
  unsigned controlKnobChanges=0,controlUses=0;
  void syncLampKnob(){++controlKnobChanges;}void noteLampUpdateUse(){++controlUses;}
+ void lampShowFrame(LampRuntimeMetrics::FrameKind){}
  bool leaveLampSceneForEffect(){return true;}
  constexpr uint8_t MODE_FIRE=4,LAMP_PROTOCOL_VERSION=1,LAMP_BASE_EFFECT_COUNT=38,LAMP_EFFECT_COUNT=47,LAMP_EFFECT_CAPACITY=LampEffects::Count;
 uint8_t legacyEffectCount=47;
@@ -189,6 +190,8 @@ constexpr int MALLOC_CAP_8BIT=1;
 unsigned heap_caps_get_largest_free_block(int){return 327680;}
 unsigned uxTaskGetStackHighWaterMark(void*){return 6144;}
 namespace UpdatePublisher {bool enforced(){return false;}}
+bool sendingFirmware=false;
+namespace LampFirmwareRelay {bool sending(){return sendingFirmware;}}
 bool policyNeedsReconcile=false,policyReadable=false;
 bool reconcileUncertainPolicy(){return false;}
 LampUpdatePolicy::Policy updatePolicy;
@@ -273,6 +276,14 @@ int main(int argc,char** argv){
  assert(String::reserveCalls==updateReserves&&Preferences::writes==updateWrites);
  const auto frozenUpdate=lampJsonReply([&](LampJsonSink& out){appendLampUpdateJson(out,capturedUpdate,true);});
  assert(!frozenUpdate.isEmpty()&&!strcmp(capturedUpdate.deviceId,"aabbccddeeff"));
+ assert(frozenUpdate.find("\"sending\"")==std::string::npos);
+ sendingFirmware=true;
+ const auto capturedSender=captureLampUpdateJson(true);
+ sendingFirmware=false;
+ for(const bool standalone:{false,true}){
+  const auto senderJson=lampJsonReply([&](LampJsonSink& out){appendLampUpdateJson(out,capturedSender,standalone);});
+  assert(senderJson.find("\"sending\":true")!=std::string::npos&&senderJson.find("\"receiver\":false")!=std::string::npos);
+ }
  const auto savedPolicy=updatePolicy;const auto savedAutomatic=automaticView;
  const auto savedPolicyRevision=policyRevision,savedMillis=fakeMillis;
  const auto savedPolicyReadable=policyReadable,savedAttemptReadable=LampUpdateAttempt::readable;
@@ -762,6 +773,23 @@ int main(int argc,char** argv){
    <<",\"current55\":"<<sonataCurrent<<",\"protectedCurrent55\":"<<sonataPrivateCurrent.body
    <<",\"bytes\":{\"catalog55\":"<<sonataCatalog.body.length()<<",\"catalog55NoAudio\":"<<sonataNoAudio.body.length()<<",\"current55\":"<<sonataCurrent.length()<<",\"protectedCurrent55\":"<<sonataPrivateCurrent.body.length()<<"}}";}
  std::cout<<"MEASURE Sonata catalog55="<<sonataCatalog.body.length()<<" catalog55NoAudio="<<sonataNoAudio.body.length()<<" current55="<<sonataCurrent.length()<<" protectedCurrent55="<<sonataPrivateCurrent.body.length()<<"; actual mode55 preview accepted, wrong-style/group/Edison mode rejected, center/path preserved\n";
+ // Exercise the real Power handler through the shared BLE/mesh adapter at
+ // the confirmed CoolLamp 2 memory profile, with its VU Meter effect retained.
+ config.role=1;Mode=46;Brightness=55;PowerOn=true;installed=true;
+ const auto beforePowerWrites=Preferences::writes;
+ const auto beforePowerUses=controlUses;
+ const auto beforePowerRestart=restartAt;
+ fakeFreeHeap=10000;fakeLargestBlock=7668;
+ const auto powerDenied=lampControlRequest(LampControlEndpoint::Power,true,"on=0");
+ assert(powerDenied.status==503&&powerDenied.body=="Control resources unavailable. This request was not executed.");
+ assert(PowerOn&&controlUses==beforePowerUses);
+ fakeFreeHeap=16928;
+ remoteBusy=true;
+ assert(lampControlRequest(LampControlEndpoint::Power,true,"on=0").status==409&&PowerOn&&controlUses==beforePowerUses);
+ remoteBusy=false;
+ const auto groupOff=lampControlRequest(LampControlEndpoint::Power,true,"on=0");
+ assert(groupOff.status==200&&groupOff.body=="Light off."&&!PowerOn&&controlUses==beforePowerUses+1);
+ assert(Mode==46&&Brightness==55&&config.role==1&&Preferences::writes==beforePowerWrites&&restartAt==beforePowerRestart);
  std::cout<<"PASS: real HTTP/BLE handlers preserve auth, URI/update/follower guards, strict forms, NVS failures, hardware-only credentials, private snapshot and context cleanup; snapshot bytes="<<snapshot.length()<<" expanded worst-name bytes="<<expandedSnapshot.length()<<"\n";
 }
 '''

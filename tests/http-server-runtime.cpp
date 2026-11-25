@@ -238,7 +238,7 @@ static std::string upload(const std::string& body,const std::string& token="deve
 struct Fixture {
   LampControlHttpAdapter server{80};
   unsigned listener=0,reads=0,mutations=0,uploadStarts=0,uploadWrites=0,uploadEnds=0,uploadAborts=0,uploadFinalCalls=0,restarts=0;
-  bool updateOwned=false,uploadComplete=false,failWrite=false,requireParserReleased=false;
+  bool updateOwned=false,uploadComplete=false,failWrite=false,requireParserReleased=false,powerOn=true;
   size_t currentReadBytes=0;const char* currentReadType="application/json";int currentReadStatus=200;
   std::vector<uint8_t> written;
   void owner(){assert((inService||inControl)&&!inCloseWorker);if(requireParserReleased)assert(!liveParsers&&!liveBodies);}
@@ -261,7 +261,20 @@ struct Fixture {
     for(const char* route:{"/api/effects","/api/descriptor","/api/revision","/api/firmware","/api/diagnostics"})
       server.on(route,HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
     server.on("/api/effects/schema",HTTP_POST,[this](){if(!auth())return;++reads;server.send(200,"application/json","{}");});
-    server.on("/api/power",HTTP_POST,[this](){if(!auth(true))return;const char* const fields[]={"on"};if(!server.fieldsAllowed(fields,1)||server.arg("on")!="1"){server.send(400,"text/plain","Invalid form.");return;}++mutations;server.send(200,"text/plain","Light on.");});
+    server.on("/api/power",HTTP_POST,[this](){
+      if(!auth(true))return;
+      const char* const fields[]={"on"};
+      const String on=server.arg("on");
+      if(!server.fieldsAllowed(fields,1)||(on!="0"&&on!="1")){server.send(400,"text/plain","Invalid form.");return;}
+      powerOn=on=="1";++mutations;
+      server.send(200,"text/plain",powerOn?"Light on.":"Light off.");
+    });
+    server.on("/api/appearance/save",HTTP_POST,[this](){
+      if(!auth(true))return;
+      const char* const fields[]={"mode"};
+      if(!server.fieldsAllowed(fields,1)||server.arg("mode")!="1"){server.send(400,"text/plain","Invalid form.");return;}
+      ++mutations;server.send(200,"text/plain","Saved.");
+    });
     server.on("/api/state/patch",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"application/json","{\"outcome\":\"executed\"}");});
     server.on("/api/sync/scene",HTTP_POST,[this](){if(!auth(true))return;++mutations;server.send(200,"text/plain","Group scene saved.");});
     server.on("/large",HTTP_GET,[this](){if(!auth())return;++reads;server.send(200,"text/plain",String(std::string(4000,'a')));});
@@ -374,7 +387,7 @@ int main(int argc,char** argv){
     // in Prepared behind a different request's memory admission.
     Fixture f(5551);const auto request=get("/api/state/current");const int partial=connect(f.listener,request.substr(0,request.size()-2));
     for(unsigned i=0;i<10;++i)turn(f.server);turn(f.server,5000);runCloser();assert(sockets[partial].closed&&!f.reads&&detachedRequests.at(partial).absoluteTimeoutMs==5000);
-    fakeFreeHeap=16000;const int waiting=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<10;++i)turn(f.server);
+    fakeFreeHeap=16000;const int waiting=connect(f.listener,post("/api/appearance/save","mode=1"));for(unsigned i=0;i<10;++i)turn(f.server);
     const int prepared=connect(f.listener,get("/api/state/current"));for(unsigned i=0;i<10;++i)turn(f.server);
     turn(f.server,5000);runCloser();assert(sockets[waiting].closed&&sockets[prepared].closed&&!f.reads&&!f.mutations&&detachedRequests.at(prepared).absoluteTimeoutMs==5000);
   }else if(scenario=="parser-admission-bounds-and-recovery"){
@@ -443,9 +456,9 @@ int main(int argc,char** argv){
     assert(f.reads==1&&!f.mutations&&fakeStringReserveCalls==reservations&&largestWrite<=FlightBytes);
     const int denied=connect(f.listener,get("/","Basic wrong"));f.finish(denied);contains(denied,"401 Unauthorized");
     contains(denied,"WWW-Authenticate");assert(f.reads==1&&!f.mutations&&!f.server.metrics().deadlines);
-    // Only the exact immutable GET route gets this policy. Mutations and
-    // unclassified/read-buffer routes keep the unchanged24 KiB admission.
-    for(int fd:{connect(f.listener,post("/api/power","on=1")),connect(f.listener,post("/","on=1")),connect(f.listener,get("/large"))}){
+    // Only the exact immutable GET route gets this policy. Ordinary durable
+    // mutations and unclassified routes keep the unchanged 24 KiB admission.
+    for(int fd:{connect(f.listener,post("/api/appearance/save","mode=1")),connect(f.listener,post("/","on=1")),connect(f.listener,get("/large"))}){
       for(unsigned i=0;i<12;++i)turn(f.server);
       turn(f.server,5001);runCloser();assert(sockets[fd].closed);
     }
@@ -525,7 +538,7 @@ int main(int argc,char** argv){
     fd=connect(f.listener,get("/api/firmware/upload/status"));f.finish(fd);contains(fd,"200 OK");assert(f.reads==1&&f.mutations==1);
     fakeFreeHeap=9000;fd=connect(f.listener,post("/api/firmware/upload/prepare","manifest=fixture"));f.finish(fd);contains(fd,"503");assert(f.mutations==1);
     fakeFreeHeap=16316;fakeLargestFreeBlock=639;fd=connect(f.listener,post("/api/firmware/upload/prepare","manifest=fixture"));f.finish(fd);contains(fd,"503");assert(f.mutations==1);
-    fakeLargestFreeBlock=7668;fd=connect(f.listener,post("/api/power","on=1"));f.finish(fd,20,1000);assert(f.mutations==1&&sockets[fd].closed);
+    fakeLargestFreeBlock=7668;fd=connect(f.listener,post("/api/appearance/save","mode=1"));f.finish(fd,20,1000);assert(f.mutations==1&&sockets[fd].closed);
     assert(!LampControlResourcePolicy::readHttpPath("/api/firmware/upload/prepare",true));
     assert(!LampControlResourcePolicy::preparationHttpPath("/api/firmware/upload/prepare",false));
     assert(!LampControlResourcePolicy::preparationReady(16316,7668,1025));
@@ -730,9 +743,9 @@ int main(int argc,char** argv){
       assert(f.reads==6&&!f.mutations&&!f.server.metrics().deadlines);
     }
     fakeFreeHeap=16316;fakeLargestFreeBlock=7668;
-    // A fresh snapshot may use the smaller read path. This does not admit a
-    // settings/power mutation or an unclassified route under the old floor.
-    const int mutation=connect(f.listener,post("/api/power","on=1"));
+    // A fresh snapshot may use the smaller read path. Ordinary durable
+    // mutations and unclassified routes still use the old floor.
+    const int mutation=connect(f.listener,post("/api/appearance/save","mode=1"));
     const int legacyRead=connect(f.listener,get("/large"));
     for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.mutations&&f.reads==6);
     turn(f.server,5001);runCloser();assert(sockets[mutation].closed&&sockets[legacyRead].closed&&!f.mutations);
@@ -795,36 +808,80 @@ int main(int argc,char** argv){
     assert(LampControlResourcePolicy::compactMutationHttpReady("/api/sync/scene",23388,9204,scene.size()));
     fakeFreeHeap=23388;fakeLargestFreeBlock=9204;
     const int sceneOk=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneOk,40);contains(sceneOk,"200 OK");assert(f.mutations==3);
-    const uint32_t sceneFloor=uint32_t(LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::CompactScenePersistenceBytes+LampControlResourcePolicy::roundedReplyBytes(scene.size())+24*32);
+    const uint32_t sceneFloor=uint32_t(LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(512)+LampControlResourcePolicy::CompactGroupPersistenceBytes+LampControlResourcePolicy::roundedReplyBytes(scene.size())+24*32);
     fakeFreeHeap=sceneFloor-1;const int sceneLow=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneLow,40);contains(sceneLow,"503 Service Unavailable");assert(f.mutations==3);
-    fakeFreeHeap=23388;fakeLargestFreeBlock=LampControlResourcePolicy::CompactScenePersistenceBytes-1;
+    fakeFreeHeap=23388;fakeLargestFreeBlock=LampControlResourcePolicy::CompactGroupPersistenceBytes-1;
     const int sceneFragmented=connect(f.listener,post("/api/sync/scene",scene));f.finish(sceneFragmented,40);contains(sceneFragmented,"503 Service Unavailable");assert(f.mutations==3);
-    // Legacy/persistent mutations still wait under their unchanged floor.
-    fakeLargestFreeBlock=9204;
-    const int legacy=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
-    assert(f.mutations==3);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==3);
+    // CoolLamp 2 had 16,928 free bytes and a 7,668-byte largest block while
+    // group power requests timed out. An absolute Off should dispatch once.
+    const std::string off="on=0";
+    constexpr uint32_t observedFreeHeap=16928,observedLargestBlock=7668;
+    fakeFreeHeap=observedFreeHeap;fakeLargestFreeBlock=observedLargestBlock;
+    const auto beforePower=f.server.metrics().dispatches, beforeDeadline=f.server.metrics().deadlines;
+    const auto beforeMutation=f.mutations;
+    const auto powerStarted=millis();
+    const int offRequest=connect(f.listener,post("/api/power",off));f.finish(offRequest,40);
+    contains(offRequest,"200 OK");contains(offRequest,"Light off.");
+    const auto acceptedExecutions=f.mutations-beforeMutation;
+    assert(!f.powerOn&&acceptedExecutions==1&&f.server.metrics().dispatches==beforePower+1&&uint32_t(millis()-powerStarted)<100);
+    const size_t powerReserve=LampControlResourcePolicy::compactMutationPersistenceBytes(LampControlEndpoint::Power);
+    assert(powerReserve==LampControlResourcePolicy::CompactGroupPersistenceBytes&&powerReserve==LampControlResourcePolicy::compactMutationPersistenceBytes("/api/power"));
+    const size_t powerFloor=LampControlResourcePolicy::ReadDispatchHeapBytes+LampControlResourcePolicy::roundedReplyBytes(LampControlResourcePolicy::CompactMutationReplyBytes)
+      +powerReserve+LampControlResourcePolicy::roundedReplyBytes(off.size())+24*32;
+    const auto denialStarted=millis();
+    const auto rejectedFreeHeap=uint32_t(powerFloor-1);
+    const auto beforeDenial=f.mutations;
+    fakeFreeHeap=rejectedFreeHeap;
+    const int powerLow=connect(f.listener,post("/api/power","on=1"));f.finish(powerLow,40);
+    contains(powerLow,"503 Service Unavailable");contains(powerLow,"This request was not executed.");
+    const auto rejectedExecutions=f.mutations-beforeDenial;
+    assert(!f.powerOn&&rejectedExecutions==0&&f.server.metrics().dispatches==beforePower+1
+      &&f.server.metrics().deadlines==beforeDeadline&&uint32_t(millis()-denialStarted)<100);
+    inControl=true;const auto tunnelLow=f.server.executeControl(LampControlEndpoint::Power,true,"on=1",true);inControl=false;
+    assert(tunnelLow.status==503&&tunnelLow.body=="Control resources unavailable. This request was not executed."&&!f.powerOn&&f.mutations==4);
+    fakeFreeHeap=observedFreeHeap;inControl=true;const auto tunnel=f.server.executeControl(LampControlEndpoint::Power,true,"on=1",true);inControl=false;
+    assert(tunnel.status==200&&tunnel.body=="Light on."&&f.powerOn&&f.mutations==5);
+    fakeFreeHeap=uint32_t(powerFloor);
+    const auto beforeFloor=f.mutations;
+    const int powerAtFloor=connect(f.listener,post("/api/power",off));f.finish(powerAtFloor,40);
+    contains(powerAtFloor,"200 OK");contains(powerAtFloor,"Light off.");
+    const auto floorExecutions=f.mutations-beforeFloor;
+    assert(!f.powerOn&&floorExecutions==1);
+    // Other durable mutations still wait under their unchanged floor.
+    fakeFreeHeap=observedFreeHeap;fakeLargestFreeBlock=9204;
+    const auto beforeLegacy=f.mutations;
+    const int legacy=connect(f.listener,post("/api/appearance/save","mode=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    assert(f.mutations==beforeLegacy);turn(f.server,5001);runCloser();assert(sockets[legacy].closed&&f.mutations==beforeLegacy);
+    std::cout<<"MEASURE compact-power {\"observedFreeHeapBytes\":"<<observedFreeHeap
+      <<",\"observedLargestBlockBytes\":"<<observedLargestBlock<<",\"httpFreeHeapFloorBytes\":"<<powerFloor
+      <<",\"persistenceWorkspaceBytes\":"<<powerReserve<<",\"rejectedFreeHeapBytes\":"<<rejectedFreeHeap
+      <<",\"acceptedHttpStatus\":"<<std::stoi(sockets[offRequest].outgoing.substr(9,3))
+      <<",\"acceptedExecutions\":"<<acceptedExecutions<<",\"floorHttpStatus\":"<<std::stoi(sockets[powerAtFloor].outgoing.substr(9,3))
+      <<",\"floorExecutions\":"<<floorExecutions<<",\"rejectedHttpStatus\":"<<std::stoi(sockets[powerLow].outgoing.substr(9,3))
+      <<",\"rejectedExecutions\":"<<rejectedExecutions<<",\"tunnelAcceptedStatus\":"<<tunnel.status
+      <<",\"tunnelRejectedStatus\":"<<tunnelLow.status<<"}\n";
   }else if(scenario=="control-memory-before-decode"){
     Fixture f;static_assert(LampControlResourcePolicy::MinFreeHeapBytes==24576);static_assert(LampControlResourcePolicy::MinLargestBlockBytes==6160);
     const auto reserves=fakeStringReserveCalls;
     for(const auto& budget:{std::pair<uint32_t,uint32_t>{16384,24000},{24575,24000},{24576,6159}}){
       fakeFreeHeap=budget.first;fakeLargestFreeBlock=budget.second;
-      for(const char* body:{"on=1","on=%QQ"}){
-        inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::Power,true,body,true);inControl=false;
+      for(const char* body:{"mode=1","mode=%QQ"}){
+        inControl=true;const auto denied=f.server.executeControl(LampControlEndpoint::AppearanceSave,true,body,true);inControl=false;
         assert(denied.status==503&&denied.body=="Control resources unavailable. This request was not executed.");
       }
       assert(!f.reads&&!f.mutations&&fakeStringReserveCalls==reserves);
-      assert(!f.server.controlActive()&&!f.server.hasArg("on")&&f.server.uri().isEmpty()&&f.server.header("Authorization").isEmpty());
+      assert(!f.server.controlActive()&&!f.server.hasArg("mode")&&f.server.uri().isEmpty()&&f.server.header("Authorization").isEmpty());
       assert(f.server.executeControl(0,true,"on=1").status==404&&fakeStringReserveCalls==reserves);
     }
     fakeFreeHeap=24576;fakeLargestFreeBlock=6160;
     for(unsigned i=0;i<20;++i)turn(f.server);assert(!f.reads&&!f.mutations);
-    inControl=true;const auto fresh=f.server.executeControl(LampControlEndpoint::Power,true,"on=1",true);inControl=false;
-    assert(fresh.status==200&&f.mutations==1&&fakeStringReserveCalls>reserves&&!f.server.controlActive()&&!f.server.hasArg("on"));
-    const int oldBudget=connect(f.listener,post("/api/power","on=1"));fakeFreeHeap=16384;
+    inControl=true;const auto fresh=f.server.executeControl(LampControlEndpoint::AppearanceSave,true,"mode=1",true);inControl=false;
+    assert(fresh.status==200&&f.mutations==1&&fakeStringReserveCalls>reserves&&!f.server.controlActive()&&!f.server.hasArg("mode"));
+    const int oldBudget=connect(f.listener,post("/api/appearance/save","mode=1"));fakeFreeHeap=16384;
     for(unsigned i=0;i<12;++i)turn(f.server);assert(f.mutations==1&&!f.server.metrics().dispatches);
     turn(f.server,5000);runCloser();assert(sockets[oldBudget].closed&&f.mutations==1);
     fakeFreeHeap=24576;for(unsigned i=0;i<20;++i)turn(f.server);assert(f.mutations==1);
-    const int current=connect(f.listener,post("/api/power","on=1"));f.finish(current);contains(current,"200 OK");assert(f.mutations==2&&f.server.metrics().dispatches==1);
+    const int current=connect(f.listener,post("/api/appearance/save","mode=1"));f.finish(current);contains(current,"200 OK");assert(f.mutations==2&&f.server.metrics().dispatches==1);
     fakeFreeHeap=16316;fakeLargestFreeBlock=7668;inControl=true;
     const auto read=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
     assert(read.status==200&&f.reads==1&&f.mutations==2&&read.body.find("development-token")==std::string::npos);
@@ -832,12 +889,12 @@ int main(int argc,char** argv){
     assert(readDenied.status==503&&f.reads==1&&f.mutations==2&&!f.server.controlActive());
   }else if(scenario=="ready-memory-before-mutation"){
     Fixture f;fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes-1;
-    const int mutation=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    const int mutation=connect(f.listener,post("/api/appearance/save","mode=1"));for(unsigned i=0;i<12;++i)turn(f.server);
     assert(!f.mutations&&f.server.metrics().dispatches==0&&sockets[mutation].outgoing.empty());
     fakeFreeHeap=LampHttpServer::DispatchHeapFloorBytes;fakeLargestFreeBlock=LampHttpServer::DispatchLargestBlockBytes-1;
     for(unsigned i=0;i<12;++i)turn(f.server);assert(!f.mutations&&f.server.metrics().dispatches==0);
     fakeLargestFreeBlock=LampHttpServer::DispatchLargestBlockBytes;f.finish(mutation);contains(mutation,"200 OK");assert(f.mutations==1);
-    fakeFreeHeap=12000;const int expired=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    fakeFreeHeap=12000;const int expired=connect(f.listener,post("/api/appearance/save","mode=1"));for(unsigned i=0;i<12;++i)turn(f.server);
     turn(f.server,1501);runCloser();assert(!sockets[expired].closed&&f.mutations==1);
     turn(f.server,3499);runCloser();assert(sockets[expired].closed&&f.mutations==1&&f.server.metrics().deadlines==1);
     fakeFreeHeap=fakeLargestFreeBlock=65536;const int fresh=connect(f.listener,get());f.finish(fresh);contains(fresh,"200 OK");assert(f.reads==1&&f.mutations==1);
@@ -883,11 +940,11 @@ int main(int argc,char** argv){
     f.server.stop();runCloser();assert(sockets[stopped].closed&&f.mutations==1&&fakeStringWipedWatched==4&&!fakeStringWatchedStorage);
   }else if(scenario=="prepared-single-slot-and-half-close"){
     Fixture f;fakeFreeHeap=12000;
-    const int a=connect(f.listener,post("/api/power","on=1")),b=connect(f.listener,post("/api/power","on=1")),c=connect(f.listener,post("/api/power","on=1"));
+    const int a=connect(f.listener,post("/api/appearance/save","mode=1")),b=connect(f.listener,post("/api/appearance/save","mode=1")),c=connect(f.listener,post("/api/appearance/save","mode=1"));
     sockets[a].readHalfClosed=true;
     for(unsigned i=0;i<18;++i)turn(f.server);assert(liveParsers==2&&!f.mutations&&!f.server.metrics().dispatches);
-    inControl=true;const auto separate=f.server.executeControl(LampControlEndpoint::Power,true,"on=1",true);inControl=false;
-    assert(separate.status==503&&!f.mutations&&!f.server.hasArg("on"));
+    inControl=true;const auto separate=f.server.executeControl(LampControlEndpoint::AppearanceSave,true,"mode=1",true);inControl=false;
+    assert(separate.status==503&&!f.mutations&&!f.server.hasArg("mode"));
     fakeFreeHeap=fakeLargestFreeBlock=65536;
     for(unsigned i=0;i<50&&(!sockets[a].closed||!sockets[b].closed||!sockets[c].closed);++i){
       const unsigned before=f.mutations;turn(f.server);assert(f.mutations-before<=1);runCloser();
@@ -902,8 +959,8 @@ int main(int argc,char** argv){
     Fixture f;const auto complete=upload(multipartBody(std::string(1024,char(0xe9))));const size_t split=complete.size()-100;
     const int transfer=connect(f.listener,complete.substr(0,split));for(unsigned i=0;i<30;++i)turn(f.server);
     assert(f.uploadStarts==1&&f.updateOwned&&!f.uploadEnds&&liveParsers==1);
-    fakeFreeHeap=12000;const int waiting=connect(f.listener,post("/api/power","on=1"));for(unsigned i=0;i<12;++i)turn(f.server);
-    assert(liveParsers==1&&!f.mutations&&!f.server.hasArg("on"));
+    fakeFreeHeap=12000;const int waiting=connect(f.listener,post("/api/appearance/save","mode=1"));for(unsigned i=0;i<12;++i)turn(f.server);
+    assert(liveParsers==1&&!f.mutations&&!f.server.hasArg("mode"));
     sockets[transfer].incoming+=complete.substr(split);f.finish(transfer);contains(transfer,"200 OK");assert(f.uploadEnds==1&&!f.updateOwned&&!f.uploadAborts&&!f.mutations&&!liveParsers);
     fakeFreeHeap=fakeLargestFreeBlock=65536;f.finish(waiting);contains(waiting,"200 OK");assert(f.mutations==1&&f.uploadEnds==1&&!f.uploadAborts);
   }else if(scenario=="prepared-waits-for-delayed-cleanup"){
@@ -920,20 +977,20 @@ int main(int argc,char** argv){
     f.finish(healthy);contains(healthy,"200 OK");assert(f.reads==1&&uint32_t(millis()-accepted)>1500&&uint32_t(millis()-accepted)<5000&&f.server.metrics().deadlines==2);
   }else if(scenario=="complete-input-total-deadline-and-rollover"){
     Fixture f;clockUs=uint64_t(UINT32_MAX-1000)*1000;fakeFreeHeap=12000;
-    const int a=connect(f.listener,post("/api/power","on=1")),b=connect(f.listener,post("/api/power","on=1")),c=connect(f.listener,post("/api/power","on=1"));
+    const int a=connect(f.listener,post("/api/appearance/save","mode=1")),b=connect(f.listener,post("/api/appearance/save","mode=1")),c=connect(f.listener,post("/api/appearance/save","mode=1"));
     for(unsigned i=0;i<18;++i)turn(f.server);assert(liveParsers==2&&!f.mutations&&!f.server.metrics().dispatches);
     // Extra pipelined bytes are never consumed as another command and a peek
     // cannot renew either waiting request's original acceptance timestamp.
     sockets[a].incoming+="ignored";sockets[b].incoming+="ignored";sockets[c].incoming+="ignored";
     turn(f.server,1501);assert(!sockets[a].closed&&!sockets[b].closed&&!sockets[c].closed&&!f.mutations&&liveParsers==2);
     turn(f.server,3499);runCloser();assert(sockets[a].closed&&sockets[b].closed&&sockets[c].closed&&!f.mutations&&!f.server.metrics().dispatches&&!liveParsers&&f.server.metrics().deadlines==3);
-    assert(f.server.header("Authorization").isEmpty()&&!f.server.hasArg("on"));
+    assert(f.server.header("Authorization").isEmpty()&&!f.server.hasArg("mode"));
     fakeFreeHeap=fakeLargestFreeBlock=65536;const int fresh=connect(f.listener,get());f.finish(fresh);contains(fresh,"200 OK");
     inControl=true;const auto reconciled=f.server.executeControl(LampControlEndpoint::State,false,"",true);inControl=false;
     assert(reconciled.status==200&&f.reads==2&&!f.mutations);
     // Starting Send's idle interval after a late dispatch cannot renew the
     // absolute deadline or replay an executed command whose reply is lost.
-    fakeFreeHeap=12000;const int late=connect(f.listener,post("/api/power","on=1"));sockets[late].sendBlocked=true;
+    fakeFreeHeap=12000;const int late=connect(f.listener,post("/api/appearance/save","mode=1"));sockets[late].sendBlocked=true;
     for(unsigned i=0;i<12;++i)turn(f.server);turn(f.server,4500);assert(!f.mutations&&!sockets[late].closed);
     fakeFreeHeap=fakeLargestFreeBlock=65536;for(unsigned i=0;i<6;++i)turn(f.server);assert(f.mutations==1&&!sockets[late].closed&&sockets[late].outgoing.empty());
     turn(f.server,500);runCloser();assert(sockets[late].closed&&f.mutations==1);
